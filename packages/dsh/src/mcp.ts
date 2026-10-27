@@ -1,6 +1,7 @@
 import * as McpClient from '@deepseek-ai/dsh-mcp-client';
 import McpResources from '@deepseek-ai/dsh-mcp-resources';
 import type { Observable } from 'rxjs';
+import type { ResourceReader } from '@hanger-source/dsh-reactive';
 import { requireActivePlugin } from './native-installation.ts';
 import { NativeCapabilityOwner, nativeToolNames, type NativeCapability } from './native-capability.ts';
 
@@ -16,8 +17,10 @@ export interface NativeMcpOptions {
 export interface NativeMcp extends NativeCapability {
   readonly serverName: string;
   /** 当前连接代际实际注册的工具；断开时为空，供标准 NativeTools 声明消费。 */
+  readonly toolNames: ResourceReader<readonly string[]>;
   readonly toolNames$: Observable<readonly string[]>;
   /** 公共资源工具只在正式服务已注册时出现；调用仍须 NativeTools 的原生来源及政策。 */
+  readonly resourceToolNames: ResourceReader<readonly string[]>;
   readonly resourceToolNames$: Observable<readonly string[]>;
 }
 
@@ -39,8 +42,10 @@ export function createNativeMcp(options: NativeMcpOptions): NativeMcp {
   });
   const prefix = `mcp__${selected.connection.serverName}__`;
   const resourceNames = new Set(['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']);
+  const toolNames = nativeToolNames(owner, name => name.startsWith(prefix));
+  const resourceToolNames = nativeToolNames(owner, name => selected.resources !== 'disabled' && resourceNames.has(name));
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(), serverName: selected.connection.serverName,
-    toolNames$: nativeToolNames(owner, name => name.startsWith(prefix)),
-    resourceToolNames$: nativeToolNames(owner, name => selected.resources !== 'disabled' && resourceNames.has(name)),
+    toolNames, toolNames$: toolNames.values$,
+    resourceToolNames, resourceToolNames$: resourceToolNames.values$,
   });
 }

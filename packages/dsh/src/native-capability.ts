@@ -1,6 +1,6 @@
 import { symbols, type Context, type Fiber } from '@deepseek-ai/cordis';
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools';
-import { Observable, distinctUntilChanged } from 'rxjs';
+import { Observable, distinctUntilChanged, map } from 'rxjs';
 import { createResource, fromSnapshot, ResourceReader, z, type Observation, type ConversationIdentity } from '@hanger-source/dsh-reactive';
 import { Scope, connect } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin, type NativeInstallation } from './native-installation.ts';
@@ -85,22 +85,9 @@ export class NativeCapabilityOwner {
   }
 }
 
-/** @internal 声明可先于 install；首次真实观察才建立这个实例共有的连接。 */
-export function nativeCapabilityObservation<T>(owner: NativeCapabilityOwner, source: () => Observable<T>): Observable<T> {
-  let shared: Observable<T> | undefined;
-  return new Observable(subscriber => {
-    if (owner.scope.disposed) { subscriber.complete(); return; }
-    try {
-      owner.context();
-      shared ??= nativeObservation(owner.scope, source());
-      return shared.subscribe(subscriber);
-    } catch (error) { subscriber.error(error); }
-  });
-}
-
 /** @internal tools/change 也包含临时 agent mask；内容稳定时不制造新声明代际。 */
-export function nativeToolNames(owner: NativeCapabilityOwner, accept: (name: string) => boolean): Observable<readonly string[]> {
-  return nativeCapabilityObservation(owner, () => {
+export function nativeToolNames(owner: NativeCapabilityOwner, accept: (name: string) => boolean): ResourceReader<readonly string[]> {
+  return nativeResource(owner.scope, () => {
     const context = owner.context();
     return fromSnapshot({
       getSnapshot: () => {
@@ -109,7 +96,10 @@ export function nativeToolNames(owner: NativeCapabilityOwner, accept: (name: str
         return Object.freeze(tools.schemas().map(tool => tool.name).filter(accept).sort());
       },
       subscribe: notify => context.on('tools/change', notify),
-    }).pipe(distinctUntilChanged((left, right) => left.length === right.length && left.every((name, index) => name === right[index])));
+    }).pipe(
+      distinctUntilChanged((left, right) => left.length === right.length && left.every((name, index) => name === right[index])),
+      map(value => ({ status: 'ready', generation: 0, observedAt: Date.now(), value })),
+    );
   });
 }
 

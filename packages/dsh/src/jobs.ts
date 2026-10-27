@@ -143,6 +143,8 @@ class SessionJobs implements NativeSessionJobs {
 }
 
 export interface NativeJobs extends NativeCapability {
+  /** 本能力显式启用并实际注册的原生工具；读取不启动Job。 */
+  readonly toolNames: ResourceReader<readonly string[]>;
   readonly toolNames$: Observable<readonly string[]>;
   forSession(session: NativeSessionSource): NativeSessionJobs;
 }
@@ -164,8 +166,8 @@ export function createNativeJobs(options: NativeJobsOptions): NativeJobs {
     if (selected.tools) await requireActivePlugin(ctx.plugin(ToolJobs, selected.tools));
   });
   const names = new Set(['job_list', 'job_output', 'job_kill']);
-  const toolNames$ = nativeToolNames(owner, name => selected.tools !== undefined && names.has(name));
-  return Object.freeze({ install: owner.install, dispose: () => owner.dispose(), toolNames$,
+  const toolNames = nativeToolNames(owner, name => selected.tools !== undefined && names.has(name));
+  return Object.freeze({ install: owner.install, dispose: () => owner.dispose(), toolNames, toolNames$: toolNames.values$,
     forSession(session: NativeSessionSource) {
       const access = nativeSessionAccess(session);
       owner.session(access, 'jobs');

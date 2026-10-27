@@ -1,5 +1,5 @@
-import { createNativeJobs, type NativeJob, type NativeSessionJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
-import { createNativeMcp } from '@hanger-source/dsh-reactive-dsh/mcp';
+import { createNativeJobs, type NativeJob, type NativeJobs, type NativeSessionJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
+import { createNativeMcp, type NativeMcp } from '@hanger-source/dsh-reactive-dsh/mcp';
 import { createNativeApproval, type NativeSessionApproval } from '@hanger-source/dsh-reactive-dsh/approval';
 import { createNativeClock } from '@hanger-source/dsh-reactive-dsh/time';
 import { createNativeSchedule, type NativeSessionSchedule, type NativeScheduleTask } from '@hanger-source/dsh-reactive-dsh/schedule';
@@ -24,6 +24,10 @@ export const nativeCatalogs = (tools: NativeSessionTools, skills: NativeSessionS
   combineResources({ tools: tools.catalog.observations$, skills: skills.catalog.observations$ });
 export const toolPolicy = (tools: NativeSessionTools, approval: NativeSessionApproval) =>
   combineResources({ tools: tools.catalog.observations$, policy: approval.policy.observations$ });
+export const declaredNativeTools = (jobs: NativeJobs, mcp: NativeMcp) =>
+  combineResources({ jobs: jobs.toolNames.observations$, mcp: mcp.toolNames.observations$,
+    resources: mcp.resourceToolNames.observations$ });
+export const readMcpTools = (mcp: NativeMcp, signal: AbortSignal): Promise<readonly string[]> => mcp.toolNames.read(signal);
 export const nativeState = (jobs: NativeSessionJobs, schedule: NativeSessionSchedule, team: NativeSessionTeam) =>
   combineResources({ jobs: jobs.state.observations$, schedule: schedule.state.observations$, team: team.state.observations$ });
 export const taskState = (job: NativeJob, scheduled: NativeScheduleTask, task: NativeTeamTask) =>

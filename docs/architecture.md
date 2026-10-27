@@ -165,7 +165,7 @@ operations 槽的 resolver 从当前声明取得原 command，之后的查询保
 
 `deepseek` 直接连接官方 Messages adapter，`piAi` 安装官方多协议 provider，`nativeModel` 允许已有宿主提供自己的 adapter。Provider profile 中模型目录的容量与输入模态是部署声明，不能从网关名字推测；目录的默认值也不是已向供应商验证的能力。真实模型自主协作、正式协议传输边界和确定性故障注入各有独立验证范围。
 
-可选原生能力保留各自责任。Jobs 使用原生 owner fence、观察和取消，但其进程内 store 不提供业务 Operation 的跨重启持久性；Approval 需要真实原生 turn 和 answerer，业务问答不能代替权限批准；MCP 复用原生 scoped registry、重同步、取消与释放，不声称支持其明确拒绝的 required Tasks 扩展。Schedule 继续由原生 storage、timer 和历史负责，当前投递缺少 Program 输入的身份、范围及准入接点；Team 的成员创建需要显式子程序绑定，成员消息也不能借用原 Goal 或人工授权。框架不以另一套队列、Mailbox 或 TaskManager 填补这些边界。
+可选原生能力保留各自责任。Jobs 使用原生 owner fence、观察和取消，但其进程内 store 不提供业务 Operation 的跨重启持久性；Approval 需要真实原生 turn 和 answerer，业务问答不能代替权限批准；MCP 复用原生 scoped registry、重同步、取消与释放，不声称支持其明确拒绝的 required Tasks 扩展。Jobs/MCP 显式选中的实际工具名由同一 ResourceReader 提供 Promise、快照、Observable 和 hooks 读取；最后消费者退出只释放查询，原生安装与执行继续属于能力 owner。Schedule 继续由原生 storage、timer 和历史负责，当前投递缺少 Program 输入的身份、范围及准入接点；Team 的成员创建需要显式子程序绑定，成员消息也不能借用原 Goal 或人工授权。框架不以另一套队列、Mailbox 或 TaskManager 填补这些边界。
 
 Jobs、Schedule、Team、Files、Approval 与 Clock 的 `forSession` 接受 Host 签发的本地 SDK 句柄或 Program 原 conversation。同形字段不授予访问权；每次调用仍核 exact 来源、原生服务、工作区和观察寿命。实际 Agent 在首次 Program 求值前完成绑定，原生来源的观察在首次订阅时连接，组件求值不启动读取。Program 来源随程序失败或退出释放，外部句柄按自己的 release 释放，原生已受理工作继续归各自 owner。
 

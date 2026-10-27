@@ -178,9 +178,9 @@ export function HumanInput(props: HumanInputProps): ReactElement {
   return leaf({ kind: 'human-input', admitResponder: props.admitResponder });
 }
 
-/** 组合宿主已经安装的原生能力；保留官方名称、执行、文件系统和准入管线。 */
+/** 组合宿主已经安装的原生能力；空集合不贡献声明，执行与准入仍归原生管线。 */
 export function NativeTools(props: NativeToolsProps): ReactElement {
-  if (!Array.isArray(props.names) || props.names.length === 0) throw new Error('REACTIVE_NATIVE_TOOLS_REQUIRED');
+  if (!Array.isArray(props.names)) throw new Error('REACTIVE_NATIVE_TOOLS_REQUIRED');
   if (props.enabled !== undefined && typeof props.enabled !== 'boolean') throw new Error('REACTIVE_NATIVE_TOOL_ENABLED_INVALID');
   if (props.admit !== undefined && typeof props.admit !== 'function') throw new Error('REACTIVE_NATIVE_TOOL_ADMISSION_INVALID');
   const names = new Set<string>();

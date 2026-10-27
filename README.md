@@ -22,6 +22,8 @@
 
 Approval 的 `forSession(source).policy` 是同源政策资源，可与工具、业务资源及 hooks 组合；policy$ 是它的值流，审计继续使用原生有序事件和 readAudit。读取和冷会话恢复观察不产生批准请求或 grant，政策变更继续显式调用 setPolicy 并由原生服务持久化。
 
+Jobs 与 MCP 的 `toolNames`、MCP 的 `resourceToolNames` 是实际注册工具名的 ResourceReader，可 read、peek、组合 observations$ 或交给 useResource；对应 `$` 属性直接使用同一资源的 values$。查询按原生 tools/change 更新，未选择的工具为空集合；`NativeTools({ names: [] })` 贡献零个声明，可表达准备中或工具全部撤下。退出观察不停止 Job 或断开 MCP。能力 dispose 才释放其安装范围，旧资源不再提供可用快照。工具名表达注册事实，调用仍经过 NativeTools 和原生 guard。
+
 后台 Program renderer 使用 React `19.3.1` 与 react-reconciler `0.34.0`。原生 UI 扩展把呈现函数交给 dsh 自己的 Slot renderer，不创建第二个 React root，也不安装后台 reconciler；它可以随原生 React `18.2` 界面使用。两种运行环境分别安装、分别编译。
 
 ## 编程模型

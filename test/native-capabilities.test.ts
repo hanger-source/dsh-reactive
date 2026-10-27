@@ -251,10 +251,11 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
       Component({ conversation }) {
         const jobs = capability.forSession(conversation);
         useResource(jobs.state);
+        const toolNames = useResource(capability.toolNames);
         useResource(approval.forSession(conversation).policy);
         useRelation(() => retired.pipe(filter(id => id === conversation.identity.sessionId), tap(() => { throw retiredFailure; })), [conversation]);
         useLayoutEffect(() => { programSessions.set(conversation.identity.sessionId, { source: conversation, jobs }); }, [conversation, jobs]);
-        return NativeTools({ names: ['job_output', 'job_list', 'job_kill'] });
+        return NativeTools({ names: toolNames.state.status === 'ready' ? toolNames.state.value : [] });
       },
     }),
   })] });
@@ -288,6 +289,8 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     const foreign = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
     const owner = SessionId(session.id), jobs = runtime.native.jobs;
     const programSession = programSessions.get(session.id)!;
+    assert.equal(capability.toolNames$, capability.toolNames.values$);
+    assert.ok((await capability.toolNames.read()).includes('job_list'));
     assert.equal(await firstValueFrom(approval.forSession(programSession.source).policy$), 'never', 'Program首次提交即可读取同一原生审批政策');
     assert.equal(capability.forSession(programSession.source), programSession.jobs);
     assert.throws(() => capability.forSession({ identity: programSession.source.identity }), /REACTIVE_NATIVE_SESSION_REQUIRED/);

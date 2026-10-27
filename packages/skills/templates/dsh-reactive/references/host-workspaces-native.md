@@ -80,7 +80,11 @@ Schedule 创建与 Team spawn/send 尚无 Program 来源准入接点。它们与
 
 Approval 的 `capability.forSession(source).policy` 提供 ResourceReader，read(signal)、peek、subscribe、values$、observations$ 与 useResource 使用同一份政策观察；policy$ 直接是其 values$。首次观察读取正式会话切面，相关 approval/policy 日志和真实 Agent 代际变化先撤下旧 ready 再重读；读取错误保留为 error，后续正式通知可恢复。冷会话可以读取持久政策，不恢复 Agent；没有会话 override 时使用已确认切面对应的部署默认政策。
 
-政策值不是一次调用的 grant。setPolicy 仍要求真实活跃 Agent，由原生服务追加日志；SDK 退出只释放观察，不改变政策。audit$ 与 readAudit 保留原生 asked/decided/policy 事件的顺序与身份，历史 asked 不代表仍可批准。业务问答继续与原生权限批准分开，读取、组合或展示政策不会触发 answerer。MCP 注册通知与 Clock 实际采样继续作为各自原生流使用，不根据政策资源合成批准或时间事件。
+政策值不是一次调用的 grant。setPolicy 仍要求真实活跃 Agent，由原生服务追加日志；SDK 退出只释放观察，不改变政策。audit$ 与 readAudit 保留原生 asked/decided/policy 事件的顺序与身份，历史 asked 不代表仍可批准。业务问答继续与原生权限批准分开，读取、组合或展示政策不会触发 answerer。Clock readings$ 保留原生日志的实际采样事件，不根据政策或工具资源合成批准或时间事件。
+
+Jobs 与 MCP 实例的 `toolNames`、MCP 的 `resourceToolNames` 是 ResourceReader，构造不连接；同一资源支持 read(signal)、peek、subscribe、observations$、values$ 与 useResource。相应 toolNames$、resourceToolNames$ 直接等于该资源的 values$，不建立第二套状态。工具名来自实际注册表并随 tools/change 更新，未选择工具时为 ready 的空数组；MCP 同步后反映当前连接代际，连接状态和调用权不能仅凭名称推断。最后消费者退出释放查询，随后读取重新取得当前快照；能力 dispose 结束旧观察、拒绝旧读取并释放原生安装。Job 执行、MCP 连接及 guard 仍属于各自原生 owner，读取与组件退出不停止业务工作。
+
+将资源交给 `useResource` 后，按当前有效状态声明，例如 `NativeTools({ names: observed.state.status === 'ready' ? observed.state.value : [] })`。显式空数组贡献零个工具声明，可表达 pending/error 或实际空集合；名称、重复项及准入参数仍严格校验，工具读取不代替调用时的授权。
 
 ## 子程序沿原生 owner
 
