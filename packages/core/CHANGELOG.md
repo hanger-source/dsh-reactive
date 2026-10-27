@@ -1,5 +1,15 @@
 # @hanger-source/dsh-reactive
 
+## 0.3.0
+
+### Minor Changes
+
+- f713b74: 新增 useResourceInstance 与 useReaction，让业务函数、Observable 和程序 hooks 共用同一程序拥有的资源及反应实例。取得实例不自动读取或执行，参数身份保持稳定；Program 失败时释放查询、感知和排队关系，已受理业务继续由原 owner 结算。开发 Skill 同步说明公共入口和生命周期。
+
+### Patch Changes
+
+- e4273f8: 资源观察在同步基线或连接通知中退订时立即撤销连接，避免已退出的消费者仍启动业务读取；后续显式读取继续使用同一个资源身份。
+
 ## 0.2.2
 
 ### Patch Changes
