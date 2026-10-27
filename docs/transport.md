@@ -161,9 +161,11 @@ await session.submit({
 
 ## 请求、流式进展与新事件
 
-`session.request(requestId).state$` 与本地句柄提供相同的 Observation 合同；其 `events$` 从同一会话事件流选择精确关联的新事实，保留 Program 的领域输入类型。会话级 `progress$` 提供当前活动与活跃 attempt 前缀，`progressFrames$` 提供原生 start/chunk/end 增量。当前活动、attempt、原始流帧及 wait continuation 内的输入范围保持 JSON，只有本会话 typed 事件与组件输入读侧按 Program.input 解析。
+`session.request(requestId).state` 与本地句柄提供相同的资源读侧，支持当前 read、peek、observations$ 和 useResource；`state$` 是该对象的完整 Observation 流。其 `events$` 从同一会话事件流选择精确关联的新事实，保留 Program 的领域输入类型。会话级 `progress` 资源提供当前活动与活跃 attempt 前缀，`progress$` 是同源观察，`progressFrames$` 提供原生 start/chunk/end 增量。当前活动、attempt、原始流帧及 wait continuation 内的输入范围保持 JSON，只有本会话 typed 事件与组件输入读侧按 Program.input 解析。
 
 一个 Session 的这些入口共享一条进展连接，首次取得任一进展入口时建立，连接由会话句柄持有到 release。只消费视图或 Action 不额外连接进展，也不要求 progress grant。某一个观察者退出不重启连接或取消工作。
+
+请求状态的 read 只等当前有效事实，不等待业务或 Goal 结束；activity 为 null 表示当前快照没有该请求，不代替 requestStatus 的受理查询。Request 不取得 Goal 控制权。资源失效会撤下旧 ready，单次读取取消不关闭会话连接；释放句柄后，捕获的进展与请求资源随原 SDK 寿命退出。原生 UI 的 progress 和 request(id).state 借入这些来源，UI 释放只退出自身观察。
 
 开场与重连交付完整当前快照，之后仅传活动变更、原生流帧与新事件，不逐 token 重传累计前缀。客户端使用 core 的同一累积接点与官方 AssistantStreamAccumulator 物化本地快照；RemoteSnapshotStream 负责代次切换。开场不会伪造 start/chunk；断线期间已经结束的瞬态 attempt 不承诺补回，持久历史从 journal 读取。
 

@@ -32,6 +32,10 @@ export function usePublicView(session: ConversationHandle<typeof contract> | Rem
 export const publicResource = (scope: Scope, source: Observable<Observation<number>>) => shareResource(source, { signal: scope.signal });
 export function useOperationState<D extends OperationContract>(operation: OperationHandle<D>) { return useResource(operation.state); }
 export const useHumanState = (conversation: ProgramSession<typeof contract>) => useResource(conversation.human);
+export const useExecutionProgress = (conversation: ProgramSession<typeof contract>) => useResource(conversation.progress);
+export function useRequestState(session: ConversationHandle<typeof contract> | RemoteProgramSession<typeof contract>, requestId: string) {
+  return useResource(session.request(requestId).state);
+}
 export async function readQuestion(session: ConversationHandle<typeof contract> | RemoteProgramSession<typeof contract>, callId: string) {
   const question = await session.question(callId);
   return question.state.read();

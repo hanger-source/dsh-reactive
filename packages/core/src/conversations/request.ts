@@ -1,9 +1,10 @@
-import { filter, map, type Observable } from 'rxjs';
+import { defer, EMPTY, filter, fromEvent, map, takeUntil, type Observable } from 'rxjs';
 import { z } from 'zod';
 import { AssistantStreamAccumulator, expandAssistantStream, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm/assistant-stream';
 import { inputReferenceSchema, ownConversationActivity, type ConversationActivity, type Json, type RequestActivity } from './protocol.ts';
 import type { AssistantAttemptSnapshot, AssistantProgressFrame, ConversationEvent, RequestEvent } from './events.ts';
 import type { Observation } from '../resources/observation.ts';
+import { ResourceReader, type ResourceReadable, type ResourceReaderOptions } from '../resources/reader.ts';
 
 /** 当前持久事实与真实活跃前缀；冷读取的 attempts 为空，不复活草稿。 */
 export interface ConversationProgressSnapshot {
@@ -24,33 +25,45 @@ export interface RequestSnapshot {
 export interface RequestHandle<T = Json> {
   readonly sessionId: string;
   readonly requestId: string;
+  readonly state: ResourceReader<RequestSnapshot>;
   readonly state$: Observable<Observation<RequestSnapshot>>;
   readonly events$: Observable<RequestEvent<T>>;
 }
 
-/** 同一选择器供本地和远程使用；连接和会话寿命由传入来源拥有。 */
+/** 同一选择器供本地和远程使用；借用会话来源，读取 owner 不投递或控制工作。 */
 export function createRequestHandle<T>(sessionId: string, requestId: string,
-  progress$: Observable<Observation<ConversationProgressSnapshot>>, events$: Observable<ConversationEvent<T>>): RequestHandle<T> {
+  progress: ResourceReadable<ConversationProgressSnapshot>, events$: Observable<ConversationEvent<T>>,
+  options: ResourceReaderOptions): RequestHandle<T> {
   if (!sessionId.trim() || !requestId.trim()) throw new Error('REACTIVE_REQUEST_ID_REQUIRED');
-  return Object.freeze({ sessionId, requestId,
-    state$: progress$.pipe(map((observation): Observation<RequestSnapshot> => {
-      if (observation.status !== 'ready') return observation;
-      const { activity, attempts } = observation.value;
+  const { signal } = options;
+  // 父资源已经拥有当前观察；只按该观察身份物化一次选择结果，不另存请求阶段或连接状态。
+  let cached: { source: Observation<ConversationProgressSnapshot>; snapshot: Observation<RequestSnapshot> } | undefined;
+  const select = (source: Observation<ConversationProgressSnapshot>): Observation<RequestSnapshot> => {
+    if (source.status !== 'ready') return source;
+    if (cached?.source === source) return cached.snapshot;
+    let snapshot: Observation<RequestSnapshot>;
+    try {
+      const { activity, attempts } = source.value;
       if (activity.sessionId !== sessionId) throw new Error('REACTIVE_REQUEST_SESSION_MISMATCH');
-      return { ...observation, value: Object.freeze({ sessionId, requestId, source: activity.source,
+      snapshot = Object.freeze({ ...source, value: Object.freeze({ sessionId, requestId, source: activity.source,
         execution: activity.execution, sequence: activity.sequence,
         activity: Object.hasOwn(activity.requests, requestId) ? activity.requests[requestId]! : null,
         attempts: Object.freeze(attempts.filter(attempt => attempt.inputs.some(input =>
           input.sourceSessionId === sessionId && input.requestId === requestId))),
-      }) };
-    })),
-    events$: events$.pipe(filter((event): event is RequestEvent<T> => {
+      }) });
+    } catch (error) { snapshot = Object.freeze({ status: 'error', generation: source.generation, error }); }
+    cached = { source, snapshot };
+    return snapshot;
+  };
+  const state = new ResourceReader({ observations$: progress.observations$.pipe(map(select)), peek: () => select(progress.peek()) }, options);
+  return Object.freeze({ sessionId, requestId, state, state$: state.observations$,
+    events$: defer(() => signal.aborted ? EMPTY : events$.pipe(filter((event): event is RequestEvent<T> => {
       if (event.sessionId !== sessionId) return false;
       if ('inputs' in event && event.inputs?.some(input => input.sourceSessionId === sessionId && input.requestId === requestId)) return true;
       if (event.kind === 'input.progress') return event.requestId === requestId;
       return (event.kind === 'wait.opened' || event.kind === 'wait.resolved')
         && event.continuation.inputs.some(input => input.sourceSessionId === sessionId && input.requestId === requestId);
-    })),
+    }), takeUntil(fromEvent(signal, 'abort')))),
   });
 }
 

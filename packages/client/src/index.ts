@@ -52,6 +52,7 @@ export interface RemoteProgramSession<P extends ProgramContract> {
   resolveAction<K extends keyof ProgramSurface<P>['actions'] & string>(name: K,
     expectedScope: z.input<ProgramSurface<P>['actions'][K]['scope']>, options?: CancellationOptions): Promise<RemoteResolvedAction<ProgramSurface<P>['actions'][K]>>;
   readonly operations: RemoteOperations<ProgramSurface<P>>;
+  readonly progress: ResourceReader<ConversationProgressSnapshot>;
   readonly progress$: Observable<Observation<ConversationProgressSnapshot>>;
   readonly progressFrames$: Observable<AssistantProgressFrame>;
   readonly events$: Observable<ConversationEvent<ProgramParsedInput<P>>>;
@@ -272,6 +273,7 @@ export async function createProgramClient<const P extends ProgramContract>(progr
         return Object.freeze(Object.assign(invoke, { definition: contract, bindingId: binding.bindingId,
           scope: binding.scope as ActionScope<S['actions'][K]> }));
       },
+      get progress() { return progressOwner().progress; },
       get progress$() { return progressOwner().progress$; },
       get progressFrames$() { return progressOwner().progressFrames$; },
       get events$() { return progressOwner().events$; },

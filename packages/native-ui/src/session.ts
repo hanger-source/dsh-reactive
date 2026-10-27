@@ -3,6 +3,7 @@ import { assertProgramDefinition, type HumanQuestion,
   type OperationContract, type OperationHandle, type OperationState, type ResourceReadable,
   type CancellationOptions, type Invocation, type InvocationActivity, type Json,
   type ViewValue, type Observation, type HumanInputState, type HumanSnapshot, type HumanQuestionSnapshot, type HumanWaitFrame,
+  type ConversationProgressSnapshot, type RequestHandle, type RequestSnapshot, type ProgramParsedInput,
   shareResource, mapResource, type ToolActionBinding } from '@hanger-source/dsh-reactive';
 import { Scope } from '@hanger-source/dsh-reactive/reactivity';
 import type { RemoteProgramSession } from '@hanger-source/dsh-reactive-client';
@@ -18,6 +19,14 @@ export interface NativeHumanQuestion {
   attachWait(options?: CancellationOptions): AsyncIterable<HumanWaitFrame>;
 }
 
+/** 固定原请求的只读消费；当前状态与后续新事件不授予执行控制权。 */
+export interface NativeRequestHandle<T = Json> {
+  readonly sessionId: string;
+  readonly requestId: string;
+  readonly state: HostObservable<Observation<RequestSnapshot>>;
+  readonly events$: RequestHandle<T>['events$'];
+}
+
 /**
  * 一个明确 Program 与真实 Client Session generation 的借用绑定。
  * SDK handle / SessionReference 由取得它们的 owner 释放；本对象只拥有 UI 观察。
@@ -30,6 +39,8 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
   readonly human: HostObservable<Observation<HumanSnapshot>>;
   readonly actionManifest$: Observable<readonly ToolActionBinding[]>;
   #questions = new Map<string, NativeHumanQuestion>();
+  #requests = new Map<string, NativeRequestHandle<ProgramParsedInput<P>>>();
+  #progress?: HostObservable<Observation<ConversationProgressSnapshot>>;
 
   /** @internal 通过 bindNativeSession 建立并核验关联。 */
   constructor(readonly definition: P, readonly native: SessionBinding, private readonly sdk: RemoteProgramSession<P>) {
@@ -38,7 +49,7 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
     this.assertActive();
     const release = native.ctx.effect(() => () => this.dispose(), 'reactive native Session binding');
     this.scope.own(() => release());
-    this.scope.own(() => this.#questions.clear());
+    this.scope.own(() => { this.#questions.clear(); this.#requests.clear(); });
     this.human = this.resource(sdk.human);
     const options = { signal: this.scope.signal, onObserverError: (error: unknown) => this.scope.observerError(error) };
     this.questions = this.resource(shareResource(sdk.human.observations$.pipe(mapResource(snapshot => snapshot.questions)), options));
@@ -86,6 +97,27 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
   }
 
   resource<T>(resource: ResourceReadable<T>): HostObservable<Observation<T>> { return this.source(resource); }
+
+  /** 显式取得进展入口才借入SDK连接；仅绑定原生UI不额外要求进展权限。 */
+  get progress(): HostObservable<Observation<ConversationProgressSnapshot>> {
+    this.assertActive();
+    return this.#progress ??= this.resource(this.sdk.progress);
+  }
+
+  request(requestId: string): NativeRequestHandle<ProgramParsedInput<P>> {
+    this.assertActive();
+    let bound = this.#requests.get(requestId);
+    if (!bound) {
+      const request = this.sdk.request(requestId);
+      bound = Object.freeze({ sessionId: request.sessionId, requestId: request.requestId,
+        state: this.resource(request.state),
+        events$: defer(() => { this.assertActive(); return request.events$; })
+          .pipe(takeUntil(fromEvent(this.scope.signal, 'abort'))),
+      });
+      this.#requests.set(requestId, bound);
+    }
+    return bound;
+  }
 
   async question(callId: string, options: CancellationOptions = {}): Promise<NativeHumanQuestion> {
     const question = await this.sdk.question(callId, this.options(options));

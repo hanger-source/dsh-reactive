@@ -17,12 +17,13 @@ import type { AssistantProgressFrame, ConversationEvent } from '@hanger-source/d
 import { defineProgram } from '@hanger-source/dsh-reactive';
 import { defineSurface } from '@hanger-source/dsh-reactive';
 import { Offer } from '@hanger-source/dsh-reactive/program';
-import { useAction, useBeforeStep, useRelation } from '@hanger-source/dsh-reactive/program';
+import { useAction, useBeforeStep, useRelation, useResource } from '@hanger-source/dsh-reactive/program';
 import { boot, text, tool } from './native-support.ts';
 
 test('晚订阅取得真实活动前缀，排队的新请求不会改写原 attempt 输入或分享旧回复', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-request-prefix-'));
   const streamed = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  const programObserved = Promise.withResolvers<void>();
   let calls = 0;
   // custom 保留传入对象，能真实暴露将原生 JSON 引用直接交给领域 schema 的错误。
   const ticket = z.custom<{ ticket: string }>(value => value !== null && typeof value === 'object'
@@ -30,6 +31,9 @@ test('晚订阅取得真实活动前缀，排队的新请求不会改写原 atte
   const definition = defineApplication({ name: 'request-prefix', admit: async () => {}, environments: [defineEnvironment({
     id: 'work', instructions: '依次回答每个实际输入',
     program: implementProgram(defineProgram({ input: ticket, surface: defineSurface({ views: {}, actions: {} }) }), { Component({ conversation }) {
+      useResource(conversation.progress);
+      const { state: request } = useResource(conversation.request('first').state);
+      if (request.status === 'ready' && request.value.activity?.state === 'settled') programObserved.resolve();
       useRelation(() => conversation.inputs$.pipe(tap(values => {
         for (const input of values) input.scope.ticket = 'changed-by-input-observer';
       })), [conversation]);
@@ -62,18 +66,17 @@ test('晚订阅取得真实活动前缀，排队的新请求不会改写原 atte
     await streamed.promise;
     await session.submit({ requestId: 'second', content: '处理第二张单', intent: 'question', delivery: 'followup' as const, scope: { ticket: 'two' } }, { actorId: 'Bob' });
     const late = await app.host.open(session.id, definition.environments[0].program.definition);
-    const baseline = late.progressSnapshot();
+    const baseline = late.progress.peek();
     assert.ok(baseline.status === 'ready');
     const active = baseline.value.attempts[0];
     assert.ok(active);
     assert.equal(active.nextIndex, 2);
     assert.deepEqual(active.inputs.map(input => [input.requestId, input.actorId, input.scope]), [['first', 'Alice', { ticket: 'one' }]]);
     assert.equal(expandAssistantStream(active.stream).flatMap(member => member.chunk.type === 'text-delta' ? [member.chunk.text] : []).join(''), 'first-');
-    const lateFirst = await firstValueFrom(late.request('first').state$), lateSecond = await firstValueFrom(late.request('second').state$);
-    assert.ok(lateFirst.status === 'ready' && lateSecond.status === 'ready');
-    assert.equal(lateFirst.value.attempts[0]?.attemptId, active.attemptId);
-    assert.equal(lateSecond.value.activity?.state, 'accepted');
-    assert.equal(lateSecond.value.attempts.length, 0);
+    const lateFirst = await late.request('first').state.read(), lateSecond = await late.request('second').state.read();
+    assert.equal(lateFirst.attempts[0]?.attemptId, active.attemptId);
+    assert.equal(lateSecond.activity?.state, 'accepted');
+    assert.equal(lateSecond.attempts.length, 0);
     const native = app.native.sessions.get(SessionId(session.id));
     assert.ok(native);
     const nativeState = app.native.sessionProjections.stateOf(native, 'reactiveInputs');
@@ -94,6 +97,7 @@ test('晚订阅取得真实活动前缀，排队的新请求不会改写原 atte
     }, { global: true });
     finish.resolve();
     await session.whenIdle();
+    await programObserved.promise;
     assert.equal(calls, 2);
     const firstMessages = firstEvents.filter(event => event.kind === 'assistant.message');
     const secondMessages = secondEvents.filter(event => event.kind === 'assistant.message');
@@ -114,7 +118,12 @@ test('晚订阅取得真实活动前缀，排队的新请求不会改写原 atte
       && event.frame.outcome.kind === 'committed' && event.frame.outcome.seq === boundarySequence));
     boundarySubscription.unsubscribe(); stopBoundary();
     assert.equal(app.errors.length, 0);
-    late.release(); session.release();
+    const releasedRequest = late.request('first');
+    late.release();
+    assert.throws(() => releasedRequest.state.read(), /REACTIVE_SCOPE_DISPOSED/u);
+    assert.throws(() => late.progress.peek(), /REACTIVE_SCOPE_DISPOSED/u);
+    assert.equal((await first.state.read()).activity?.reply, 'first-response', '释放借用者不撤下另一 SDK 的事实');
+    session.release();
   } finally { finish.resolve(); await app.dispose(); }
 });
 

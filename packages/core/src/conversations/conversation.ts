@@ -9,7 +9,7 @@ import { ownConversationActivity } from './protocol.ts';
 import { ownConversationEvent, type AssistantProgressFrame, type ConversationEvent } from './events.ts';
 import type { HumanInputState, HumanForegroundQuestion, HumanSnapshot } from '../participation/contract.ts';
 import { shareResource } from '../resources/sharing.ts';
-import type { ResourceReader } from '../resources/reader.ts';
+import { ResourceReader } from '../resources/reader.ts';
 import { createAssistantProgress, createRequestHandle, type ConversationProgressSnapshot, type RequestHandle } from './request.ts';
 import type { Observation } from '../resources/observation.ts';
 
@@ -47,6 +47,7 @@ export class Conversation<T = Json, Raw = T> {
   /** 原始事实读侧；跨进程传输直接使用它，不反向编码领域输入。 */
   readonly rawEvents$: Observable<ConversationEvent>;
   readonly progress$: Observable<Observation<ConversationProgressSnapshot>>;
+  readonly progress: ResourceReader<ConversationProgressSnapshot>;
   readonly progressFrames$: Observable<AssistantProgressFrame>;
   readonly human: ResourceReader<HumanSnapshot>;
   readonly questions$: Observable<HumanInputState>;
@@ -90,7 +91,11 @@ export class Conversation<T = Json, Raw = T> {
     this.rawEvents$ = this.observeFacts(this.#events.pipe(map(event => event.raw$), mergeAll()));
     this.events$ = this.observeFacts(this.#events.pipe(map(event => event.typed$), mergeAll()));
     this.progressFrames$ = this.observeFacts(this.#frames);
-    this.progress$ = this.#progressVersion.changes$.pipe(map(() => this.progressSnapshot()));
+    this.progress = new ResourceReader({
+      observations$: this.#progressVersion.changes$.pipe(map(() => this.progressSnapshot())),
+      peek: () => this.progressSnapshot(),
+    }, { signal: this.scope.signal, onObserverError: error => this.scope.observerError(error) });
+    this.progress$ = this.progress.observations$;
     this.scope.own(() => { this.#events.complete(); this.#frames.complete(); this.#requests.clear(); });
   }
   private observeFacts<U>(source: Observable<U>): Observable<U> {
@@ -117,7 +122,8 @@ export class Conversation<T = Json, Raw = T> {
     this.scope.assertActive();
     let request = this.#requests.get(requestId);
     if (!request) {
-      request = createRequestHandle(this.identity.sessionId, requestId, this.progress$, this.events$);
+      request = createRequestHandle(this.identity.sessionId, requestId, this.progress, this.events$,
+        { signal: this.scope.signal, onObserverError: error => this.scope.observerError(error) });
       this.#requests.set(requestId, request);
     }
     return request;

@@ -16,3 +16,6 @@ export function operationState<D extends OperationContract>(native: NativeSessio
   return native.resource(operation.state);
 }
 export const humanQuestion = (native: NativeSession<typeof program>, callId: string) => native.question(callId);
+export const requestProgress = (native: NativeSession<typeof program>, requestId: string) => ({
+  session: native.progress, request: native.request(requestId),
+});

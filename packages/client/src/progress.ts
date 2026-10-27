@@ -1,11 +1,12 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { RemoteSnapshotStream } from '@deepseek-ai/dsh-api-gateway/client';
 import { BehaviorSubject, Subject, map, type Observable } from 'rxjs';
-import { createAssistantProgress, createRequestHandle, decodeProgramEvent, parseAssistantProgressFrame, parseConversationProgress, type AssistantProgressFrame, type ConversationActivity, type ConversationEvent, type ConversationProgressSnapshot, type Observation, type RequestHandle, type ProgramContract, type ProgramParsedInput } from '@hanger-source/dsh-reactive';
+import { ResourceReader, createAssistantProgress, createRequestHandle, decodeProgramEvent, parseAssistantProgressFrame, parseConversationProgress, type AssistantProgressFrame, type ConversationActivity, type ConversationEvent, type ConversationProgressSnapshot, type Observation, type RequestHandle, type ProgramContract, type ProgramParsedInput } from '@hanger-source/dsh-reactive';
 import type { ProgramProgressFrame } from './types.ts';
 import { decodeProgramFailure } from './errors.ts';
 
 export interface RemoteProgress<P extends ProgramContract> {
+  readonly progress: ResourceReader<ConversationProgressSnapshot>;
   readonly progress$: Observable<Observation<ConversationProgressSnapshot>>;
   readonly progressFrames$: Observable<AssistantProgressFrame>;
   readonly events$: Observable<ConversationEvent<ProgramParsedInput<P>>>;
@@ -21,8 +22,16 @@ export function connectProgress<P extends ProgramContract>(ctx: Context, session
   const progressFrames = new Subject<AssistantProgressFrame>();
   const requests = new Map<string, RequestHandle<ProgramParsedInput<P>>>();
   // 累计 prefix 只在真正的 progress/state 消费者读取时物化，helper 缓存该 revision。
-  const progress$ = current.pipe(map((observation): Observation<ConversationProgressSnapshot> => observation.status === 'ready'
-    ? { ...observation, value: { activity: observation.value, attempts: assistant.snapshot() } } : observation));
+  let cached: { source: Observation<ConversationActivity>; snapshot: Observation<ConversationProgressSnapshot> } | undefined;
+  const snapshot = (): Observation<ConversationProgressSnapshot> => {
+    const source = current.value;
+    if (source.status !== 'ready') return source;
+    if (cached?.source === source) return cached.snapshot;
+    const snapshot = Object.freeze({ ...source, value: Object.freeze({ activity: source.value, attempts: assistant.snapshot() }) });
+    cached = { source, snapshot };
+    return snapshot;
+  };
+  const progress = new ResourceReader({ observations$: current.pipe(map(snapshot)), peek: snapshot }, { signal: lifetime });
   const invalidate = (): void => {
     if (lifetime.aborted) return;
     assistant.replace([]);
@@ -73,15 +82,15 @@ export function connectProgress<P extends ProgramContract>(ctx: Context, session
   const reset = ctx.on('connection/reset', invalidate);
   stream.start();
   return {
-    progress$, progressFrames$: progressFrames.asObservable(), events$: events.asObservable(),
+    progress, progress$: progress.observations$, progressFrames$: progressFrames.asObservable(), events$: events.asObservable(),
     request(id) {
       lifetime.throwIfAborted();
       let request = requests.get(id);
-      if (!request) { request = createRequestHandle(sessionId, id, progress$, events); requests.set(id, request); }
+      if (!request) { request = createRequestHandle(sessionId, id, progress, events, { signal: lifetime }); requests.set(id, request); }
       return request;
     },
     async close() {
-      reset(); await stream.dispose(); assistant.replace([]); current.complete(); events.complete(); progressFrames.complete(); requests.clear();
+      reset(); await stream.dispose(); assistant.replace([]); current.complete(); events.complete(); progressFrames.complete(); requests.clear(); cached = undefined;
     },
   };
 }

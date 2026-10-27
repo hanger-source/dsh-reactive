@@ -41,13 +41,14 @@ export type ProgramOperationReaders<P extends ProgramContract> = {
     readonly [K in keyof P['surface']['operations']]: (options?: SubmitOptions) => BoundOperation<P['surface']['operations'][K]>;
 };
 type ProgramViews<P extends ProgramContract> = SurfaceViews<P['surface']>;
-export type ServiceConversation<P extends ProgramContract> = Pick<ConversationHandle<P>, 'id' | 'identity' | 'surface' | 'activity$' | 'progress$' | 'progressFrames$' | 'events$' | 'rawEvents$' | 'actionManifest$' | 'views' | 'view' | 'viewResource' | 'observeView' | 'readView' | 'collection' | 'request' | 'resolveAction' | 'invokeAction' | 'operations' | 'resolveOperation' | 'attachOperation' | 'locateOperation' | 'readOperationFeedback' | 'snapshot' | 'progressSnapshot' | 'release'> & {
+export type ServiceConversation<P extends ProgramContract> = Pick<ConversationHandle<P>, 'id' | 'identity' | 'surface' | 'activity$' | 'progress' | 'progress$' | 'progressFrames$' | 'events$' | 'rawEvents$' | 'actionManifest$' | 'views' | 'view' | 'viewResource' | 'observeView' | 'readView' | 'collection' | 'request' | 'resolveAction' | 'invokeAction' | 'operations' | 'resolveOperation' | 'attachOperation' | 'locateOperation' | 'readOperationFeedback' | 'snapshot' | 'progressSnapshot' | 'release'> & {
     submit(input: Submission<ProgramInput<P>>, options?: CancellationOptions): Promise<InputReceipt>;
     editQueuedInput(requestId: string, content: Submission['content'], options?: CancellationOptions): Promise<InputReceipt>;
 };
 export class ConversationHandle<P extends ProgramContract = ProgramContract> {
     readonly activity$: Observable<ConversationActivity>;
     readonly progress$: Observable<Observation<ConversationProgressSnapshot>>;
+    readonly progress: ResourceReader<ConversationProgressSnapshot>;
     readonly progressFrames$: Observable<AssistantProgressFrame>;
     readonly events$: Observable<ConversationEvent<ProgramParsedInput<P>>>;
     readonly rawEvents$: Observable<ConversationEvent>;
@@ -66,7 +67,9 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> {
         facts.registerSessionAccess(this, entry, this.#scope.signal, () => this.assertActive());
         entry.pins++;
         this.activity$ = this.observe(entry.conversation.activity$);
-        this.progress$ = this.observe(entry.conversation.progress$);
+        this.progress = new ResourceReader(entry.conversation.progress,
+            { signal: this.#scope.signal, onObserverError: error => this.#scope.observerError(error) });
+        this.progress$ = this.progress.observations$;
         this.progressFrames$ = this.observe(entry.conversation.progressFrames$);
         this.events$ = this.observe(entry.conversation.events$);
         this.rawEvents$ = this.observe(entry.conversation.rawEvents$);
@@ -172,12 +175,13 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> {
         return this.participation.resolveOperation(this.entry, name, { ...options, signal }, this.participant) as BoundOperation<P['surface']['operations'][K]>;
     }
     snapshot() { this.assertActive(); return this.entry.conversation[conversationBindings]().activity.peek(); }
-    progressSnapshot() { this.assertActive(); return this.entry.conversation.progressSnapshot(); }
+    progressSnapshot() { this.assertActive(); return this.progress.peek(); }
     request(requestId: string): RequestHandle<ProgramParsedInput<P>> {
         this.assertActive();
         let request = this.#requests.get(requestId);
         if (!request) {
-            request = createRequestHandle(this.id, requestId, this.progress$, this.events$);
+            request = createRequestHandle(this.id, requestId, this.progress, this.events$,
+                { signal: this.#scope.signal, onObserverError: error => this.#scope.observerError(error) });
             this.#requests.set(requestId, request);
         }
         return request;

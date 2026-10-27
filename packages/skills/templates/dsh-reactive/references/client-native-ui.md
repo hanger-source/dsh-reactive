@@ -28,7 +28,9 @@ local resolveAction 同步，remote 异步；统一代码 `await` 两者。预�
 
 `session.viewResource('facts')` 与动态实例的 `viewResource('facts')` 返回稳定只读资源。直接使用 `resource.read(signal)`、`peek()`、`subscribe`、`values$`、`observations$`，或将同一对象交给 `useResource(resource)`、`nativeSession.resource(resource)`；不要再复制 BehaviorSubject 或缓存。SDK release 结束该对象的读取与观察，取消某一次 read 不影响其他消费者或原 Program。动态资源固定逻辑地址，模块撤下报告 error，同地址重挂继续更新；这不改变 Action 旧绑定必须拒绝的规则。
 
-readView 返回当前有效业务值，observeView 保完整 Observation；这些入口共用 viewResource 的状态，views 是值流，不能用它声称失效仍有效。progress$/request(id)/events$ 观察受理、实际模型消费、工具和回复；一个模型步骤可消费整组输入，不能承诺每请求独占一轮答案。
+readView 返回当前有效业务值，observeView 保完整 Observation；这些入口共用 viewResource 的状态，views 是值流，不能用它声称失效仍有效。progress 和 request(id).state 是同源资源，可 read、组合 observations$ 或交给 useResource；progress$/state$ 直接引用相应资源的观察，events$ 只交付已确认关联的新事实。一个模型步骤可消费整组输入，不能承诺每请求独占一轮答案，也不能把 read 当前快照当作等待业务或 Goal 完成。
+
+Program 的 conversation.progress 与 conversation.request(id).state、SDK 和原生 UI 的对应入口都借入原进展 owner。首次显式取得 SDK 进展入口才建立远程连接；UI 绑定本身不要求 progress grant。原生 UI 的 native.progress 与 native.request(id).state 保留 pending/error，native.request(id).events$ 保留原事件与当前 UI 的观察寿命，不另存模型输出或按消息正文猜请求。
 
 ## 输入保 intent 与 delivery 独立
 

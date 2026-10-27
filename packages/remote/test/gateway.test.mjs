@@ -1133,9 +1133,9 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；请
   assert.equal(early.session.request('request-a'), a);
   const occurrences = [], raw = [], changes = [];
   const events = a.events$.subscribe(value => occurrences.push(value)), frames = early.session.progressFrames$.subscribe(value => raw.push(value));
-  const cold = await next(a.state$, value => value.status === 'ready');
-  assert.equal(cold.value.source, 'durable'); assert.equal(cold.value.execution, 'unavailable'); assert.equal(cold.value.activity, null);
-  assert.deepEqual(cold.value.attempts, []);
+  const cold = await a.state.read();
+  assert.equal(cold.source, 'durable'); assert.equal(cold.execution, 'unavailable'); assert.equal(cold.activity, null);
+  assert.deepEqual(cold.attempts, []);
   const journal = await early.session.openEvents({ publish: change => changes.push(change), failed: error => errors.push(error) });
   await journal.prepend({ maxMessages: 10 });
   assert.equal(runtime.native.agents.get(SessionId(sessionId)), undefined);
@@ -1192,6 +1192,12 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；请
   const disconnected = next(a.state$, value => value.status === 'pending');
   const originalSocket = sockets.find(item => item.group === early.group && item.endpoint === 'reactivePrograms/progress').socket;
   originalSocket.terminate(); await disconnected;
+  const stopped = new AbortController(), stoppedReason = new Error('CANCEL_ONLY_PROGRESS_READ');
+  const cancelledRead = assert.rejects(a.state.read(stopped.signal), error => error === stoppedReason);
+  const recoveredRead = a.state.read();
+  stopped.abort(stoppedReason); await cancelledRead;
+  assert.equal((await recoveredRead).attempts[0]?.attemptId, attempt.attemptId);
+  assert.equal((await early.session.progress.read()).attempts[0]?.attemptId, attempt.attemptId);
   await next(a.state$, extended);
   assert.equal(occurrences.length, beforeReconnect, '重连全 prefix 不重放已发生事件');
   assert.ok(sockets.filter(item => item.group === early.group && item.endpoint === 'reactivePrograms/progress').length >= 2);
@@ -1241,7 +1247,15 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；请
   let completed = false;
   const completion = a.state$.subscribe({ complete: () => { completed = true; } });
   assert.equal(completed, false, 'settled 不终止 request 观察');
-  await early.session.release(); await late.session.release(); await resumed.release();
+  const closingConnection = next(a.state$, value => value.status === 'pending');
+  sockets.findLast(item => item.group === early.group && item.endpoint === 'reactivePrograms/progress'
+    && item.socket.readyState === WebSocket.OPEN).socket.terminate();
+  await closingConnection;
+  const pendingRequest = assert.rejects(a.state.read(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
+  const pendingProgress = assert.rejects(early.session.progress.read(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
+  await early.session.release(); await Promise.all([pendingRequest, pendingProgress]);
+  assert.throws(() => a.state.peek(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
+  await late.session.release(); await resumed.release();
   completion.unsubscribe(); assert.equal(completed, true);
   await Promise.all(sockets.filter(item => item.endpoint === 'reactivePrograms/progress').map(({ socket }) => socket.readyState === WebSocket.CLOSED
     ? undefined : new Promise(resolve => socket.once('close', resolve))));
