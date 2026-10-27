@@ -16,6 +16,8 @@
 
 `@hanger-source/dsh-reactive-skills` 提供同版本的应用开发 Skill 与按需 references。安装后运行 `dsh-reactive-skill` 取得该版本入口的绝对路径，编码 Agent 按需读取；它不安装运行时业务 Skill，也不修改全局 Agent 配置。
 
+运行时业务 Skill 从 `@hanger-source/dsh-reactive-dsh/skills` 的 `createNativeSkills({ service: 'provided' })` 接入宿主原生 Registry。安装后用 `forSession(source).catalog` 和 `definition(name)` 取得同源资源，可 read、peek、invalidate、组合 observations$ 或交给 useResource；目录保留原生 complete 与 invocation policy，正文不存在为 undefined。原生变更或 Agent 代际变化撤下旧事实，冷会话保持 pending，读取不启动模型；provider、Skill 声明与执行准入继续由原 owner 管理。
+
 后台 Program renderer 使用 React `19.3.1` 与 react-reconciler `0.34.0`。原生 UI 扩展把呈现函数交给 dsh 自己的 Slot renderer，不创建第二个 React root，也不安装后台 reconciler；它可以随原生 React `18.2` 界面使用。两种运行环境分别安装、分别编译。
 
 ## 编程模型

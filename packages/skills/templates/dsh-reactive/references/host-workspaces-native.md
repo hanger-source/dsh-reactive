@@ -70,6 +70,10 @@ Files 复用已安装的 WorkspaceFiles、fs、sandboxPolicy 和 Typert，不自
 
 Schedule 创建与 Team spawn/send 尚无 Program 来源准入接点。它们与已支持的提醒观察/更新、任务板创建/CAS、等待和 interrupt 分开；不能因为插件可安装，就声称 UI 或服务创建链已经贯通。
 
+运行时业务 Skill 使用 `@hanger-source/dsh-reactive-dsh/skills` 的 `createNativeSkills({ service: 'provided' })`，由 installNative 或 nativeCapabilities 安装读取接点；宿主必须已有正式 skills Registry。`const skills = capability.forSession(source)` 后，`skills.catalog` 是目录资源，`skills.definition(name)` 是固定名称的正文资源，同一来源和名称复用对象。read(signal)、peek、values$、observations$、invalidate 与 useResource 消费同一正式 Resource，构造不读取；最后消费者退出撤销读取与原生监听。需要重试不完整发现或主动重取正文时显式 invalidate，不轮询或无条件 retry。
+
+目录保留原生 `complete`、modelInvocable、userInvocable 与资源基址，不提供 provider locator；发现和读取不授予调用权限。未找到正文返回 ready(undefined)，真正读取失败保留 error，之后 skills/change 可恢复。Agent 关闭时资源保持 pending，显式恢复后按真实新 Agent 层级和该会话工作目录重读；读取不恢复 Agent、不启动模型。SDK dispose 只释放观察，provider 与 Skill 声明仍归原生注册者或 Program。这与独立 `@hanger-source/dsh-reactive-skills` 的开发指导产品分开。
+
 ## 子程序沿原生 owner
 
 `createRuntime(assembly => ...)` 的 assembly 提供 `implementDelegation(action, { program, mode:'spawn'|'fork', childInput, objective, authorize })`。返回普通 ActionImplementation，继续 useAction/Offer/Operation/Follow；不用新增 Delegate 组件或子队列。

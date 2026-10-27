@@ -4,6 +4,7 @@ import { defineApplication, defineEnvironment, defineProgram, defineSurface, def
 import type { Observable } from 'rxjs';
 import { implementProgram, useResource, useResourceInstance, useReaction } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, type ConversationHandle, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
+import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { createProgramClient, type RemoteProgramSession } from '@hanger-source/dsh-reactive-client';
 import { mountProgramGateway } from '@hanger-source/dsh-reactive-remote';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
@@ -15,7 +16,7 @@ const application = defineApplication({ name: 'registry-consumer', admit: async 
 ] });
 export const backend = (options: RuntimeOptions) => createRuntime(() => application, options);
 export const clientContract = () => contract;
-export const publicEntries = [createProgramClient, mountProgramGateway, getDeveloperSkill] as const;
+export const publicEntries = [createProgramClient, mountProgramGateway, getDeveloperSkill, createNativeSkills] as const;
 export const developerSkill = getDeveloperSkill();
 export const nativeProgramSource = (conversation: ProgramSession<typeof contract>): NativeSessionSource => conversation;
 export const invocationActivity = <T, O extends Json>(invocation: Invocation<T, O>) => invocation.activity;
@@ -33,6 +34,9 @@ export function usePublicView(session: ConversationHandle<typeof contract> | Rem
 export const publicResource = (scope: Scope, source: Observable<Observation<number>>) => shareResource(source, { signal: scope.signal });
 export function useOperationState<D extends OperationContract>(operation: OperationHandle<D>) { return useResource(operation.state); }
 export const useHumanState = (conversation: ProgramSession<typeof contract>) => useResource(conversation.human);
+export function useRuntimeSkills(skills: NativeSessionSkills, name: string) {
+  return { catalog: useResource(skills.catalog), definition: useResource(skills.definition(name)) };
+}
 export const useExecutionProgress = (conversation: ProgramSession<typeof contract>) => useResource(conversation.progress);
 export function useRequestState(session: ConversationHandle<typeof contract> | RemoteProgramSession<typeof contract>, requestId: string) {
   return useResource(session.request(requestId).state);
