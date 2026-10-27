@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { createElement as h, Fragment } from 'react';
 import { defer, finalize, firstValueFrom, of, Subject } from 'rxjs';
 import { Context as NativeContext } from '@deepseek-ai/cordis';
-import SessionStore, { SessionId } from '@deepseek-ai/dsh-session';
+import SessionStore, { SessionId, pluginRecordOf } from '@deepseek-ai/dsh-session';
 import * as persistence from '@deepseek-ai/dsh-session-persistence-jsonl';
 import Storage from '@deepseek-ai/dsh-storage';
 import * as storageJson from '@deepseek-ai/dsh-storage-json';
@@ -82,6 +82,58 @@ test('真实存储拒写后沿原创建引用完成登记，原生工作区移�
     assert.equal(modelCalls, 0);
     assert.deepEqual(app.errors, []);
   } finally { await app.dispose(); }
+});
+
+test('已有持久成员但Agent setup尚未完成时不能取得公开句柄，setup失败后沿原引用恢复同一创建', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-creation-boundary-'));
+  const program = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+  const definition = defineApplication({ name: 'creation-boundary', admit: async () => {}, environments: [defineEnvironment({
+    id: 'work', instructions: '构造与公开受理分别确认', program: implementProgram(program, { Component: () => null }),
+  })] });
+  let modelCalls = 0;
+  const app = await boot(join(root, 'home'), definition, async function* () { modelCalls++; yield* text('无模型工作'); });
+  const entered = Promise.withResolvers<void>(), released = Promise.withResolvers<void>();
+  const failure = new Error('AGENT_SETUP_CHECKPOINT_FAILED'), sessionId = 'creating-session';
+  let reference: CreationIncompleteError['reference'] | undefined;
+  const unfinished = (error: unknown) => {
+    if (!(error instanceof CreationIncompleteError)) return false;
+    reference = error.reference;
+    return reference.sessionId === sessionId && reference.workspaceId === app.workspace.workspaceId && reference.environmentId === 'work';
+  };
+  const remove = app.native.on('agent/created', async ({ agent }) => {
+    if (agent.id !== sessionId) return;
+    entered.resolve(); await released.promise; throw failure;
+  });
+  let removePublication = () => {};
+  let creating: Promise<void> | undefined;
+  try {
+    creating = assert.rejects(app.host.create('work', { workspaceId: app.workspace.workspaceId, sessionId }), error => error === failure);
+    await entered.promise;
+    assert.ok(app.native.workspaceRegistry.get(WorkspaceId(app.workspace.workspaceId))!.sessionIds.includes(SessionId(sessionId)),
+      '先有真实持久成员，再由原生Agent完成其全部setup');
+    await assert.rejects(app.host.open(sessionId), unfinished);
+    await assert.rejects(app.host.resume(sessionId), unfinished);
+    await assert.rejects(app.host.service(sessionId, program), unfinished);
+    assert.throws(() => app.host.conversation(sessionId), unfinished);
+    released.resolve(); await creating;
+    remove();
+    await assert.rejects(app.host.open(sessionId), unfinished, 'setup失败后的冷读取不能把成员关系当作完成回执');
+    let boundaryRead: Promise<{ issued: true } | { error: unknown }> | undefined;
+    removePublication = app.native.on('session/event', (session, event) => {
+      if (session.id !== sessionId || pluginRecordOf(event)?.type !== 'plugin:reactive/created') return;
+      // 观察正式追加事件时，实际持久 flush 和原创建 Promise 仍未确认。
+      boundaryRead = app.host.open(sessionId).then(handle => { handle.release(); return { issued: true as const }; }, error => ({ error }));
+    });
+    const recovered = await app.host.completeCreation(reference!);
+    assert.ok(boundaryRead);
+    const boundary = await boundaryRead;
+    assert.ok('error' in boundary && unfinished(boundary.error), '内存中的完成记录还不是已 ACK 的创建结果');
+    assert.equal(recovered.id, sessionId);
+    const observer = await app.host.open(sessionId);
+    observer.release(); recovered.release();
+    assert.equal(modelCalls, 0);
+    assert.deepEqual(app.errors, []);
+  } finally { released.resolve(); remove(); removePublication(); await creating; await app.dispose(); }
 });
 
 test('环境和工作区独立组合，共享来源跨环境持有，冷恢复保留原装配并过滤外应用会话', async () => {

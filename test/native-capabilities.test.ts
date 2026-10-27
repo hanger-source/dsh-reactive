@@ -5,7 +5,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Fragment, createElement as h, useLayoutEffect } from 'react';
-import { BehaviorSubject, Subject, filter, firstValueFrom } from 'rxjs';
+import { BehaviorSubject, Observable, Subject, filter, firstValueFrom, tap } from 'rxjs';
 import { LlmAdapter, type GenerateOptions } from '@deepseek-ai/dsh-llm';
 import type { Context } from '@deepseek-ai/cordis';
 import LocalJobs from '@deepseek-ai/dsh-jobs-local';
@@ -13,18 +13,46 @@ import * as jobTools from '@deepseek-ai/dsh-tool-jobs';
 import type { JobOutcome } from '@deepseek-ai/dsh-jobs';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
-import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, composeSurface, readActionPresentation, z, type NativeToolCall } from '@hanger-source/dsh-reactive';
-import { implementProgram, NativeTools, Offer, Expose, Module, useAction, useObservable } from '@hanger-source/dsh-reactive/program';
+import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, composeSurface, readActionPresentation, Scope, z, type NativeToolCall, type ProgramSession } from '@hanger-source/dsh-reactive';
+import { implementProgram, NativeTools, Offer, Expose, Module, useAction, useObservable, useRelation } from '@hanger-source/dsh-reactive/program';
 import { boot, text, tool } from './native-support.ts';
 import type { ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
 import { createRuntime, nativeModel, requireActivePlugin } from '@hanger-source/dsh-reactive-dsh';
-import { createNativeJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
+import { createNativeJobs, type NativeSessionJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
+import { createNativeApproval } from '@hanger-source/dsh-reactive-dsh/approval';
+import { nativeObservation } from '../packages/dsh/src/native-capability.ts';
 
 declare module '@deepseek-ai/dsh-jobs/view' {
   interface JobKindMap { nativeLifecycle: 'native-lifecycle'; }
 }
 
 const nativeArguments = z.object({ marker: z.string().regex(/^[a-z-]+$/u) }).strict();
+
+test('原生读侧构造不连接，首次订阅后共享同一来源，owner退出不向迟到观察者回放旧快照', () => {
+  const scope = new Scope(), changes = new Subject<number>();
+  let connections = 0, releases = 0;
+  const observed = nativeObservation(scope, new Observable<number>(subscriber => {
+    connections++;
+    const subscription = changes.subscribe(subscriber);
+    return () => { releases++; subscription.unsubscribe(); };
+  }));
+  try {
+    assert.equal(connections, 0);
+    const one: number[] = [], two: number[] = [];
+    const first = observed.subscribe(value => one.push(value));
+    changes.next(1);
+    const second = observed.subscribe(value => two.push(value));
+    assert.equal(connections, 1);
+    first.unsubscribe(); changes.next(2); second.unsubscribe();
+    assert.deepEqual(one, [1]); assert.deepEqual(two, [1, 2]);
+    assert.equal(releases, 0, '观察连接归原生读侧owner，组件退订不冒充SDK dispose');
+    scope.dispose();
+    assert.equal(releases, 1);
+    const late: number[] = [];
+    assert.equal(observed.subscribe(value => late.push(value)).closed, true);
+    assert.deepEqual(late, []);
+  } finally { scope.dispose(); }
+});
 
 for (const mode of ['native', 'ptc'] as const) {
   test(`${mode} 原生声明沿真实registry执行；未声明SDK不可调用，异步政策撤销和其他guard都保留`, { timeout: 30_000 }, async () => {
@@ -208,15 +236,26 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
   const directory = join(root, 'workspace'); await mkdir(directory);
   const errors: unknown[] = [], children: Array<{ child: ChildProcess; closed: Promise<JobOutcome> }> = [];
   const capability = createNativeJobs({ registry: { kind: 'provided' }, tools: { completionDelivery: 'quiet' } });
+  const approval = createNativeApproval({ policy: 'never', require: () => undefined, answer: 'provided' });
   const forceStop = () => {
     for (const { child } of children) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   };
   t.signal.addEventListener('abort', forceStop, { once: true });
   let modelCalls = 0;
+  const program = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+  const programSessions = new Map<string, { source: ProgramSession<typeof program>; jobs: NativeSessionJobs }>();
+  const retired = new Subject<string>(), retiredFailure = new Error('PROGRAM_NATIVE_SOURCE_RETIRED');
   const definition = defineApplication({ name: 'native-installation', admit: async () => {}, environments: [defineEnvironment({
     id: 'work', instructions: '只有显式选择的Job控制工具可用，Job不代表持久业务完成。',
-    program: implementProgram(defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) }), {
-      Component: () => NativeTools({ names: ['job_output', 'job_list', 'job_kill'] }),
+    program: implementProgram(program, {
+      Component({ conversation }) {
+        const jobs = capability.forSession(conversation);
+        useObservable(() => jobs.list$, [jobs]);
+        useObservable(() => approval.forSession(conversation).policy$, [conversation]);
+        useRelation(() => retired.pipe(filter(id => id === conversation.identity.sessionId), tap(() => { throw retiredFailure; })), [conversation]);
+        useLayoutEffect(() => { programSessions.set(conversation.identity.sessionId, { source: conversation, jobs }); }, [conversation, jobs]);
+        return NativeTools({ names: ['job_output', 'job_list', 'job_kill'] });
+      },
     }),
   })] });
   const runtime = await createRuntime(() => definition, {
@@ -231,6 +270,7 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
       await pending;
       assert.equal(ctx.tools.get('job_list'), undefined, '依赖后来装入不能使已拒绝的旧控制器复活');
       await capability.install(ctx, home);
+      await approval.install(ctx, home);
       assert.ok(ctx.tools.get('job_list'));
       const failure = new Error('ACTUAL_PLUGIN_STARTUP_REJECTED');
       await assert.rejects(requireActivePlugin(ctx.plugin({ name: 'partial-startup', inject: ['tools'], async apply(native: Context) {
@@ -247,8 +287,12 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     const session = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
     const foreign = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
     const owner = SessionId(session.id), jobs = runtime.native.jobs;
+    const programSession = programSessions.get(session.id)!;
+    assert.equal(await firstValueFrom(approval.forSession(programSession.source).policy$), 'never', 'Program首次提交即可读取同一原生审批政策');
+    assert.equal(capability.forSession(programSession.source), programSession.jobs);
+    assert.throws(() => capability.forSession({ identity: programSession.source.identity }), /REACTIVE_NATIVE_SESSION_REQUIRED/);
     let observedSession = capability.forSession(session);
-    const launch = () => observedSession.start({ kind: 'native-lifecycle', label: '隔离Node进程，显式停止前保持运行',
+    const launch = () => programSession.jobs.start({ kind: 'native-lifecycle', label: '隔离Node进程，显式停止前保持运行',
       run(job) {
         // 此生产方只持有实际ChildProcess；id、游标、事件与终态均由官方JobRegistry拥有。
         const child = spawn(process.execPath, ['-e', "process.stdout.write('native-job-ready\\n');setInterval(()=>{},1000);"],
@@ -274,6 +318,7 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     assert.deepEqual(secondObserved, observed, '两个SDK观察者读取同一个真实输出，均不消费模型cursor');
     assert.throws(() => capability.forSession(foreign).job(first), '另一个真实owner不能读取输出');
     assert.deepEqual(reader.readAt(0), observed, '重复SDK观察不消耗模型游标');
+    assert.deepEqual(programSession.jobs.job(first).readAt(0), observed, 'Program与外部SDK消费同一原生Job，不复制输出状态');
     assert.equal(jobs.read(first, owner).chunks.map(chunk => chunk.text).join(''), 'native-job-ready\n');
     assert.equal(jobs.read(first, owner).chunks.length, 0, '只有正式consuming read才推进模型游标');
     assert.deepEqual(reader.readAt(0), observed, '模型读取也不破坏SDK观察者的绝对offset');
@@ -287,7 +332,10 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     assert.equal(stopped.status, 'killed'); await children[0]!.closed;
     assert.throws(() => process.kill(children[0]!.child.pid!, 0), { code: 'ESRCH' });
 
-    const otherHost = await boot(join(root, 'other-home'), definition, async function* () { yield* text('不会为SDK读取启动模型'); });
+    const otherDefinition = defineApplication({ name: 'native-installation', admit: async () => {}, environments: [defineEnvironment({
+      id: 'work', instructions: '独立宿主未选择这个能力实例', program: implementProgram(program, { Component: () => null }),
+    })] });
+    const otherHost = await boot(join(root, 'other-home'), otherDefinition, async function* () { yield* text('不会为SDK读取启动模型'); });
     try {
       const other = await otherHost.host.create('work', { workspaceId: otherHost.workspace.workspaceId });
       assert.throws(() => capability.forSession(other), /REACTIVE_NATIVE_CAPABILITY_HOST_MISMATCH/);
@@ -302,6 +350,12 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     assert.deepEqual(registrations.map(event => event.data.jobId), [first, second]);
     foreign.release(); session.release();
     assert.throws(() => capability.forSession(session), /REACTIVE_CONVERSATION_HANDLE_RELEASED|REACTIVE_SCOPE_DISPOSED/);
+    assert.equal(programSession.jobs.job(second).snapshot().status, 'running', '外部SDK退出不释放Program来源');
+    retired.next(session.id);
+    assert.throws(() => capability.forSession(programSession.source), error => error === retiredFailure);
+    assert.throws(() => programSession.jobs.list(), /REACTIVE_SCOPE_DISPOSED/);
+    assert.equal(jobs.get(second, owner).status, 'running', 'Program失败只撤观察，不能停止已受理的原生进程');
+    assert.doesNotThrow(() => process.kill(children[1]!.child.pid!, 0));
     await runtime.dispose();
     assert.equal((await secondClosed).status, 'killed', 'Runtime释放等待真实owner的生产进程退出');
     assert.throws(() => process.kill(children[1]!.child.pid!, 0), { code: 'ESRCH' });

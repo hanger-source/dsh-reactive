@@ -355,7 +355,21 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
       });
     } finally { await rename(medium, join(root, 'unavailable-medium-marker')); await rename(preserved, medium); }
     assert.ok(reference); sessions.add(reference.sessionId);
-    const created = await client.completeCreation(reference);
+    const creationEntered = Promise.withResolvers(), creationReleased = Promise.withResolvers();
+    const removeCreationGate = runtime.native.on('agent/created', async ({ agent }) => {
+      if (agent.id !== reference.sessionId) return;
+      creationEntered.resolve(); await creationReleased.promise;
+    });
+    const completing = client.completeCreation(reference);
+    let created;
+    try {
+      await creationEntered.promise;
+      for (const method of ['open', 'resume']) {
+        await assert.rejects(client[method](reference.sessionId), error => error instanceof CreationIncompleteError
+          && error.reference.sessionId === reference.sessionId && error.reference.workspaceId === workspace.workspaceId,
+        '真实Gateway保留同一创建引用，不能把未完成创建降为通用远程错误或提前返回句柄');
+      }
+    } finally { creationReleased.resolve(); removeCreationGate(); created = await completing; }
     assert.equal(created.id, reference.sessionId); assert.equal(requests, 0);
     assert.equal(created.identity.actorId, 'alice');
     assert.equal((await created.readView('current')).toISOString(), '2026-10-26T00:00:00.000Z');

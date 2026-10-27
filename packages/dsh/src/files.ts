@@ -7,7 +7,7 @@ import { Observable, ReplaySubject } from 'rxjs';
 import type { CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { NativeCapabilityOwner, nativeObservationScope, ownNativeValue,
-  type NativeCapability, type NativeSessionHandle } from './native-capability.ts';
+  type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
 
 export type { WorkspaceFileRange, WorkspaceByteReadOptions, WorkspaceFileText, WorkspaceFileBytes,
@@ -190,7 +190,7 @@ class SessionFiles implements NativeSessionFiles {
 }
 
 export interface NativeFiles extends NativeCapability {
-  forSession(session: NativeSessionHandle): NativeSessionFiles;
+  forSession(session: NativeSessionSource): NativeSessionFiles;
 }
 
 /** 只读文件接点；字节、版本、限额及 watch 仍由正式 FS/WorkspaceFiles 服务持有。 */
@@ -207,7 +207,7 @@ export function createNativeFiles(options: NativeFilesOptions): NativeFiles {
     });
   });
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
-    forSession(session: NativeSessionHandle) {
+    forSession(session: NativeSessionSource) {
       const access = nativeSessionAccess(session); owner.session(access, 'workspaceFiles');
       let current = sessions.get(session);
       if (!current || current.disposed) {

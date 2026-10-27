@@ -165,4 +165,8 @@ operations 槽的 resolver 从当前声明取得原 command，之后的查询保
 
 可选原生能力保留各自责任。Jobs 使用原生 owner fence、观察和取消，但其进程内 store 不提供业务 Operation 的跨重启持久性；Approval 需要真实原生 turn 和 answerer，业务问答不能代替权限批准；MCP 复用原生 scoped registry、重同步、取消与释放，不声称支持其明确拒绝的 required Tasks 扩展。Schedule 继续由原生 storage、timer 和历史负责，当前投递缺少 Program 输入的身份、范围及准入接点；Team 的成员创建需要显式子程序绑定，成员消息也不能借用原 Goal 或人工授权。框架不以另一套队列、Mailbox 或 TaskManager 填补这些边界。
 
+Jobs、Schedule、Team、Files、Approval 与 Clock 的 `forSession` 接受 Host 签发的本地 SDK 句柄或 Program 原 conversation。同形字段不授予访问权；每次调用仍核 exact 来源、原生服务、工作区和观察寿命。实际 Agent 在首次 Program 求值前完成绑定，原生来源的观察在首次订阅时连接，组件求值不启动读取。Program 来源随程序失败或退出释放，外部句柄按自己的 release 释放，原生已受理工作继续归各自 owner。
+
+创建根会话时，宿主持久写入原工作区 binding 并完成原生 workspace 成员登记，之后才构造 Program；最终创建回执仍在实际 Agent setup 成功后写入并确认持久 flush。登记失败保留原 CreationIncompleteError 引用；只有成员、或完成记录仍在等待创建 ACK 的会话不能经普通 open、resume、conversation 或 service 取得外部句柄，须沿原创建引用完成登记。创建和已有会话激活由同一启动 owner 区分，普通只读访问不等待或借用新会话的创建许可。已有完整回执的恢复只核成员，不重新加入已被撤销的成员关系。
+
 子程序通过原生 spawn / fork 在同一工作区与环境运行独立 Program 与 Goal，沿原调用持久保存父原因、真实子输入及双边确认，见[原生子程序委托](native-delegation.md)。长会话以及真实运营服务的整体消费仍需连续验证。编译、确定性模型试验、发布产物和正式业务验收分别报告，不由依赖安装推定成立。

@@ -14,7 +14,7 @@ export function createProgramFailureMapper(wireStream: Pick<TypertGatewayWireStr
         command: error.command, reference: error.reference,
       })
       : error instanceof CreationIncompleteError
-        ? new RemoteError('reactive/creation-incomplete', 'Session persisted but workspace registration is incomplete', { reference: error.reference })
+        ? new RemoteError('reactive/creation-incomplete', 'Session creation is not yet confirmed', { reference: error.reference })
         : error instanceof ActionBindingUnavailableError
           ? new RemoteError('reactive/action-binding-unavailable', error.message, { name: error.actionName, reason: error.reason })
           : error instanceof ActionTargetMismatchError

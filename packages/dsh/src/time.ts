@@ -3,7 +3,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session';
 import { filter, map, type Observable } from 'rxjs';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin } from './native-installation.ts';
-import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, ownNativeValue, type NativeCapability, type NativeSessionHandle } from './native-capability.ts';
+import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, ownNativeValue, type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, nativeSessionEvents, type NativeSessionAccess } from './conversations/session-access.ts';
 
 export interface NativeClockOptions extends TimeContext.Config {
@@ -34,7 +34,7 @@ export interface NativeClock extends NativeCapability {
   readonly timeZone: string;
   /** 显式 zone 的普通格式化；不把格式化值冒充一次原生 pre-step 采样。 */
   format(instant: Date | number, options?: Omit<Intl.DateTimeFormatOptions, 'timeZone'>): string;
-  forSession(session: NativeSessionHandle): NativeSessionClock;
+  forSession(session: NativeSessionSource): NativeSessionClock;
 }
 
 export function createNativeClock(options: NativeClockOptions): NativeClock {
@@ -49,7 +49,7 @@ export function createNativeClock(options: NativeClockOptions): NativeClock {
     format(instant: Date | number, format: Omit<Intl.DateTimeFormatOptions, 'timeZone'> = {}) {
       return new Intl.DateTimeFormat('zh-CN', { ...format, timeZone }).format(instant);
     },
-    forSession(session: NativeSessionHandle) {
+    forSession(session: NativeSessionSource) {
       const access = nativeSessionAccess(session); owner.session(access, 'sessionProjections');
       let current = sessions.get(session);
       if (!current || current.disposed) { current = new SessionClock(owner, access); sessions.set(session, current); }

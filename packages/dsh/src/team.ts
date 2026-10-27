@@ -9,7 +9,7 @@ import { abortable, type CancellationOptions } from '@hanger-source/dsh-reactive
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin } from './native-installation.ts';
 import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, ownNativeValue,
-  type NativeCapability, type NativeSessionHandle } from './native-capability.ts';
+  type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
 
 export { TeamId, TeamTaskId, TeamError } from '@deepseek-ai/dsh-experimental-agent-team';
@@ -144,7 +144,7 @@ class SessionTeam implements NativeSessionTeam {
 }
 
 export interface NativeTeam extends NativeCapability {
-  forSession(session: NativeSessionHandle): NativeSessionTeam;
+  forSession(session: NativeSessionSource): NativeSessionTeam;
 }
 
 /** 具名成员和任务板仍归原生 Team；没有可信 Program 创建/输入前门时不包装 spawn/send。 */
@@ -157,7 +157,7 @@ export function createNativeTeam(options: NativeTeamOptions): NativeTeam {
   });
   const sessions = new WeakMap<object, SessionTeam>();
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
-    forSession(session: NativeSessionHandle) {
+    forSession(session: NativeSessionSource) {
       const access = nativeSessionAccess(session); owner.session(access, 'agentTeams');
       let current = sessions.get(session);
       if (!current || current.disposed) { current = new SessionTeam(owner, access); sessions.set(session, current); }

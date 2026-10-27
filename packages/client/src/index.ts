@@ -426,10 +426,10 @@ export async function createProgramClient<const P extends ProgramContract>(progr
       active(); const identity = creation(await remote.completeCreation(reference)); active(); return session(identity);
     },
     async open(sessionId): Promise<RemoteProgramSession<P>> {
-      active(); const identity = result(await remote.open({ sessionId })); active(); return session(identity);
+      active(); const identity = creation(await remote.open({ sessionId })); active(); return session(identity);
     },
     async resume(sessionId): Promise<RemoteProgramSession<P>> {
-      active(); const identity = result(await remote.resume({ sessionId })); active(); return session(identity);
+      active(); const identity = creation(await remote.resume({ sessionId })); active(); return session(identity);
     },
     async describe() { active(); return result(await remote.describe()); },
     async dispose(): Promise<void> {

@@ -7,7 +7,7 @@ import { abortable, type CancellationOptions } from '@hanger-source/dsh-reactive
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin } from './native-installation.ts';
 import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, ownNativeValue,
-  type NativeCapability, type NativeSessionHandle } from './native-capability.ts';
+  type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
 
 export type { ScheduleId, ScheduleRecord, ScheduleCatalogEntry, ScheduleDeliveryReceipt, ScheduleDeliveryRecord,
@@ -126,7 +126,7 @@ class SessionSchedule implements NativeSessionSchedule {
 }
 
 export interface NativeSchedule extends NativeCapability {
-  forSession(session: NativeSessionHandle): NativeSessionSchedule;
+  forSession(session: NativeSessionSource): NativeSessionSchedule;
 }
 
 /**
@@ -142,7 +142,7 @@ export function createNativeSchedule(options: NativeScheduleOptions): NativeSche
   });
   const sessions = new WeakMap<object, SessionSchedule>();
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
-    forSession(session: NativeSessionHandle) {
+    forSession(session: NativeSessionSource) {
       const access = nativeSessionAccess(session); owner.session(access, 'schedule');
       let current = sessions.get(session);
       if (!current || current.disposed) { current = new SessionSchedule(owner, access); sessions.set(session, current); }

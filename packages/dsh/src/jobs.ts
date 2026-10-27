@@ -5,7 +5,7 @@ import { Observable } from 'rxjs';
 import { fromSnapshot, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin } from './native-installation.ts';
-import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, nativeToolNames, ownNativeValue, type NativeCapability, type NativeSessionHandle } from './native-capability.ts';
+import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, nativeToolNames, ownNativeValue, type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
 
 export { JobId } from '@deepseek-ai/dsh-jobs';
@@ -134,7 +134,7 @@ class SessionJobs implements NativeSessionJobs {
 
 export interface NativeJobs extends NativeCapability {
   readonly toolNames$: Observable<readonly string[]>;
-  forSession(session: NativeSessionHandle): NativeSessionJobs;
+  forSession(session: NativeSessionSource): NativeSessionJobs;
 }
 
 /** 正式 Jobs 配置、安装 owner 与会话 SDK。没有安装选择时不会创建服务或工作。 */
@@ -156,7 +156,7 @@ export function createNativeJobs(options: NativeJobsOptions): NativeJobs {
   const names = new Set(['job_list', 'job_output', 'job_kill']);
   const toolNames$ = nativeToolNames(owner, name => selected.tools !== undefined && names.has(name));
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(), toolNames$,
-    forSession(session: NativeSessionHandle) {
+    forSession(session: NativeSessionSource) {
       const access = nativeSessionAccess(session);
       owner.session(access, 'jobs');
       let current = sessions.get(session);

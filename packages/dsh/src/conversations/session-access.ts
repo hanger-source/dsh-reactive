@@ -5,7 +5,7 @@ import type { SessionInspection } from '@deepseek-ai/dsh-session-persistence';
 import { Observable, switchMap, map } from 'rxjs';
 import { abortable } from '@hanger-source/dsh-reactive';
 
-/** @internal Host 对 exact 本地句柄签发的权限；不从 sessionId 反查或启动 Agent。 */
+/** @internal Host 对 exact 本地句柄或 Program 来源签发的权限；不从 sessionId 反查或启动 Agent。 */
 export interface NativeSessionAccess {
   readonly context: Context;
   readonly sessionId: SessionId;
@@ -17,7 +17,7 @@ export interface NativeSessionAccess {
 
 const sessions = new WeakMap<object, NativeSessionAccess>();
 
-/** @internal 仅由创建 ConversationHandle 的 Host 登记，不导出到包入口。 */
+/** @internal 仅由 Host 为原 Program conversation 和本地 SDK 句柄登记，不导出到包入口。 */
 export function registerNativeSession(handle: object, access: NativeSessionAccess): void {
   if (sessions.has(handle)) throw new Error('REACTIVE_NATIVE_SESSION_ALREADY_REGISTERED');
   sessions.set(handle, access);

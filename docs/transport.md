@@ -178,7 +178,7 @@ execution 表示会话活动，不代表某个请求独占执行。一个步骤�
 const created = await client.create('order', { workspaceId: authorizedWorkspaceId });
 ```
 
-`CreationIncompleteError.reference` 表示 Host 明确报告：会话已持久化，Workspace 成员登记尚未完成。reference 保留准确 `{ environmentId, workspaceId, sessionId }`；沿原引用调用 `completeCreation`，该入口先核对请求中精确 Workspace 的资源权限，再由 Host 核验真实存储与成员权威。`CreationUnknownError.reference` 保留相同三项身份，表示回执不能证明创建结果，不能据此改选 Workspace 或另建会话。
+`CreationIncompleteError.reference` 表示 Host 明确报告：原创建尚未确认，Workspace 登记、Agent setup 或最终持久回执仍未完成。create、completeCreation、open 和 resume 均保留这个类型及准确 `{ environmentId, workspaceId, sessionId }`；普通读取不提前签发句柄，也不自动续做创建。沿原引用显式调用 `completeCreation`，该入口先核对精确 Workspace 的资源权限，再由 Host 核验真实存储与成员权威。`CreationUnknownError.reference` 保留相同三项身份，表示回执不能证明创建结果，不能据此改选 Workspace 或另建会话。
 
 原生子工作已有明确 command/reference、但创建尚未确认时，宿主抛出 `ChildCreationIncompleteError`。远程统一映射为 `RemoteError`，code 为 `reactive/child-creation-incomplete`，details 为 `{ command, reference }`，保留原 `parentSessionId`、`invocationId` 与 `childSessionId`。Action 开始/结果、Operation 槽准备/读取及显式 resume 都使用同一个映射；原始 cause 不进入 wire。它与网络回执未知保持各自语义，消费者沿原 command/reference 核对既有事实；错误映射不恢复工作、不猜测 messageId，也不重发子输入。
 

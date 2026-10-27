@@ -1,7 +1,7 @@
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction,
-  type ResourceImplementation, type ReactionImplementation, z } from '@hanger-source/dsh-reactive';
+  type ResourceImplementation, type ReactionImplementation, type ProgramSession, z } from '@hanger-source/dsh-reactive';
 import { implementProgram, useResource, useResourceInstance, useReaction } from '@hanger-source/dsh-reactive/program';
-import { createRuntime, type RuntimeOptions } from '@hanger-source/dsh-reactive-dsh';
+import { createRuntime, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import { createProgramClient } from '@hanger-source/dsh-reactive-client';
 import { mountProgramGateway } from '@hanger-source/dsh-reactive-remote';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
@@ -15,6 +15,7 @@ export const backend = (options: RuntimeOptions) => createRuntime(() => applicat
 export const clientContract = () => contract;
 export const publicEntries = [createProgramClient, mountProgramGateway, getDeveloperSkill] as const;
 export const developerSkill = getDeveloperSkill();
+export const nativeProgramSource = (conversation: ProgramSession<typeof contract>): NativeSessionSource => conversation;
 
 const current = defineResource({ name: 'consumer-current', params: z.null(), value: z.object({ revision: z.number() }) });
 const changes = defineReaction({ name: 'consumer-changes', params: z.null(), event: z.number(), result: z.string() });

@@ -42,6 +42,10 @@ createWorkspace 注册原生 existing 目录，不隐式 mkdir。Environment 不
 
 组件用 `<NativeTools names={actualInstalledNames} enabled={condition} admit={policy} />` 选择原生已安装工具，保持原执行/guard/PTC语义。它不安装后端，enabled 不等于业务授权。
 
+Jobs、Schedule、Team、Files、Approval、Clock 用 `capability.forSession(conversation)` 消费 Program 收到的原 conversation，也可消费 Host 签发的本地 SDK 句柄。不得拼接 `{ id }` 或复制 identity 对象代替原对象。取得会话能力不建立观察，首次订阅才连接；业务 hook 可以用 `useObservable(() => jobs.list$, [jobs])` 读同一流。启动 Job 或写入仍是显式命令，须在真实会话 owner 已经活跃时调用，不在 render 中执行。
+
+同一原来源共享 SDK 实例，Program 来源和外部句柄分别拥有观察寿命。组件退订不 dispose 会话 SDK；显式 dispose、Program 失败或来源退出才释放观察，不杀死已受理 Job，不撤回提醒，也不取消 Team 成员。Program 来源不自动取得人工、ToolOccurrence 或 Goal 权限。
+
 Schedule 创建与 Team spawn/send 尚无 Program 来源准入接点。它们与已支持的提醒观察/更新、任务板创建/CAS、等待和 interrupt 分开；不能因为插件可安装，就声称 UI 或服务创建链已经贯通。
 
 ## 子程序沿原生 owner

@@ -6,7 +6,7 @@ import { filter, map, distinctUntilChanged, type Observable } from 'rxjs';
 import type { CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin } from './native-installation.ts';
-import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, ownNativeValue, type NativeCapability, type NativeSessionHandle } from './native-capability.ts';
+import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, ownNativeValue, type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, nativeSessionEvents, nativeSessionInspections, type NativeSessionAccess } from './conversations/session-access.ts';
 
 export type { ApprovalPolicy, ApprovalOutcome } from '@deepseek-ai/dsh-user-approval';
@@ -75,7 +75,7 @@ class SessionApproval implements NativeSessionApproval {
 }
 
 export interface NativeApproval extends NativeCapability {
-  forSession(session: NativeSessionHandle): NativeSessionApproval;
+  forSession(session: NativeSessionSource): NativeSessionApproval;
 }
 
 /** 原生 turn/one-shot grant/audit/取消保持同一个服务，业务问答不能充当批准。 */
@@ -99,7 +99,7 @@ export function createNativeApproval(options: NativeApprovalOptions): NativeAppr
     });
   });
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
-    forSession(session: NativeSessionHandle) {
+    forSession(session: NativeSessionSource) {
       const access = nativeSessionAccess(session); owner.session(access, 'approval');
       let current = sessions.get(session);
       if (!current || current.disposed) { current = new SessionApproval(owner, access, policy); sessions.set(session, current); }

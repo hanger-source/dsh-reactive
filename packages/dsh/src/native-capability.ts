@@ -1,7 +1,7 @@
 import { symbols, type Context, type Fiber } from '@deepseek-ai/cordis';
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools';
 import { Observable, distinctUntilChanged } from 'rxjs';
-import { fromSnapshot } from '@hanger-source/dsh-reactive';
+import { fromSnapshot, type ConversationIdentity } from '@hanger-source/dsh-reactive';
 import { Scope, connect } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin, type NativeInstallation } from './native-installation.ts';
 import type { NativeSessionAccess } from './conversations/session-access.ts';
@@ -14,6 +14,8 @@ export interface NativeCapability {
 
 /** 仅用于编程时选择句柄；真正身份由 Host 的 exact 对象登记核验。 */
 export interface NativeSessionHandle { readonly id: string; }
+/** 外部本地句柄或 Program 的原 conversation；字段形状不授予访问权，仍核 exact 对象。 */
+export type NativeSessionSource = NativeSessionHandle | { readonly identity: ConversationIdentity };
 
 /** 一次安装同时用于独立 Runtime 与嵌入宿主，部分失败释放这个安装范围。 */
 export function nativeCapabilities(...selected: readonly NativeCapability[]): NativeInstallation {
@@ -123,11 +125,12 @@ export function nativeObservationScope(owner: NativeCapabilityOwner, access: Nat
   return scope;
 }
 
-/** @internal 所有读取者共享一份订阅；scope 退出后不重放旧快照。 */
+/** @internal 首次观察才连接，所有读取者共享 owner 持有的订阅；scope 退出后不重放旧快照。 */
 export function nativeObservation<T>(scope: Scope, source: Observable<T>): Observable<T> {
-  const shared = connect(scope, source);
+  let shared: Observable<T> | undefined;
   return new Observable(subscriber => {
     if (scope.disposed) { subscriber.complete(); return; }
+    shared ??= connect(scope, source);
     return shared.subscribe(subscriber);
   });
 }

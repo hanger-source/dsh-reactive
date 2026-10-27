@@ -22,6 +22,8 @@ const receipt = await invocation.result;
 
 local resolveAction 同步，remote 异步；统一代码 `await` 两者。预期 scope 是调用者持有的**原始**目标，用同 schema 与当前绑定核验；不要把 scope 重复进业务 input，不按当前页面重定向。捕获后保 bindingId，撤下/替换/重挂硬拒旧句柄。接收 ActionAdmissionUnknownError 时不自动重发；定位已有 invocation/Operation 或按应用幂等合同处理。
 
+创建尚未完成时，create、completeCreation、open、resume 都可能返回 `CreationIncompleteError`，reference 保留原 environmentId、workspaceId、sessionId。原生已有成员或内存中已有完成事件仍不能证明创建已 ACK。沿原引用显式 completeCreation，不把 open/resume 写成隐式创建恢复，也不换一个会话重试。
+
 动态集合：`session.collection('items').instances$` 观察实际成员；`collection.instance(key).readView('facts', options)`、`.resolveAction('save', rawScope, options)`、`.operations` 消费同一局部合同。不要维护第二张 key→工具名表或解析命名 namespace。
 
 readView 返回当前有效业务值，observeView 保完整 Observation；views 是值流，不能用它声称失效仍有效。progress$/request(id)/events$ 观察受理、实际模型消费、工具和回复；一个模型步骤可消费整组输入，不能承诺每请求独占一轮答案。
