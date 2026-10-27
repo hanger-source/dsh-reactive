@@ -68,8 +68,11 @@ export interface RemoteProgramSession<P extends ProgramContract> {
   submit(input: Submission<ProgramInput<P>>, options?: CancellationOptions): Promise<ProgramInputReceipt>;
   editQueuedInput(requestId: string, content: Submission['content'], options?: CancellationOptions): Promise<ProgramInputReceipt>;
   uploadFile(data: FileUploadSource, options?: RemoteUploadFileOptions): Promise<FileUploadValue>;
+  /** 等待归本句柄；退出结束等待，已进入原生暂停的控制仍由Host结算。 */
   pause(): Promise<ProgramGoalControl>;
+  /** 取消原生处理；退出只结束回执等待，不回滚已经进入的控制。 */
   cancel(): Promise<ProgramCancelResult>;
+  /** 只读原请求事实，句柄或SDK退出立即结束尚未返回的查询。 */
   requestStatus(requestId: string): Promise<ProgramRequestStatus>;
   answerQuestion(callId: string, answer: HumanAnswer, options?: CancellationOptions): Promise<boolean>;
   attachWait(callId: string, options?: CancellationOptions): AsyncIterable<HumanWaitFrame>;
@@ -175,9 +178,9 @@ export function bindProgramClient<const P extends ProgramContract>(program: P, c
     if (ctx.get('connection') !== connection) throw new Error('REACTIVE_REMOTE_CLIENT_CONNECTION_REPLACED');
   };
   active();
-  const callRemote = <T>(call: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+  const callRemote = <T>(call: (signal: AbortSignal) => Promise<T>, signal = lifetime.signal): Promise<T> => {
     active();
-    const signal = lifetime.signal;
+    signal.throwIfAborted();
     return firstValueFrom(fromEvent(signal, 'abort').pipe(
       mergeMap(() => throwError(() => signal.reason)),
       raceWith(defer(() => from(call(signal)))),
@@ -374,10 +377,15 @@ export function bindProgramClient<const P extends ProgramContract>(program: P, c
         return result(uploaded);
       },
       async requestStatus(requestId) {
-        assertActive(); return result(await remote.requestStatus({ sessionId: identity.sessionId, requestId }));
+        assertActive();
+        return result(await callRemote(signal => remote.requestStatus({ sessionId: identity.sessionId, requestId }, signal), scopeSignal));
       },
-      async pause() { assertActive(); return result(await remote.pause({ sessionId: identity.sessionId })); },
-      async cancel() { assertActive(); return result(await remote.cancel({ sessionId: identity.sessionId })); },
+      async pause() {
+        assertActive(); return result(await callRemote(signal => remote.pause({ sessionId: identity.sessionId }, signal), scopeSignal));
+      },
+      async cancel() {
+        assertActive(); return result(await callRemote(signal => remote.cancel({ sessionId: identity.sessionId }, signal), scopeSignal));
+      },
       async answerQuestion(callId, answer, options = {}) {
         assertActive();
         const cancelled = options.signal;

@@ -57,7 +57,8 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
     const workspace = await runtime.application.createWorkspace({ directory });
     local.push(await runtime.application.create('work', { workspaceId: workspace.workspaceId, sessionId }));
     const role = { name: 'context-user', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/resume', 'reactivePrograms/questions',
-      'reactivePrograms/view', 'reactivePrograms/resolveAction', 'reactivePrograms/startAction', 'reactivePrograms/actionResult', 'reactivePrograms/observeAction'] };
+      'reactivePrograms/view', 'reactivePrograms/resolveAction', 'reactivePrograms/startAction', 'reactivePrograms/actionResult', 'reactivePrograms/observeAction',
+      'reactivePrograms/requestStatus', 'reactivePrograms/pause', 'reactivePrograms/cancel'] };
     const gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
       model: { provider: 'client-context', model: 'unused' }, actor: principal => principal.id,
       access: service => service.registerPolicy('context-user', { bindings: () => [
@@ -87,7 +88,9 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
         delayed.entered = true;
         const reply = await response.clone().json();
         assert.ok(response.ok, 'Host必须实际受理延迟回执的请求');
-        assert.equal(reply.result.ok, true, JSON.stringify(reply));
+        // 无Goal时pause返回正式业务拒绝；失败回执同样不能越过已退出的等待owner。
+        if (!delayed.allowRemoteFailure) assert.equal(reply.result.ok, true, JSON.stringify(reply));
+        delayed.reply = reply.result;
         delayed.received.resolve(); await delayed.release.promise;
       }
       return response;
@@ -162,6 +165,32 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
         const preserved = await peer.completeCreation(reference);
         assert.equal(preserved.id, reference.sessionId, '取消回执等待不删除已在Host登记的同一会话');
       }
+    } finally { delayed.release.resolve(); }
+  });
+  for (const [endpoint, invoke] of [
+    ['requestStatus', session => session.requestStatus('not-submitted')],
+    ['pause', session => session.pause()], ['cancel', session => session.cancel()],
+  ]) for (const owner of ['session', 'client']) await t.test(endpoint + '回执延迟时' + owner + '退出结束等待且公共Context保活', { timeout: 2_000 }, async subject => {
+    const delayed = { endpoint, allowRemoteFailure: endpoint === 'pause',
+      received: Promise.withResolvers(), release: Promise.withResolvers(), entered: false };
+    subject.signal.addEventListener('abort', () => delayed.release.resolve(), { once: true });
+    const ctx = await connect(a.gateway.url, delayed), pendingClient = bindProgramClient(program, ctx);
+    clients.push(pendingClient);
+    const session = await pendingClient.open(sessionId);
+    const rejected = assert.rejects(invoke(session), error => {
+      assert.match(String(error), owner === 'session' ? /REACTIVE_CONVERSATION_HANDLE_RELEASED/u : /REACTIVE_REMOTE_CLIENT_DISPOSED/u);
+      return true;
+    });
+    try {
+      await delayed.received.promise;
+      assert.equal(delayed.reply.ok, endpoint !== 'pause');
+      if (owner === 'session') await session.release();
+      else await pendingClient.dispose();
+      await rejected;
+      const peer = bindProgramClient(program, ctx); clients.push(peer);
+      const live = await peer.open(sessionId);
+      assert.equal(await live.readView('owner'), 'a-after-context-exit');
+      assert.deepEqual(await live.requestStatus('not-submitted'), { requestId: 'not-submitted', state: 'absent' });
     } finally { delayed.release.resolve(); }
   });
   assert.deepEqual(calls, [{ label: 'a', input: 'first' }, { label: 'b', input: 'still-b' }]);

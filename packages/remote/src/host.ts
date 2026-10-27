@@ -142,19 +142,24 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
 
   /** 暂停原生 Goal；它不取消外部业务操作。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
-  async pause(request: ProgramAddress): Promise<ProgramGoalControl> {
+  async pause(request: ProgramAddress, signal: AbortSignal): Promise<ProgramGoalControl> {
     this.principal();
+    signal.throwIfAborted();
     const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
-    try { const goal = await handle.pause().catch(this.rethrow); return { id: goal.id, revision: goal.revision, phase: goal.phase }; }
+    try {
+      signal.throwIfAborted();
+      const goal = await handle.pause().catch(this.rethrow); return { id: goal.id, revision: goal.revision, phase: goal.phase };
+    }
     finally { handle.release(); }
   }
 
   /** 取消原生处理；真实业务 owner 的 body 不随网络调用结束。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
-  async cancel(request: ProgramAddress): Promise<ProgramCancelResult> {
+  async cancel(request: ProgramAddress, signal: AbortSignal): Promise<ProgramCancelResult> {
     this.principal();
+    signal.throwIfAborted();
     const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
-    try { await handle.cancel().catch(this.rethrow); return { canceled: true }; }
+    try { signal.throwIfAborted(); await handle.cancel().catch(this.rethrow); return { canceled: true }; }
     finally { handle.release(); }
   }
 
@@ -183,10 +188,14 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
 
   /** 核对原 requestId 的真实受理/消费事实；查询不唤醒模型或重投输入。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
-  async requestStatus(request: ProgramRequestAddress): Promise<ProgramRequestStatus> {
+  async requestStatus(request: ProgramRequestAddress, signal: AbortSignal): Promise<ProgramRequestStatus> {
     this.principal();
+    signal.throwIfAborted();
     const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
-    try { return { requestId: request.requestId, state: handle.snapshot().requests[request.requestId]?.state ?? 'absent' }; }
+    try {
+      signal.throwIfAborted();
+      return { requestId: request.requestId, state: handle.snapshot().requests[request.requestId]?.state ?? 'absent' };
+    }
     finally { handle.release(); }
   }
 

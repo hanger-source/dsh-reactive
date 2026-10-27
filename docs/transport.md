@@ -106,7 +106,9 @@ const receipt = await invocation.result;
 
 远程解析使用 Gateway 原生流：开场交付绑定，流持有实际会话句柄。每个 SDK Session 对同一槽保留一个已就绪连接，重复解析完成后移交持有，`session.release()` 等待这些连接释放。它不依赖视图或人工观察权限来延长冷程序寿命。断线期间暂停新调用；重连必须保留同一绑定身份才能恢复，不能把重连取得的新 ID 填进旧函数。失去连续持有以 `connection-lost` 原因明确拒绝，需要新的显式解析。
 
-本地与远程的 SDK 调用统一接收 `{ signal }` 选项，类型来自 core 的 `CancellationOptions`。远程身份始终来自认证载体，选项不携带 actor。`resolveAction` 的信号只取消尚未完成的解析等待，就绪连接随后由 Session 持有；远程 Action 调用的信号只取消开始回执的等待，已受理的业务和已取得 Invocation 的结果、观察继续归原 owner。受理尚未确认时仍按未知受理处理，不自动重发。已取消的调用在发送前明确拒绝。
+支持调用方取消的本地与远程 SDK 方法使用 `{ signal }` 选项，类型来自 core 的 `CancellationOptions`。远程身份始终来自认证载体，选项不携带 actor。`resolveAction` 的信号只取消尚未完成的解析等待，就绪连接随后由 Session 持有；远程 Action 调用的信号只取消开始回执的等待，已受理的业务和已取得 Invocation 的结果、观察继续归原 owner。受理尚未确认时仍按未知受理处理，不自动重发。已取消的调用在发送前明确拒绝。
+
+远程 `requestStatus`、`pause`、`cancel` 的等待属于调用它们的 Session 句柄。句柄 release 或 SDK dispose 会结束尚未返回的等待，即使公共 Context 仍存活或载体延迟返回回执；同一 Context 上其他 SDK 继续工作。Host 在异步取得真实句柄后、进入读取或原生控制前再次核验请求取消。已经进入暂停或取消的控制由原生 owner 结算，客户端退出不回滚控制，也不取消已受理业务；需要确认最终事实时，使用仍有效的句柄观察当前状态。
 
 Node 使用同一入口，提供绝对 HTTP(S) baseUrl，并按应用认证方式提供 `fetch` 和 `createWebSocket`。浏览器默认使用同源 fetch/WebSocket；Cookie 或其他认证载体由应用配置，不能把只有 unary 的请求头认证误当成 socket 认证。
 
