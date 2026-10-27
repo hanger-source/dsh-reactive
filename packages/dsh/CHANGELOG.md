@@ -1,5 +1,12 @@
 # @hanger-source/dsh-reactive-dsh
 
+## 0.19.1
+
+### Patch Changes
+
+- Updated dependencies [84f447f]
+  - @hanger-source/dsh-reactive@0.19.1
+
 ## 0.19.0
 
 ### Minor Changes

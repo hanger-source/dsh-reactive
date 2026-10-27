@@ -1,5 +1,11 @@
 # @hanger-source/dsh-reactive
 
+## 0.19.1
+
+### Patch Changes
+
+- 84f447f: NativeTools 保留原生注册名中的大小写与连字符，使正式 MCP client 已生成的公开身份可以直接声明；不改名、不重新映射服务器工具。重复项、无效字符、长度和保留执行入口的限制继续生效。
+
 ## 0.19.0
 
 ### Minor Changes
