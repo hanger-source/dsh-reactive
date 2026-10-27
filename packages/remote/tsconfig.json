@@ -1,11 +1,14 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "composite": true,
+    "tsBuildInfoFile": "lib/remote.tsbuildinfo",
     "rootDir": "src",
     "outDir": "lib",
     "stripInternal": true,
     "paths": {}
   },
+  "references": [{ "path": "../core" }, { "path": "../dsh" }, { "path": "../client/tsconfig.contracts.json" }],
   "include": [
     "src/**/*.ts"
   ],

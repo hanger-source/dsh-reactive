@@ -6,7 +6,7 @@
 
 项目处于 0.x 阶段，API 与组件主链、SDK、原生接入仍在演进；公开能力的限制以本文和分域文档为准，聚焦试验不代表完整框架已经验收。
 
-源码位于 [hanger-source/dsh-reactive](https://github.com/hanger-source/dsh-reactive)，由 hanger 维护。六个公共包统一使用 `@hanger-source/dsh-reactive*` 名称，当前源码版本为 `0.2.0`；npm 发行需要单独授权，源码版本和 GitHub 提交不表示包已在 npm 发布。
+源码位于 [hanger-source/dsh-reactive](https://github.com/hanger-source/dsh-reactive)，由 hanger 维护。六个公共包统一使用 `@hanger-source/dsh-reactive*` 名称与同一版本；正式发行通过 GitHub Actions 的 Trusted Publishing 完成，源码版本和 GitHub 提交不表示包已在 npm 发布。版本管理、候选验收和发布方式见[发行说明](docs/releasing.md)。
 
 `@hanger-source/dsh-reactive` 提供纯 Program、Surface、Action、Operation、输入与观察合同，供业务模块和本地、远程消费者共享。后台 React 程序从 `@hanger-source/dsh-reactive/program` 导入 `implementProgram`、声明组件与 hooks；纯合同和远程客户端不加载这个入口。原生 Runtime、模型与宿主装配位于独立包 `@hanger-source/dsh-reactive-dsh`，按宿主的实际能力选择依赖。
 

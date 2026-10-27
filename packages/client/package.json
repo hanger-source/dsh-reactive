@@ -36,12 +36,15 @@
     }
   },
   "files": [
-    "lib",
+    "lib/**/*.js",
+    "lib/**/*.map",
+    "lib/**/*.d.ts",
     "release.json"
   ],
   "scripts": {
-    "build:contracts": "tsc -p tsconfig.contracts.json",
-    "build": "tsc -p tsconfig.json && node scripts/browser.mjs",
+    "build:contracts": "tsc -b tsconfig.contracts.json",
+    "build": "tsc -b tsconfig.json && npm run build:browser",
+    "build:browser": "node scripts/browser.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

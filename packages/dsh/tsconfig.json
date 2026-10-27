@@ -1,11 +1,14 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "composite": true,
+    "tsBuildInfoFile": "lib/dsh.tsbuildinfo",
     "paths": {},
     "rootDir": "src",
     "outDir": "lib",
     "stripInternal": false
   },
+  "references": [{ "path": "../core" }],
   "include": [
     "src/**/*.ts",
     "src/**/*.tsx"

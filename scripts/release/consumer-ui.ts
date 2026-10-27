@@ -10,3 +10,4 @@ const program = defineProgram({ input: z.null(), surface: defineSurface({ views:
 export type Session = RemoteProgramSession<typeof program>;
 export const view = defineNativeActionView(action, (_props: NativeActionViewProps<typeof action>) => null);
 export const publicEntries = [createNativeActionViews, bindNativeSession, getDeveloperSkill] as const;
+export const developerSkill = getDeveloperSkill();

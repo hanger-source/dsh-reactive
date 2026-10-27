@@ -1,0 +1,143 @@
+name: npm Release
+
+on:
+  push:
+    tags: ['dsh-reactive@*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 已存在的 annotated 发行 tag，例如 dsh-reactive@0.2.1
+        required: true
+        type: string
+
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      version: ${{ steps.source.outputs.version }}
+      channel: ${{ steps.source.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: 安装公开构建依赖
+        run: npm ci --ignore-scripts --registry https://registry.npmjs.org
+      - name: 核验 annotated tag、来源和六包版本
+        id: source
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node --input-type=module -e '
+            import { appendFileSync } from "node:fs";
+            import semver from "semver";
+            import { configuration, packages, capture, releaseSource } from "./scripts/release/common.mjs";
+            const { version } = await packages(await configuration());
+            const channel = semver.prerelease(version) ? "next" : "stable";
+            const commit = await capture("git", ["rev-parse", "HEAD"]);
+            await releaseSource({ commit, channel, tag: process.env.RELEASE_TAG }, true);
+            for (const [key, value] of Object.entries({ commit, version, channel }))
+              appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
+          '
+      - name: 一次构建并准备可追溯的六包产物
+        env:
+          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
+          RELEASE_CHANNEL: ${{ steps.source.outputs.channel }}
+        run: npm run release -- prepare --channel "$RELEASE_CHANNEL" --commit "$RELEASE_COMMIT" --tag "$RELEASE_TAG" --out "$GITHUB_WORKSPACE/.tmp/release"
+      - name: 检查包边界和公开入口
+        run: |
+          npm run check:boundaries
+          npm run check:packages
+      - name: 编译并执行核心及 Gateway 行为试验
+        run: |
+          node scripts/prepare-test.mjs reset
+          npx --no-install tsc -p tsconfig.test.json
+          node scripts/prepare-test.mjs link
+          node --test --test-timeout=15000 .tmp/test/test/*.test.js
+          npm run test --workspace @hanger-source/dsh-reactive-remote
+      - name: 编译公开用法
+        run: npm run typecheck:examples
+      - name: 从实际候选安装并验收后台、原生 UI 和 Skill
+        run: npm run release -- verify-artifacts --manifest .tmp/release/release-manifest.json
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: npm-release-candidate
+          path: |
+            .tmp/release/release-manifest.json
+            .tmp/release/candidate-verification.json
+            .tmp/release/packages/*.tgz
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: 安装发行工具
+        run: npm ci --ignore-scripts --registry https://registry.npmjs.org
+      - name: 使用支持 Trusted Publishing 的 npm
+        run: npm install --global npm@11
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release-candidate
+          path: .tmp/release
+      - name: 发布已验证产物并从 npm registry 重新安装验收
+        env:
+          NPM_CONFIG_PROVENANCE: 'true'
+          RELEASE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+        run: |
+          if [ "$RELEASE_CHANNEL" = stable ]; then
+            npm run release -- publish --manifest .tmp/release/release-manifest.json --also-latest
+          else
+            npm run release -- publish --manifest .tmp/release/release-manifest.json
+          fi
+      - name: 发布 GitHub Release 与不可变产物
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+        run: |
+          if [ "$RELEASE_CHANNEL" = next ]; then
+            gh release create "$RELEASE_TAG" .tmp/release/packages/*.tgz .tmp/release/release-manifest.json .tmp/release/registry-verification.json --verify-tag --prerelease --title "$RELEASE_VERSION" --generate-notes
+          else
+            gh release create "$RELEASE_TAG" .tmp/release/packages/*.tgz .tmp/release/release-manifest.json .tmp/release/registry-verification.json --verify-tag --title "$RELEASE_VERSION" --generate-notes
+          fi
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: npm-publication-receipts
+          path: |
+            .tmp/release/publication.json
+            .tmp/release/registry-verification.json
+          if-no-files-found: ignore
+          retention-days: 90

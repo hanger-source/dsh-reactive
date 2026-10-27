@@ -46,11 +46,13 @@
     }
   },
   "files": [
-    "lib",
+    "lib/**/*.js",
+    "lib/**/*.map",
+    "lib/**/*.d.ts",
     "release.json"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -b tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

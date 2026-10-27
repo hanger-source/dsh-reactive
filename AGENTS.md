@@ -6,7 +6,7 @@
 
 本项目建设基于 dsh 的双向响应式应用编程框架。先读 README 和 `docs/architecture.md`，结合当前代码与调用者推进，不把使用示意当成已经发布的接口合同。
 
-项目源码目标为 `https://github.com/hanger-source/dsh-reactive`，作者为 hanger。正式包使用 `@hanger-source/dsh-reactive*`，根目录为 private workspace，核心源码位于 `packages/core/src`。当前 `0.2.0` 是源码版本，不能推定公共 npm 已发行；GitHub 提交、推送和 npm 发布分别需要对应任务授权。
+项目源码目标为 `https://github.com/hanger-source/dsh-reactive`，作者为 hanger。正式包使用 `@hanger-source/dsh-reactive*`，根目录为 private workspace，核心源码位于 `packages/core/src`。源码版本不能推定公共 npm 已发行；GitHub 提交、推送和 npm 发布分别需要对应任务授权。授权发行后使用 GitHub 的 `release.yml` 与 npm Trusted Publishing，不以本机 npm 登录或配置 `NPM_TOKEN` 替代这条链路。
 
 核心是服务端和 Agent 宿主中的响应式运行机制，以及开发者组合这些能力的体验。前端、CLI、后台服务与原生会话 UI 都是消费者。不得把主线缩成 React hooks、聊天组件或前端状态同步。
 

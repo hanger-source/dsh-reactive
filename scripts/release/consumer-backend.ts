@@ -13,3 +13,4 @@ const application = defineApplication({ name: 'registry-consumer', admit: async 
 export const backend = (options: RuntimeOptions) => createRuntime(() => application, options);
 export const clientContract = () => contract;
 export const publicEntries = [createProgramClient, mountProgramGateway, getDeveloperSkill] as const;
+export const developerSkill = getDeveloperSkill();

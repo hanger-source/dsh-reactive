@@ -53,7 +53,9 @@ for (const kind of ['backend', 'ui']) {
   }
   await copyFile(join(root, `scripts/release/consumer-${kind}.ts`), join(directory, 'consumer.ts'));
   await writeFile(join(directory, 'tsconfig.json'), JSON.stringify({ compilerOptions: { target: 'ES2024', module: 'NodeNext',
-    moduleResolution: 'NodeNext', strict: true, skipLibCheck: false, noEmit: true, types: ['node'], jsx: 'react-jsx' }, include: ['consumer.ts'] }, null, 2));
+    moduleResolution: 'NodeNext', strict: true, skipLibCheck: false, outDir: 'compiled', types: ['node'], jsx: 'react-jsx' }, include: ['consumer.ts'] }, null, 2));
   await run(process.execPath, [join(directory, 'node_modules/typescript/bin/tsc'), '-p', 'tsconfig.json'], directory);
-  console.log(JSON.stringify({ consumer: kind, directory, packages: names, strict: true, source: 'workspace-tarballs' }));
+  // 执行同一份仓外消费者：Program 的根合同必须被 /program 接受，UI 消费不加载后台 renderer。
+  await run(process.execPath, [join(directory, 'compiled/consumer.js')], directory);
+  console.log(JSON.stringify({ consumer: kind, directory, packages: names, strict: true, runtime: true, source: 'workspace-tarballs' }));
 }

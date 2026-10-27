@@ -1,5 +1,6 @@
 {
   "extends": "./tsconfig.json",
+  "compilerOptions": { "composite": false },
   "include": ["src/index.ts", "src/host.ts", "src/carrier.ts"],
   "exclude": []
 }

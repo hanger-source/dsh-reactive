@@ -1,0 +1,11 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/dsh" },
+    { "path": "./packages/client/tsconfig.contracts.json" },
+    { "path": "./packages/remote" },
+    { "path": "./packages/client" },
+    { "path": "./packages/native-ui" }
+  ]
+}

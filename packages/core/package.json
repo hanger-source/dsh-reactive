@@ -77,7 +77,9 @@
     }
   },
   "files": [
-    "lib",
+    "lib/**/*.js",
+    "lib/**/*.map",
+    "lib/**/*.d.ts",
     "README.md",
     "CONTRIBUTING.md",
     "docs",
@@ -92,7 +94,8 @@
     "directory": "packages/core"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/package-assets.mjs",
+    "build": "tsc -b tsconfig.json && npm run build:assets",
+    "build:assets": "node scripts/package-assets.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "prepack": "npm run build"
   },

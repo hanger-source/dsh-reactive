@@ -28,7 +28,9 @@ npm run check:packages
 
 core 的根入口和客户端保持无 React、无原生宿主装配；后台组件实现通过 `/program` 加载。dsh 不依赖 Gateway、客户端或 UI。remote 依赖 dsh 和纯 client 合同；native-ui 依赖 client 和官方原生 UI 接点，不反向加载 dsh 或 Gateway。可选原生域使用独立入口与显式 peer，不能让未选择该能力的用户被迫安装它。
 
-`docs` 和根 `examples` 是说明及示例的唯一源。core 构建将选定资产复制入包；不要手工编辑其生成副本。客户端 `lib/typert.remote-client.*` 由官方 Typert 工具从远程宿主合同生成，修改服务合同后按构建顺序重新生成，不手改生成内容。`lib`、`.tmp`、打包文件与本地运行数据不提交。
+TypeScript 项目引用在 `tsconfig.build.json` 及各包配置中声明编译依赖。core 是共享合同的唯一编译来源；client 的 wire 合同、错误与 transport 由 `tsconfig.contracts.json` 单独产出，完整 SDK 引用这些声明，不重复编译同一批文件。根构建先编译 dsh 与 client 合同，再运行官方 Typert 生成器，随后完成宿主、SDK 与可选 UI 的编译、浏览器 bundle 和 Skill 构建。构建信息与 `lib` 同寿命，重新准备产物目录也会重新编译；npm 包只收录运行文件、声明、映射与正式资产。
+
+`docs` 和根 `examples` 是说明及示例的唯一源。core 构建将选定资产复制入包；不要手工编辑其生成副本。客户端 `lib/typert.remote-client.*` 由官方 Typert 工具从远程宿主合同生成，修改服务合同后运行根构建，不手改生成内容。`lib`、`.tmp`、打包文件与本地运行数据不提交。
 
 ## 修改和验证
 
@@ -45,7 +47,7 @@ npm run test:remote
 
 真实模型试验显式选择独立数据目录、provider 和预算，保留精确工作区、会话、输入、调用、操作及日志。模型调用、原生服务试验、包安装和外部业务验收分别说明证据，互不替代。
 
-[GitHub Actions](.github/workflows/ci.yml) 使用公开 npm 依赖，完成构建、边界检查、核心与 Gateway 试验、示例严格编译，并将实际 tgz 安装到仓外的后台 React 19 与原生 UI React 18 消费者，以 `skipLibCheck:false` 检查公开声明。CI 保留六包产物供审阅，不执行 npm 发布。
+[日常 GitHub CI](.github/workflows/ci.yml) 使用公开 npm 依赖，完成构建、边界检查、核心与 Gateway 试验、示例严格编译，并将实际 tgz 安装到仓外的后台 React 19 与原生 UI React 18 消费者，以 `skipLibCheck:false` 编译并执行消费者。它保留六包产物供审阅。独立的 [npm 发行工作流](.github/workflows/release.yml) 对 main 上的 annotated 发行 tag 准备、验证并发布同一份产物，使用 GitHub OIDC Trusted Publishing，随后从 npm registry 重新安装验收。
 
 保留并发修改和有效日志。只暂存本批文件，完成一批有相称验证的变化后本地提交；不要混入其他应用、凭据、临时探针或运行数据。
 
@@ -53,7 +55,7 @@ npm run test:remote
 
 公共合同、运行语义、exports、依赖闭包和开发 Skill 都属于发行接口。变更这些内容时运行 `npm run changeset`，写明用户可观察的行为及升级影响。六个发行包使用同一版本；包间依赖与开发指导适用版本一并更新。破坏性变化提供明确迁移用法，不在生产代码中维持默认兼容分支。
 
-当前 `0.2.0` 是源码版本，不能据此声称公共 npm 已发布。GitHub 提交或推送与 npm 发行是独立操作，后者需要明确授权。
+源码版本不能据此声称公共 npm 已发布。GitHub 提交或推送与 npm 发行是独立操作，后者需要明确授权。
 
 候选版使用 `next`；正式版使用单独的稳定发行流程。版本、构建、产物、registry 安装和 tag 按 `npm run release -- --help` 给出的流程执行。打包准备不代表已经发布，发布成功也不代表外部业务验收。发布需要明确授权，不将预发布加入默认安装渠道。
 

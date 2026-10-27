@@ -22,13 +22,15 @@
     }
   },
   "files": [
-    "lib",
+    "lib/**/*.js",
+    "lib/**/*.map",
+    "lib/**/*.d.ts",
     "release.json"
   ],
   "scripts": {
     "generate": "node scripts/generate.mjs",
-    "build": "npm run generate && tsc -p tsconfig.json",
-    "typecheck": "npm run generate && tsc --noEmit -p tsconfig.json",
+    "build": "tsc -b ../dsh ../client/tsconfig.contracts.json && npm run generate && tsc -b tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --test --test-timeout=25000 test/*.test.mjs",
     "browser:serve": "node test/browser-host.mjs",
     "browser:requests": "node test/browser-request-host.mjs",

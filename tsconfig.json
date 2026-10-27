@@ -17,6 +17,9 @@
       ],
       "@hanger-source/dsh-reactive-dsh": [
         "./packages/dsh/src/index.ts"
+      ],
+      "@hanger-source/dsh-reactive-dsh/*": [
+        "./packages/dsh/src/*.ts"
       ]
     }
   },

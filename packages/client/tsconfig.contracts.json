@@ -1,5 +1,14 @@
 {
-  "extends": "./tsconfig.json",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "tsBuildInfoFile": "lib/contracts.tsbuildinfo",
+    "rootDir": "src",
+    "outDir": "lib",
+    "stripInternal": true,
+    "paths": {}
+  },
+  "references": [{ "path": "../core" }],
   "include": ["src/types.ts", "src/errors.ts", "src/transport.ts", "src/inbox.ts"],
   "exclude": []
 }
