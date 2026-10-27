@@ -26,6 +26,8 @@ npm run check:packages
 
 根目录是私有工作区，不发布。各包在自己的 `package.json` 中声明 exports、依赖和构建命令；跨包代码只导入正式包入口。内部相对路径、测试路径和构建产物路径不构成公共 API。新增出口必须同时让仓外 strict TypeScript 消费者能够安装和编译。
 
+`check:boundaries` 使用 dependency-cruiser 核验依赖方向、各包自己的 npm 声明和运行时代码不借用 devDependencies。包内相对导入不能越出本包；正式公共入口保留原模块身份。声明文件需要的类型包也是发行依赖，不能依赖根工作区或其他依赖恰好将它安装出来。
+
 core 的根入口和客户端保持无 React、无原生宿主装配；后台组件实现通过 `/program` 加载。dsh 不依赖 Gateway、客户端或 UI。remote 依赖 dsh 和纯 client 合同；native-ui 依赖 client 和官方原生 UI 接点，不反向加载 dsh 或 Gateway。可选原生域使用独立入口与显式 peer，不能让未选择该能力的用户被迫安装它。
 
 TypeScript 项目引用在 `tsconfig.build.json` 及各包配置中声明编译依赖。core 是共享合同的唯一编译来源；client 的 wire 合同、错误与 transport 由 `tsconfig.contracts.json` 单独产出，完整 SDK 引用这些声明，不重复编译同一批文件。根构建先编译 dsh 与 client 合同，再运行官方 Typert 生成器，随后完成宿主、SDK 与可选 UI 的编译、浏览器 bundle 和 Skill 构建。构建信息与 `lib` 同寿命，重新准备产物目录也会重新编译；npm 包只收录运行文件、声明、映射与正式资产。
@@ -47,7 +49,7 @@ npm run test:remote
 
 真实模型试验显式选择独立数据目录、provider 和预算，保留精确工作区、会话、输入、调用、操作及日志。模型调用、原生服务试验、包安装和外部业务验收分别说明证据，互不替代。
 
-[日常 GitHub CI](.github/workflows/ci.yml) 使用公开 npm 依赖，完成构建、边界检查、核心与 Gateway 试验、示例严格编译，并将实际 tgz 安装到仓外的后台 React 19 与原生 UI React 18 消费者，以 `skipLibCheck:false` 编译并执行消费者。它保留六包产物供审阅。独立的 [npm 发行工作流](.github/workflows/release.yml) 对 main 上的 annotated 发行 tag 准备、验证并发布同一份产物，使用 GitHub OIDC Trusted Publishing，随后从 npm registry 重新安装验收。
+[日常 GitHub CI](.github/workflows/ci.yml) 使用公开 npm 依赖，完成构建、边界检查、核心与 Gateway 试验、示例严格编译，并将实际 tgz 安装到仓外的默认后台、可选原生能力与原生 UI 消费者，以 `skipLibCheck:false` 编译并执行。原生 UI 使用 React 18；另将同一物理安装中的纯合同、SDK 和可选 UI 入口按浏览器条件完整打包，拒绝未打包的外部依赖、后台 renderer 和另一份 core。它保留六包产物供审阅。独立的 [npm 发行工作流](.github/workflows/release.yml) 对 main 上的 annotated 发行 tag 准备、验证并发布同一份产物，使用 GitHub OIDC Trusted Publishing，随后从 npm registry 重新安装验收。
 
 保留并发修改和有效日志。只暂存本批文件，完成一批有相称验证的变化后本地提交；不要混入其他应用、凭据、临时探针或运行数据。
 

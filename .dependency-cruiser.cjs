@@ -2,6 +2,20 @@
 module.exports = {
   forbidden: [
     {
+      name: 'declared-package-dependency', severity: 'error',
+      from: {}, to: { dependencyTypes: ['npm-no-pkg', 'npm-unknown'] },
+    },
+    {
+      name: 'published-runtime-dependency', severity: 'error',
+      from: { path: '^packages/[^/]+/src/' },
+      to: { dependencyTypes: ['npm-dev'], dependencyTypesNot: ['npm', 'npm-peer', 'npm-optional', 'type-only'] },
+    },
+    {
+      name: 'package-relative-import-boundary', severity: 'error',
+      from: { path: '^packages/([^/]+)/src/' },
+      to: { dependencyTypes: ['local'], dependencyTypesNot: ['aliased'], pathNot: '^packages/$1/' },
+    },
+    {
       name: 'unresolved-import', severity: 'error',
       from: {}, to: { couldNotResolve: true },
     },

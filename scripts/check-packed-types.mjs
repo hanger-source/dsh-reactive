@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { access, copyFile, lstat, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { consumerKinds, consumerPackages, consumerEnvironment } from './release/consumer-profiles.mjs';
+import { consumerKinds, consumerPackages, consumerEnvironment, prepareConsumerSources } from './release/consumer-profiles.mjs';
+import { buildConsumerBrowser } from './release/consumer-browser.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const config = JSON.parse(await readFile(join(root, 'scripts/release.config.json'), 'utf8'));
@@ -49,11 +50,10 @@ for (const kind of consumerKinds) {
     assert.equal(await realpath(installed), installed);
     assert.equal(JSON.parse(await readFile(join(installed, 'package.json'), 'utf8')).version, packed.get(name).version);
   }
-  await copyFile(join(root, `scripts/release/consumer-${kind}.ts`), join(directory, 'consumer.ts'));
-  await writeFile(join(directory, 'tsconfig.json'), JSON.stringify({ compilerOptions: { target: 'ES2024', module: 'NodeNext',
-    moduleResolution: 'NodeNext', strict: true, skipLibCheck: false, outDir: 'compiled', types: ['node'], jsx: 'react-jsx' }, include: ['consumer.ts'] }, null, 2));
+  await prepareConsumerSources(directory, kind);
   await run(process.execPath, [join(directory, 'node_modules/typescript/bin/tsc'), '-p', 'tsconfig.json'], directory);
   // 执行同一份仓外消费者：Program 的根合同必须被 /program 接受，UI 消费不加载后台 renderer。
   await run(process.execPath, [join(directory, 'compiled/consumer.js')], directory);
-  console.log(JSON.stringify({ consumer: kind, directory, packages: names, strict: true, runtime: true, source: 'workspace-tarballs' }));
+  const browser = kind === 'ui' ? await buildConsumerBrowser(directory) : undefined;
+  console.log(JSON.stringify({ consumer: kind, directory, packages: names, strict: true, runtime: true, browser, source: 'workspace-tarballs' }));
 }

@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { capture, run, root, configuration, save, json, independent, assertVersion, clean } from './common.mjs';
 import { artifactManifest, currentArtifacts } from './artifacts.mjs';
-import { consumerKinds, consumerPackages, consumerEnvironment } from './consumer-profiles.mjs';
+import { consumerKinds, consumerPackages, consumerEnvironment, prepareConsumerSources } from './consumer-profiles.mjs';
+import { buildConsumerBrowser } from './consumer-browser.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 async function metadata(name, version, registry) {
@@ -103,17 +104,16 @@ export async function verify(path, source) {
           || installed.resolved !== registryRecords.get(name).dist.tarball) throw new Error('RELEASE_INSTALL_NOT_FROM_REGISTRY: ' + name);
       }
     }
-    await copyFile(join(root, 'scripts/release/consumer-' + kind + '.ts'), join(cwd, 'consumer.ts'));
+    await prepareConsumerSources(cwd, kind);
     await copyFile(join(root, 'scripts/release/consumer-runtime.mjs'), join(cwd, 'runtime.mjs'));
     await save(join(cwd, 'expected.json'), { kind, source, packages: names, version: manifest.version,
       commit: manifest.commit, tag: manifest.tag, registry: manifest.registry });
-    await save(join(cwd, 'tsconfig.json'), { compilerOptions: { target: 'ES2024', module: 'NodeNext', moduleResolution: 'NodeNext',
-      strict: true, skipLibCheck: false, outDir: 'compiled', types: ['node'], jsx: 'react-jsx' }, include: ['consumer.ts'] });
     await run(process.execPath, [join(cwd, 'node_modules/typescript/bin/tsc'), '-p', 'tsconfig.json'], cwd);
     // 执行同一份实际类型消费者，保证所有可选子入口也在仓外的物理安装中加载。
     await run(process.execPath, [join(cwd, 'compiled/consumer.js')], cwd);
     await run(process.execPath, [join(cwd, 'runtime.mjs')], cwd);
-    consumers.push({ kind, directory: cwd, packages: names, strict: true, runtimeImport: true });
+    const browser = kind === 'ui' ? await buildConsumerBrowser(cwd) : undefined;
+    consumers.push({ kind, directory: cwd, packages: names, strict: true, runtimeImport: true, ...browser ? { browser } : {} });
   }
   const report = { source, commit: manifest.commit, version: manifest.version, registry: manifest.registry,
     manifestSha256: artifact.manifestSha256, consumers };
