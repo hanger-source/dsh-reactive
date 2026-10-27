@@ -1,7 +1,7 @@
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction,
   resourceView, shareResource, type Scope, type Observation, type OperationContract, type OperationHandle,
   type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, type Invocation, type Json, z } from '@hanger-source/dsh-reactive';
-import type { Observable } from 'rxjs';
+import { concatMap, type Observable } from 'rxjs';
 import { implementProgram, useResource, useResourceInstance, useReaction } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, type ConversationHandle, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
@@ -27,6 +27,12 @@ const changes = defineReaction({ name: 'consumer-changes', params: z.null(), eve
 export function useBackendBindings(resource: ResourceImplementation<typeof current>, reaction: ReactionImplementation<typeof changes>) {
   const instance = useResourceInstance(resource, null);
   return { resource: instance, observed: useResource(instance), reaction: useReaction(reaction, null) };
+}
+export function useLocalBackend(target: string, changes$: Observable<number>) {
+  const resource = useResourceInstance(() => ({ value: z.string(), read: () => target }), [target]);
+  const reaction = useReaction(() => ({ event: z.number(), result: z.string(),
+    observe: () => changes$, operator: concatMap, execute: revision => target + ':' + (revision + 1) }), [target, changes$]);
+  return { resource, reaction, observed: useResource(resource) };
 }
 export function usePublicView(session: ConversationHandle<typeof contract> | RemoteProgramSession<typeof contract>) {
   const resource: ResourceReadable<number> = session.viewResource('revision');

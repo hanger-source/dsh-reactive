@@ -157,3 +157,21 @@ function useTypedProgramBindings() {
   return { resource, reaction, read, values, start };
 }
 void useTypedProgramBindings;
+
+function useTypedLocalBindings(target: string) {
+  const resource = useResourceInstance(() => ({ value: z.string().transform(Number), read: () => target }), [target]);
+  const read: () => Promise<number> = () => resource.read();
+  const observed = useResource(resource);
+  if (observed.state.status === 'ready') observed.state.value.toFixed();
+  // @ts-expect-error 局部资源与正式资源相同，读取的是schema output。
+  resource.values$.pipe(map(value => value.trim()));
+  const reaction = useReaction(() => ({ event: z.string().transform(Number), result: z.string().transform(Number),
+    observe: () => of(target), operator: concatMap, execute: event => event.toFixed() }), [target]);
+  const results = () => reaction.start().events$.pipe(map(event => event.event + event.result));
+  // @ts-expect-error 局部factory仍须明确提供React依赖。
+  useResourceInstance(() => ({ value: z.string(), read: () => target }));
+  // @ts-expect-error 局部factory不能把read和observe混合为两份来源。
+  useResourceInstance(() => ({ value: z.string(), read: () => target, observe: () => of({ status: 'pending' as const, generation: 0 }) }), [target]);
+  return { resource, reaction, read, results };
+}
+void useTypedLocalBindings;

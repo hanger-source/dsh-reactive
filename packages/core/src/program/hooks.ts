@@ -10,9 +10,11 @@ import { bindResource, type ResourceInstance } from '../resources/binding.ts';
 import type { ResourceReadable } from '../resources/reader.ts';
 import { isResourceImplementation, type ResourceImplementation } from '../resources/implementation.ts';
 import type { ResourceContract, ResourceParameters, ResourceData } from '../resources/definition.ts';
+import { createResource, type LocalResource, type LocalResourceOptions } from '../resources/local.ts';
 import { bindReaction, type ReactionInstance } from '../reactions/binding.ts';
 import type { ReactionContract, ReactionParameters } from '../reactions/definition.ts';
 import type { ReactionImplementation } from '../reactions/implementation.ts';
+import { createReaction, type LocalReaction, type LocalReactionOptions } from '../reactions/local.ts';
 import { connect, normalizeResource, type SnapshotSource } from '../reactivity/observable.ts';
 
 /** 宿主拥有程序寿命、真实执行来源与步骤准入；组件不自行授予业务权限。 */
@@ -138,21 +140,41 @@ export interface ObservedResource<T> {
 /**
  * 取得程序拥有的正式资源实例，构造不读取；read、失效、流及其他 hook 共用同一对象。
  * 相同实现与解析参数跨组件共享；替换目标不改写已取得的实例。
+ * 局部 factory 纯构造 createResource 的选项，依赖数组决定本组件的实例身份。
  */
 export function useResourceInstance<D extends ResourceContract>(implementation: ResourceImplementation<D>,
-  params: ResourceParameters<NoInfer<D>>): ResourceInstance<D> {
+  params: ResourceParameters<NoInfer<D>>): ResourceInstance<D>;
+export function useResourceInstance<V extends z.ZodType>(factory: () => LocalResourceOptions<V>,
+  dependencies: DependencyList): LocalResource<V>;
+export function useResourceInstance(source: ResourceImplementation | (() => LocalResourceOptions<z.ZodType>),
+  paramsOrDependencies: unknown): ResourceInstance<ResourceContract> {
   const owner = useOwner();
-  return bindResource(implementation, { scope: owner.reactivityScope }).instance(params);
+  const local = useMemo(() => typeof source === 'function'
+    ? createResource(owner.reactivityScope, source())
+    : undefined,
+  [owner, typeof source === 'function', ...(typeof source === 'function' ? paramsOrDependencies as DependencyList : [])]);
+  return typeof source === 'function' ? local!
+    : bindResource(source, { scope: owner.reactivityScope }).instance(paramsOrDependencies);
 }
 
 /**
  * 取得程序拥有的持续反应，不在 render 或 commit 隐式 start。
  * 运行属于程序，组件退出不冒充停止；调用 run.stop 或程序退出才释放感知和排队关系。
+ * 局部 factory 使用 createReaction 的同一选项，不要求声明参数合同或另传 Scope。
  */
 export function useReaction<D extends ReactionContract>(implementation: ReactionImplementation<D>,
-  params: ReactionParameters<NoInfer<D>>): ReactionInstance<D> {
+  params: ReactionParameters<NoInfer<D>>): ReactionInstance<D>;
+export function useReaction<E extends z.ZodType, R extends z.ZodType>(factory: () => LocalReactionOptions<E, R>,
+  dependencies: DependencyList): LocalReaction<E, R>;
+export function useReaction(source: ReactionImplementation | (() => LocalReactionOptions<z.ZodType, z.ZodType>),
+  paramsOrDependencies: unknown): ReactionInstance<ReactionContract> {
   const owner = useOwner();
-  return bindReaction(implementation, { scope: owner.reactivityScope }).instance(params);
+  const local = useMemo(() => typeof source === 'function'
+    ? createReaction(owner.reactivityScope, source())
+    : undefined,
+  [owner, typeof source === 'function', ...(typeof source === 'function' ? paramsOrDependencies as DependencyList : [])]);
+  return typeof source === 'function' ? local!
+    : bindReaction(source, { scope: owner.reactivityScope }).instance(paramsOrDependencies);
 }
 
 /**

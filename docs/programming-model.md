@@ -227,6 +227,7 @@ const application = defineApplication({
 - `useResource(factory, dependencies)` 共享资源来源，直接返回 state 与 observations$。来源错误、空完成或停在 pending 后完成都进入资源 error；业务空值仍是 ready 中的值。
 - `useResourceInstance(implementation, params)` 取得当前 Program 共享的正式资源实例。普通函数通过它 read、invalidate 或订阅，组件通过 `useResource(instance)` 观察，同一实现与解析参数只持有一个实例；直接 `useResource(implementation, params)` 也连接这个实例。
 - `useReaction(implementation, params)` 取得当前 Program 共享的持续反应，`start()` 才开始感知和执行。同实例不能同时 start 两次；组件退出不停止程序拥有的运行，业务显式调用 `run.stop()`。程序失败或退出会停止查询、持续感知及尚未开始的排队工作，已受理业务仍由原 owner 结算。
+- 局部资源使用 `useResourceInstance(() => ({ value, read, invalidations? }), dependencies)`，或同一选项的 observe 分支；局部反应使用 `useReaction(() => ({ event, result, observe, operator, execute }), dependencies)`。factory 只纯构造 createResource/createReaction 已有选项，React dependencies 决定组件内身份；同依赖重渲染保留实例，不同组件分别拥有局部身份。Program 统一持有这些正式实例，组件退出不销毁已交给普通函数的对象或停止显式运行。依赖改变取得新对象，旧实例不重定向；需要跨组件共享时，使用现有 implementation 与 params 合同入口。
 - `combineResources({ a: a$, b: b$ })` 组合具名资源，任一 error 保留为 error，尚有 pending 则不能产生 ready；全部有效才给出具名领域值。
 - `shareResource(observations$, { signal })` 将已有或组合后的 Observation 流提供为稳定只读资源。普通函数、Promise、peek、subscribe、values$、observations$ 与 `useResource(resource)` 共用 RxJS 的一份当前快照，不重复 schema 解析，不新建 Scope。构造不连接；有限来源的最终观察保留至最后消费者退出，之后显式读取再连接。signal 固定该资源的读取寿命，不能通过修改原 options 更换 owner。
 - `mapResource(project)` 只派生有效值，失效和错误继续传播；同步投影错误进入同代 error，后续有效代次可以恢复。

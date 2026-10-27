@@ -45,6 +45,10 @@ export function inventory(scope: Scope, service: {
 
 需要普通函数读取、写后失效或将对象交给其他业务 hook 时，用 `useResourceInstance(implementation, params)` 取得相同实例，再按需 `useResource(instance)`。取得实例不启动读取；不要为 read、Context 和公开 View 各建一个资源。
 
+局部 hook 可以直接 `useResourceInstance(() => ({ value: z.string(), read: () => target }), [target])`；observe/invalidations 与 createResource 使用同一选项和语义。局部反应直接 `useReaction(() => ({ event, result, observe, operator, execute }), dependencies)`，继续显式 start。factory 纯构造选项，dependencies 与 React useMemo 相同，必须列出捕获目标、数据源或业务函数的身份依赖；不要在 factory 中启动查询或动作。相同组件和依赖保留实例，其他组件不凭相同名称共享局部对象；共享合同仍用 implementation/params 入口。
+
+局部对象由当前 Program 的响应式作用域持有，可把整个资源／反应组合从业务 hook 返回给其他模块、普通函数或公开 View。依赖改变后取得新对象，之前捕获的资源与显式反应运行保留原目标，不自动重定向或停止。组件退出只释放组件查询，Program 失败或退出才撤销这些对象的查询和感知；已受理业务保持原 owner。
+
 ## 反应是显式运行
 
 可复用反应采用 `defineReaction({ name, params, event, result })`、`implementReaction`、`bindReaction`；局部采用 `createReaction(scope, options)`，name 可省略，多个局部对象仍各有自己的运行身份。两者都是 `instance.start()` 才执行。
