@@ -1,6 +1,6 @@
 {
   "name": "@hanger-source/dsh-reactive-remote",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "dsh-reactive 的已认证 Gateway 宿主与 Program 服务入口",
   "license": "UNLICENSED",
   "author": "hanger",
@@ -60,10 +60,10 @@
     "zod": "4.4.3"
   },
   "peerDependencies": {
-    "@hanger-source/dsh-reactive": "0.9.0",
+    "@hanger-source/dsh-reactive": "0.9.1",
     "@deepseek-ai/cordis": "4.0.5",
-    "@hanger-source/dsh-reactive-dsh": "0.9.0",
-    "@hanger-source/dsh-reactive-client": "0.9.0"
+    "@hanger-source/dsh-reactive-dsh": "0.9.1",
+    "@hanger-source/dsh-reactive-client": "0.9.1"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-schedule": "0.2.1-rc.3",
