@@ -95,6 +95,7 @@ test('同一View资源贯通本地、远程和hooks，动态重挂及真实断�
     const localItem = local.collection('items').instance('a/b').viewResource('at');
     const instance = remote.collection('items').instance('a/b'), item = instance.viewResource('at');
     assert.equal(instance.viewResource('at'), item);
+    subscriptions.push(item.observations$.subscribe());
     await item.read(t.signal);
     const removed = first(item.observations$, value => value.status === 'error');
     layout.next([]); await removed;

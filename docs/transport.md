@@ -165,6 +165,8 @@ await session.submit({
 
 本地与远程 SDK 的 `viewResource(name)` 返回同一槽的稳定只读资源，提供 `peek()`、`read(signal?)`、`subscribe`、`observations$` 和 `values$`，可以直接交给 `useResource` 或原生 UI 的 `resource`。它借用已有 View 状态，读取和订阅随当前 SDK 句柄退出，不创建第二份缓存或来源连接。动态集合的 `instance(key).viewResource(name)` 使用相同入口：资源固定逻辑地址，模块撤下报告 error，同地址重新挂载继续观察新来源；它不具有 Action 的绑定身份。
 
+远程会话的 View 与 human 查询在首个消费者读取或订阅时才连接 Gateway；open、构造资源、取得 views 值流和 peek 不发起这些查询。相同资源的多个消费者共用一次连接；最后消费者退出撤下当前快照并取消流，随后显式读取从新的原生 baseline 开始。会话 release 等待已退出的查询真正释放。View、人工观察与控制各自需要对应 endpoint 的权限，打开会话不隐式要求未消费的读侧权限；释放查询不停止 Program、Goal、Job 或已经受理的 Action。
+
 `views.slot`、`observeView(name)` 和 `readView(name, options?)` 消费同一个读侧对象。前者发出领域值，后两者保留 pending/ready/error 或等待当前可用值。`readView(name, { signal })` 和资源的 `read(signal)` 只取消本次读取。`view(schema)` 接收普通值流；`resourceView(schema)` 明确接收现有 Observation 流。pending 立即撤销旧 ready，error 不伪装成空业务值，同源后续状态可以恢复。Program 持有 source 连接，外部观察者退订不停止业务连接。
 
 视图来源已经是 `z.output` 领域值；Host 在每次 ready emission 调用同一 schema 的 `z.encode` 一次，remote 读取已编码 wire 状态，客户端用 Program Surface 的 `decodeView` 恢复领域值。视图需要从领域值产生 wire，所以示例中的 `updatedAt` 使用双向 Date codec；裸 `z.date()` 或不可反向执行的 transform 无法承担这一方向。输入的单向 transform 则从始终保留的原始 JSON 产生领域值。增加观察者和重连不重复编码已存在的视图 emission，编码或解码失败进入观察错误。

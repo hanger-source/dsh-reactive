@@ -7,16 +7,19 @@ import { type RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { bytesToBase64 } from '@deepseek-ai/dsh-util-crypto';
 import { BehaviorSubject, defer, firstValueFrom, from, fromEvent, map, mergeMap, raceWith, takeWhile, throwError, type Observable } from 'rxjs';
-import { z, assertProgramDefinition, decodeView, surfaceSlotDefinition, createSurfaceCollectionClient, actionManifestSlot, type ToolActionBinding, type SurfaceCollectionClient, type ActionInput, type ActionInvocation, type ActionContract, type ActionScope, type Invocation, type InvocationActivity, type Observation, type Submission, type Surface, type SurfaceViews, type ViewValue, type OperationContract, type OperationReference, type OperationCommand, type OperationHandle, type OperationLocation, type OperationState, type HumanInputState, type HumanForegroundQuestion, type HumanAnswer, type HumanWaitFrame, type BoundOperation, type OperationFeedbackRead, type OperationFeedbackPayload, type ConversationProgressSnapshot, type ConversationEvent, type RequestHandle, type AssistantProgressFrame, type ProgramContract, type ProgramInput, type ProgramParsedInput, type ProgramSurface, type WorkspaceRegistration, type ConversationCreateOptions, type FileUploadSource, type FileUploadValue, type CancellationOptions } from '@hanger-source/dsh-reactive';
+import { z, assertProgramDefinition, surfaceSlotDefinition, createSurfaceCollectionClient, actionManifestSlot, type ToolActionBinding, type SurfaceCollectionClient, type ActionInput, type ActionInvocation, type ActionContract, type ActionScope, type Invocation, type InvocationActivity, type Observation, type Submission, type Surface, type SurfaceViews, type ViewValue, type OperationContract, type OperationReference, type OperationCommand, type OperationHandle, type OperationLocation, type OperationState, type HumanInputState, type HumanForegroundQuestion, type HumanAnswer, type HumanWaitFrame, type BoundOperation, type OperationFeedbackRead, type OperationFeedbackPayload, type ConversationProgressSnapshot, type ConversationEvent, type RequestHandle, type AssistantProgressFrame, type ProgramContract, type ProgramInput, type ProgramParsedInput, type ProgramSurface, type WorkspaceRegistration, type ConversationCreateOptions, type FileUploadSource, type FileUploadValue, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import { decodeProgramFailure } from './errors.ts';
 import './errors.ts';
 import contribution from '@hanger-source/dsh-reactive-client/remote';
-import type { ProgramActionStart, ProgramCreationReference, ProgramIdentity, ProgramInputReceipt, ProgramInvocationFrame, ProgramViewFrame, ProgramQuestions, ProgramQuestionsFrame, ProgramOperationNotificationResult, ProgramRequestStatus, ProgramWorkspace, ProgramGoalControl, ProgramCancelResult, ProgramSubmission } from './types.ts';
+import type { ProgramActionStart, ProgramCreationReference, ProgramIdentity, ProgramInputReceipt, ProgramInvocationFrame, ProgramQuestions, ProgramOperationNotificationResult, ProgramRequestStatus, ProgramWorkspace, ProgramGoalControl, ProgramCancelResult, ProgramSubmission } from './types.ts';
 import { createAuthenticatedTransport, type AuthenticatedTransportOptions } from './transport.ts';
 import { attachRemoteOperation, locateRemoteOperation, bindRemoteOperation, readRemoteOperationFeedback } from './operations.ts';
 import { ProgramJournal, type ProgramJournalOptions, type ProgramJournalRequest } from './journal.ts';
 import { connectProgress, type RemoteProgress } from './progress.ts';
 import { createActionBindings } from './action-bindings.ts';
+import { remoteView } from './views.ts';
+import { remoteHuman } from './human.ts';
+import type { RemoteResourceConnection } from './resource.ts';
 import { ResourceReader } from '@hanger-source/dsh-reactive';
 import { createHumanQuestionResolver, type HumanQuestionHandle } from '@hanger-source/dsh-reactive';
 
@@ -126,11 +129,6 @@ function creation<T>(reply: RemoteResult<T>): T {
   return result(reply);
 }
 
-interface ViewConnection {
-  readonly reader: ResourceReader<unknown>;
-  close(): Promise<void>;
-}
-
 const sessionConnections = new WeakMap<object, ConnectionHandle>();
 
 /** 核验SDK对象的真实连接归属；身份由构造入口签发，不接受同形对象或URL推断。 */
@@ -190,7 +188,7 @@ export function bindProgramClient<const P extends ProgramContract>(program: P, c
   const session = async (identity: ProgramIdentity): Promise<RemoteProgramSession<P>> => {
     const controller = new AbortController();
     const scopeSignal = AbortSignal.any([lifetime.signal, controller.signal]);
-    const slots = new Map<string, ViewConnection>();
+    const slots = new Map<string, RemoteResourceConnection<unknown>>();
     const assertActive = (): void => { active(); scopeSignal.throwIfAborted(); };
     const actionBindings = createActionBindings(ctx.remote, identity.sessionId, scopeSignal);
     const accessSource = { kind: 'participant', participant: 'human', actorId: identity.actorId, entrypoint: 'operation-query' } as const;
@@ -199,58 +197,18 @@ export function bindProgramClient<const P extends ProgramContract>(program: P, c
     const progressOwner = (): RemoteProgress<P> => {
       assertActive(); return progress ??= connectProgress(ctx, identity.sessionId, program, scopeSignal);
     };
-    const humanState = new BehaviorSubject<Observation<ProgramQuestions>>({ status: 'pending', generation: 0 });
-    const human = new ResourceReader({ observations$: humanState.asObservable(), peek: () => humanState.value }, { signal: scopeSignal });
+    const humanConnection = remoteHuman(ctx, identity.sessionId, scopeSignal);
+    const human = humanConnection.reader;
     const question = createHumanQuestionResolver(human, {
       answerQuestion: (id, answer, options) => handle.answerQuestion(id, answer, options),
       attachWait: (id, options) => handle.attachWait(id, options),
     }, { signal: scopeSignal });
-    const invalidateHuman = (): void => { if (!scopeSignal.aborted) humanState.next({ status: 'pending', generation: humanState.value.generation + 1 }); };
-    const humanStream = new RemoteSnapshotStream(ctx.remote.$stream<ProgramQuestionsFrame>({
-      name: 'program-questions:' + identity.sessionId,
-      open: signal => remote.questions({ sessionId: identity.sessionId }, signal),
-      ended: () => new Error('REACTIVE_REMOTE_QUESTIONS_ENDED'), carrierFailed: invalidateHuman,
-    }), {
-      name: 'program-questions:' + identity.sessionId,
-      isSnapshot: (frame): frame is Extract<ProgramQuestionsFrame, { type: 'baseline' }> => frame.type === 'baseline',
-      replace: frame => humanState.next({ status: 'ready', generation: humanState.value.generation + 1, observedAt: Date.now(), value: frame.value }),
-      update: frame => humanState.next({ status: 'ready', generation: humanState.value.generation + 1, observedAt: Date.now(), value: frame.value }),
-      failed: error => humanState.next({ status: 'error', generation: humanState.value.generation + 1, error }),
-    });
-    const resetHuman = ctx.on('connection/reset', invalidateHuman);
-    humanStream.start();
-    const viewSlot = (name: string): ViewConnection => {
+    const viewSlot = (name: string): RemoteResourceConnection<unknown> => {
       assertActive();
       const existing = slots.get(name);
       if (existing) return existing;
-      const definition = surfaceSlotDefinition(surface, 'views', name);
-      if (!definition) throw new Error('REACTIVE_VIEW_NOT_FOUND');
-      const state = new BehaviorSubject<Observation<unknown>>({ status: 'pending', generation: 0 });
-      const invalidate = (): void => {
-        if (!scopeSignal.aborted) state.next({ status: 'pending', generation: state.value.generation + 1 });
-      };
-      const accept = (frame: ProgramViewFrame): void => {
-        if (scopeSignal.aborted) return;
-        const observed = frame.observation;
-        if (observed.status === 'ready') state.next({ ...observed, value: decodeView(definition, observed.value) });
-        else if (observed.status === 'error') state.next({ ...observed, error: decodeProgramFailure(observed.error) });
-        else state.next(observed);
-      };
-      const stream = new RemoteSnapshotStream(ctx.remote.$stream<ProgramViewFrame>({
-        name: 'program-view:' + name,
-        open: signal => remote.view({ sessionId: identity.sessionId, name }, signal),
-        ended: () => new Error('REACTIVE_REMOTE_VIEW_ENDED'), carrierFailed: invalidate,
-      }), {
-        name: 'program-view:' + name,
-        isSnapshot: (frame): frame is Extract<ProgramViewFrame, { type: 'baseline' }> => frame.type === 'baseline',
-        replace: accept, update: accept,
-        failed: error => { if (!scopeSignal.aborted) state.next({ status: 'error', generation: state.value.generation + 1, error }); },
-      });
-      const reset = ctx.on('connection/reset', invalidate);
-      const reader = new ResourceReader({ observations$: state.asObservable(), peek: () => state.value }, { signal: scopeSignal });
-      const slot: ViewConnection = { reader, async close(): Promise<void> { reset(); await stream.dispose(); state.complete(); } };
+      const slot = remoteView(ctx, identity.sessionId, surface, name, scopeSignal);
       slots.set(name, slot);
-      stream.start();
       return slot;
     };
     for (const name of Object.keys(surface.views)) viewSlot(name);
@@ -435,9 +393,10 @@ export function bindProgramClient<const P extends ProgramContract>(program: P, c
       release(): Promise<void> {
         return released ??= (async (): Promise<void> => {
           controller.abort(new Error('REACTIVE_CONVERSATION_HANDLE_RELEASED'));
-          sessions.delete(handle); resetHuman();
-          await Promise.all([actionBindings.close(), humanStream.dispose(), progress?.close(), ...[...journals].map(journal => journal.dispose()), ...[...slots.values()].map(slot => slot.close())]);
-          humanState.complete();
+          // 释放中的句柄仍归SDK持有；并发dispose必须等待同一批异步查询退役。
+          try {
+            await Promise.all([actionBindings.close(), humanConnection.close(), progress?.close(), ...[...journals].map(journal => journal.dispose()), ...[...slots.values()].map(slot => slot.close())]);
+          } finally { sessions.delete(handle); }
         })();
       },
     };
