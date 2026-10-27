@@ -4,7 +4,7 @@ import type { Scope } from './scope.ts';
 
 const connections = new WeakMap<Scope, WeakMap<Observable<unknown>, Observable<unknown>>>();
 
-/** 作用域立即持有来源连接；消费者只观察，不决定来源启停或错误后的重试。 */
+/** 作用域立即持有来源连接；owner退出后不向迟到消费者重放旧值或错误。 */
 export function connect<T>(scope: Scope, source$: Observable<T>): Observable<T> {
   scope.assertActive();
   let owned = connections.get(scope);
@@ -16,14 +16,21 @@ export function connect<T>(scope: Scope, source$: Observable<T>): Observable<T> 
   const shared$ = connectable(source$.pipe(takeUntil(ended$)), {
     connector: () => new ReplaySubject<T>(1), resetOnDisconnect: false,
   });
+  let current: Observable<T> | undefined = shared$;
+  const observed$ = new Observable<T>(subscriber => {
+    if (scope.disposed) { subscriber.complete(); return; }
+    return current!.subscribe(subscriber);
+  });
   // 先登记共享身份与清理，再建立连接；同步来源也可以安全地重入或释放 owner。
-  owned.set(source$, shared$);
+  owned.set(source$, observed$);
   scope.own(() => {
+    // 先撤掉可重放对象；complete/teardown中的重入也不能重新取得已退出owner的事实。
+    current = undefined;
     try { ended$.next(); ended$.complete(); }
     finally { connection.unsubscribe(); }
   });
   connection.add(shared$.connect());
-  return shared$;
+  return observed$;
 }
 
 export interface SnapshotSource<T> {

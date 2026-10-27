@@ -56,11 +56,18 @@ test('owner 立即连接一次，多消费者与无人观察时共享事实，ow
   assert.deepEqual(late, [3]);
   assert.equal(starts, 1);
   assert.equal(stops, 0);
+  const reentered: number[] = [];
+  shared$.subscribe({ complete: () => { shared$.subscribe(value => reentered.push(value)); } });
   scope.dispose();
   events.next(4);
   assert.equal(stops, 1);
   assert.equal(completed, true);
   assert.deepEqual(late, [3]);
+  assert.deepEqual(reentered, [], 'owner退出的complete中重入订阅也不能取得旧值');
+  const after: number[] = [];
+  assert.equal(shared$.subscribe(value => after.push(value)).closed, true);
+  assert.deepEqual(after, []);
+  assert.equal(starts, 1, '退出后的迟到订阅不能重连来源');
 });
 
 test('共享来源失败保留同一错误，不随新消费者重新执行，不同owner独立连接', () => {
@@ -77,6 +84,11 @@ test('共享来源失败保留同一错误，不随新消费者重新执行，�
   assert.equal(starts, 2);
   assert.deepEqual(errors, [failure, failure, failure]);
   first.dispose(); second.dispose();
+  let ended = false;
+  shared$.subscribe({ next() { assert.fail('已退出owner不能交付旧值'); },
+    error() { assert.fail('已退出owner不能重放旧错误'); }, complete: () => { ended = true; } });
+  assert.equal(ended, true);
+  assert.equal(starts, 2);
 });
 
 test('key切换和失效立即撤销旧读取并发布pending，失败是当前代次状态且后续通知可恢复', async () => {

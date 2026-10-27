@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import { access, mkdir, mkdtemp, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createElement as h, Fragment } from 'react';
-import { defer, finalize, firstValueFrom, of, Subject } from 'rxjs';
+import { createElement as h, Fragment, useLayoutEffect } from 'react';
+import { Observable, defer, finalize, firstValueFrom, of, Subject } from 'rxjs';
 import { Context as NativeContext } from '@deepseek-ai/cordis';
 import SessionStore, { SessionId, pluginRecordOf } from '@deepseek-ai/dsh-session';
 import * as persistence from '@deepseek-ai/dsh-session-persistence-jsonl';
@@ -15,9 +15,65 @@ import * as storageDomain from '@deepseek-ai/dsh-storage-domain';
 import WorkspaceRegistry, { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { Context, Expose, useAction, useResource } from '@hanger-source/dsh-reactive/program';
-import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, observeResource, resourceView, z, type ProgramProps } from '@hanger-source/dsh-reactive';
+import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, observeResource, resourceView, z, type ProgramProps, type ProgramWorkspace } from '@hanger-source/dsh-reactive';
 import { CreationIncompleteError, mountApplication } from '@hanger-source/dsh-reactive-dsh';
 import { boot, text } from './native-support.ts';
+
+test('工作区共享流跨会话保活，宿主退出后活动与有限来源均不再重放旧事实', { timeout: 20_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-workspace-sharing-'));
+  const captured = new Map<string, ProgramWorkspace>();
+  const program = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+  const definition = defineApplication({ name: 'workspace-sharing', admit: async () => {}, environments: [defineEnvironment({
+    id: 'work', instructions: '只观察共享来源', program: implementProgram(program, { Component({ conversation, workspace }) {
+      useLayoutEffect(() => { captured.set(conversation.identity.sessionId, workspace); }, [conversation, workspace]);
+      return null;
+    } }),
+  })] });
+  let models = 0, starts = 0, stops = 0;
+  const app = await boot(root, definition, async function* () { models++; yield* text('unused'); });
+  const changes = new Subject<number>();
+  const source = new Observable<number>(subscriber => {
+    starts++;
+    const connection = changes.subscribe(subscriber);
+    return () => { stops++; connection.unsubscribe(); };
+  });
+  const sessions: Array<{ release(): void }> = [];
+  try {
+    const one = await app.host.create('work', { workspaceId: app.workspace.workspaceId }); sessions.push(one);
+    const two = await app.host.create('work', { workspaceId: app.workspace.workspaceId }); sessions.push(two);
+    const directory = join(root, 'other-workspace'); await mkdir(directory);
+    const otherWorkspace = await app.host.createWorkspace({ directory });
+    const other = await app.host.create('work', { workspaceId: otherWorkspace.workspaceId }); sessions.push(other);
+    const first = captured.get(one.id)!, sibling = captured.get(two.id)!, isolated = captured.get(other.id)!;
+    assert.equal(first, sibling); assert.notEqual(first, isolated);
+    const shared = first.share(source), foreign = isolated.share(source);
+    assert.equal(sibling.share(source), shared); assert.equal(starts, 2);
+    changes.next(1);
+    const values: number[] = [];
+    const consumer = shared.subscribe(value => values.push(value));
+    assert.deepEqual(values, [1]); consumer.unsubscribe();
+    await app.host.close(one.id); await app.host.close(two.id);
+    changes.next(2);
+    assert.equal(await firstValueFrom(shared), 2);
+    assert.equal(await firstValueFrom(foreign), 2);
+    assert.equal(stops, 0, '会话与最后消费者退出不结束工作区持有的来源');
+    const final = first.share(of('settled-workspace-fact'));
+    assert.equal(await firstValueFrom(final), 'settled-workspace-fact');
+    assert.equal(await firstValueFrom(final), 'settled-workspace-fact', '有限来源的终态在owner活跃时仍可读取');
+    let completed = false;
+    shared.subscribe({ complete: () => { completed = true; } });
+    await app.dispose();
+    assert.equal(stops, 2); assert.equal(completed, true);
+    const late: Array<number | string> = [];
+    assert.equal(shared.subscribe(value => late.push(value)).closed, true);
+    assert.equal(foreign.subscribe(value => late.push(value)).closed, true);
+    assert.equal(final.subscribe(value => late.push(value)).closed, true);
+    assert.deepEqual(late, []);
+    assert.equal(starts, 2);
+    assert.throws(() => first.share(source), /REACTIVE_SCOPE_DISPOSED/);
+    assert.equal(models, 0); assert.deepEqual(app.errors, []);
+  } finally { changes.complete(); for (const session of sessions) session.release(); await app.dispose(); }
+});
 
 test('真实存储拒写后沿原创建引用完成登记，原生工作区移除成员后重启与创建恢复均不能重新授予身份', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-workspace-'));

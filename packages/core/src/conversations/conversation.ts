@@ -20,6 +20,7 @@ export interface WorkspaceContext {
   readonly directory: string;
   /** @internal 工作区持有共享来源，独立于会话观察者。 */
   readonly scope: Scope;
+  /** 立即复用本工作区的来源连接；owner退出后旧流只完成，不再重放旧快照。 */
   share<T>(source$: Observable<T>): Observable<T>;
 }
 export interface ConversationIdentity {
