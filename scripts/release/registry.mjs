@@ -52,6 +52,21 @@ function checkTags(tags, manifest) {
     throw new Error('RELEASE_PRERELEASE_STABLE_TAG: registry 仍将候选放入稳定 tag，未满足渠道约束。');
   }
 }
+export async function publishedLatest(item, manifest, previous) {
+  const deadline = Date.now() + 15 * 60_000;
+  let announced = false;
+  for (;;) {
+    const tags = await distTags(item.name, manifest.registry);
+    if (tags.latest === manifest.version) return tags;
+    if (tags.latest !== previous) throw new Error('RELEASE_UNEXPECTED_LATEST_TAG_CHANGE: ' + item.name);
+    if (Date.now() >= deadline) throw new Error('RELEASE_LATEST_TAG_NOT_CONFIRMED: ' + item.name);
+    if (!announced) {
+      console.log('等待 npm 已受理的 latest 标签公开可见：' + item.name + '@' + manifest.version);
+      announced = true;
+    }
+    await delay(5000);
+  }
+}
 
 export async function verify(path, source) {
   const artifact = await artifactManifest(path), { manifest, directory } = artifact;
@@ -164,8 +179,12 @@ export async function publish(options) {
   for (const item of manifest.artifacts) await confirm(item, true);
   await verify(artifact.file, 'registry');
   if (options['also-latest']) {
-    for (const item of manifest.artifacts) await run('npm', ['dist-tag', 'add', item.name + '@' + item.version, 'latest', '--registry', manifest.registry]);
-    for (const item of manifest.artifacts) if ((await distTags(item.name, manifest.registry)).latest !== manifest.version) throw new Error('RELEASE_LATEST_TAG_NOT_CONFIRMED');
+    const previous = new Map();
+    for (const item of manifest.artifacts) {
+      previous.set(item.name, (await distTags(item.name, manifest.registry)).latest);
+      await run('npm', ['dist-tag', 'add', item.name + '@' + item.version, 'latest', '--registry', manifest.registry]);
+    }
+    for (const item of manifest.artifacts) await publishedLatest(item, manifest, previous.get(item.name));
   }
   await clean();
   state.completed = true;
