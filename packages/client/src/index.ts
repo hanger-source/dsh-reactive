@@ -2,7 +2,7 @@ import { Context } from '@deepseek-ai/cordis';
 import * as Registry from '@deepseek-ai/dsh-typert-registry/client';
 import * as Gateway from '@deepseek-ai/dsh-api-gateway/client';
 import { RemoteSnapshotStream, type ClientRemote } from '@deepseek-ai/dsh-api-gateway/client';
-import { installConnection, type ConnectionInstallOptions } from '@deepseek-ai/dsh-client-connection/client';
+import { installConnection, type ConnectionHandle, type ConnectionInstallOptions } from '@deepseek-ai/dsh-client-connection/client';
 import { type RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { bytesToBase64 } from '@deepseek-ai/dsh-util-crypto';
@@ -128,29 +128,59 @@ interface ViewConnection {
   close(): Promise<void>;
 }
 
+const sessionConnections = new WeakMap<object, ConnectionHandle>();
+
+/** 核验SDK对象的真实连接归属；身份由构造入口签发，不接受同形对象或URL推断。 */
+export function assertProgramSessionConnection<P extends ProgramContract>(session: RemoteProgramSession<P>, connection: ConnectionHandle | undefined): void {
+  if (sessionConnections.get(session) !== connection || connection === undefined)
+    throw new Error('REACTIVE_REMOTE_SESSION_CONNECTION_MISMATCH');
+}
+
 /** 同一纯 Program 合同声明输入与公开出口；构造客户端不携带宿主组件或业务执行。 */
 export async function createProgramClient<const P extends ProgramContract>(program: P, options: ProgramClientOptions): Promise<ProgramClient<P>> {
   assertProgramDefinition(program);
-  type S = ProgramSurface<P>;
-  const surface: S = program.surface;
   const ctx = new Context();
-  const lifetime = new AbortController();
-  const sessions = new Set<RemoteProgramSession<P>>();
-  const observations = new Set<AbortController>();
   try {
     await ctx.plugin(Registry);
     installConnection(ctx, { interactions: 'answer', transport: createAuthenticatedTransport(options), recovery: options.recovery });
     await ctx.plugin(Gateway);
     await ctx.remote.$mount(contribution);
+    const client = bindProgramClient(program, ctx);
+    return { ...client, async dispose() { await client.dispose(); await ctx.fiber.dispose(); } };
   } catch (error) { await ctx.fiber.dispose(); throw error; }
-  const remote = ctx.remote.reactivePrograms;
-  const active = (): void => lifetime.signal.throwIfAborted();
+}
 
-  const session = (identity: ProgramIdentity): RemoteProgramSession<P> => {
+/** 借用已安装Connection、Gateway和Program远程合同的客户端上下文；只释放本SDK的使用。 */
+export function bindProgramClient<const P extends ProgramContract>(program: P, ctx: Context): ProgramClient<P> {
+  assertProgramDefinition(program);
+  type S = ProgramSurface<P>;
+  const surface: S = program.surface;
+  const connection = ctx.get('connection');
+  const gateway = ctx.get('remote');
+  if (!connection || !gateway?.reactivePrograms) throw new Error('REACTIVE_PROGRAM_CLIENT_CONTEXT_REQUIRED');
+  if (connection.interactions !== 'answer') throw new Error('REACTIVE_PROGRAM_CLIENT_INTERACTIONS_REQUIRED');
+  const lifetime = new AbortController();
+  const sessions = new Set<RemoteProgramSession<P>>();
+  const observations = new Set<AbortController>();
+  let closing: Promise<void> | undefined;
+  const close = (): Promise<void> => {
+    lifetime.abort(new Error('REACTIVE_REMOTE_CLIENT_DISPOSED'));
+    for (const observation of observations) observation.abort();
+    return closing ??= Promise.all([...sessions].map(handle => handle.release())).then(() => {});
+  };
+  const releaseContext = ctx.effect(() => close, 'reactive Program client');
+  const remote = gateway.reactivePrograms;
+  const active = (): void => {
+    lifetime.signal.throwIfAborted();
+    if (ctx.get('connection') !== connection) throw new Error('REACTIVE_REMOTE_CLIENT_CONNECTION_REPLACED');
+  };
+  active();
+
+  const session = async (identity: ProgramIdentity): Promise<RemoteProgramSession<P>> => {
     const controller = new AbortController();
     const scopeSignal = AbortSignal.any([lifetime.signal, controller.signal]);
     const slots = new Map<string, ViewConnection>();
-    const assertActive = (): void => scopeSignal.throwIfAborted();
+    const assertActive = (): void => { active(); scopeSignal.throwIfAborted(); };
     const actionBindings = createActionBindings(ctx.remote, identity.sessionId, scopeSignal);
     const accessSource = { kind: 'participant', participant: 'human', actorId: identity.actorId, entrypoint: 'operation-query' } as const;
     const journals = new Set<ProgramJournal>();
@@ -395,7 +425,10 @@ export async function createProgramClient<const P extends ProgramContract>(progr
         })();
       },
     };
-    sessions.add(handle); return handle;
+    sessionConnections.set(handle, connection);
+    sessions.add(handle);
+    try { assertActive(); return handle; }
+    catch (error) { await handle.release(); throw error; }
   };
   return {
     async createWorkspace(registration) {
@@ -418,11 +451,7 @@ export async function createProgramClient<const P extends ProgramContract>(progr
       active(); const identity = creation(await remote.resume({ sessionId })); active(); return session(identity);
     },
     async describe() { active(); return result(await remote.describe()); },
-    async dispose(): Promise<void> {
-      lifetime.abort(new Error('REACTIVE_REMOTE_CLIENT_DISPOSED'));
-      for (const observation of observations) observation.abort();
-      await Promise.all([...sessions].map(handle => handle.release())); await ctx.fiber.dispose();
-    },
+    dispose: () => close().finally(() => releaseContext()),
   };
 }
 

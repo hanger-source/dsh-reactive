@@ -57,7 +57,20 @@ intent 描述 question/goal/followup，不能代替 delivery；goal 必须有实
 
 安装 `@hanger-source/dsh-reactive-native-ui` 只用于 dsh 原生客户端扩展，不加载后台 renderer。原生 SlotCore、UiSession、UiConversation 仍拥有 slots、节点与会话状态，应用提供视觉组件。
 
-`bindNativeSession(Program, exactSessionBinding, remoteSession)` 同时核真实 Program 对象、SDK definition 和 exact native 代际。SDK必须来自同一 Program；不能只按相同 sessionId 或当前页面猜归属。
+`bindNativeSession(Program, exactSessionBinding, remoteSession)` 同时核真实 Program 对象、SDK definition、实际 Connection 与 exact native 代际。原生扩展在其客户端 Context 使用 `bindProgramClient(Program, ctx)`，再通过该 SDK 的 open 取得 Session。Context 的装配 owner 负责登记一次 Program 远程贡献：
+
+```ts
+import { bindProgramClient } from '@hanger-source/dsh-reactive-client';
+import programRemotes from '@hanger-source/dsh-reactive-client/remote';
+
+// 原生客户端装配阶段，ctx 已安装 Connection 与 Gateway。
+await ctx.remote.$mount(programRemotes);
+const client = bindProgramClient(InventoryProgram, ctx);
+const sdk = await client.open(exactSessionBinding.sessionId);
+const native = bindNativeSession(InventoryProgram, exactSessionBinding, sdk);
+```
+
+该 Context 必须允许 `interactions:'answer'`。多个 SDK 可以借用同一装配；SDK dispose 只退出自己的会话和观察，Context 退出关闭全部借用 SDK。独立 createProgramClient 拥有另一份 Connection，适用于独立客户端；原生 UI 按实际连接归属绑定，不能用相同 URL、sessionId 或复制出来的同形句柄代替。
 
 - `nativeSource` 直接接已有 peek/subscribe；`observeNativeResource` 保 pending/error；NativeSession.resource/operation/invocation/view 将同一个对象交给原生观察。
 - `nativeHooks`、`nativeSessionInject` 复用原生 InjectFace；注入的 `program` 不覆盖原生 props.session。`provideNativeSources` 交原 UiSession.provide 持有注册/更新/退出，不再建 registry。

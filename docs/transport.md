@@ -110,6 +110,10 @@ const receipt = await invocation.result;
 
 Node 使用同一入口，提供绝对 HTTP(S) baseUrl，并按应用认证方式提供 `fetch` 和 `createWebSocket`。浏览器默认使用同源 fetch/WebSocket；Cookie 或其他认证载体由应用配置，不能把只有 unary 的请求头认证误当成 socket 认证。
 
+`createProgramClient` 拥有独立的客户端 Context、Connection 和远程合同，dispose 释放这些装配。已存在 dsh 客户端 Context 的原生扩展使用 `bindProgramClient(program, ctx)`：由应用装配 owner 在该 Context 登记一次 `@hanger-source/dsh-reactive-client/remote` 贡献，SDK 借入现有 Connection 与 `reactivePrograms` 服务。Context 必须具备 `interactions:'answer'`；缺少装配时明确失败。
+
+同一 Context 可为多个 Program 或多个消费者建立独立 SDK。SDK dispose 释放自己的 Session、观察与等待，保留公共 Context 和远程合同；Context 退出会同时关闭其借用 SDK。`bindNativeSession` 核验 SDK 原对象所使用的实际 Connection、Program 与原生 Session generation。原生扩展取得的 SDK 应来自该客户端 Context 的 bindProgramClient；相同会话 ID、相同合同或相同服务器地址不能替代这份连接归属。
+
 `createProgramClient` 校验 Program 确由当前 core 实例的 `defineProgram` 创建，拒绝用普通对象冒充合同。同进程的本地 typed 句柄可以核对同一个定义对象；跨进程对象身份不能互相证明。客户端声明自己预期的合同，应用负责把目标 environment/session 路由到对应合同。SDK 不从远程环境自动推断 schema，也不证明两个进程的合同等价；解析失败会明确报错，解析成功只说明该值满足本地所选 schema。合同选择不授予 endpoint、actor 或业务权限。
 
 `session.submit` 的范围类型是 `ProgramInput<typeof orderProgram>`，即 `z.input`。上述合同提交 `asOf` 字符串：

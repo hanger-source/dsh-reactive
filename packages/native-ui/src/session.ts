@@ -7,6 +7,7 @@ import { assertProgramDefinition, type HumanQuestion,
   shareResource, mapResource, type ToolActionBinding } from '@hanger-source/dsh-reactive';
 import { Scope } from '@hanger-source/dsh-reactive/reactivity';
 import type { RemoteProgramSession } from '@hanger-source/dsh-reactive-client';
+import { assertProgramSessionConnection } from '@hanger-source/dsh-reactive-client';
 import type { SessionBinding } from '@deepseek-ai/dsh-api-session-controller/client';
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots';
 import { defer, fromEvent, takeUntil, type Observable } from 'rxjs';
@@ -67,6 +68,7 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
       throw new Error('REACTIVE_NATIVE_SESSION_GENERATION_INACTIVE');
     if (this.sdk.id !== this.id || this.sdk.definition !== this.definition)
       throw new Error('REACTIVE_NATIVE_SESSION_CONTRACT_MISMATCH');
+    assertProgramSessionConnection(this.sdk, this.native.ctx.get('connection'));
   }
 
   private options(options: CancellationOptions = {}): CancellationOptions {
