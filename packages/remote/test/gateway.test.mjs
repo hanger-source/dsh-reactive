@@ -324,6 +324,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     } },
   });
   const clients = [];
+  const questionSockets = [];
   let loseSubmitAck = false;
   const connect = async actor => {
     const client = await createProgramClient(program, { baseUrl: gateway.url,
@@ -334,7 +335,18 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
         }
         return response;
       },
-      createWebSocket: url => new WebSocket(url, { headers: { authorization: 'Bearer ' + actor } }),
+      createWebSocket: url => {
+        const socket = new WebSocket(url, { headers: { authorization: 'Bearer ' + actor } });
+        const tracked = { actor, socket, endpoint: undefined };
+        questionSockets.push(tracked);
+        const send = socket.send.bind(socket);
+        socket.send = (data, ...rest) => {
+          const message = JSON.parse(String(data));
+          if (message.type === 'open') tracked.endpoint = message.endpoint;
+          return send(data, ...rest);
+        };
+        return socket;
+      },
     }); clients.push(client); return client;
   };
   try {
@@ -373,6 +385,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
       }
     } finally { creationReleased.resolve(); removeCreationGate(); created = await completing; }
     assert.equal(created.id, reference.sessionId); assert.equal(requests, 0);
+    console.info('gateway.human.creation.ready', { sessionId: created.id });
     assert.equal(created.identity.actorId, 'alice');
     assert.equal((await created.readView('current')).toISOString(), '2026-10-26T00:00:00.000Z');
     const stoppedSubmit = new AbortController(), stoppedReason = new Error('SUBMIT_NOT_ACCEPTED');
@@ -484,6 +497,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     await client.dispose(); await disconnected;
     finish.resolve();
     const reconnected = await connect('alice'), session = await reconnected.open(sessionId);
+    console.info('gateway.human.reconnected', { sessionId });
     const original = await session.invocation('check', id);
     const receipt = await original.result;
     assert.equal(receipt.at.toISOString(), '2026-10-26T00:00:07.000Z');
@@ -501,9 +515,12 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     assert.equal(executions, 1);
     finiteQuery = true;
     const finite = session.attachOperation(operation, { id: 'op-7' });
-    const finiteStates = [], ended = Promise.withResolvers();
-    const finiteSubscription = finite.observations$.subscribe({ next: value => finiteStates.push(value.status), complete: ended.resolve, error: ended.reject });
-    await ended.promise; finiteSubscription.unsubscribe();
+    const finiteStates = [];
+    const finiteSubscription = finite.observations$.subscribe(value => finiteStates.push(value.status));
+    // 业务完成由合同的 settled 判定；有限查询结束后，正在使用的读侧仍可读取最终事实。
+    assert.equal((await finite.settled()).at.toISOString(), '2026-10-26T00:00:08.000Z');
+    assert.equal((await finite.state.read()).phase, 'done');
+    finiteSubscription.unsubscribe();
     assert.equal(finiteStates.at(-1), 'ready'); assert.equal(queries, 2); assert.equal(executions, 1);
     // 同一个公开业务错误经过不同读取入口；比较公开字段，不依赖原生 Error 原型跨进程相等。
     const localFailureHandle = await runtime.application.open(sessionId, program);
@@ -562,6 +579,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     });
     await session.submit({ requestId: 'ask-once', content: '确认处理结果', delivery: 'followup', intent: 'question', scope: { merchantId: 'merchant-7' } });
     const [question] = await foreground;
+    console.info('gateway.human.foreground', { callId: question.callId });
     assert.deepEqual({ sessionId: question.origin.sessionId, callId: question.origin.callId, rootCallId: question.origin.rootCallId,
       parentCallId: question.origin.parentCallId, name: question.origin.name },
     { sessionId, callId: 'remote-question', rootCallId: 'remote-question', parentCallId: null, name: 'ask_user_question' });
@@ -569,15 +587,23 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
       actorId: input.actorId, scope: input.scope })),
     [{ sourceSessionId: sessionId, requestId: 'ask-once', actorId: 'alice', scope: { merchantId: 'merchant-7' } }]);
     assert.equal(Object.hasOwn(question.origin, 'goal'), false);
-    await assert.rejects(reader.answerQuestion(question.callId, { answers: [{ id: 'allow', selected: ['是'] }] }), error => error.code === 'remote-access/denied');
+    const observedQuestion = await reader.question(question.callId);
+    console.info('gateway.human.reader.bound', { callId: question.callId });
+    assert.deepEqual((await observedQuestion.state.read()).foreground.origin, question.origin);
+    await assert.rejects(observedQuestion.answer({ answers: [{ id: 'allow', selected: ['是'] }] }), error => error.code === 'remote-access/denied');
+    const boundQuestion = await session.question(question.callId);
+    console.info('gateway.human.responder.bound', { callId: question.callId });
+    assert.equal(await session.question(question.callId), boundQuestion);
     await assert.rejects(session.notifyOperation('ungranted-publisher'), error => error.code === 'remote-access/denied');
     const claimAbort = new AbortController();
-    const claim = session.attachWait(question.callId, { signal: claimAbort.signal })[Symbol.asyncIterator]();
+    const claim = boundQuestion.attachWait({ signal: claimAbort.signal })[Symbol.asyncIterator]();
     assert.ok((await claim.next()).value.remainingMs > 0);
     const settledQuestion = next(session.questions$, state => state.settled.some(item => item.callId === question.callId), 'settled question');
-    assert.equal(await session.answerQuestion(question.callId, { answers: [{ id: 'allow', selected: ['是'] }] }), true);
+    assert.equal(await boundQuestion.answer({ answers: [{ id: 'allow', selected: ['是'] }] }), true);
+    console.info('gateway.human.answer.accepted', { callId: question.callId });
     const settled = await settledQuestion;
     assert.deepEqual(settled.settled.find(item => item.callId === question.callId).origin, question.origin);
+    assert.deepEqual((await boundQuestion.state.read()).settled?.origin, question.origin);
     assert.ok(responderAdmissions.some(admission => admission.answer === null));
     assert.ok(responderAdmissions.some(admission => admission.answer !== null));
     for (const admission of responderAdmissions) {
@@ -605,8 +631,9 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     assert.deepEqual(preferenceCalls[1].source, { kind: 'tool', callId: 'remote-delivery-preferences',
       rootCallId: 'remote-delivery-preferences', parentCallId: null });
     assert.deepEqual(deliveries, [], 'SDK 尚未回答时，业务不能记录交付方式');
+    const deliveryHandle = await session.question(deliveryQuestion.callId);
     const deliveryClaimAbort = new AbortController();
-    const deliveryClaim = session.attachWait(deliveryQuestion.callId, { signal: deliveryClaimAbort.signal })[Symbol.asyncIterator]();
+    const deliveryClaim = deliveryHandle.attachWait({ signal: deliveryClaimAbort.signal })[Symbol.asyncIterator]();
     assert.ok((await deliveryClaim.next()).value.remainingMs > 0);
     assert.deepEqual(deliveries, [], '持有前台 claim 不是业务答复');
     const deliveryChildSettled = next(deliveryRequest.events$, event => event.kind === 'tool.settled'
@@ -615,7 +642,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
       && event.callId === 'remote-delivery-preferences', 'Action returned');
     const preferenceAdmissions = responderAdmissions.length;
     try {
-      assert.equal(await session.answerQuestion(deliveryQuestion.callId, preferenceAnswer), true);
+      assert.equal(await deliveryHandle.answer(preferenceAnswer), true);
       const returned = await deliveryReturned, child = await deliveryChildSettled;
       assert.equal(returned.outcome, 'returned'); assert.deepEqual(returned.result, { status: 'recorded', delivery: '站内' });
       assert.equal(child.outcome, 'returned'); assert.equal(child.parentCallId, returned.callId);
@@ -630,6 +657,24 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     }
     assert.deepEqual(await firstValueFrom(session.foregroundQuestions$), []);
     assert.equal(requests, 4);
+    const questionObservation = boundQuestion.state.observations$.subscribe();
+    try {
+      await next(boundQuestion.state.observations$, value => value.status === 'ready', '断线前问题基线');
+      const questionDisconnected = next(boundQuestion.state.observations$, value => value.status === 'pending', '问题连接失效');
+      const humanSocket = questionSockets.findLast(item => item.actor === 'alice'
+        && item.endpoint === 'reactivePrograms/questions' && item.socket.readyState === WebSocket.OPEN);
+      assert.ok(humanSocket);
+      humanSocket.socket.terminate();
+      await questionDisconnected;
+      const readAbort = new AbortController(), readReason = new Error('CANCEL_ONLY_QUESTION_READ');
+      const interrupted = boundQuestion.state.read(readAbort.signal);
+      const deniedRead = assert.rejects(interrupted, error => error === readReason);
+      const recovered = boundQuestion.state.read();
+      readAbort.abort(readReason); await deniedRead;
+      assert.deepEqual((await recovered).settled?.origin, question.origin, '单次读取取消不停止原生连接恢复');
+      assert.equal(await session.question(question.callId), boundQuestion, '重连仍复用原问题身份');
+      console.info('gateway.human.connection.recovered', { callId: question.callId });
+    } finally { questionObservation.unsubscribe(); }
     const submission = { requestId: 'ack-lost', content: '继续独立核验', delivery: 'followup', intent: 'question', scope: null };
     loseSubmitAck = true;
     await assert.rejects(session.submit(submission), error => error instanceof SubmissionAdmissionUnknownError
@@ -655,6 +700,10 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     await blocking.promise;
     assert.deepEqual(await resumed.cancel(), { canceled: true });
     blocking = undefined;
+    await session.release();
+    assert.throws(() => boundQuestion.state.read(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
+    assert.throws(() => boundQuestion.answer({ answers: [{ id: 'allow', selected: ['是'] }] }), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
+    await assert.rejects(boundQuestion.attachWait()[Symbol.asyncIterator]().next(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
     assert.deepEqual(runtimeErrors, []); assert.deepEqual(carrierErrors, []);
   } finally {
     finish.resolve(); editFinish.resolve(); await Promise.all(clients.map(client => client.dispose()));

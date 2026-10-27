@@ -109,6 +109,8 @@ Offer.follow 接合原调用、原工作、命令、正式引用和等待。原�
 
 HumanInput 把响应者准入与当前程序一起组合。实际提出问题、前台等待、客户端 claim、超时继续与迟到回答沿原生服务；持久问题和瞬态前台请求对外分别观察。输入提交权限、人工答复权限及正式业务批准分别核验。
 
+Program conversation 的 human 资源组合这两类原事实，本地 SDK 借用同一对象的读侧，Gateway 将共同快照传给远程 SDK，不让消费者再拼接两个观察。question(callId) 绑定固定原会话和已知问题，state 只投影 active、foreground、settled，回答与前台 claim 仍由原入口按真实响应者重新准入，不维护另一套问答阶段。服务端口在运行时也拒绝人工答复与 Goal 控制。可选原生 UI 借用这份资源，完整传递 pending/error，其问题控制仍核验原 UI generation。
+
 真实工具调用中的 Action 可通过 askHuman 主动请求补充信息，框架将它作为实际 programmatic 子调用接回标准工具与问答服务。调用体拥有这次等待，退出时取消并等待未完成提问；超时返回 pending 后，晚答继续属于原对话，不恢复原函数栈。普通 SDK 参与者不因此取得原生工具或 Goal 身份。
 
 ## Surface 与跨进程边界

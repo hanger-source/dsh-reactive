@@ -10,6 +10,8 @@ export { createRequestHandle, type ConversationProgressSnapshot, type RequestHan
 export { type AnyEnvironment, type EnvironmentAt, type EnvironmentOperations } from './environments/definition.ts';
 export { assertOperationFollowSupported, attachOperation, bindOperation, encodeOperationFeedback, implementOperation, isOperationOwner, locateOperation, operationBindingCommand, operationBindingOwner, operationFollowLinkSchema, readOperationFeedback, registerOperationFollow, settledOperation, type BoundOperation, type OperationAccessContext, type OperationBindingReference, type OperationCommand, type OperationContract, type OperationFeedbackNode, type OperationFeedbackPayload, type OperationFeedbackRead, type OperationFollowLink, type OperationHandle, type OperationLocation, type OperationNotificationResult, type OperationOwner, type OperationOwnerReference, type OperationReference, type OperationState } from './operations/contract.ts';
 export { humanAnswerSchema, type HumanAnswer, type HumanAskOptions, type HumanAskResult, type HumanForegroundQuestion, type HumanInputState, type HumanPrompt, type HumanQuestion, type HumanQuestionOrigin, type HumanResponderOptions, type HumanWaitFrame } from './participation/contract.ts';
+export { createHumanQuestionResolver, type HumanQuestionHandle, type HumanQuestionResolver } from './participation/questions.ts';
+export type { HumanSnapshot } from './participation/contract.ts';
 export { type HumanInputDeclaration, type SkillDeclaration } from './program/declarations.ts';
 export { type ProgramContract, type ProgramImplementation, type ProgramInput, type ProgramParsedInput } from './program/definition.ts';
 export { ProgramInstance, type BoundFollow, type BoundOffer } from './program/instance.ts';

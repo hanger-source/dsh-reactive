@@ -2,13 +2,21 @@ import { assertProgramDefinition, type HumanQuestion,
   type HumanForegroundQuestion, type HumanAnswer, type ProgramContract, type ProgramSurface,
   type OperationContract, type OperationHandle, type OperationState, type ResourceReadable,
   type CancellationOptions, type Invocation, type InvocationActivity, type Json,
-  type ViewValue, type Observation, type HumanInputState, type ToolActionBinding } from '@hanger-source/dsh-reactive';
+  type ViewValue, type Observation, type HumanInputState, type HumanSnapshot, type HumanQuestionSnapshot, type HumanWaitFrame,
+  shareResource, mapResource, type ToolActionBinding } from '@hanger-source/dsh-reactive';
 import { Scope } from '@hanger-source/dsh-reactive/reactivity';
 import type { RemoteProgramSession } from '@hanger-source/dsh-reactive-client';
 import type { SessionBinding } from '@deepseek-ai/dsh-api-session-controller/client';
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots';
 import { defer, fromEvent, takeUntil, type Observable } from 'rxjs';
 import { nativeSource, observeNativeSource, type NativeReadable } from './sources.ts';
+
+export interface NativeHumanQuestion {
+  readonly callId: string;
+  readonly state: HostObservable<Observation<HumanQuestionSnapshot>>;
+  answer(answer: HumanAnswer, options?: CancellationOptions): Promise<boolean>;
+  attachWait(options?: CancellationOptions): AsyncIterable<HumanWaitFrame>;
+}
 
 /**
  * 一个明确 Program 与真实 Client Session generation 的借用绑定。
@@ -19,7 +27,9 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
   readonly id: string;
   readonly questions: HostObservable<Observation<HumanInputState>>;
   readonly foregroundQuestions: HostObservable<Observation<readonly HumanForegroundQuestion[]>>;
+  readonly human: HostObservable<Observation<HumanSnapshot>>;
   readonly actionManifest$: Observable<readonly ToolActionBinding[]>;
+  #questions = new Map<string, NativeHumanQuestion>();
 
   /** @internal 通过 bindNativeSession 建立并核验关联。 */
   constructor(readonly definition: P, readonly native: SessionBinding, private readonly sdk: RemoteProgramSession<P>) {
@@ -28,8 +38,11 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
     this.assertActive();
     const release = native.ctx.effect(() => () => this.dispose(), 'reactive native Session binding');
     this.scope.own(() => release());
-    this.questions = this.guard(observeNativeSource(this.scope, sdk.questions$));
-    this.foregroundQuestions = this.guard(observeNativeSource(this.scope, sdk.foregroundQuestions$));
+    this.scope.own(() => this.#questions.clear());
+    this.human = this.resource(sdk.human);
+    const options = { signal: this.scope.signal, onObserverError: (error: unknown) => this.scope.observerError(error) };
+    this.questions = this.resource(shareResource(sdk.human.observations$.pipe(mapResource(snapshot => snapshot.questions)), options));
+    this.foregroundQuestions = this.resource(shareResource(sdk.human.observations$.pipe(mapResource(snapshot => snapshot.foreground)), options));
     this.actionManifest$ = defer(() => {
       this.assertActive();
       return sdk.actionManifest$;
@@ -73,6 +86,21 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
   }
 
   resource<T>(resource: ResourceReadable<T>): HostObservable<Observation<T>> { return this.source(resource); }
+
+  async question(callId: string, options: CancellationOptions = {}): Promise<NativeHumanQuestion> {
+    const question = await this.sdk.question(callId, this.options(options));
+    this.assertActive();
+    let bound = this.#questions.get(question.callId);
+    if (!bound) {
+      const controlOptions = (options?: CancellationOptions) => this.options(options);
+      bound = Object.freeze({ callId: question.callId, state: this.resource(question.state),
+        answer: (answer: HumanAnswer, options?: CancellationOptions) => question.answer(answer, controlOptions(options)),
+        async *attachWait(options?: CancellationOptions) { yield* question.attachWait(controlOptions(options)); },
+      });
+      this.#questions.set(question.callId, bound);
+    }
+    return bound;
+  }
 
   view<K extends keyof ProgramSurface<P>['views'] & string>(name: K): HostObservable<Observation<ViewValue<ProgramSurface<P>['views'][K]>>> {
     this.assertActive();

@@ -8,7 +8,7 @@ import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import { decodeProgramFailure } from '@hanger-source/dsh-reactive-client/errors';
 import { createProgramFailureMapper } from './host-errors.ts';
 import { z, encodeOperationFeedback, type AnyEnvironment, type InputReference, type ConversationEvent, type HumanQuestionOrigin } from '@hanger-source/dsh-reactive';
-import { combineLatest, endWith, firstValueFrom, fromEvent, ignoreElements, merge, take, type Observable, type Subscription } from 'rxjs';
+import { endWith, firstValueFrom, fromEvent, ignoreElements, merge, take, type Observable, type Subscription } from 'rxjs';
 import type { ProgramActionRequest, ProgramActionStart, ProgramAddress, ProgramCreateRequest, ProgramCreationReference, ProgramIdentity, ProgramInputReceipt, ProgramInvocationAddress, ProgramInvocationFrame, ProgramSubmitRequest, ProgramWorkspaceRegistration, ProgramViewFrame, ProgramViewRequest, WireObservation, ProgramFailure, ProgramActionBindingRequest, ProgramActionBinding, ProgramUploadFileRequest, ProgramFileUploadValue, ProgramInputEditRequest } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramOperationRequest, ProgramOperationLocateRequest, ProgramOperationLocation, ProgramOperationNotification, ProgramOperationNotificationResult, ProgramAnswerRequest, ProgramQuestionRequest, ProgramQuestionsFrame, ProgramWaitFrame, ProgramOperationBindingRequest, ProgramOperationBinding, ProgramOperationFeedbackRequest, ProgramOperationFeedbackRead } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramRequestAddress, ProgramRequestStatus, ProgramWorkspace, ProgramGoalControl, ProgramCancelResult, ProgramJournalOpenRequest, ProgramJournalPageRequest, ProgramJournalFrame } from '@hanger-source/dsh-reactive-client/types';
@@ -421,7 +421,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
     let first = true;
     try {
-      yield* frames(combineLatest([handle.questions$, handle.foregroundQuestions$]), signal, ([questions, foreground]) => {
+      yield* frames(handle.human.values$, signal, ({ questions, foreground }) => {
         const wireQuestion = <Q extends { readonly origin: HumanQuestionOrigin }>(question: Q) => ({
           ...question, origin: { ...question.origin, inputs: this.wireInputs(question.origin.inputs) },
         });

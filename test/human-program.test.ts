@@ -131,19 +131,36 @@ for (const mode of ['native', 'ptc'] as const) {
           messageId: input.messageId, requestId: 'original-merchant', source: 'user', intent: 'question',
           scope: submittedScope, actorId: 'request-author', participant: 'human' }] };
       assert.deepEqual(question.origin, origin, 'Action 内部提问必须是实际子调用，并保留未解码的原输入');
+      const bound = await session.question(question.callId);
+      assert.equal(await session.question(question.callId), bound, '同一 SDK 复用固定问题对象');
+      assert.deepEqual((await bound.state.read()).foreground, question);
+      await assert.rejects(session.question('never-asked'), /REACTIVE_HUMAN_QUESTION_NOT_FOUND/u);
+      const service = await app.host.service(session.id, scene.program);
+      try {
+        // 忽略公开类型的 JavaScript 调用也不能把后台服务变成人工参与者。
+        const untyped = service as unknown as typeof session;
+        await assert.rejects(untyped.question(question.callId), /REACTIVE_HUMAN_PARTICIPANT_REQUIRED/u);
+        assert.throws(() => untyped.answerQuestion(question.callId, deliveryDetails), /REACTIVE_HUMAN_PARTICIPANT_REQUIRED/u);
+        await assert.rejects(untyped.attachWait(question.callId)[Symbol.asyncIterator]().next(), /REACTIVE_HUMAN_PARTICIPANT_REQUIRED/u);
+        await assert.rejects(untyped.pause(), /REACTIVE_HUMAN_PARTICIPANT_REQUIRED/u);
+        await assert.rejects(untyped.cancel(), /REACTIVE_HUMAN_PARTICIPANT_REQUIRED/u);
+        assert.deepEqual(scene.effects, []);
+        assert.deepEqual((await bound.state.read()).foreground, question, '拒绝服务控制后原前台仍在等待');
+      } finally { service.release(); }
       const agent = app.native.agents.get(SessionId(session.id))!;
       const starts = agent.session.snapshotEvents().filter(event => event.type === 'tool/ptc-dispatch-start' && event.data.subCallId === question.callId);
       assert.equal(starts.length, 1);
       assert.ok(starts[0]?.type === 'tool/ptc-dispatch-start');
       assert.deepEqual({ rootCallId: starts[0].data.rootCallId, parentCallId: starts[0].data.parentCallId, name: starts[0].data.name },
         { rootCallId, parentCallId: invocation.id, name: 'ask_user_question' });
-      await assert.rejects(session.answerQuestion(question.callId, deliveryDetails, { actorId: 'intruder' }), /REVIEWER_REQUIRED/u);
+      await assert.rejects(bound.answer(deliveryDetails, { actorId: 'intruder' }), /REVIEWER_REQUIRED/u);
       assert.deepEqual(scene.effects, []);
-      assert.equal(await session.answerQuestion(question.callId, deliveryDetails, { actorId: 'reviewer' }), true);
+      assert.equal(await bound.answer(deliveryDetails, { actorId: 'reviewer' }), true);
       assert.deepEqual(await invocation.result, { step: 'foreground', outcome: 'recorded' });
       await session.whenIdle();
       assert.deepEqual(scene.effects, [{ step: 'foreground', merchantId: 'merchant-a', invocationId: invocation.id }]);
       assert.deepEqual(scene.admitted, [origin]);
+      assert.equal((await bound.state.read()).foreground, undefined);
       const events = agent.session.snapshotEvents();
       const child = nestedEnd(events, question.callId);
       assert.equal(child.data.isError, false);
@@ -266,6 +283,8 @@ for (const mode of ['native', 'ptc'] as const) {
       const timed = scene.invocations[0]!;
       assert.equal(question.origin.rootCallId, rootCallId);
       assert.equal(question.origin.parentCallId, timed.id);
+      const bound = await session.question(question.callId);
+      assert.deepEqual((await bound.state.read()).foreground, question);
       assert.deepEqual(scene.effects, []);
       assert.deepEqual(await timed.result, { step: 'timed', outcome: 'pending', callId: question.callId });
       await session.whenIdle();
@@ -275,16 +294,27 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.equal(continued.active[0]?.state, 'continued');
       assert.deepEqual(continued.active[0]?.origin, question.origin);
       assert.deepEqual(await firstValueFrom(session.foregroundQuestions$), []);
+      assert.equal((await bound.state.read()).active?.state, 'continued');
+      assert.equal((await bound.state.read()).foreground, undefined);
       const agent = app.native.agents.get(SessionId(session.id))!;
       const timedEvents = agent.session.snapshotEvents();
       assert.ok(nestedEnd(timedEvents, question.callId).seq < parentEnd(timedEvents, mode, timed.id).seq);
-      assert.equal(await session.answerQuestion(question.callId, deliveryDetails, { actorId: 'reviewer' }), true);
+      await app.host.close(session.id);
+      const cold = await app.host.open(session.id, scene.program);
+      const late = await cold.question(question.callId);
+      assert.equal(app.native.agents.get(SessionId(session.id)), undefined, '读取持久问题对象不创建 Agent');
+      assert.deepEqual((await late.state.read()).active?.origin, question.origin);
+      await assert.rejects(late.attachWait()[Symbol.asyncIterator]().next(), /REACTIVE_HUMAN_FOREGROUND_UNAVAILABLE/u);
+      assert.equal(await late.answer(deliveryDetails, { actorId: 'reviewer' }), true);
+      cold.release();
       await session.whenIdle();
       assert.equal(scene.calls.length, 1, '晚答只续接原生输入，不重新执行已经返回的 Action body');
       assert.deepEqual(scene.effects, [], 'pending 没有交付资料可记录，晚答也不能重放旧 JavaScript continuation');
       const settled = await firstValueFrom(session.questions$);
       assert.deepEqual(settled.settled, [{ callId: question.callId, answers: deliveryDetails.answers, origin: question.origin }]);
-      const replies = agent.session.snapshotEvents().filter(event => event.type === 'user/message' && event.data.source.kind === 'user-question-reply');
+      assert.deepEqual((await bound.state.read()).settled, settled.settled[0]);
+      const resumedAgent = app.native.agents.get(SessionId(session.id))!;
+      const replies = resumedAgent.session.snapshotEvents().filter(event => event.type === 'user/message' && event.data.source.kind === 'user-question-reply');
       assert.equal(replies.length, 1);
       assert.ok(replies[0]?.type === 'user/message');
       assert.deepEqual(replies[0].data.source, { kind: 'user-question-reply', callId: question.callId, outcome: 'answered' });
@@ -295,6 +325,7 @@ for (const mode of ['native', 'ptc'] as const) {
       await session.submit({ requestId: 'cancel-merchant', content: '开始第二次明确问答后取消本轮', intent: 'question', delivery: 'followup' as const, scope: submittedScope }, { actorId: 'request-author' });
       const [cancelledQuestion] = await cancellingQuestion;
       assert.ok(cancelledQuestion);
+      const cancelledHandle = await session.question(cancelledQuestion.callId);
       const cancelled = scene.invocations.at(-1)!;
       const rejection = assert.rejects(cancelled.result);
       await session.cancel();
@@ -303,7 +334,9 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.equal(scene.calls.at(-1)!.signal.aborted, true);
       assert.deepEqual(scene.effects, []);
       assert.deepEqual(await firstValueFrom(session.foregroundQuestions$), []);
-      const cancelledEvents = agent.session.snapshotEvents();
+      assert.deepEqual(await cancelledHandle.state.read(), { active: undefined, foreground: undefined, settled: undefined },
+        '未留持久记录的子问退出后只有缺失事实，不伪造完成或取消阶段');
+      const cancelledEvents = resumedAgent.session.snapshotEvents();
       const child = nestedEnd(cancelledEvents, cancelledQuestion.callId);
       assert.equal(child.data.isError, true);
       assert.ok(child.seq < parentEnd(cancelledEvents, mode, cancelled.id).seq, '取消也必须先 drain 实际子调用再结束父调用');

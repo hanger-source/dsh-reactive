@@ -5,7 +5,7 @@ import { assertSurfaceBindings, type Surface } from '../surfaces/contract.ts';
 /** 组件得到对话事实与显式输入，不持有原生 Agent 或声明注册器。 */
 export type ProgramSession<P extends ProgramContract> = Pick<Conversation<ProgramParsedInput<P>, ProgramInput<P>>,
   'identity' | 'inputs$' | 'activity$' | 'goal$' | 'waits$' | 'events$' | 'progress$' | 'progressFrames$' | 'request'
-  | 'questions$' | 'foregroundQuestions$' | 'submit'>;
+  | 'human' | 'questions$' | 'foregroundQuestions$' | 'submit'>;
 
 export type ProgramWorkspace = Pick<WorkspaceContext, 'id' | 'directory' | 'share'>;
 export interface ProgramProps<P extends ProgramContract> {

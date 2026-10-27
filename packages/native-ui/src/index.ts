@@ -7,6 +7,7 @@ export type { NativeActionViewProps, NativeActionView, NativePresentationSource,
 export { nativeSource, observeNativeSource, observeNativeResource } from './sources.ts';
 export type { NativeReadable, NativeSourceInput, NativeSourceValue } from './sources.ts';
 export { NativeSession, bindNativeSession } from './session.ts';
+export type { NativeHumanQuestion } from './session.ts';
 export { nativeHooks, nativeSessionInject, provideNativeSources } from './slots.ts';
 export type { NativeSources, NativeHooks, NativeInjected, NativeSessionInject } from './slots.ts';
 export { registerNativeConversation } from './conversation.ts';

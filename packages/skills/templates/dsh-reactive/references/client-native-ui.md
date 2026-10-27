@@ -64,4 +64,6 @@ intent 描述 question/goal/followup，不能代替 delivery；goal 必须有实
 
 NativeSession.dispose 退出 UI 观察/贡献，不 release 借入 SDK/SessionReference，不取消已受理工作。代际变化或 SDK.release 后旧参与端口硬拒。人工回答走绑定的纯 SDK 与原 question.origin，不接 Controller 当前页的默认路径冒充准入。
 
+`nativeSession.human` 保留 SDK 的完整人工快照；questions 和 foregroundQuestions 同样传递 pending/error，不在断线时继续展示旧 ready。`await nativeSession.question(callId, options)` 返回固定问题的原生 UI 绑定，state 是原生 HostObservable，answer 与 attachWait 继续核验这个 UI generation，并委托原 SDK；绑定不创建新问题、不自动 claim 或代答。
+
 dsh rc.3 SessionController 缺 Program 创建/prompt/队列执行前接点，不能声称其默认输入框已贯通框架准入；这不妨碍 typed slots、节点、资源与明确 SDK 参与组合。后台 React 19 renderer 与原生 React 18 UI 需独立编译、独立部署。

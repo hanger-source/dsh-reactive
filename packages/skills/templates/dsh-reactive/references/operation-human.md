@@ -35,6 +35,10 @@ Action 的 `operation: { definition, command(input, scope, origin), reference(re
 
 Program 根声明一项 `<HumanInput admitResponder={policy} />`。policy 按 `question.origin` 的 session、actual tool call、原始 inputs 与真实 actor 核权，不能按当前页面选择或 SDK 自报用户判断。问题观察是独立快照，修改它不会改变权威关联。
 
+Program 的 conversation、本地和远程 SDK 提供 `human` 只读资源，questions 与 foreground 来自同一个快照，可直接 read、组合 observations$ 或交给 useResource。人工 SDK 的 `const question = await session.question(callId, options)` 绑定该会话里已知的原问题；同一 SDK 重复取得同一个对象。`question.state` 保留原 active、foreground、settled 事实，`question.answer(answer, options)` 与 `question.attachWait(options)` 委托原响应准入和真实前台 claim，不再重复传 callId。只读绑定不创建问题、计时器或批准权；三个事实均缺失时不能推断业务取消或完成。读取与退订不回答问题、不停止原问答。
+
+限时问题对象可从前台持续观察到 continued 和正式 settled，也可在冷 SDK 上取得迟答对象；迟答是否需要恢复实际 Agent 仍由原会话入口决定。answer 返回的 bool 只表示前台受理或 continued 排队，不能代替持久答复和工具结算。服务端口的运行时拒绝 question、answerQuestion、attachWait、pause 和 cancel，不能靠绕过 TypeScript 声明借用人的身份。
+
 原生工具中的 Action 可以主动问人：
 
 ```ts

@@ -15,3 +15,4 @@ export const publicView = (native: NativeSession<typeof program>, session: Sessi
 export function operationState<D extends OperationContract>(native: NativeSession<typeof program>, operation: OperationHandle<D>) {
   return native.resource(operation.state);
 }
+export const humanQuestion = (native: NativeSession<typeof program>, callId: string) => native.question(callId);

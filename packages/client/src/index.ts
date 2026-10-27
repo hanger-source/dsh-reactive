@@ -6,7 +6,7 @@ import { installConnection, type ConnectionInstallOptions } from '@deepseek-ai/d
 import { type RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { bytesToBase64 } from '@deepseek-ai/dsh-util-crypto';
-import { BehaviorSubject, EMPTY, ReplaySubject, mergeMap, of, throwError, type Observable } from 'rxjs';
+import { BehaviorSubject, ReplaySubject, map, type Observable } from 'rxjs';
 import { z, assertProgramDefinition, decodeView, surfaceSlotDefinition, createSurfaceCollectionClient, actionManifestSlot, type ToolActionBinding, type SurfaceCollectionClient, type ActionInput, type ActionInvocation, type ActionContract, type ActionScope, type Invocation, type InvocationActivity, type Observation, type Submission, type Surface, type SurfaceViews, type ViewValue, type OperationContract, type OperationReference, type OperationCommand, type OperationHandle, type OperationLocation, type OperationState, type HumanInputState, type HumanForegroundQuestion, type HumanAnswer, type HumanWaitFrame, type BoundOperation, type OperationFeedbackRead, type OperationFeedbackPayload, type ConversationProgressSnapshot, type ConversationEvent, type RequestHandle, type AssistantProgressFrame, type ProgramContract, type ProgramInput, type ProgramParsedInput, type ProgramSurface, type WorkspaceRegistration, type ConversationCreateOptions, type FileUploadSource, type FileUploadValue, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import { decodeProgramFailure } from './errors.ts';
 import './errors.ts';
@@ -18,6 +18,7 @@ import { ProgramJournal, type ProgramJournalOptions, type ProgramJournalRequest 
 import { connectProgress, type RemoteProgress } from './progress.ts';
 import { createActionBindings } from './action-bindings.ts';
 import { ResourceReader } from '@hanger-source/dsh-reactive';
+import { createHumanQuestionResolver, type HumanQuestionHandle } from '@hanger-source/dsh-reactive';
 
 export { createAuthenticatedTransport } from './transport.ts';
 export type { AuthenticatedTransportOptions } from './transport.ts';
@@ -57,6 +58,8 @@ export interface RemoteProgramSession<P extends ProgramContract> {
   request(requestId: string): RequestHandle<ProgramParsedInput<P>>;
   invocation<K extends keyof ProgramSurface<P>['actions'] & string>(name: K, id: string): Promise<ActionInvocation<ProgramSurface<P>['actions'][K]>>;
   readonly human$: Observable<Observation<ProgramQuestions>>;
+  readonly human: ResourceReader<ProgramQuestions>;
+  question(callId: string, options?: CancellationOptions): Promise<HumanQuestionHandle>;
   readonly questions$: Observable<HumanInputState>;
   readonly foregroundQuestions$: Observable<readonly HumanForegroundQuestion[]>;
   observeView<K extends keyof ProgramSurface<P>['views'] & string>(name: K): Observable<Observation<ViewValue<ProgramSurface<P>['views'][K]>>>;
@@ -154,10 +157,13 @@ export async function createProgramClient<const P extends ProgramContract>(progr
     const progressOwner = (): RemoteProgress<P> => {
       assertActive(); return progress ??= connectProgress(ctx, identity.sessionId, program, scopeSignal);
     };
-    const human = new BehaviorSubject<Observation<ProgramQuestions>>({ status: 'pending', generation: 0 });
-    const humanValues = human.pipe(mergeMap(observed => observed.status === 'pending' ? EMPTY
-      : observed.status === 'error' ? throwError(() => observed.error) : of(observed.value)));
-    const invalidateHuman = (): void => { if (!scopeSignal.aborted) human.next({ status: 'pending', generation: human.value.generation + 1 }); };
+    const humanState = new BehaviorSubject<Observation<ProgramQuestions>>({ status: 'pending', generation: 0 });
+    const human = new ResourceReader({ observations$: humanState.asObservable(), peek: () => humanState.value }, { signal: scopeSignal });
+    const question = createHumanQuestionResolver(human, {
+      answerQuestion: (id, answer, options) => handle.answerQuestion(id, answer, options),
+      attachWait: (id, options) => handle.attachWait(id, options),
+    }, { signal: scopeSignal });
+    const invalidateHuman = (): void => { if (!scopeSignal.aborted) humanState.next({ status: 'pending', generation: humanState.value.generation + 1 }); };
     const humanStream = new RemoteSnapshotStream(ctx.remote.$stream<ProgramQuestionsFrame>({
       name: 'program-questions:' + identity.sessionId,
       open: signal => remote.questions({ sessionId: identity.sessionId }, signal),
@@ -165,9 +171,9 @@ export async function createProgramClient<const P extends ProgramContract>(progr
     }), {
       name: 'program-questions:' + identity.sessionId,
       isSnapshot: (frame): frame is Extract<ProgramQuestionsFrame, { type: 'baseline' }> => frame.type === 'baseline',
-      replace: frame => human.next({ status: 'ready', generation: human.value.generation + 1, observedAt: Date.now(), value: frame.value }),
-      update: frame => human.next({ status: 'ready', generation: human.value.generation + 1, observedAt: Date.now(), value: frame.value }),
-      failed: error => human.next({ status: 'error', generation: human.value.generation + 1, error }),
+      replace: frame => humanState.next({ status: 'ready', generation: humanState.value.generation + 1, observedAt: Date.now(), value: frame.value }),
+      update: frame => humanState.next({ status: 'ready', generation: humanState.value.generation + 1, observedAt: Date.now(), value: frame.value }),
+      failed: error => humanState.next({ status: 'error', generation: humanState.value.generation + 1, error }),
     });
     const resetHuman = ctx.on('connection/reset', invalidateHuman);
     humanStream.start();
@@ -278,9 +284,10 @@ export async function createProgramClient<const P extends ProgramContract>(progr
         if (stored.name !== name) throw new Error('REACTIVE_ACTION_INVOCATION_SLOT_MISMATCH');
         return invocation(ctx.remote, identity.sessionId, stored, contract as S['actions'][K], lifetime.signal, observations);
       },
-      human$: human.asObservable(),
-      questions$: humanValues.pipe(mergeMap(value => of(value.questions))),
-      foregroundQuestions$: humanValues.pipe(mergeMap(value => of(value.foreground))),
+      human, question,
+      human$: human.observations$,
+      questions$: human.values$.pipe(map(value => value.questions)),
+      foregroundQuestions$: human.values$.pipe(map(value => value.foreground)),
       observeView(name) {
         assertActive();
         return handle.viewResource(name).observations$;
@@ -382,7 +389,7 @@ export async function createProgramClient<const P extends ProgramContract>(progr
           controller.abort(new Error('REACTIVE_CONVERSATION_HANDLE_RELEASED'));
           sessions.delete(handle); resetHuman();
           await Promise.all([actionBindings.close(), humanStream.dispose(), progress?.close(), ...[...journals].map(journal => journal.dispose()), ...[...slots.values()].map(slot => slot.close())]);
-          human.complete();
+          humanState.complete();
         })();
       },
     };

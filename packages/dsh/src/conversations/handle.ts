@@ -1,11 +1,12 @@
 import { bytesToBase64 } from "@deepseek-ai/dsh-util-crypto";
 import { type z } from "zod";
-import { Observable } from "rxjs";
+import { Observable, map, distinctUntilChanged } from "rxjs";
 import { conversationBindings, type Submission, type CancellationOptions, type SubmitOptions, type ObservedViews } from "@hanger-source/dsh-reactive/kernel";
 import { type AnyEnvironment, type EnvironmentOperations } from "@hanger-source/dsh-reactive/kernel";
 import { type Scope } from "@hanger-source/dsh-reactive/kernel";
 import { type Observation } from "@hanger-source/dsh-reactive/kernel";
 import { ResourceReader } from "@hanger-source/dsh-reactive/kernel";
+import { createHumanQuestionResolver, type HumanQuestionResolver, type HumanQuestionHandle, type HumanSnapshot } from "@hanger-source/dsh-reactive/kernel";
 import { type ActionContract, type ActionInput, type ActionScope } from "@hanger-source/dsh-reactive/kernel";
 import { type OperationContract, type OperationHandle, type OperationReference, type OperationCommand, type OperationLocation, type OperationState, type BoundOperation, type OperationFeedbackRead, type OperationFeedbackPayload } from "@hanger-source/dsh-reactive/kernel";
 import { type ActionInvocation } from "@hanger-source/dsh-reactive/kernel";
@@ -52,6 +53,8 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> {
     readonly rawEvents$: Observable<ConversationEvent>;
     readonly questions$: Observable<HumanInputState>;
     readonly foregroundQuestions$: Observable<readonly HumanForegroundQuestion[]>;
+    readonly human: ResourceReader<HumanSnapshot>;
+    #question: HumanQuestionResolver<SubmitOptions>;
     #released = false;
     #scope: Scope;
     #views?: ObservedViews<ProgramViews<P>>;
@@ -67,8 +70,14 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> {
         this.progressFrames$ = this.observe(entry.conversation.progressFrames$);
         this.events$ = this.observe(entry.conversation.events$);
         this.rawEvents$ = this.observe(entry.conversation.rawEvents$);
-        this.questions$ = this.observe(entry.conversation.questions$);
-        this.foregroundQuestions$ = this.observe(entry.conversation.foregroundQuestions$);
+        this.human = new ResourceReader(entry.conversation.human,
+            { signal: this.#scope.signal, onObserverError: error => this.#scope.observerError(error) });
+        this.questions$ = this.human.values$.pipe(map(snapshot => snapshot.questions), distinctUntilChanged());
+        this.foregroundQuestions$ = this.human.values$.pipe(map(snapshot => snapshot.foreground), distinctUntilChanged());
+        this.#question = createHumanQuestionResolver(this.human, {
+            answerQuestion: (id, answer, options) => this.answerQuestion(id, answer, options),
+            attachWait: (id, options) => this.attachWait(id, options),
+        }, { signal: this.#scope.signal, onObserverError: error => this.#scope.observerError(error) });
     }
     /** @internal 只有宿主能建立带观察生存期的句柄。 */
     static create<P extends ProgramContract = ProgramContract>(entry: ConversationSession, participant: 'human' | 'service', sessions: ConversationSessions, inputs: ConversationInputs, actions: ActionAuthority, participation: OperationParticipation, questions: ConversationQuestions, facts: ConversationObservations): ConversationHandle<P> {
@@ -94,6 +103,10 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> {
         if (this.#released)
             throw new Error('REACTIVE_CONVERSATION_HANDLE_RELEASED');
         this.#scope.assertActive();
+    }
+    private assertHuman() {
+        this.assertActive();
+        if (this.participant !== 'human') throw new Error('REACTIVE_HUMAN_PARTICIPANT_REQUIRED');
     }
     get id() { return this.entry.header.id as string; }
     get identity() { return this.entry.conversation.identity; }
@@ -238,23 +251,27 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> {
         const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
         return this.participation.readOperationFeedback(this.id, definition, command, id, { ...options, signal }, this.participant);
     }
+    async question(callId: string, options: SubmitOptions = {}): Promise<HumanQuestionHandle<SubmitOptions>> {
+        this.assertHuman();
+        return this.#question(callId, options);
+    }
     answerQuestion(callId: string, answer: HumanAnswer, options: SubmitOptions = {}): Promise<boolean> {
-        this.assertActive();
+        this.assertHuman();
         const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
         return this.questions.answerQuestion(this.entry, callId, answer, { ...options, signal });
     }
     async *attachWait(callId: string, options: SubmitOptions = {}): AsyncIterable<HumanWaitFrame> {
-        this.assertActive();
+        this.assertHuman();
         const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
         yield* this.questions.attachWait(this.entry, callId, { ...options, signal });
     }
     async pause() {
-        this.assertActive();
+        this.assertHuman();
         return this.sessions.pauseGoal(this.sessions.live(this.entry).agent);
     }
     /** 停止模型处理；是否取消外部业务操作仍由业务能力决定。 */
     async cancel() {
-        this.assertActive();
+        this.assertHuman();
         const agent = this.sessions.live(this.entry).agent;
         await this.sessions.cancelAgent(agent);
     }

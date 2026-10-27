@@ -58,6 +58,19 @@ export interface HumanForegroundQuestion {
   readonly origin: HumanQuestionOrigin;
 }
 
+/** 持久问题与瞬态前台事实的共同读侧，不把两者合成另一套问答阶段。 */
+export interface HumanSnapshot {
+  readonly questions: HumanInputState;
+  readonly foreground: readonly HumanForegroundQuestion[];
+}
+
+/** 固定callId当前可见的原生事实；全部缺失不等于业务已取消或已完成。 */
+export interface HumanQuestionSnapshot {
+  readonly active: HumanQuestion | undefined;
+  readonly foreground: HumanForegroundQuestion | undefined;
+  readonly settled: HumanSettledQuestion | undefined;
+}
+
 /** claim 的 answer 为 null；提交答案时业务同时核验原问题、完整答案和真实响应者。 */
 export interface HumanResponderAdmission {
   readonly channel: 'foreground' | 'continued';

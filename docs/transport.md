@@ -208,6 +208,8 @@ remote owner 持有真实 Invocation，`session.invocation(slot, id)`、result �
 
 `questions$`、`foregroundQuestions$` 来自当前 Handle 的真实 Human owner。`answerQuestion(callId, answer, options?)` 委托当前程序的 HumanInput 回答准入，bool 仅说明前台受理或 continued 排队，不是答案持久化或工具结算。`attachWait(callId, { signal })` claim 真实前台等待；退出或取消释放 claim，既不自动回答，也不跨断线自动重新 claim。
 
+本地与远程 SDK 的 `human` 资源提供同一批 questions 和 foreground 事实，远程 `human$` 是其完整 Observation 流。`question(callId, options?)` 只绑定当前快照中已知的原问题并复用对象，返回固定 callId、state、answer 与 attachWait。state 保留 active、foreground 和 settled 的原生形态；前台超时、迟答、冷恢复和取消均不靠 SDK 自建阶段推断。服务来源不能借这些入口作答或控制 Goal。
+
 前台、持久 active 与 settled 问题均携带与本地相同的 origin：原 sessionId、实际工具调用及其完整原始输入集合。客户端可据此把问题交给对应请求或业务模块，无需订阅并反查工具历史。多输入问题保留全部来源，JSON 范围不按客户端 Program 转换；origin 是关联事实，响应许可仍由认证入口与当前 HumanInput 策略核验。
 
 ## 官方流与发布边界
