@@ -14,7 +14,7 @@ import { installConnection } from '@deepseek-ai/dsh-client-connection/client';
 import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, resourceView, z } from '@hanger-source/dsh-reactive';
 import { Expose, implementProgram, useAction } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
-import { assertProgramSessionConnection, bindProgramClient, createAuthenticatedTransport, createProgramClient } from '@hanger-source/dsh-reactive-client';
+import { assertProgramSessionConnection, bindProgramClient, createAuthenticatedTransport, createProgramClient, CreationUnknownError } from '@hanger-source/dsh-reactive-client';
 import contribution from '@hanger-source/dsh-reactive-client/remote';
 import { mountProgramGateway, RemoteAuthenticationError } from '@hanger-source/dsh-reactive-remote';
 
@@ -37,6 +37,7 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
   });
   const host = async label => {
     const current = new BehaviorSubject(ready(label));
+    const visible = new Set([sessionId]);
     const action = implementAction(mark, { execute(input, call) {
       assert.equal(call.source.actorId, 'context-operator');
       calls.push({ label, input }); return label + ':' + input;
@@ -55,26 +56,43 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
     const directory = join(root, label, 'workspace'); await mkdir(directory, { recursive: true });
     const workspace = await runtime.application.createWorkspace({ directory });
     local.push(await runtime.application.create('work', { workspaceId: workspace.workspaceId, sessionId }));
-    const role = { name: 'context-user', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/questions',
+    const role = { name: 'context-user', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/resume', 'reactivePrograms/questions',
       'reactivePrograms/view', 'reactivePrograms/resolveAction', 'reactivePrograms/startAction', 'reactivePrograms/actionResult', 'reactivePrograms/observeAction'] };
     const gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
       model: { provider: 'client-context', model: 'unused' }, actor: principal => principal.id,
-      access: service => service.registerPolicy('context-user', { bindings: () => [{ role, resource: { kind: 'session', id: sessionId } }] }),
+      access: service => service.registerPolicy('context-user', { bindings: () => [
+        ...[...visible].map(id => ({ role, resource: { kind: 'session', id } })),
+        { role: { name: 'workspace-owner', resource: 'workspace', actions: ['reactivePrograms/create', 'reactivePrograms/completeCreation'] },
+          resource: { kind: 'workspace', id: workspace.workspaceId } },
+        { role: { name: 'workspace-registry', resource: 'global', actions: ['reactivePrograms/createWorkspace', 'reactivePrograms/describe'] }, resource: { kind: 'global' } },
+      ] }),
       carrier: { onError: error => errors.push(error), async authenticate(request) {
         if (request.headers.get('authorization') !== 'Bearer context-test') throw new RemoteAuthenticationError(401);
         return { kind: 'context-user', id: 'context-operator' };
       } },
     }); gateways.push(gateway);
-    return { gateway, current };
+    return { gateway, current, workspace, runtime, visible };
   };
   const transport = baseUrl => ({ baseUrl,
     fetch: (url, init) => fetch(url, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), authorization: 'Bearer context-test' } }),
     createWebSocket: url => new WebSocket(url, { headers: { authorization: 'Bearer context-test' } }),
   });
-  const connect = async baseUrl => {
+  const connect = async (baseUrl, delayed) => {
     const ctx = new Context(); contexts.push(ctx);
     await ctx.plugin(Registry);
-    installConnection(ctx, { interactions: 'answer', transport: createAuthenticatedTransport(transport(baseUrl)) });
+    const selected = transport(baseUrl), fetch = selected.fetch;
+    if (delayed) selected.fetch = async (url, init) => {
+      const response = await fetch(url, init);
+      if (!delayed.entered && new URL(url).pathname.endsWith('/reactivePrograms/' + delayed.endpoint)) {
+        delayed.entered = true;
+        const reply = await response.clone().json();
+        assert.ok(response.ok, 'Host必须实际受理延迟回执的请求');
+        assert.equal(reply.result.ok, true, JSON.stringify(reply));
+        delayed.received.resolve(); await delayed.release.promise;
+      }
+      return response;
+    };
+    installConnection(ctx, { interactions: 'answer', transport: createAuthenticatedTransport(selected) });
     await ctx.plugin(Gateway);
     await ctx.remote.$mount(contribution);
     return ctx;
@@ -115,6 +133,37 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
   assert.throws(() => assertProgramSessionConnection(ownedSession, anotherA.get('connection')), /REACTIVE_REMOTE_SESSION_CONNECTION_MISMATCH/u);
   await owned.dispose();
   assert.equal(await duplicate.readView('owner'), 'a-after-context-exit');
+  const registration = join(root, 'registered-with-delayed-ack'); await mkdir(registration);
+  const reference = { environmentId: 'work', workspaceId: a.workspace.workspaceId, sessionId: crypto.randomUUID() };
+  a.visible.add(reference.sessionId);
+  for (const [endpoint, invoke] of [
+    ['open', sdk => sdk.open(sessionId)], ['resume', sdk => sdk.resume(sessionId)],
+    ['completeCreation', sdk => sdk.completeCreation({ ...reference, sessionId })],
+    ['createWorkspace', sdk => sdk.createWorkspace({ directory: registration })], ['describe', sdk => sdk.describe()],
+    ['create', sdk => sdk.create(reference.environmentId, reference)],
+  ]) await t.test(endpoint + '回执被延迟时SDK退出结束等待，借用Context继续可用', { timeout: 1_000 }, async subject => {
+    const delayed = { endpoint, received: Promise.withResolvers(), release: Promise.withResolvers(), entered: false };
+    subject.signal.addEventListener('abort', () => delayed.release.resolve(), { once: true });
+    const ctx = await connect(a.gateway.url, delayed), pendingClient = bindProgramClient(program, ctx);
+    clients.push(pendingClient);
+    const rejected = assert.rejects(invoke(pendingClient), error => {
+      if (endpoint === 'create') {
+        assert.ok(error instanceof CreationUnknownError); assert.deepEqual(error.reference, reference);
+        assert.match(String(error.cause), /REACTIVE_REMOTE_CLIENT_DISPOSED/u);
+      } else assert.match(String(error), /REACTIVE_REMOTE_CLIENT_DISPOSED/u);
+      return true;
+    });
+    try {
+      await delayed.received.promise;
+      await pendingClient.dispose(); await rejected;
+      const peer = bindProgramClient(program, ctx); clients.push(peer);
+      const live = await peer.open(sessionId); assert.equal(await live.readView('owner'), 'a-after-context-exit');
+      if (endpoint === 'create') {
+        const preserved = await peer.completeCreation(reference);
+        assert.equal(preserved.id, reference.sessionId, '取消回执等待不删除已在Host登记的同一会话');
+      }
+    } finally { delayed.release.resolve(); }
+  });
   assert.deepEqual(calls, [{ label: 'a', input: 'first' }, { label: 'b', input: 'still-b' }]);
   assert.equal(models, 0); assert.deepEqual(errors, []);
   console.info('client-context.verified', { sameSessionId: sessionId, hosts: 2, sharedContextClients: 2, models });

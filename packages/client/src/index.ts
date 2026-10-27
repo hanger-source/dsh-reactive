@@ -6,7 +6,7 @@ import { installConnection, type ConnectionHandle, type ConnectionInstallOptions
 import { type RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { bytesToBase64 } from '@deepseek-ai/dsh-util-crypto';
-import { BehaviorSubject, ReplaySubject, map, type Observable } from 'rxjs';
+import { BehaviorSubject, ReplaySubject, defer, firstValueFrom, from, fromEvent, map, mergeMap, raceWith, throwError, type Observable } from 'rxjs';
 import { z, assertProgramDefinition, decodeView, surfaceSlotDefinition, createSurfaceCollectionClient, actionManifestSlot, type ToolActionBinding, type SurfaceCollectionClient, type ActionInput, type ActionInvocation, type ActionContract, type ActionScope, type Invocation, type InvocationActivity, type Observation, type Submission, type Surface, type SurfaceViews, type ViewValue, type OperationContract, type OperationReference, type OperationCommand, type OperationHandle, type OperationLocation, type OperationState, type HumanInputState, type HumanForegroundQuestion, type HumanAnswer, type HumanWaitFrame, type BoundOperation, type OperationFeedbackRead, type OperationFeedbackPayload, type ConversationProgressSnapshot, type ConversationEvent, type RequestHandle, type AssistantProgressFrame, type ProgramContract, type ProgramInput, type ProgramParsedInput, type ProgramSurface, type WorkspaceRegistration, type ConversationCreateOptions, type FileUploadSource, type FileUploadValue, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import { decodeProgramFailure } from './errors.ts';
 import './errors.ts';
@@ -175,6 +175,14 @@ export function bindProgramClient<const P extends ProgramContract>(program: P, c
     if (ctx.get('connection') !== connection) throw new Error('REACTIVE_REMOTE_CLIENT_CONNECTION_REPLACED');
   };
   active();
+  const callRemote = <T>(call: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+    active();
+    const signal = lifetime.signal;
+    return firstValueFrom(fromEvent(signal, 'abort').pipe(
+      mergeMap(() => throwError(() => signal.reason)),
+      raceWith(defer(() => from(call(signal)))),
+    ));
+  };
 
   const session = async (identity: ProgramIdentity): Promise<RemoteProgramSession<P>> => {
     const controller = new AbortController();
@@ -432,25 +440,34 @@ export function bindProgramClient<const P extends ProgramContract>(program: P, c
   };
   return {
     async createWorkspace(registration) {
-      active(); return result(await remote.createWorkspace(registration));
+      return result(await callRemote(signal => remote.createWorkspace(registration, signal)));
     },
     async create(environmentId, options): Promise<RemoteProgramSession<P>> {
       active();
       const reference = { environmentId, workspaceId: options.workspaceId, sessionId: options.sessionId ?? crypto.randomUUID() };
-      const reply = await remote.create(reference);
-      if (!reply.ok && (reply.error.code === 'gateway/internal' || reply.error.code === 'gateway/cancelled')) throw new CreationUnknownError(reference, reply.error);
-      const identity = creation(reply); active(); return session(identity);
+      let dispatched = false;
+      try {
+        const reply = await callRemote(signal => {
+          dispatched = true;
+          return remote.create(reference, signal);
+        });
+        if (!reply.ok && (reply.error.code === 'gateway/internal' || reply.error.code === 'gateway/cancelled')) throw new CreationUnknownError(reference, reply.error);
+        const identity = creation(reply); active(); return await session(identity);
+      } catch (error) {
+        if (dispatched && lifetime.signal.aborted && error === lifetime.signal.reason) throw new CreationUnknownError(reference, error);
+        throw error;
+      }
     },
     async completeCreation(reference): Promise<RemoteProgramSession<P>> {
-      active(); const identity = creation(await remote.completeCreation(reference)); active(); return session(identity);
+      const identity = creation(await callRemote(signal => remote.completeCreation(reference, signal))); active(); return session(identity);
     },
     async open(sessionId): Promise<RemoteProgramSession<P>> {
-      active(); const identity = creation(await remote.open({ sessionId })); active(); return session(identity);
+      const identity = creation(await callRemote(signal => remote.open({ sessionId }, signal))); active(); return session(identity);
     },
     async resume(sessionId): Promise<RemoteProgramSession<P>> {
-      active(); const identity = creation(await remote.resume({ sessionId })); active(); return session(identity);
+      const identity = creation(await callRemote(signal => remote.resume({ sessionId }, signal))); active(); return session(identity);
     },
-    async describe() { active(); return result(await remote.describe()); },
+    async describe() { return result(await callRemote(signal => remote.describe(signal))); },
     dispose: () => close().finally(() => releaseContext()),
   };
 }

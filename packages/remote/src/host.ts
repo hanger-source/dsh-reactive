@@ -82,16 +82,18 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
 
   /** 显式注册已有工作目录；不选择 Environment 或创建会话。 */
   @Remote
-  async createWorkspace(request: ProgramWorkspaceRegistration): Promise<ProgramWorkspace> {
+  async createWorkspace(request: ProgramWorkspaceRegistration, signal: AbortSignal): Promise<ProgramWorkspace> {
     this.principal();
+    signal.throwIfAborted();
     const workspace = await this.options.application.createWorkspace(request).catch(this.rethrow);
     return this.visibleWorkspace(workspace);
   }
 
   /** 在获准的既有 Workspace 中，以指定 Environment 创建工作会话。 */
   @Remote({ resources: { session: _request => undefined, workspace: request => WorkspaceId(request.workspaceId) } })
-  async create(request: ProgramCreateRequest): Promise<ProgramIdentity> {
+  async create(request: ProgramCreateRequest, signal: AbortSignal): Promise<ProgramIdentity> {
     const actorId = this.actor();
+    signal.throwIfAborted();
     const { environmentId, ...options } = request;
     const handle = await this.options.application.create(environmentId, options).catch(this.rethrow);
     try { return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, actorId }; }
@@ -100,8 +102,9 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
 
   /** 凭明确引用补齐框架已持久化但尚未完成的创建。 */
   @Remote({ resources: { session: _request => undefined, workspace: request => WorkspaceId(request.workspaceId) } })
-  async completeCreation(request: ProgramCreationReference): Promise<ProgramIdentity> {
+  async completeCreation(request: ProgramCreationReference, signal: AbortSignal): Promise<ProgramIdentity> {
     const actorId = this.actor();
+    signal.throwIfAborted();
     const handle = await this.options.application.completeCreation(request).catch(this.rethrow);
     try { return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, actorId }; }
     finally { handle.release(); }
@@ -109,8 +112,9 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
 
   /** 只读打开当前程序，不把观察变成模型唤醒。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
-  async open(request: ProgramAddress): Promise<ProgramIdentity> {
+  async open(request: ProgramAddress, signal: AbortSignal): Promise<ProgramIdentity> {
     const actorId = this.actor();
+    signal.throwIfAborted();
     const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
     try { return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, actorId }; }
     finally { handle.release(); }
@@ -118,8 +122,9 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
 
   /** 显式恢复真实宿主；只读 open 不承担激活语义。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
-  async resume(request: ProgramAddress): Promise<ProgramIdentity> {
+  async resume(request: ProgramAddress, signal: AbortSignal): Promise<ProgramIdentity> {
     const actorId = this.actor();
+    signal.throwIfAborted();
     const handle = await this.options.application.resume(request.sessionId).catch(this.rethrow);
     try { return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, actorId }; }
     finally { handle.release(); }
@@ -127,8 +132,9 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
 
   /** 发现仅返回获准的 Workspace 与其获准成员；global endpoint grant 不授予内容。 */
   @Remote
-  async describe(): Promise<readonly ProgramWorkspace[]> {
+  async describe(signal: AbortSignal): Promise<readonly ProgramWorkspace[]> {
     this.principal();
+    signal.throwIfAborted();
     const workspaces = await this.options.application.describe().catch(this.rethrow);
     return workspaces.filter(workspace => this.ctx.remoteAccess.allows({ kind: 'workspace', id: WorkspaceId(workspace.workspaceId) }))
       .map(workspace => this.visibleWorkspace(workspace));

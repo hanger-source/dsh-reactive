@@ -24,6 +24,8 @@ local resolveAction 同步，remote 异步；统一代码 `await` 两者。预�
 
 创建尚未完成时，create、completeCreation、open、resume 都可能返回 `CreationIncompleteError`，reference 保留原 environmentId、workspaceId、sessionId。原生已有成员或内存中已有完成事件仍不能证明创建已 ACK。沿原引用显式 completeCreation，不把 open/resume 写成隐式创建恢复，也不换一个会话重试。
 
+client.dispose 或借入的 Context 退出时，在途的 createWorkspace、describe、create、completeCreation、open、resume 回执等待都会结算。SDK 向 transport 传递取消信号，也独立结束自己的等待；这不撤销 Host 已受理的工作。create 已发出而尚未确认时返回 CreationUnknownError，保留原创建引用，之后用有效 SDK 显式 completeCreation。已经退出的 SDK 拒绝新调用；借用 SDK 退出不关闭公共 Context 或其他 SDK。
+
 动态集合：`session.collection('items').instances$` 观察实际成员；`collection.instance(key).readView('facts', options)`、`.resolveAction('save', rawScope, options)`、`.operations` 消费同一局部合同。不要维护第二张 key→工具名表或解析命名 namespace。
 
 `session.viewResource('facts')` 与动态实例的 `viewResource('facts')` 返回稳定只读资源。直接使用 `resource.read(signal)`、`peek()`、`subscribe`、`values$`、`observations$`，或将同一对象交给 `useResource(resource)`、`nativeSession.resource(resource)`；不要再复制 BehaviorSubject 或缓存。SDK release 结束该对象的读取与观察，取消某一次 read 不影响其他消费者或原 Program。动态资源固定逻辑地址，模块撤下报告 error，同地址重挂继续更新；这不改变 Action 旧绑定必须拒绝的规则。

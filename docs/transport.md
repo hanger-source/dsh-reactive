@@ -114,6 +114,8 @@ Node 使用同一入口，提供绝对 HTTP(S) baseUrl，并按应用认证方�
 
 同一 Context 可为多个 Program 或多个消费者建立独立 SDK。SDK dispose 释放自己的 Session、观察与等待，保留公共 Context 和远程合同；Context 退出会同时关闭其借用 SDK。`bindNativeSession` 核验 SDK 原对象所使用的实际 Connection、Program 与原生 Session generation。原生扩展取得的 SDK 应来自该客户端 Context 的 bindProgramClient；相同会话 ID、相同合同或相同服务器地址不能替代这份连接归属。
 
+SDK dispose 同时结束在途的 createWorkspace、describe、create、completeCreation、open 和 resume 等回执等待，并向连接传递取消信号；自定义 transport 未配合取消也不会使调用者继续挂起。停止等待不撤销 Host 已受理的登记或执行。create 请求已发出但结果尚未确认时返回 `CreationUnknownError`，保留原 environmentId、workspaceId、sessionId；用另一有效 SDK 沿同一引用显式 completeCreation，不生成新会话或自动重发。
+
 `createProgramClient` 校验 Program 确由当前 core 实例的 `defineProgram` 创建，拒绝用普通对象冒充合同。同进程的本地 typed 句柄可以核对同一个定义对象；跨进程对象身份不能互相证明。客户端声明自己预期的合同，应用负责把目标 environment/session 路由到对应合同。SDK 不从远程环境自动推断 schema，也不证明两个进程的合同等价；解析失败会明确报错，解析成功只说明该值满足本地所选 schema。合同选择不授予 endpoint、actor 或业务权限。
 
 `session.submit` 的范围类型是 `ProgramInput<typeof orderProgram>`，即 `z.input`。上述合同提交 `asOf` 字符串：
