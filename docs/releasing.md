@@ -53,6 +53,8 @@ prepare 只执行一次总 build，然后 npm pack（`--ignore-scripts`）。对
 
 候选验证将 tgz 安装到仓外物理目录，分别验证默认后台 React 19、选择全部可选原生域的 React 19、原生 UI React 18 消费者，以 `skipLibCheck:false` 编译并运行同一份消费者。原生域所需的 optional peers 从实际宿主 tgz 的 package.json 取得，不借工作区 node_modules 补齐；Jobs、MCP、Approval、Clock、Schedule、Team、Files 子入口均实际加载。日常 CI 与发行沿用相同环境选择和消费者源码，后台默认安装仍独立验证。Skill 通过真实 `getDeveloperSkill()` 和 `dsh-reactive-skill` CLI 定位安装内容，核对版本、入口与五个 references。这个阶段只证明候选产物可消费，不称为已发布。
 
+真实浏览器行为使用 `npm run browser:remote` 启动认证 Runtime/Gateway 试验宿主。打开输出的 url 验证 Date、Action/Operation 和错误详情；打开 nativeUrl 验证原生会话引用。每个流程使用一次新启动的独立宿主。原生引用流程通过官方 rc.3 bootInjections 与 ClientModuleSystem 装配真正的 Client Sessions，观察其引用计数、取消和失败清理、代际重开、Context 退出及真实 WebSocket 的关闭后发送；这些行为不由包打包或类型检查代替。
+
 ## GitHub CI 发布
 
 六个 npm 包分别将以下配置登记为 Trusted Publisher：GitHub owner `hanger-source`、repository `dsh-reactive`、workflow file `release.yml`，不设置额外 environment。发行需要允许 `npm publish` 和 `npm dist-tag`，分别用于发布产物与确认稳定版的默认安装渠道。这些是 npm 侧的信任配置，不是 GitHub Actions Secret。
@@ -104,7 +106,7 @@ publish 完成前会从指定 registry 按 `name@version` 重新安装六包；�
 npm run release -- verify --manifest /absolute/release-candidate/release-manifest.json
 ```
 
-该验证不接受 tgz 替代 registry。它比对实际 registry 元数据、dist integrity、dist-tags、安装锁中的 registry tarball 位置和完整性，再运行两个仓外消费者。安装后的 `release.json` 必须对应同一 commit/tag/六包版本；Skill 的实际 API、CLI 与包内 references 必须可用。发布成功以此报告和 registry 受理事实为准。
+该验证不接受 tgz 替代 registry。它比对实际 registry 元数据、dist integrity、dist-tags、安装锁中的 registry tarball 位置和完整性，再运行三组仓外消费者。安装后的 `release.json` 必须对应同一 commit/tag/六包版本；Skill 的实际 API、CLI 与包内 references 必须可用。发布成功以此报告和 registry 受理事实为准。
 
 `candidate-verification.json`、`registry-verification.json` 与 `publication.json` 保存在候选目录，分别记录候选消费、registry 消费和渠道治理。所有 Git push 都是独立的显式操作；脚本不推送分支或标签。
 

@@ -8,6 +8,8 @@ export { nativeSource, observeNativeSource, observeNativeResource } from './sour
 export type { NativeReadable, NativeSourceInput, NativeSourceValue } from './sources.ts';
 export { NativeSession, bindNativeSession } from './session.ts';
 export type { NativeHumanQuestion, NativeRequestHandle } from './session.ts';
+export { retainNativeSession } from './session-reference.ts';
+export type { NativeSessionReference } from './session-reference.ts';
 export { nativeHooks, nativeSessionInject, provideNativeSources } from './slots.ts';
 export type { NativeSources, NativeHooks, NativeInjected, NativeSessionInject } from './slots.ts';
 export { registerNativeConversation } from './conversation.ts';

@@ -1,6 +1,6 @@
 import { defineAction, defineProgram, defineSurface, resourceView, z, type OperationContract, type OperationHandle } from '@hanger-source/dsh-reactive';
 import { bindProgramClient, type RemoteProgramSession } from '@hanger-source/dsh-reactive-client';
-import { createNativeActionViews, defineNativeActionView, bindNativeSession,
+import { createNativeActionViews, defineNativeActionView, bindNativeSession, retainNativeSession,
   type NativeSession, type NativeActionViewProps } from '@hanger-source/dsh-reactive-native-ui';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
 
@@ -9,6 +9,7 @@ const action = defineAction({ name: 'release_consumer_read', description: 'å…¬å¼
 const program = defineProgram({ input: z.null(), surface: defineSurface({ views: { version: resourceView(z.string()) }, actions: { read: action } }) });
 export type Session = RemoteProgramSession<typeof program>;
 export const nativeClient = (ctx: Parameters<typeof bindProgramClient>[1]) => bindProgramClient(program, ctx);
+export const nativeReference = (ctx: Parameters<typeof retainNativeSession>[1], sessionId: string) => retainNativeSession(program, ctx, sessionId);
 export const view = defineNativeActionView(action, (_props: NativeActionViewProps<typeof action>) => null);
 export const publicEntries = [createNativeActionViews, bindNativeSession, getDeveloperSkill] as const;
 export const developerSkill = getDeveloperSkill();

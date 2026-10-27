@@ -12,6 +12,8 @@
 
 `@hanger-source/dsh-reactive-client` 提供独立客户端与远程数据合同；`@hanger-source/dsh-reactive-remote` 负责认证 Gateway 宿主。选择扩展 dsh 原生界面时安装 `@hanger-source/dsh-reactive-native-ui`。纯资源程序、后台服务和 CLI 无需安装原生 UI。
 
+原生扩展用 `retainNativeSession(Program, clientContext, sessionId)` 取得拥有原生代际引用、独立 SDK 和 UI 观察的对象，使用 `reference.session` 并在退出时 `await reference.release()`。共享客户端装配、目录和 Host 工作仍由原 owner 管理；已经持有原生 binding 与 SDK 的消费者继续用同步 `bindNativeSession` 借用它们。
+
 `@hanger-source/dsh-reactive-skills` 提供同版本的应用开发 Skill 与按需 references。安装后运行 `dsh-reactive-skill` 取得该版本入口的绝对路径，编码 Agent 按需读取；它不安装运行时业务 Skill，也不修改全局 Agent 配置。
 
 后台 Program renderer 使用 React `19.3.1` 与 react-reconciler `0.34.0`。原生 UI 扩展把呈现函数交给 dsh 自己的 Slot renderer，不创建第二个 React root，也不安装后台 reconciler；它可以随原生 React `18.2` 界面使用。两种运行环境分别安装、分别编译。

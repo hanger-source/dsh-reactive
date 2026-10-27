@@ -114,6 +114,10 @@ Node 使用同一入口，提供绝对 HTTP(S) baseUrl，并按应用认证方�
 
 同一 Context 可为多个 Program 或多个消费者建立独立 SDK。SDK dispose 释放自己的 Session、观察与等待，保留公共 Context 和远程合同；Context 退出会同时关闭其借用 SDK。`bindNativeSession` 核验 SDK 原对象所使用的实际 Connection、Program 与原生 Session generation。原生扩展取得的 SDK 应来自该客户端 Context 的 bindProgramClient；相同会话 ID、相同合同或相同服务器地址不能替代这份连接归属。
 
+需要框架持有整组引用时，使用 `await retainNativeSession(Program, clientContext, sessionId, { signal })`，从返回对象的 `session` 消费同一 NativeSession，退出时 `await reference.release()` 或使用 `await using`。调用方提供已安装官方 Client Sessions、Connection、Gateway 和 Program 贡献的客户端根或应用插件 Context；目标 Agent generation 的 Context 不能成为这组引用的 owner，避免会话保留自己的寿命。取得入口先通过官方 sessions.refresh 刷新共享目录，再 retain 精确代际并打开 Program SDK；需要原生目录和该会话的读取许可，不授予新权限或创建 Host 会话。
+
+取得失败或取得期间 signal 取消，会释放本次已取得的原生引用与 SDK；信号只控制取得过程，成功后引用由显式 release 或所属 Context 退出释放。release 关闭本次 UI 观察、原生引用及独立 SDK，其他引用保留当前代际；最后一个原生引用的代际退出继续由官方 Client Sessions 执行。同步 bindNativeSession 仍只拥有 UI 观察，不释放借入对象；两种入口都不取消 Host 已受理的 Action、Operation 或模型工作。
+
 SDK dispose 同时结束在途的 createWorkspace、describe、create、completeCreation、open 和 resume 等回执等待，并向连接传递取消信号；自定义 transport 未配合取消也不会使调用者继续挂起。停止等待不撤销 Host 已受理的登记或执行。create 请求已发出但结果尚未确认时返回 `CreationUnknownError`，保留原 environmentId、workspaceId、sessionId；用另一有效 SDK 沿同一引用显式 completeCreation，不生成新会话或自动重发。
 
 `createProgramClient` 校验 Program 确由当前 core 实例的 `defineProgram` 创建，拒绝用普通对象冒充合同。同进程的本地 typed 句柄可以核对同一个定义对象；跨进程对象身份不能互相证明。客户端声明自己预期的合同，应用负责把目标 environment/session 路由到对应合同。SDK 不从远程环境自动推断 schema，也不证明两个进程的合同等价；解析失败会明确报错，解析成功只说明该值满足本地所选 schema。合同选择不授予 endpoint、actor 或业务权限。

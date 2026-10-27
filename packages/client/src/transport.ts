@@ -39,30 +39,31 @@ async function* socketStream(openSocket: ConnectionWebSocketFactory, url: string
   const streamId = '1';
   let terminal = false, stopped = false;
   const send = (message: RemoteStreamClientMessage): void => { socket.send(JSON.stringify(message)); };
-  const abort = (): void => { opened.reject(signal.reason); inbox.fail(signal.reason); socket.close(); };
+  const abort = (): void => { stopped = true; opened.reject(signal.reason); inbox.fail(signal.reason); socket.close(); };
   const onOpen = (): void => opened.resolve();
   const detach = (): void => { socket.removeEventListener('close', onClose); socket.removeEventListener('error', onError); };
-  const onClose = (): void => {
+  const disconnected = (): void => {
+    stopped = true;
     if (!terminal && !signal.aborted) {
       const error = new RemoteStreamCarrierError('Remote physical stream disconnected');
       opened.reject(error); inbox.fail(error);
     }
-    if (stopped) detach();
   };
-  const onError = (): void => onClose();
+  const onClose = (): void => { disconnected(); detach(); };
+  const onError = (): void => disconnected();
   const onMessage = (event: { readonly data: unknown }): void => {
     try {
       if (typeof event.data !== 'string') throw new Error('REACTIVE_REMOTE_TEXT_FRAME_REQUIRED');
       const frame = parseRemoteStreamServerMessage(event.data);
       if (frame.streamId !== streamId) throw new Error('REACTIVE_REMOTE_STREAM_ID_INVALID');
       if (frame.type === 'item') inbox.push(frame.value, new TextEncoder().encode(event.data).byteLength);
-      else if (frame.type === 'end') { terminal = true; inbox.end(); }
+      else if (frame.type === 'end') { stopped = true; terminal = true; inbox.end(); }
       else {
-        terminal = true;
+        stopped = true; terminal = true;
         // Gateway 保留新 Host 的扩展错误码；wire 已由官方 parser 验证，重建正式 RemoteError。
         inbox.fail(new RemoteError(frame.error.code as RemoteErrorCode, frame.error.message, frame.error.details));
       }
-    } catch (error) { terminal = true; inbox.fail(error); }
+    } catch (error) { stopped = true; terminal = true; inbox.fail(error); }
   };
   socket.addEventListener('open', onOpen);
   socket.addEventListener('close', onClose);

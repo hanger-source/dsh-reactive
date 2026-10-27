@@ -74,6 +74,8 @@ const native = bindNativeSession(InventoryProgram, exactSessionBinding, sdk);
 
 该 Context 必须允许 `interactions:'answer'`。多个 SDK 可以借用同一装配；SDK dispose 只退出自己的会话和观察，Context 退出关闭全部借用 SDK。独立 createProgramClient 拥有另一份 Connection，适用于独立客户端；原生 UI 按实际连接归属绑定，不能用相同 URL、sessionId 或复制出来的同形句柄代替。
 
+需要整体取得并拥有引用时，使用 `const reference = await retainNativeSession(Program, clientContext, sessionId, { signal })`，消费 `reference.session`，退出时 `await reference.release()`，也支持 await using。Context 由客户端根或应用插件拥有，须已有官方 Client Sessions 与上述 Program 远程贡献；不要用目标 Agent generation 的 Context 保留其自身寿命。框架通过官方目录刷新、精确代际 retain 和 SDK open 完成装配，权限仍由原生目录及 Program 读取入口分别核验。取得失败或取消释放部分成果，成功后的 signal 不释放已返回引用；显式 release 或所属 Context 退出释放本次 UI、SDK 和原生引用，不影响其他引用或 Host 工作。已有 binding 和 SDK 时用 bindNativeSession，原对象仍由调用者释放。
+
 - `nativeSource` 直接接已有 peek/subscribe；`observeNativeResource` 保 pending/error；NativeSession.resource/operation/invocation/view 将同一个对象交给原生观察。
 - `nativeHooks`、`nativeSessionInject` 复用原生 InjectFace；注入的 `program` 不覆盖原生 props.session。`provideNativeSources` 交原 UiSession.provide 持有注册/更新/退出，不再建 registry。
 - `registerNativeConversation` 组合原节点/视图/分组/渲染注册，部分失败回滚整组；所有解析与 replay 留给原 UiConversation。
