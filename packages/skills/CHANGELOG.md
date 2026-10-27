@@ -1,5 +1,16 @@
 # @hanger-source/dsh-reactive-skills
 
+## 0.17.2
+
+### Patch Changes
+
+- Updated dependencies [d458636]
+  - @hanger-source/dsh-reactive-client@0.17.2
+  - @hanger-source/dsh-reactive-remote@0.17.2
+  - @hanger-source/dsh-reactive-native-ui@0.17.2
+  - @hanger-source/dsh-reactive@0.17.2
+  - @hanger-source/dsh-reactive-dsh@0.17.2
+
 ## 0.17.1
 
 ### Patch Changes

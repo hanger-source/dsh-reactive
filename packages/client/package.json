@@ -1,6 +1,6 @@
 {
   "name": "@hanger-source/dsh-reactive-client",
-  "version": "0.17.1",
+  "version": "0.17.2",
   "description": "dsh-reactive 的独立类型化客户端与纯远程合同",
   "license": "UNLICENSED",
   "author": "hanger",
@@ -60,7 +60,7 @@
     "zod": "4.4.3"
   },
   "peerDependencies": {
-    "@hanger-source/dsh-reactive": "0.17.1"
+    "@hanger-source/dsh-reactive": "0.17.2"
   },
   "devDependencies": {
     "@hanger-source/dsh-reactive": "file:../core"

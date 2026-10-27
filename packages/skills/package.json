@@ -1,6 +1,6 @@
 {
   "name": "@hanger-source/dsh-reactive-skills",
-  "version": "0.17.1",
+  "version": "0.17.2",
   "description": "面向编码 Agent 的 dsh-reactive 应用开发 Skill",
   "license": "UNLICENSED",
   "author": "hanger",
@@ -19,11 +19,11 @@
     "prepack": "npm run build"
   },
   "peerDependencies": {
-    "@hanger-source/dsh-reactive": "0.17.1",
-    "@hanger-source/dsh-reactive-dsh": "0.17.1",
-    "@hanger-source/dsh-reactive-client": "0.17.1",
-    "@hanger-source/dsh-reactive-remote": "0.17.1",
-    "@hanger-source/dsh-reactive-native-ui": "0.17.1"
+    "@hanger-source/dsh-reactive": "0.17.2",
+    "@hanger-source/dsh-reactive-dsh": "0.17.2",
+    "@hanger-source/dsh-reactive-client": "0.17.2",
+    "@hanger-source/dsh-reactive-remote": "0.17.2",
+    "@hanger-source/dsh-reactive-native-ui": "0.17.2"
   },
   "peerDependenciesMeta": {
     "@hanger-source/dsh-reactive": { "optional": true },
