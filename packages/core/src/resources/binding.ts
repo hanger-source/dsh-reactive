@@ -1,4 +1,4 @@
-import { Observable, Subject, Subscriber, Subscription, defer, finalize, mergeMap, of, EMPTY, throwError, startWith, switchMap } from 'rxjs';
+import { Observable, Subject, Subscriber, Subscription, defer, mergeMap, of, EMPTY, throwError, startWith, switchMap } from 'rxjs';
 import { z } from 'zod';
 import { ScopeDisposedError, type Scope } from '../reactivity/scope.ts';
 import { normalizeResource } from '../reactivity/observable.ts';
@@ -43,14 +43,17 @@ export class ResourceInstance<D extends ResourceContract> implements ResourceRea
       if (this.#connection || this.#closed) return;
       const connection = new Subscription();
       this.#connection = connection;
-      const source$ = this.#invalidations.pipe(startWith(undefined), switchMap(() => defer(() => {
+      const source$ = this.#invalidations.pipe(startWith(undefined), switchMap(() => new Observable<Observation<ResourceData<D>>>(subscriber => {
         const controller = new AbortController();
+        // observe/invalidations 工厂尚未返回时也可能退出 owner，不能延后登记取消。
+        subscriber.add(() => controller.abort());
+        if (subscriber.closed) return;
         const context = Object.freeze({ signal: controller.signal });
-        return normalizeResource(defer(() => implementation.observe
+        normalizeResource(defer(() => implementation.observe
           ? implementation.observe(params, context)
           : observeResource<ResourceTarget<D>, z.input<D['value']>>({ key$: of(params), read: (current, signal) => implementation.read(current, { signal }),
             ...implementation.invalidations ? { invalidations: current => implementation.invalidations!(current, context) } : {} })))
-          .pipe(mapResource(value => z.parse<D['value']>(definition.value, value)), finalize(() => controller.abort()));
+          .pipe(mapResource(value => z.parse<D['value']>(definition.value, value))).subscribe(subscriber);
       })));
       const subscriber = new Subscriber<Observation<ResourceData<D>>>({
         next: observation => {

@@ -1,7 +1,55 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Observable, Subject, Subscription, concatMap, firstValueFrom, lastValueFrom, map, of, take, tap } from 'rxjs';
+import { NEVER, Observable, Subject, Subscription, concatMap, firstValueFrom, lastValueFrom, map, of, take, tap } from 'rxjs';
 import { Scope, createResource, createReaction, defineResource, implementResource, bindResource, defineReaction, implementReaction, bindReaction, z } from '@hanger-source/dsh-reactive';
+import type { Observation } from '@hanger-source/dsh-reactive';
+
+test('读取中同步失效先释放独占来源，下一次读取才能取得连接，迟到结果不覆盖当前事实', async () => {
+  const scope = new Scope(), invalidations = new Subject<void>();
+  const active = new Set<symbol>();
+  const reads: { signal: AbortSignal; result: ReturnType<typeof Promise.withResolvers<number>> }[] = [];
+  const resource = createResource(scope, { value: z.number(), invalidations: () => invalidations,
+    read({ signal }) {
+      if (active.size) throw new Error('PREVIOUS_RESOURCE_READ_STILL_ACTIVE');
+      const lease = Symbol('exclusive-source'); active.add(lease);
+      signal.addEventListener('abort', () => active.delete(lease), { once: true });
+      const result = Promise.withResolvers<number>();
+      reads.push({ signal, result });
+      if (reads.length === 1) invalidations.next();
+      return result.promise.finally(() => active.delete(lease));
+    },
+  });
+  const observed: Observation<number>[] = [];
+  const watch = resource.observations$.subscribe(value => observed.push(value));
+  try {
+    assert.equal(reads.length, 2, '取消旧读之前启动新读，会被实际独占来源拒绝');
+    assert.equal(reads[0]!.signal.aborted, true);
+    reads[1]!.result.resolve(2); reads[0]!.result.resolve(1);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(observed.flatMap(value => value.status === 'ready' ? [value.value] : []), [2]);
+    assert.equal(observed.some(value => value.status === 'error'), false);
+    assert.equal(active.size, 0);
+  } finally { watch.unsubscribe(); scope.dispose(); }
+});
+
+test('资源工厂尚未返回时退出作用域，提供者可用原 signal 阻止退出后的读取或监听副作用', () => {
+  for (const kind of ['read', 'observe', 'invalidations'] as const) {
+    const scope = new Scope();
+    let opened = 0, completed = false;
+    const stopped = ({ signal }: { signal: AbortSignal }) => { scope.dispose(); signal.throwIfAborted(); opened++; };
+    const resource = kind === 'observe'
+      ? createResource(scope, { value: z.number(), observe(context) { stopped(context); return NEVER; } })
+      : kind === 'invalidations'
+        ? createResource(scope, { value: z.number(), read() { opened++; return 1; },
+          invalidations(context) { stopped(context); return NEVER; } })
+        : createResource(scope, { value: z.number(), read(context) { stopped(context); return 1; } });
+    const watch = resource.observations$.subscribe({ complete: () => { completed = true; } });
+    try {
+      assert.equal(opened, 0, kind + ' 不应在 owner 退出后打开来源');
+      assert.equal(completed, true);
+    } finally { watch.unsubscribe(); scope.dispose(); }
+  }
+});
 
 test('同步退出资源观察不启动业务读取，连接中退出也立即撤销来源，后续显式读取仍可正常建立连接', async () => {
   const scope = new Scope();

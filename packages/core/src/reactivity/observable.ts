@@ -1,4 +1,4 @@
-import { Observable, Subject, ReplaySubject, Subscription, connectable, takeUntil, defer, from, finalize, tap, distinctUntilChanged, EmptyError, filter, isObservable, map, materialize, scan, startWith } from 'rxjs';
+import { Observable, Subject, ReplaySubject, Subscription, connectable, takeUntil, defer, from, tap, distinctUntilChanged, EmptyError, filter, isObservable, map, materialize, scan, startWith } from 'rxjs';
 import type { Observation } from '../resources/observation.ts';
 import type { Scope } from './scope.ts';
 
@@ -47,13 +47,15 @@ export function fromSnapshot<T>(source: SnapshotSource<T>): Observable<T> {
 
 /** Promise API 与标准退订的取消互操作；组合、并发和重试均使用 RxJS 本身。 */
 export function abortable<T>(run: (signal: AbortSignal) => PromiseLike<T> | T): Observable<T> {
-  return defer(() => {
+  return new Observable(subscriber => {
     const controller = new AbortController();
     let settled = false;
-    return defer(() => from(Promise.resolve(run(controller.signal)))).pipe(
+    // run 可以同步失效当前读取；进入业务代码前就把取消交给真实订阅。
+    subscriber.add(() => { if (!settled) controller.abort(); });
+    if (subscriber.closed) return;
+    defer(() => from(Promise.resolve(run(controller.signal)))).pipe(
       tap({ next: () => { settled = true; }, error: () => { settled = true; } }),
-      finalize(() => { if (!settled) controller.abort(); }),
-    );
+    ).subscribe(subscriber);
   });
 }
 
