@@ -17,7 +17,8 @@ export class ProgramSkills {
   #names: readonly string[] = [];
   #directories: readonly string[] = [];
   #revision = 0;
-  #catalogRevision = 0;
+  #lookupRevision = 0;
+  #preparing = new Set<AbortController>();
   #providers = new Map<string, Fiber>();
   #contexts = new Map<string, NamedSkill>();
   #retiring = new Set<Promise<void>>();
@@ -31,7 +32,11 @@ export class ProgramSkills {
     // 新的 plugin fiber 继承 Agent 的 scope；显式注入不依赖 agent-loop 的依赖清单。
     this.#owner = agent.ctx.inject(['skills', 'systemPrompt', 'workingDirectory', 'fs'], ctx => {
       this.#ctx = ctx;
-      ctx.on('skills/change', () => { this.#catalogRevision++; });
+      const invalidate = () => { this.#lookupRevision++; this.invalidatePreparation(); };
+      ctx.on('skills/change', invalidate);
+      ctx.on('session/event', (session, event) => {
+        if (session === agent.session && event.type === 'working-directory/change') invalidate();
+      });
       ctx.effect(() => () => this.closeBindings());
     });
   }
@@ -59,6 +64,7 @@ export class ProgramSkills {
     this.#names = names;
     this.#directories = directories;
     this.#revision++;
+    this.invalidatePreparation();
   }
 
   /** 在原生 pre-step 的 Skill catalog 收集之前等待；相同目录与名称保留原生注册身份。 */
@@ -104,36 +110,44 @@ export class ProgramSkills {
     }
   }
 
-  /** 选中的方法正文进入本次原生上下文；声明、目录或 catalog 改变时由调用者重新装配。 */
+  /** 选中的方法正文进入本次原生上下文；依赖变化取消当前读取并准备新的集合。 */
   async prepare(signal: AbortSignal): Promise<() => boolean> {
     const lifetime = AbortSignal.any([signal, this.#lifetime.signal]);
     for (;;) {
       await this.ready(lifetime);
       const ctx = this.#ctx!;
       const revision = this.#revision;
-      const catalogRevision = this.#catalogRevision;
+      const lookupRevision = this.#lookupRevision;
       const names = this.#names;
-      const cwd = await ctx.workingDirectory.ensure(this.agent, lifetime);
-      const stable = () => !this.#disposed && !lifetime.aborted && revision === this.#revision
-        && catalogRevision === this.#catalogRevision && cwd === ctx.workingDirectory.get(this.agent.session);
-      let definitions;
-      try { definitions = await Promise.all(names.map(name => ctx.skills.get(name, { scope: this.agent, cwd, signal: lifetime }))); }
-      catch (error) {
-        lifetime.throwIfAborted();
+      const current = () => revision === this.#revision && lookupRevision === this.#lookupRevision;
+      const attempt = new AbortController();
+      this.#preparing.add(attempt);
+      const reading = AbortSignal.any([lifetime, attempt.signal]);
+      try {
+        const cwd = await ctx.workingDirectory.ensure(this.agent, reading);
+        const stable = () => !this.#disposed && !lifetime.aborted && current()
+          && cwd === ctx.workingDirectory.get(this.agent.session);
+        const definitions = await Promise.all(names.map(name => ctx.skills.get(name, { scope: this.agent, cwd, signal: reading })));
+        reading.throwIfAborted();
         this.assertActive();
         if (!stable()) continue;
+        const texts = definitions.map((definition, index) => {
+          if (!definition) throw new Error('REACTIVE_SKILL_NOT_FOUND: ' + names[index]);
+          if (!isModelInvocable(definition)) throw new Error('REACTIVE_SKILL_NOT_MODEL_INVOCABLE: ' + names[index]);
+          return renderSkillContent(definition);
+        });
+        names.forEach((name, index) => { this.#contexts.get(name)!.text = texts[index]!; });
+        return stable;
+      } catch (error) {
+        lifetime.throwIfAborted();
+        this.assertActive();
+        if (!current()) continue;
         throw error;
+      } finally {
+        this.#preparing.delete(attempt);
+        // 原生 Registry 取消本次查询；共享 provider 的注册和其他查询保持各自寿命。
+        attempt.abort();
       }
-      lifetime.throwIfAborted();
-      this.assertActive();
-      if (!stable()) continue;
-      const texts = definitions.map((definition, index) => {
-        if (!definition) throw new Error('REACTIVE_SKILL_NOT_FOUND: ' + names[index]);
-        if (!isModelInvocable(definition)) throw new Error('REACTIVE_SKILL_NOT_MODEL_INVOCABLE: ' + names[index]);
-        return renderSkillContent(definition);
-      });
-      names.forEach((name, index) => { this.#contexts.get(name)!.text = texts[index]!; });
-      return stable;
     }
   }
 
@@ -150,6 +164,9 @@ export class ProgramSkills {
   }
 
   private assertActive() { if (this.#disposed) throw new Error('REACTIVE_SKILLS_DISPOSED'); }
+  private invalidatePreparation() {
+    for (const attempt of this.#preparing) attempt.abort(new Error('REACTIVE_SKILL_PREPARATION_CHANGED'));
+  }
   private retire(fiber: Fiber) {
     const retirement = Promise.resolve(fiber.dispose()).then(() => { this.#retiring.delete(retirement); }, error => {
       this.#retiring.delete(retirement);
