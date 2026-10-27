@@ -1,5 +1,16 @@
 # @hanger-source/dsh-reactive-dsh
 
+## 0.7.0
+
+### Minor Changes
+
+- 424b75d: 本地、远程及动态集合提供稳定的 viewResource 读侧对象，普通函数、Promise、Observable、程序 hooks 与可选原生 UI 共用现有 View 状态和 SDK 读取寿命。ResourceReader 统一已有快照的读取、取消与终止结算，不建立新缓存或来源连接。自定义 SurfaceCollectionTransport 以 viewResource 返回已有读侧，取代分开的 observeView/readView 传输方法。
+
+### Patch Changes
+
+- Updated dependencies [424b75d]
+  - @hanger-source/dsh-reactive@0.7.0
+
 ## 0.6.0
 
 ### Minor Changes
