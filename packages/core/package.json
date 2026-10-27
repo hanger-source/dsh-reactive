@@ -1,6 +1,6 @@
 {
   "name": "@hanger-source/dsh-reactive",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "description": "基于 dsh 的双向响应式应用编程框架",
   "license": "UNLICENSED",
   "author": "hanger",
