@@ -1,0 +1,65 @@
+{
+  "name": "@hanger-source/dsh-reactive-client",
+  "version": "0.2.0",
+  "description": "dsh-reactive 的独立类型化客户端与纯远程合同",
+  "license": "UNLICENSED",
+  "author": "hanger",
+  "publishConfig": { "registry": "https://registry.npmjs.org", "tag": "next", "access": "public" },
+  "repository": { "type": "git", "url": "git+https://github.com/hanger-source/dsh-reactive.git", "directory": "packages/client" },
+  "type": "module",
+  "engines": {
+    "node": ">=24.18.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "node": "./lib/index.js",
+      "browser": "./lib/client.browser.js",
+      "default": "./lib/client.browser.js"
+    },
+    "./package.json": "./package.json",
+    "./types": {
+      "types": "./lib/types.d.ts",
+      "import": "./lib/types.js"
+    },
+    "./errors": {
+      "types": "./lib/errors.d.ts",
+      "import": "./lib/errors.js"
+    },
+    "./transport": {
+      "types": "./lib/transport.d.ts",
+      "import": "./lib/transport.js"
+    },
+    "./remote": {
+      "types": "./lib/typert.remote-client.d.ts",
+      "import": "./lib/typert.remote-client.js"
+    }
+  },
+  "files": [
+    "lib",
+    "release.json"
+  ],
+  "scripts": {
+    "build:contracts": "tsc -p tsconfig.contracts.json",
+    "build": "tsc -p tsconfig.json && node scripts/browser.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-api-gateway": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-client-connection": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-session": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-typert-registry": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-util-crypto": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-util-values": "0.2.1-rc.3",
+    "rxjs": "7.8.2",
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "@hanger-source/dsh-reactive": "0.2.0"
+  },
+  "devDependencies": {
+    "@hanger-source/dsh-reactive": "file:../core"
+  }
+}

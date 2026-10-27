@@ -1,0 +1,72 @@
+{
+  "name": "@hanger-source/dsh-reactive-remote",
+  "version": "0.2.0",
+  "description": "dsh-reactive 的已认证 Gateway 宿主与 Program 服务入口",
+  "license": "UNLICENSED",
+  "author": "hanger",
+  "publishConfig": { "registry": "https://registry.npmjs.org", "tag": "next", "access": "public" },
+  "repository": { "type": "git", "url": "git+https://github.com/hanger-source/dsh-reactive.git", "directory": "packages/remote" },
+  "type": "module",
+  "engines": {
+    "node": ">=24.18.0"
+  },
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./lib/index.d.ts",
+      "import": "./lib/index.js"
+    },
+    "./typert": {
+      "types": "./lib/typert.host.d.ts",
+      "default": "./lib/typert.host.js"
+    }
+  },
+  "files": [
+    "lib",
+    "release.json"
+  ],
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "build": "npm run generate && tsc -p tsconfig.json",
+    "typecheck": "npm run generate && tsc --noEmit -p tsconfig.json",
+    "test": "node --test --test-timeout=25000 test/*.test.mjs",
+    "browser:serve": "node test/browser-host.mjs",
+    "browser:requests": "node test/browser-request-host.mjs",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-agent-default-model": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-api-gateway": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-api-remote-access": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-api-remotes": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-api-session-controller": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-attachment": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-attachment-local": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-client-connection": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-client-file-upload": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-commands": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-credentials-local": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-session": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-typert-loader": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-typert-registry": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-util-crypto": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-util-values": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-workspace": "0.2.1-rc.3",
+    "rxjs": "7.8.2",
+    "ws": "8.21.3",
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "@hanger-source/dsh-reactive": "0.2.0",
+    "@deepseek-ai/cordis": "4.0.5",
+    "@hanger-source/dsh-reactive-dsh": "0.2.0",
+    "@hanger-source/dsh-reactive-client": "0.2.0"
+  },
+  "devDependencies": {
+    "@hanger-source/dsh-reactive": "file:../core",
+    "@types/ws": "8.18.1",
+    "@hanger-source/dsh-reactive-dsh": "file:../dsh",
+    "@hanger-source/dsh-reactive-client": "file:../client"
+  }
+}

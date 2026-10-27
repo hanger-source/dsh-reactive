@@ -1,0 +1,35 @@
+{
+  "name": "@hanger-source/dsh-reactive-skills",
+  "version": "0.2.0",
+  "description": "面向编码 Agent 的 dsh-reactive 应用开发 Skill",
+  "license": "UNLICENSED",
+  "author": "hanger",
+  "publishConfig": { "registry": "https://registry.npmjs.org", "tag": "next", "access": "public" },
+  "repository": { "type": "git", "url": "git+https://github.com/hanger-source/dsh-reactive.git", "directory": "packages/skills" },
+  "type": "module",
+  "engines": { "node": ">=24.18.0" },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.mjs" },
+    "./package.json": "./package.json"
+  },
+  "bin": { "dsh-reactive-skill": "./dist/cli.mjs" },
+  "files": ["dist", "skills", "release.json"],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "@hanger-source/dsh-reactive": "0.2.0",
+    "@hanger-source/dsh-reactive-dsh": "0.2.0",
+    "@hanger-source/dsh-reactive-client": "0.2.0",
+    "@hanger-source/dsh-reactive-remote": "0.2.0",
+    "@hanger-source/dsh-reactive-native-ui": "0.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@hanger-source/dsh-reactive": { "optional": true },
+    "@hanger-source/dsh-reactive-dsh": { "optional": true },
+    "@hanger-source/dsh-reactive-client": { "optional": true },
+    "@hanger-source/dsh-reactive-remote": { "optional": true },
+    "@hanger-source/dsh-reactive-native-ui": { "optional": true }
+  }
+}

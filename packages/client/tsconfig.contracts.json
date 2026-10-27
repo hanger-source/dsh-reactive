@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/types.ts", "src/errors.ts", "src/transport.ts", "src/inbox.ts"],
+  "exclude": []
+}

@@ -1,0 +1,23 @@
+{
+  "registry": "https://registry.npmjs.org",
+  "repository": "git+https://github.com/hanger-source/dsh-reactive.git",
+  "author": "hanger",
+  "tagPrefix": "dsh-reactive@",
+  "packages": [
+    { "name": "@hanger-source/dsh-reactive", "directory": "packages/core" },
+    { "name": "@hanger-source/dsh-reactive-dsh", "directory": "packages/dsh" },
+    { "name": "@hanger-source/dsh-reactive-client", "directory": "packages/client" },
+    { "name": "@hanger-source/dsh-reactive-remote", "directory": "packages/remote" },
+    { "name": "@hanger-source/dsh-reactive-native-ui", "directory": "packages/native-ui" },
+    { "name": "@hanger-source/dsh-reactive-skills", "directory": "packages/skills" }
+  ],
+  "consumerTooling": {
+    "typescript": "5.9.3",
+    "nodeTypes": "24.19.2",
+    "backendReact": "19.3.1",
+    "backendReactTypes": "19.3.0",
+    "backendReconciler": "0.34.0",
+    "uiReact": "18.2.0",
+    "uiReactTypes": "18.3.28"
+  }
+}

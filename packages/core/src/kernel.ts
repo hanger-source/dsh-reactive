@@ -1,0 +1,23 @@
+/** 宿主扩展合同：实现运行边界，允许加载组件运行时；纯合同与客户端不导入此入口。 */
+export { ActionBindingUnavailableError, ActionTargetMismatchError, actionInvocationArguments, actionOperationOwner, captureActionArguments, guardActionExecution, implementAction, observeBoundAction, type ActionCallContext, type ActionContract, type ActionExecutionContext, type ActionImplementation, type ActionInput, type ActionInvocation, type ActionObserved, type ActionOperationEvent, type ActionOutput, type ActionParsedInput, type ActionReference, type ActionScope, type ActionSource, type Invocation } from './actions/contract.ts';
+export { type ApplicationDefinition } from './applications/definition.ts';
+export { NativeChildWork, nativeChildCommandSchema, nativeChildReceiptSchema, type NativeChildCommand, type NativeChildFeedback, type NativeChildReceipt, type NativeChildReference, type NativeChildState } from './collaboration/child.ts';
+export { Conversation, conversationBindings, type CancellationOptions, type Continuation, type ConversationCreateOptions, type ConversationIdentity, type GoalReference, type InputReceipt, type ObservedViews, type Submission, type SubmitOptions, type Views, type WaitReference, type WorkspaceContext, type WorkspaceInfo, type WorkspaceRegistration } from './conversations/conversation.ts';
+export { type AssistantProgressFrame, type AssistantStream, type ConversationEvent, type ToolOccurrence } from './conversations/events.ts';
+export { InputEditRejectedError } from './conversations/input-edit.ts';
+export { admittedSubmissionSchema, continuationSchema, conversationCreateOptionsSchema, creationReferenceSchema, inputReferenceSchema, requestActivitySchema, submissionSchema, type AdmittedPromptContentPart, type AdmittedSubmission, type ConversationActivity, type CreationReference, type EncodedFileUploadRequest, type FileUploadReceiptId, type FileUploadSource, type FileUploadValue, type InputReference, type Json, type NormalizedSubmission, type PromptContentPart, type UploadFileOptions, waitSchema, workspaceRegistrationSchema } from './conversations/protocol.ts';
+export { createRequestHandle, type ConversationProgressSnapshot, type RequestHandle } from './conversations/request.ts';
+export { type AnyEnvironment, type EnvironmentAt, type EnvironmentOperations } from './environments/definition.ts';
+export { assertOperationFollowSupported, attachOperation, bindOperation, encodeOperationFeedback, implementOperation, isOperationOwner, locateOperation, operationBindingCommand, operationBindingOwner, operationFollowLinkSchema, readOperationFeedback, registerOperationFollow, settledOperation, type BoundOperation, type OperationAccessContext, type OperationBindingReference, type OperationCommand, type OperationContract, type OperationFeedbackNode, type OperationFeedbackPayload, type OperationFeedbackRead, type OperationFollowLink, type OperationHandle, type OperationLocation, type OperationNotificationResult, type OperationOwner, type OperationOwnerReference, type OperationReference, type OperationState } from './operations/contract.ts';
+export { humanAnswerSchema, type HumanAnswer, type HumanAskOptions, type HumanAskResult, type HumanForegroundQuestion, type HumanInputState, type HumanPrompt, type HumanQuestion, type HumanQuestionOrigin, type HumanResponderOptions, type HumanWaitFrame } from './participation/contract.ts';
+export { type HumanInputDeclaration, type SkillDeclaration } from './program/declarations.ts';
+export { type ProgramContract, type ProgramImplementation, type ProgramInput, type ProgramParsedInput } from './program/definition.ts';
+export { ProgramInstance, type BoundFollow, type BoundOffer } from './program/instance.ts';
+export { connect } from './reactivity/observable.ts';
+export { Scope, batch, type Cell, type Value } from './reactivity/scope.ts';
+export { type Observation } from './resources/observation.ts';
+export { type ResourceValue } from './resources/value.ts';
+export { createSurfaceCollectionClient, type SurfaceCollectionClient } from './surfaces/collection-client.ts';
+export { surfaceSlotDefinition, type SurfaceViews } from './surfaces/contract.ts';
+export { actionManifestSlot, type ToolActionBinding } from './surfaces/presentation.ts';
+export type { InputParticipant } from './conversations/protocol.ts';

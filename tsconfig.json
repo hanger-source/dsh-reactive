@@ -1,0 +1,29 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "paths": {
+      "@hanger-source/dsh-reactive": [
+        "./packages/core/src/index.ts"
+      ],
+      "@hanger-source/dsh-reactive/program": [
+        "./packages/core/src/program/index.ts"
+      ],
+      "@hanger-source/dsh-reactive/kernel": [
+        "./packages/core/src/kernel.ts"
+      ],
+      "@hanger-source/dsh-reactive/*": [
+        "./packages/core/src/*/index.ts"
+      ],
+      "@hanger-source/dsh-reactive-dsh": [
+        "./packages/dsh/src/index.ts"
+      ]
+    }
+  },
+  "include": [
+    "packages/core/src/**/*.ts",
+    "packages/core/src/**/*.tsx",
+    "test/**/*.ts",
+    "test/**/*.tsx"
+  ]
+}

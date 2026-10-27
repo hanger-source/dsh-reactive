@@ -1,0 +1,21 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@4.0.1/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": false,
+  "fixed": [[
+    "@hanger-source/dsh-reactive",
+    "@hanger-source/dsh-reactive-dsh",
+    "@hanger-source/dsh-reactive-client",
+    "@hanger-source/dsh-reactive-remote",
+    "@hanger-source/dsh-reactive-native-ui",
+    "@hanger-source/dsh-reactive-skills"
+  ]],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "main",
+  "format": false,
+  "privatePackages": { "version": false, "tag": false },
+  "updateInternalDependencies": "patch",
+  "ignore": [],
+  "bumpVersionsWithWorkspaceProtocolOnly": false
+}

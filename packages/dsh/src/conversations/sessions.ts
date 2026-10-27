@@ -1,0 +1,455 @@
+import { randomUUID } from "node:crypto";
+import { isAbsolute } from "node:path";
+import type { Context } from "@deepseek-ai/cordis";
+import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
+import { SessionId, pluginRecordOf } from "@deepseek-ai/dsh-session";
+import { SessionAlreadyExistsError, type SessionInspection } from "@deepseek-ai/dsh-session-persistence";
+import { Conversation, conversationBindings, type WorkspaceInfo, type WorkspaceRegistration, type ConversationCreateOptions } from "@hanger-source/dsh-reactive/kernel";
+import { type ApplicationDefinition } from "@hanger-source/dsh-reactive/kernel";
+import { type AnyEnvironment } from "@hanger-source/dsh-reactive/kernel";
+import { EnvironmentPresets } from "../programs/presets.ts";
+import { canonical } from "./records.ts";
+import { type Workspaces, type ManagedWorkspace } from "../workspaces/workspaces.ts";
+import { conversationCreateOptionsSchema, creationReferenceSchema, workspaceRegistrationSchema, type CreationReference } from "@hanger-source/dsh-reactive/kernel";
+import type { ProgramContract } from "@hanger-source/dsh-reactive/kernel";
+import type { ProgramImplementation } from "@hanger-source/dsh-reactive/kernel";
+import { type NativeDelegations, type DelegationRecord } from "../delegations.ts";
+import type { HostOptions } from '../applications/options.ts';
+import type { ConversationSession, LiveConversation } from './session.ts';
+import type { ConversationObservations } from './observations.ts';
+import type { ConversationInputs } from './inputs.ts';
+import type { ConversationPrograms } from '../programs/preparation.ts';
+import type { OperationParticipation } from '../operations/participation.ts';
+export class CreationIncompleteError extends Error {
+    constructor(readonly reference: CreationReference, cause: unknown) {
+        super('REACTIVE_WORKSPACE_CREATION_INCOMPLETE', { cause });
+    }
+}
+/** 冷程序图和真实Agent挂载分别保留身份；只持有本应用实际取得的原生句柄。 */
+export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly AnyEnvironment[]> {
+    #entries = new Map<Agent, LiveConversation>();
+    #sessions = new Map<string, ConversationSession>();
+    #starting = new Map<string, Promise<void>>();
+    #owned = new Map<string, AgentHandle>();
+    #rootAdmissions = new WeakMap<Agent, {
+        workspace: ManagedWorkspace;
+        environment: AnyEnvironment;
+    }>();
+    #presets: EnvironmentPresets;
+    constructor(private readonly ctx: Context, private readonly definition: ApplicationDefinition<E>, private readonly workspaces: Workspaces, private readonly options: HostOptions, private readonly signal: AbortSignal, private readonly facts: ConversationObservations, private readonly delegations: NativeDelegations, private readonly programs: () => ConversationPrograms, private readonly inputs: () => ConversationInputs, private readonly operations: () => OperationParticipation) {
+        this.#presets = new EnvironmentPresets(ctx, definition.name);
+    }
+    private assertActive() { if (this.signal.aborted)
+        throw new Error('REACTIVE_HOST_DISPOSED'); }
+    get(id: string) { return this.#sessions.get(id); }
+    forAgent(agent: Agent) { return this.#entries.get(agent); }
+    assertServiceActor(): void {
+        if (!this.options.serviceActorId?.trim())
+            throw new Error('REACTIVE_ACTION_ACTOR_REQUIRED');
+    }
+    async recoverChild(session: ConversationSession): Promise<void> {
+        if (!session.child)
+            return;
+        const parent = this.ctx.agents.get(SessionId(session.child.command.parentSessionId));
+        if (!parent)
+            throw new Error('REACTIVE_CHILD_PARENT_NOT_RUNNING');
+        await this.delegations.recoverLive(this.live(session).agent, parent, this.signal);
+    }
+    require(id: string): ConversationSession {
+        this.assertActive();
+        const session = this.#sessions.get(id);
+        if (!session)
+            throw new Error('REACTIVE_CONVERSATION_NOT_OPEN');
+        return session;
+    }
+    async initialize(): Promise<void> {
+        await this.#presets.initialize(this.workspaces.environments(), (agent, environment, signal) => this.attach(agent, environment, signal));
+    }
+    installDisposed(): void {
+        this.ctx.on('agent/disposed', ({ agent }) => {
+            const entry = this.#entries.get(agent);
+            this.#entries.delete(agent);
+            if (!entry || entry.session.live !== entry)
+                return;
+            entry.session.live = undefined;
+            entry.session.conversation[conversationBindings]().resetProgress();
+            entry.session.conversation[conversationBindings]().publishForegroundQuestions([]);
+            this.facts.publish(entry.session);
+            this.collect(entry.session);
+        });
+    }
+    async shutdownNative(): Promise<unknown[]> {
+        await Promise.allSettled(this.#starting.values());
+        const owned = [...this.#owned.values()], failures: unknown[] = [];
+        try {
+            await this.ctx.get('subagents')?.drainDescendants(owned.map(handle => handle.agent));
+        }
+        catch (error) {
+            failures.push(error);
+        }
+        for (const handle of owned)
+            handle.agent.cancel({ kind: 'disposed' });
+        const results = await Promise.allSettled(owned.map(async (handle) => {
+            try {
+                await this.settle(handle.agent);
+            }
+            finally {
+                await handle.dispose();
+            }
+        }));
+        this.#owned.clear();
+        failures.push(...results.flatMap(result => result.status === 'rejected' ? [result.reason] : []));
+        return failures;
+    }
+    stopPresets(): Promise<void> { return this.#presets.dispose(); }
+    releasePrograms(): unknown[] {
+        const failures: unknown[] = [];
+        for (const entry of this.#sessions.values()) {
+            try {
+                entry.conversation.scope.dispose();
+            }
+            catch (error) {
+                failures.push(error);
+            }
+        }
+        this.#sessions.clear();
+        return failures;
+    }
+    collect(entry: ConversationSession) {
+        if (entry.live || entry.pins !== 0)
+            return;
+        if (this.#sessions.get(entry.header.id) === entry)
+            this.#sessions.delete(entry.header.id);
+        entry.conversation.scope.dispose();
+    }
+    release(entry: ConversationSession) { entry.pins--; this.collect(entry); }
+    live(entry: ConversationSession) {
+        this.assertActive();
+        if (!entry.live)
+            throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
+        return entry.live;
+    }
+    compose(inspection: SessionInspection, workspace: ManagedWorkspace, environment: AnyEnvironment, implementation: ProgramImplementation = environment.program, child?: DelegationRecord) {
+        this.workspaces.verifyInspection(inspection, workspace, environment);
+        if (!child && (inspection.meta.origin || inspection.meta.parentSession || inspection.meta.isSeeded))
+            throw new Error('REACTIVE_ROOT_CONVERSATION_REQUIRED');
+        const existing = this.#sessions.get(inspection.meta.id);
+        if (existing) {
+            if (existing.workspace !== workspace || existing.environment !== environment)
+                throw new Error('REACTIVE_WORKSPACE_BINDING_MISMATCH');
+            if (existing.implementation !== implementation)
+                throw new Error('REACTIVE_PROGRAM_IMPLEMENTATION_MISMATCH');
+            if (!existing.live) {
+                const { state, questions } = this.facts.stateOf(inspection);
+                existing.conversation[conversationBindings]().accept(state.current);
+                existing.conversation[conversationBindings]().publishQuestions(questions);
+                existing.state = state;
+                this.facts.publish(existing);
+            }
+            return existing;
+        }
+        const { state, questions } = this.facts.stateOf(inspection);
+        const conversation = new Conversation({ sessionId: inspection.meta.id, workspaceId: workspace.native.id,
+            environmentId: environment.id, directory: workspace.native.path, parentSessionId: inspection.meta.parentSession ?? null }, workspace.context, implementation.definition, state.activity);
+        try {
+            conversation[conversationBindings]().accept(state.current);
+            conversation[conversationBindings]().publishQuestions(questions);
+            const program = this.programs().create(conversation, implementation, workspace, () => entry);
+            const views = Object.freeze(Object.fromEntries(Object.entries(program.outputs.views)
+                .map(([name, value]) => [name, value.values$])));
+            const entry: ConversationSession = { header: inspection.meta, workspace, environment, implementation, child, conversation, state, program, views, pins: 0 };
+            this.inputs().bindConversation(entry);
+            program.mount();
+            this.#sessions.set(inspection.meta.id, entry);
+            return entry;
+        }
+        catch (error) {
+            conversation.scope.dispose();
+            throw error;
+        }
+    }
+    async attach(agent: Agent, environment: AnyEnvironment, nativeSignal: AbortSignal = this.signal) {
+        this.assertActive();
+        if (this.#entries.has(agent))
+            return this.#entries.get(agent)!;
+        const parentWorkspace = (record: DelegationRecord, parent: Agent) => {
+            const parentLiveConversation = this.#entries.get(parent);
+            if (this.ctx.agents.get(parent.id) !== parent || !parentLiveConversation || parentLiveConversation.session.environment !== environment
+                || canonical(parentLiveConversation.session.conversation.identity) !== canonical(record.parent))
+                throw new Error('REACTIVE_CHILD_PARENT_WORKSPACE_MISMATCH');
+            this.workspaces.assertMember(parent.session, parentLiveConversation.session.workspace, environment);
+            return parentLiveConversation.session.workspace;
+        };
+        const child = await this.delegations.created(agent, async (record, parent) => {
+            parentWorkspace(record, parent);
+            await this.inputs().revalidateCauses(record.causes, nativeSignal);
+        }, nativeSignal);
+        let workspace: ManagedWorkspace;
+        if (child) {
+            const parent = this.ctx.agents.get(SessionId(child.record.command.parentSessionId));
+            if (!parent)
+                throw new Error('REACTIVE_CHILD_PARENT_NOT_RUNNING');
+            workspace = parentWorkspace(child.record, parent);
+            const own = agent.session.snapshotEvents().slice(agent.session.inheritedEventCount);
+            if (!own.some(event => pluginRecordOf(event)?.type === 'plugin:reactive/workspace')) {
+                this.workspaces.bind(agent.session, workspace, environment);
+                await this.workspaces.attach(agent.session, workspace, environment);
+                this.workspaces.complete(agent.session, workspace, environment);
+                await this.facts.flush(agent);
+            }
+            else {
+                const inspection = { meta: agent.session.header, events: agent.session.snapshotEvents(), inheritedEventCount: agent.session.inheritedEventCount };
+                if (!this.workspaces.completed(inspection, workspace, environment))
+                    throw new Error('REACTIVE_CHILD_WORKSPACE_CREATION_INCOMPLETE');
+                this.workspaces.assertMember(agent.session, workspace, environment);
+            }
+        }
+        else {
+            const admission = this.#rootAdmissions.get(agent);
+            this.#rootAdmissions.delete(agent);
+            if (!admission || admission.environment !== environment)
+                throw new Error('REACTIVE_ROOT_CREATION_AUTHORITY_REQUIRED');
+            const selected = this.workspaces.resolve({ meta: agent.session.header, events: agent.session.snapshotEvents(), inheritedEventCount: agent.session.inheritedEventCount });
+            if (selected.environment !== environment || selected.workspace !== admission.workspace)
+                throw new Error('REACTIVE_WORKSPACE_BINDING_MISMATCH');
+            workspace = selected.workspace;
+        }
+        const session = this.compose({ meta: agent.session.header, events: agent.session.snapshotEvents(),
+            inheritedEventCount: agent.session.inheritedEventCount }, workspace, environment, child?.implementation ?? environment.program, child?.record);
+        if (session.live)
+            throw new Error('REACTIVE_CONVERSATION_ALREADY_RUNNING');
+        const { conversation } = session;
+        this.programs().scope(agent, conversation.scope);
+        const entry = this.programs().createLive(agent, session);
+        session.live = entry;
+        this.#entries.set(agent, entry);
+        try {
+            await this.programs().attach(entry);
+            this.facts.publish(session);
+        }
+        catch (error) {
+            this.#entries.delete(agent);
+            session.live = undefined;
+            this.programs().release(agent);
+            this.collect(session);
+            throw error;
+        }
+        return entry;
+    }
+    assertSessionWorkspace(session: ConversationSession) {
+        this.assertActive();
+        session.conversation.scope.assertActive();
+        if (session.live)
+            this.workspaces.assertMember(session.live.agent.session, session.workspace, session.environment);
+        else
+            this.workspaces.assertMemberHeader(session.header, session.workspace, session.environment);
+    }
+    async createWorkspace(input: WorkspaceRegistration): Promise<WorkspaceInfo> {
+        this.assertActive();
+        const registration = workspaceRegistrationSchema.parse(input);
+        if (!isAbsolute(registration.directory))
+            throw new Error('REACTIVE_WORKSPACE_PATH_NOT_ABSOLUTE');
+        return this.workspaces.register(registration, id => this.facts.inspect(id));
+    }
+    async describe(): Promise<readonly WorkspaceInfo[]> {
+        this.assertActive();
+        return this.workspaces.describe(id => this.facts.inspect(id));
+    }
+    async mountRoot(native: Context, agent: Agent, workspace: ManagedWorkspace, environment: AnyEnvironment) {
+        this.#rootAdmissions.set(agent, { workspace, environment });
+        try {
+            await this.ctx.agentPresets.mount(native, this.workspaces.presetId(environment));
+        }
+        catch (error) {
+            this.#rootAdmissions.delete(agent);
+            throw error;
+        }
+    }
+    async createRegistered(workspace: ManagedWorkspace, environment: AnyEnvironment, sessionId: string, create: () => Promise<AgentHandle>) {
+        this.assertActive();
+        if (this.#starting.has(sessionId))
+            throw new Error('REACTIVE_CONVERSATION_ACTIVATION_IN_PROGRESS');
+        const starting = (async () => {
+            let handle: AgentHandle | undefined;
+            try {
+                handle = await create();
+                this.assertActive();
+                this.#owned.set(sessionId, handle);
+                await this.facts.flush(handle.agent);
+                await this.workspaces.attach(handle.agent.session, workspace, environment);
+                this.workspaces.complete(handle.agent.session, workspace, environment);
+                await this.facts.flush(handle.agent);
+            }
+            catch (cause) {
+                if (!handle) {
+                    if (cause instanceof SessionAlreadyExistsError)
+                        throw new Error('REACTIVE_CONVERSATION_EXISTS', { cause });
+                    throw cause;
+                }
+                let failure = cause;
+                try {
+                    await handle.dispose();
+                    this.#owned.delete(sessionId);
+                }
+                catch (cleanup) {
+                    failure = new AggregateError([cause, cleanup], 'REACTIVE_CREATION_CLEANUP_FAILED');
+                }
+                throw new CreationIncompleteError({ environmentId: environment.id, workspaceId: workspace.native.id, sessionId }, failure);
+            }
+        })();
+        this.#starting.set(sessionId, starting);
+        try {
+            await starting;
+        }
+        finally {
+            this.#starting.delete(sessionId);
+        }
+    }
+    async create<Id extends E[number]['id']>(environmentId: Id, raw: ConversationCreateOptions): Promise<ConversationSession> {
+        this.assertActive();
+        const options = conversationCreateOptionsSchema.parse(raw), sessionId = options.sessionId ?? randomUUID();
+        const environment = this.workspaces.environment(environmentId), workspace = this.workspaces.get(options.workspaceId);
+        const presetId = this.workspaces.presetId(environment);
+        await this.createRegistered(workspace, environment, sessionId, () => this.ctx.agents.create({ sessionId: SessionId(sessionId),
+            meta: { cwd: workspace.native.path, agentPreset: presetId }, agentOptions: this.options.model,
+            setup: async (native, agent) => {
+                this.workspaces.bind(agent.session, workspace, environment);
+                await this.mountRoot(native, agent, workspace, environment);
+            } }));
+        return this.#sessions.get(sessionId)!;
+    }
+    async readSession(sessionId: string) {
+        this.assertActive();
+        const live = this.#sessions.get(sessionId);
+        if (live?.live) {
+            this.workspaces.assertMember(live.live.agent.session, live.workspace, live.environment);
+            return live;
+        }
+        const inspection = await this.facts.inspect(sessionId);
+        this.assertActive();
+        const { workspace, environment } = this.workspaces.resolve(inspection);
+        if (!workspace.native.sessionIds.includes(SessionId(sessionId)))
+            throw new Error('REACTIVE_WORKSPACE_MEMBERSHIP_REQUIRED');
+        const child = inspection.meta.parentSession ? await this.delegations.describeChild(inspection) : undefined;
+        return this.compose(inspection, workspace, environment, child?.implementation ?? environment.program, child?.record);
+    }
+    async completeCreation(raw: CreationReference): Promise<ConversationSession> {
+        this.assertActive();
+        const reference = creationReferenceSchema.parse(raw);
+        const workspace = this.workspaces.get(reference.workspaceId), environment = this.workspaces.environment(reference.environmentId);
+        const inspection = await this.facts.inspect(reference.sessionId);
+        this.workspaces.verifyInspection(inspection, workspace, environment);
+        if (this.workspaces.completed(inspection, workspace, environment)) {
+            if (!workspace.native.sessionIds.includes(SessionId(reference.sessionId)))
+                throw new Error('REACTIVE_WORKSPACE_MEMBERSHIP_REQUIRED');
+            return this.readSession(reference.sessionId);
+        }
+        this.workspaces.assertCreation(inspection, workspace, environment);
+        await this.createRegistered(workspace, environment, reference.sessionId, () => this.ctx.agents.resume({ resumeSessionId: SessionId(reference.sessionId),
+            agentOptions: this.options.model, setup: async (native, agent) => {
+                this.workspaces.assertCreation({ meta: agent.session.header, events: agent.session.snapshotEvents(),
+                    inheritedEventCount: agent.session.inheritedEventCount }, workspace, environment);
+                await this.mountRoot(native, agent, workspace, environment);
+            } }));
+        return this.require(reference.sessionId);
+    }
+    async activate(sessionId: string) {
+        if (this.#sessions.get(sessionId)?.live)
+            return;
+        const pending = this.#starting.get(sessionId);
+        if (pending)
+            return pending;
+        const starting = (async () => {
+            const session = await this.readSession(sessionId);
+            if (session.child) {
+                await this.activate(session.child.command.parentSessionId);
+                if (session.live)
+                    return;
+                const parent = this.live(this.#sessions.get(session.child.command.parentSessionId)!).agent;
+                await this.inputs().revalidateCauses(session.child.causes, this.signal);
+                await this.delegations.resume(session.child, parent, this.signal);
+                if (!session.live)
+                    throw new Error('REACTIVE_CHILD_NOT_RUNNING');
+                return;
+            }
+            const handle = await this.ctx.agents.resume({ resumeSessionId: SessionId(sessionId), agentOptions: this.options.model,
+                setup: async (native, agent) => {
+                    this.workspaces.assertMember(agent.session, session.workspace, session.environment);
+                    await this.mountRoot(native, agent, session.workspace, session.environment);
+                } });
+            this.#owned.set(sessionId, handle);
+            await this.delegations.restoreChildren(handle.agent, this.signal);
+        })();
+        this.#starting.set(sessionId, starting);
+        try {
+            await starting;
+        }
+        finally {
+            this.#starting.delete(sessionId);
+        }
+    }
+    expectProgram(session: ConversationSession, expected?: ProgramContract) {
+        if (expected && session.implementation.definition !== expected)
+            throw new Error('REACTIVE_PROGRAM_CONTRACT_MISMATCH');
+    }
+    checkpoint(agent: Agent) { return this.facts.flush(agent); }
+    async pauseGoal(agent: Agent) {
+        const goal = this.ctx.goals.get(agent);
+        if (!goal)
+            throw new Error('REACTIVE_GOAL_ABSENT');
+        const paused = this.ctx.goals.pause(agent, goal);
+        await this.facts.flush(agent);
+        return paused;
+    }
+    async cancelAgent(agent: Agent) {
+        // 本次取消先同步截断当前 step；后续 pause 不能把它误作仍可保留的处理中输入。
+        const prompts = [...agent.inbox.nextTurn, ...agent.inbox.nextStep, ...(this.#entries.get(agent)?.claimed ?? [])]
+            .flatMap(message => message.source.kind === 'user'
+            && 'rpcId' in message.source && typeof message.source.rpcId === 'string' ? [message.source.rpcId] : []);
+        agent.cancel({ kind: 'user' });
+        for (const requestId of new Set(prompts))
+            this.ctx.fileUploads.retirePrompt(agent, requestId);
+        const subagents = this.ctx.get('subagents');
+        if (subagents) {
+            const descendants = await subagents.listDescendants(agent.id);
+            for (const child of descendants)
+                if ('id' in child && typeof child.id === 'string')
+                    subagents.interrupt(SessionId(child.id), { kind: 'ancestor', agent });
+        }
+        await agent.whenIdle();
+        await this.facts.flush(agent);
+    }
+    async settle(agent: Agent) {
+        for (;;) {
+            await agent.whenIdle();
+            if (!await this.ctx.get('subagents')?.waitForChildren(agent))
+                break;
+        }
+        const entry = this.#entries.get(agent);
+        if (!entry)
+            return;
+        while (entry.recovery.size)
+            await Promise.all(entry.recovery);
+        if (entry.recoveryErrors.length)
+            throw new AggregateError(entry.recoveryErrors.splice(0), 'REACTIVE_INPUT_RECOVERY_FAILED');
+        if (this.ctx.agents.get(agent.id) === agent)
+            await this.facts.flush(agent);
+    }
+    async close(sessionId: string) {
+        const session = this.#sessions.get(sessionId);
+        if (session?.child) {
+            const parent = this.ctx.agents.get(SessionId(session.child.command.parentSessionId));
+            if (!parent)
+                throw new Error('REACTIVE_CHILD_PARENT_NOT_RUNNING');
+            await this.ctx.subagents.drainChildren(parent, [SessionId(sessionId)]);
+            return;
+        }
+        const handle = this.#owned.get(sessionId);
+        if (!handle)
+            throw new Error('REACTIVE_CONVERSATION_NOT_OWNED');
+        await this.ctx.get('subagents')?.drainDescendants([handle.agent]);
+        await this.settle(handle.agent);
+        await handle.dispose();
+        this.#owned.delete(sessionId);
+    }
+}

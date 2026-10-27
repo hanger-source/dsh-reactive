@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.contracts.json",
+  "include": ["src/types.ts"],
+  "exclude": []
+}

@@ -1,0 +1,333 @@
+import { implementProgram } from '@hanger-source/dsh-reactive/program';
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { Fragment, createElement as h } from 'react';
+import { BehaviorSubject, filter, firstValueFrom } from 'rxjs';
+import { SessionId } from '@deepseek-ai/dsh-session';
+import { createUserMessage, type GenerateOptions } from '@deepseek-ai/dsh-llm';
+import { defineApplication, defineEnvironment, z } from '@hanger-source/dsh-reactive';
+import { defineAction, implementAction } from '@hanger-source/dsh-reactive';
+import type { HumanAnswer, HumanQuestionOrigin, HumanResponderAdmission } from '@hanger-source/dsh-reactive';
+import { inputReferenceSchema } from '@hanger-source/dsh-reactive/kernel';
+import { Context, Expose, HumanInput, Offer } from '@hanger-source/dsh-reactive/program';
+import { defineProgram } from '@hanger-source/dsh-reactive';
+import { useAction, useObservable } from '@hanger-source/dsh-reactive/program';
+import { defineSurface, view } from '@hanger-source/dsh-reactive';
+import { boot, text, tool } from './native-support.ts';
+
+const questions = [
+  { id: 'merchant-permission', question: '是否允许处理商家甲？', options: [{ label: '允许' }, { label: '拒绝' }] },
+  { id: 'receipt-mode', question: '如何交付商家甲的回执？', options: [{ label: '站内' }, { label: '邮件' }] },
+];
+const answer: HumanAnswer = { answers: [
+  { id: 'merchant-permission', selected: ['允许'] }, { id: 'receipt-mode', selected: ['站内'] },
+] };
+function admitResponder(admission: HumanResponderAdmission, actors: readonly string[] = ['operator-test']) {
+  if (!actors.includes(admission.actorId)) throw new Error('MERCHANT_RESPONDER_DENIED');
+  if (admission.question.questions[0]?.id !== 'merchant-permission') throw new Error('MERCHANT_QUESTION_DENIED');
+  if (admission.answer && admission.answer.answers[0]?.selected[0] !== '允许') throw new Error('MERCHANT_ANSWER_DENIED');
+}
+
+for (const mode of ['native', 'ptc'] as const) {
+  test(`${mode} 正式问答前台响应审核完整问题、答案及响应者，PTC 不伪造 open 投影`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-human-foreground-'));
+    const requests: GenerateOptions[] = [];
+    const selectedMerchant$ = new BehaviorSubject('merchant-a');
+    const merchantScope = z.object({ merchantId: z.string() }).strict();
+    const surface = defineSurface({ views: { selectedMerchant: view(z.string()) }, actions: {} });
+    const admittedOrigins: HumanQuestionOrigin[] = [];
+    const policy = (admission: HumanResponderAdmission) => {
+      admitResponder(admission, ['operator-test', 'merchant-b-operator']);
+      const merchantId = admission.actorId === 'operator-test' ? 'merchant-a' : 'merchant-b';
+      if (!admission.question.origin.inputs.length || admission.question.origin.inputs.some(input =>
+        merchantScope.parse(input.scope).merchantId !== merchantId)) throw new Error('MERCHANT_ORIGIN_DENIED');
+      if (admission.answer) admittedOrigins.push(structuredClone(admission.question.origin));
+    };
+    const definition = defineApplication({ name: 'human-foreground', admit: async () => {}, environments: [defineEnvironment({
+      id: 'work', instructions: '就商家甲的处理权限和回执方式向人询问',
+      program: implementProgram(defineProgram({ input: merchantScope.nullable(), surface }), { Component() {
+        const selected = useObservable(() => selectedMerchant$, []);
+        return h(Fragment, null, selected.status === 'ready' ? Context({ name: 'selected-merchant', value: { merchantId: selected.value } }) : null,
+          HumanInput({ admitResponder: policy }), Expose({ surface, value: { views: { selectedMerchant: selectedMerchant$ } } }));
+      } }),
+    })] });
+    const app = await boot(join(root, 'home'), definition, async function* (options) {
+      requests.push(options);
+      if (requests.length === 1) {
+        if (mode === 'native') yield* tool('ask_user_question', 'human-foreground', { questions, timeout: 30 });
+        else yield* tool('run_code', 'human-foreground-root', { description: '询问商家甲的处理许可',
+          code: `return await tools.ask_user_question(${JSON.stringify({ questions, timeout: 30 })});` });
+      } else yield* text('已收到商家甲的完整答复');
+    }, mode);
+    try {
+      const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+      const foreground = firstValueFrom(session.foregroundQuestions$.pipe(filter(value => value.length === 1)));
+      const acceptedInput = firstValueFrom(session.rawEvents$.pipe(filter(event => event.kind === 'input.accepted'
+        && event.inputs.some(input => input.requestId === 'merchant-question'))));
+      await session.submit({ requestId: 'merchant-question', content: '先明确商家甲的权限与回执方式', intent: 'question', delivery: 'followup' as const, scope: { merchantId: 'merchant-a' } });
+      const [pending] = await foreground;
+      assert.ok(pending); assert.equal(pending.timed, true);
+      assert.deepEqual(pending.questions, questions);
+      const initialAccepted = await acceptedInput;
+      assert.ok(initialAccepted.kind === 'input.accepted');
+      const origin: HumanQuestionOrigin = { sessionId: session.id, callId: pending.callId,
+        rootCallId: mode === 'native' ? 'human-foreground' : 'human-foreground-root',
+        parentCallId: mode === 'native' ? null : 'human-foreground-root', name: 'ask_user_question',
+        inputs: [{ sourceSessionId: session.id, messageId: initialAccepted.messageId, requestId: 'merchant-question', source: 'user',
+          intent: 'question', scope: { merchantId: 'merchant-a' }, actorId: 'operator-test', participant: 'human' }] };
+      assert.deepEqual(pending.origin, origin, '前台问题关联实际原生调用或 PTC 子调用及其完整原输入');
+      const exposedInput = pending.origin.inputs[0]!;
+      assert.ok(exposedInput.scope !== null && typeof exposedInput.scope === 'object' && !Array.isArray(exposedInput.scope));
+      assert.equal(Reflect.set(exposedInput.scope, 'merchantId', 'merchant-b'), false);
+      assert.equal(Reflect.set(exposedInput, 'requestId', 'foreign-request'), false);
+      selectedMerchant$.next('merchant-b');
+      assert.equal(await session.readView('selectedMerchant'), 'merchant-b');
+      const state = await firstValueFrom(session.questions$);
+      if (mode === 'native') {
+        assert.deepEqual(state.active.map(value => [value.callId, value.state]), [[pending.callId, 'open']]);
+        assert.deepEqual(state.active[0]?.origin, origin);
+      }
+      else assert.deepEqual(state, { active: [], settled: [] });
+      await assert.rejects(session.answerQuestion(pending.callId, answer, { actorId: 'intruder' }), /MERCHANT_RESPONDER_DENIED/u);
+      await assert.rejects(session.answerQuestion(pending.callId, answer, { actorId: 'merchant-b-operator' }), /MERCHANT_ORIGIN_DENIED/u);
+      await assert.rejects(session.answerQuestion(pending.callId, { answers: [answer.answers[0]!] }), /each question exactly once/u);
+      await assert.rejects(session.answerQuestion(pending.callId, { answers: [
+        { id: 'merchant-permission', selected: ['拒绝'] }, answer.answers[1]!,
+      ] }), /MERCHANT_ANSWER_DENIED/u);
+      assert.equal(requests.length, 1);
+      assert.equal(await session.answerQuestion(pending.callId, answer), true);
+      assert.deepEqual(admittedOrigins, [origin], '当前选择与消费者写入尝试均不得改写策略所核验的原问题');
+      await session.whenIdle();
+      assert.equal(requests.length, 2);
+      const agent = app.native.agents.get(SessionId(session.id))!;
+      const events = agent.session.snapshotEvents();
+      assert.equal(events.filter(event => event.type === 'user/message' && event.data.source.kind === 'user-question-reply').length, 0);
+      if (mode === 'native') {
+        const result = events.find(event => event.type === 'tool/result' && event.data.message.toolCallId === pending.callId);
+        assert.ok(result?.type === 'tool/result');
+        assert.deepEqual(JSON.parse(result.data.message.content.map(block => block.type === 'text' ? block.text : '').join('')), answer);
+        assert.deepEqual((await firstValueFrom(session.questions$)).settled, [{ callId: pending.callId, answers: answer.answers, origin }]);
+      } else {
+        assert.equal(events.filter(event => event.type === 'tool/call' && event.data.name === 'ask_user_question').length, 0);
+        const dispatch = events.find(event => event.type === 'tool/ptc-dispatch' && event.data.subCallId === pending.callId);
+        assert.ok(dispatch?.type === 'tool/ptc-dispatch');
+        assert.deepEqual(JSON.parse(dispatch.data.content.map(block => block.type === 'text' ? block.text : '').join('')), answer);
+        assert.deepEqual(await firstValueFrom(session.questions$), { active: [], settled: [] });
+      }
+      await assert.rejects(session.answerQuestion(pending.callId, answer), /REACTIVE_HUMAN_QUESTION_NOT_OPEN/u);
+      assert.deepEqual(Object.keys(session.snapshot().requests), ['merchant-question']);
+      assert.equal(app.errors.length, 0);
+      const unassociated = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '未经框架受理的原生输入' }] });
+      const accepted = firstValueFrom(session.events$.pipe(filter(event => event.kind === 'input.accepted' && event.messageId === unassociated.id)));
+      agent.send(unassociated, 'next-turn', true);
+      const occurrence = await accepted;
+      assert.ok(occurrence.kind === 'input.accepted');
+      assert.deepEqual(occurrence.inputs, [{ sourceSessionId: session.id, messageId: unassociated.id, requestId: null, source: 'user',
+        intent: 'question', scope: null, actorId: null, participant: 'native' }], '宿主默认 actor 不能冒认未关联原生输入');
+      await session.whenIdle();
+      assert.equal(requests.length, 2, '缺少真实 actor 的原生输入在 prepare 拒绝，不能调用模型');
+      assert.equal(app.errors.length, 1); assert.ok(app.errors[0] instanceof Error);
+      assert.equal(app.errors[0].message, 'REACTIVE_INPUT_ACTOR_REQUIRED');
+      assert.equal(agent.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.id === unassociated.id), false);
+      assert.deepEqual(Object.keys(session.snapshot().requests), ['merchant-question']);
+      session.release();
+    } finally { await app.dispose(); }
+  });
+
+  test(`${mode} 原生 claim 跨无关帧保留，声明退出仅释放 claim，continued 冷读和晚答沿同一问题`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-human-continued-'));
+    const mounted$ = new BehaviorSubject(true), revision$ = new BehaviorSubject(0);
+    const requests: GenerateOptions[] = [];
+    const merchantScope = z.object({ merchantId: z.string() }).strict();
+    const inspect = defineAction({ name: 'inspect_merchant', description: '核验当前明确商家',
+      scope: merchantScope, input: z.object({}).strict(), output: z.string() });
+    const inspectImplementation = implementAction(inspect, { execute: (_input, call) => call.scope.merchantId });
+    const surface = defineSurface({ views: { inputs: view(inputReferenceSchema.array().readonly()) }, actions: {} });
+    const responders: string[] = [];
+    const admittedOrigins: HumanQuestionOrigin[] = [];
+    const policy = (admission: HumanResponderAdmission) => {
+      admitResponder(admission, ['alice', 'bob', 'charlie']);
+      const merchantId = admission.actorId === 'charlie' ? 'merchant-b' : 'merchant-a';
+      if (!admission.question.origin.inputs.length || admission.question.origin.inputs.some(input =>
+        merchantScope.parse(input.scope).merchantId !== merchantId)) throw new Error('MERCHANT_ORIGIN_DENIED');
+      if (admission.answer) {
+        responders.push(admission.actorId);
+        admittedOrigins.push(structuredClone(admission.question.origin));
+      }
+    };
+    function Merchant({ merchantId }: { merchantId: string }) {
+      const action = useAction(inspectImplementation, () => ({ merchantId }), [merchantId]);
+      return h(Fragment, null, Context({ name: 'merchant', value: { merchantId } }), Offer({ name: 'inspect_merchant', action }));
+    }
+    const definition = defineApplication({ name: 'human-continued', admit: async () => {}, environments: [defineEnvironment({
+      id: 'work', instructions: '超时不算许可，可以先继续独立工作',
+      program: implementProgram(defineProgram({ input: merchantScope.transform(value => ({ ...value, decoded: true as const })), surface }), { Component({ conversation }) {
+        const mounted = useObservable(() => mounted$, []), revision = useObservable(() => revision$, []);
+        const inputs = useObservable(() => conversation.inputs$, [conversation]);
+        const selected = inputs.status === 'ready' ? inputs.value.at(-1) : undefined;
+        return h(Fragment, null, Context({ name: 'revision', value: revision.status === 'ready' ? revision.value : null }),
+          selected ? h(Merchant, { merchantId: selected.scope.merchantId }) : null,
+          mounted.status === 'ready' && mounted.value ? HumanInput({ admitResponder: policy }) : null,
+          Expose({ surface, value: { views: { inputs: conversation.inputs$ } } }));
+      } }),
+    })] });
+    const app = await boot(join(root, 'home'), definition, async function* (options) {
+      requests.push(options);
+      if (requests.length === 1) {
+        if (mode === 'native') yield* tool('ask_user_question', 'human-continued', { questions, timeout: 1 });
+        else yield* tool('run_code', 'human-continued-root', { description: '限时询问商家甲',
+          code: `return await tools.ask_user_question(${JSON.stringify({ questions, timeout: 1 })});` });
+      } else yield* text(requests.length === 2 ? '先进行不依赖该许可的独立核验'
+        : requests.length === 3 ? '已核查商家乙当前现场，商家甲问题仍待原许可' : '已按原问题收到完整晚答');
+    }, mode);
+    try {
+      const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+      const foreground = firstValueFrom(session.foregroundQuestions$.pipe(filter(value => value.length === 1)));
+      const acceptedInput = firstValueFrom(session.rawEvents$.pipe(filter(event => event.kind === 'input.accepted'
+        && event.inputs.some(input => input.requestId === 'merchant-question'))));
+      await session.submit({ requestId: 'merchant-question', content: '核实商家甲许可，等候时继续独立工作',
+        intent: 'question', delivery: 'followup' as const, scope: { merchantId: 'merchant-a' } }, { actorId: 'alice' });
+      const [pending] = await foreground;
+      assert.ok(pending);
+      const initialAccepted = await acceptedInput;
+      assert.ok(initialAccepted.kind === 'input.accepted');
+      const origin: HumanQuestionOrigin = { sessionId: session.id, callId: pending.callId,
+        rootCallId: mode === 'native' ? 'human-continued' : 'human-continued-root',
+        parentCallId: mode === 'native' ? null : 'human-continued-root', name: 'ask_user_question',
+        inputs: [{ sourceSessionId: session.id, messageId: initialAccepted.messageId, requestId: 'merchant-question', source: 'user',
+          intent: 'question', scope: { merchantId: 'merchant-a' }, actorId: 'alice', participant: 'human' }] };
+      assert.deepEqual(pending.origin, origin);
+      const claimSignal = new AbortController();
+      const claim = session.attachWait(pending.callId, { actorId: 'alice', signal: claimSignal.signal })[Symbol.asyncIterator]();
+      const frame = await claim.next();
+      assert.ok(!frame.done); assert.ok(frame.value.remainingMs > 0 && frame.value.remainingMs <= 1_000);
+      let claimEnded = false;
+      const ended = claim.next().then(value => { claimEnded = true; return value; });
+      const disconnected = app.host.conversation(session.id, definition.environments[0].program.definition);
+      const disconnectedClaim = disconnected.attachWait(pending.callId, { actorId: 'alice' })[Symbol.asyncIterator]();
+      assert.equal((await disconnectedClaim.next()).done, false);
+      const disconnectedEnded = disconnectedClaim.next();
+      disconnected.release();
+      assert.equal((await disconnectedEnded).done, true);
+      assert.equal(claimEnded, false, '另一个观察者断开只释放自己的 claim');
+      await delay(frame.value.remainingMs + 30);
+      revision$.next(1);
+      await assert.rejects(session.answerQuestion(pending.callId, answer, { actorId: 'intruder' }), /MERCHANT_RESPONDER_DENIED/u);
+      assert.equal(claimEnded, false, '无关声明帧不得释放仍获当前参与策略允许的原生 claim');
+      assert.equal(requests.length, 1);
+      mounted$.next(false);
+      await assert.rejects(session.answerQuestion(pending.callId, answer), /REACTIVE_HUMAN_INPUT_NOT_DECLARED/u);
+      assert.equal((await ended).done, true);
+      const continued = await firstValueFrom(session.questions$.pipe(filter(state => state.active.some(value => value.callId === pending.callId && value.state === 'continued'))));
+      assert.equal(continued.active[0]?.callId, pending.callId);
+      assert.deepEqual(continued.active[0]?.origin, origin);
+      await session.whenIdle();
+      assert.equal(requests.length, 2);
+      assert.deepEqual(await firstValueFrom(session.foregroundQuestions$), []);
+      const originalInputs = await session.readView('inputs');
+      assert.equal(originalInputs.length, 1);
+      assert.deepEqual(originalInputs.map(input => ({ requestId: input.requestId, actorId: input.actorId, scope: input.scope })),
+        [{ requestId: 'merchant-question', actorId: 'alice', scope: { merchantId: 'merchant-a', decoded: true } }]);
+      await session.submit({ requestId: 'merchant-b-question', content: '核查商家乙当前现场，不回答商家甲原问题',
+        intent: 'question', delivery: 'followup' as const, scope: { merchantId: 'merchant-b' } }, { actorId: 'charlie' });
+      await session.whenIdle();
+      assert.equal(requests.length, 3);
+      const currentInputs = await session.readView('inputs');
+      assert.deepEqual(currentInputs.map(input => ({ requestId: input.requestId, actorId: input.actorId, scope: input.scope })),
+        [{ requestId: 'merchant-b-question', actorId: 'charlie', scope: { merchantId: 'merchant-b', decoded: true } }]);
+      const id = session.id;
+      await app.host.close(id); session.release();
+      const cold = await app.host.open(id, definition.environments[0].program.definition);
+      assert.equal(app.native.agents.get(SessionId(id)), undefined);
+      const coldState = await firstValueFrom(cold.questions$);
+      assert.equal(coldState.active[0]?.state, 'continued');
+      assert.deepEqual(coldState.active[0]?.origin, origin, '冷读从原问题的调用恢复 raw 输入，不使用后来商家乙的当前输入或 Program 解码输出');
+      assert.deepEqual(await cold.readView('inputs'), currentInputs);
+      await assert.rejects(cold.answerQuestion(pending.callId, answer), /REACTIVE_HUMAN_INPUT_NOT_DECLARED/u);
+      assert.equal(app.native.agents.get(SessionId(id)), undefined, '未获当前参与策略允许的晚答不得唤醒冷 Agent');
+      mounted$.next(true);
+      await assert.rejects(cold.answerQuestion(pending.callId, answer, { actorId: 'intruder' }), /MERCHANT_RESPONDER_DENIED/u);
+      await assert.rejects(cold.answerQuestion(pending.callId, answer, { actorId: 'charlie' }), /MERCHANT_ORIGIN_DENIED/u);
+      assert.equal(app.native.agents.get(SessionId(id)), undefined);
+      assert.equal(await cold.answerQuestion(pending.callId, answer, { actorId: 'bob' }), true);
+      const settled = await firstValueFrom(cold.questions$.pipe(filter(state => state.settled.some(value => value.callId === pending.callId))));
+      await cold.whenIdle();
+      assert.equal(requests.length, 4);
+      assert.deepEqual(settled.active, []);
+      assert.deepEqual(settled.settled, [{ callId: pending.callId, answers: answer.answers, origin }]);
+      assert.deepEqual(await cold.readView('inputs'), originalInputs, 'Bob 回答原问题，当前现场仍沿原 call 关联 Alice 的商家输入');
+      assert.deepEqual(responders, ['bob', 'bob'], '冷预审与 live 准入都核验真实响应者，不产生 Bob 的新业务输入');
+      assert.deepEqual(admittedOrigins, [origin, origin], '冷预审与 live 准入沿同一原问题核验原始商家、请求和提出者');
+      const snapshots = requests[3]!.messages.flatMap(message => {
+        const source = z.object({ kind: z.literal('runtime-context'), form: z.literal('snapshot'),
+          sections: z.array(z.object({ name: z.string(), text: z.string() })) }).safeParse(message.source);
+        return source.success ? [source.data.sections] : [];
+      });
+      assert.deepEqual(snapshots.at(-1)?.filter(section => section.name === 'merchant').map(section => JSON.parse(section.text)),
+        [{ merchantId: 'merchant-a' }], '迟答步骤的当前 Context 快照仍有原商家，不借历史快照证明');
+      assert.equal(requests[3]!.tools?.some(tool => tool.name === 'inspect_merchant'), mode === 'native');
+      const agent = app.native.agents.get(SessionId(id))!;
+      assert.ok(app.native.tools.get('inspect_merchant', agent), '原商家能力仍注册在当前 Agent，PTC 也使用同一真实能力');
+      const events = agent.session.snapshotEvents();
+      const replies = events.filter(event => event.type === 'user/message' && event.data.source.kind === 'user-question-reply');
+      assert.equal(replies.length, 1);
+      assert.ok(replies[0]?.type === 'user/message');
+      assert.deepEqual(replies[0].data.source, { kind: 'user-question-reply', callId: pending.callId, outcome: 'answered' });
+      if (mode === 'ptc') assert.equal(events.filter(event => event.type === 'tool/call' && event.data.name === 'ask_user_question').length, 0);
+      assert.deepEqual(Object.keys(cold.snapshot().requests), ['merchant-question', 'merchant-b-question']);
+      assert.equal(cold.snapshot().goal, null);
+      assert.deepEqual(app.errors, []);
+      claimSignal.abort(); cold.release();
+    } finally { await app.dispose(); }
+  });
+}
+
+test('异步响应准入结束后复核当前声明，退出不能让旧策略提交答案，也不取消原问题', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-human-admission-'));
+  const mounted$ = new BehaviorSubject(true);
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  let calls = 0, held = false;
+  const policy = async (admission: HumanResponderAdmission) => {
+    admitResponder(admission);
+    if (admission.answer && !held) { held = true; entered.resolve(); await release.promise; }
+  };
+  const definition = defineApplication({ name: 'human-admission', admit: async () => {}, environments: [defineEnvironment({
+    id: 'work', instructions: '取得当前正式参与许可',
+    program: implementProgram(defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) }), { Component() {
+      const mounted = useObservable(() => mounted$, []);
+      return mounted.status === 'ready' && mounted.value ? HumanInput({ admitResponder: policy }) : null;
+    } }),
+  })] });
+  const app = await boot(join(root, 'home'), definition, async function* () {
+    calls++;
+    if (calls === 1) yield* tool('ask_user_question', 'human-async-admission', { questions, timeout: 30 });
+    else yield* text('当前策略已经审核并接受完整答复');
+  });
+  try {
+    const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+    const foreground = firstValueFrom(session.foregroundQuestions$.pipe(filter(value => value.length === 1)));
+    await session.submit({ requestId: 'merchant-question', content: '请求商家甲的处理许可', intent: 'question', delivery: 'followup' as const, scope: null });
+    const [pending] = await foreground;
+    assert.ok(pending);
+    const answering = session.answerQuestion(pending.callId, answer);
+    const rejected = assert.rejects(answering, /REACTIVE_HUMAN_INPUT_CHANGED/u);
+    await entered.promise;
+    mounted$.next(false);
+    await assert.rejects(session.answerQuestion(pending.callId, answer), /REACTIVE_HUMAN_INPUT_NOT_DECLARED/u);
+    release.resolve(); await rejected;
+    assert.equal(calls, 1);
+    assert.equal((await firstValueFrom(session.questions$)).active[0]?.state, 'open');
+    assert.equal((await firstValueFrom(session.foregroundQuestions$))[0]?.callId, pending.callId);
+    mounted$.next(true);
+    assert.equal(await session.answerQuestion(pending.callId, answer), true);
+    await session.whenIdle();
+    assert.equal(calls, 2);
+    assert.deepEqual((await firstValueFrom(session.questions$)).settled, [{ callId: pending.callId, answers: answer.answers, origin: pending.origin }]);
+    assert.deepEqual(app.errors, []);
+    session.release();
+  } finally { release.resolve(); await app.dispose(); }
+});

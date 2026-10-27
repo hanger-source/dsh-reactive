@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "files": [],
+  "include": [],
+  "references": [{ "path": "./packages/client/tsconfig.host.json" }, { "path": "./packages/remote/tsconfig.host.json" }]
+}
