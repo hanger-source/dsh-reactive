@@ -5,7 +5,7 @@
 ## 选择对象与共享范围
 
 - 可复用合同：`defineResource({ name, params, value })` → `implementResource(definition, implementation)` → `bindResource(implementation, { scope }).instance(params)`。
-- 局部事实：`createResource(scope, { name, value, read, invalidations? })`，或互斥的 `{ observe }` 分支。它返回相同 `ResourceInstance`，不是另一套状态。
+- 局部事实：`createResource(scope, { value, read, invalidations? })`，或互斥的 `{ observe }` 分支。它返回相同 `ResourceInstance`，不是另一套状态。可选 name 是诊断标签，不决定共享身份，也不需要注册名称。
 - `params` 的解析输出必须是 JSON；解析后的参数内容与**实现对象、Scope**共同决定实例身份。值可以是 Date 等领域数据，不要为共享把服务对象塞进 params。
 - 将实现放在依赖装配处，复用它；在每次 hook 调用里重新 implement 会改变身份。业务服务依赖改变时创建新实现；业务目标改变时请求对应参数实例。
 
@@ -44,7 +44,7 @@ export function inventory(scope: Scope, service: {
 
 ## 反应是显式运行
 
-可复用反应采用 `defineReaction({ name, params, event, result })`、`implementReaction`、`bindReaction`；局部采用 `createReaction(scope, options)`。两者都是 `instance.start()` 才执行。
+可复用反应采用 `defineReaction({ name, params, event, result })`、`implementReaction`、`bindReaction`；局部采用 `createReaction(scope, options)`，name 可省略，多个局部对象仍各有自己的运行身份。两者都是 `instance.start()` 才执行。
 
 程序内用 `useReaction(implementation, params)` 取得程序拥有的相同参数实例，不手工创建 Scope 或绑定表。hook 不自动 start；同实例的重复并行 start 会失败。组件卸载不停止程序拥有的运行，显式 `run.stop()` 才结束关系；Program 失败或退出会释放查询、感知和排队工作，已受理业务仍归原 owner。Reaction 执行失败由 run 结算，只有业务明确传播时才进入 Program 失败。
 
@@ -55,7 +55,7 @@ import { concatMap, filter, type Observable } from 'rxjs';
 export function restock(scope: Scope, events: Observable<{ sku: string; revision: number }>,
   request: (event: { sku: string; revision: number }) => Promise<{ operationId: string }>) {
   return createReaction(scope, {
-    name: 'restock', event: z.object({ sku: z.string(), revision: z.number() }),
+    event: z.object({ sku: z.string(), revision: z.number() }),
     result: z.object({ operationId: z.string() }),
     observe: () => events.pipe(filter(event => event.revision > 0)),
     operator: concatMap,
@@ -67,6 +67,8 @@ export function restock(scope: Scope, events: Observable<{ sku: string; revision
 `operator` 直接接 `concatMap`、`mergeMap`、`switchMap`、`exhaustMap`。条件、去重和并发用 RxJS；不要另创策略字符串。execute 可返回普通值、PromiseLike 或 Observable，也可直接返回真实 Action 的 `invocation.result`。
 
 `run.state$`、`run.events$`、`run.settled` 观察同一次运行。`events$` 只交付热的成功结果，不回放执行；运行终止时正常 complete。来源、执行或释放失败保存在 `state$` 的 failed 状态和 `settled` 的 failed 结算中，不进入 `events$` 的 error 回调，也不会使 `settled` reject。`state$` 回放当前状态，先 start 后订阅也能观察同步发生的失败。
+
+来源或执行结果同步完成时，订阅返回并接收清理函数后才交付终止；这次连接传播出的清理失败仍进入 failed，不回滚已经发生的业务。来源内部自行吞掉的错误不由框架恢复，不要通过修改 RxJS 全局错误配置改变其他模块的语义。
 
 ```ts
 const run = reaction.start();

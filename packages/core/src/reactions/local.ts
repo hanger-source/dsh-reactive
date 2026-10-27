@@ -6,7 +6,8 @@ import { implementReaction, type ReactionOperator, type ReactionSourceContext } 
 import { bindReaction, type ReactionInstance } from './binding.ts';
 
 export interface LocalReactionOptions<E extends z.ZodType, R extends z.ZodType> {
-  readonly name: string;
+  /** 可选诊断标签；不参与运行身份、去重或业务授权。 */
+  readonly name?: string;
   readonly event: E;
   readonly result: R;
   observe(context: ReactionSourceContext): Observable<z.input<E>>;
@@ -20,7 +21,7 @@ export function createReaction<E extends z.ZodType, R extends z.ZodType>(
   scope: Scope, options: LocalReactionOptions<E, R>,
 ): LocalReaction<E, R> {
   scope.assertActive();
-  const { name, event, result, observe, operator, execute } = options;
+  const { name = 'local.reaction', event, result, observe, operator, execute } = options;
   if (typeof observe !== 'function') throw new Error('REACTIVE_REACTION_IMPLEMENTATION_INVALID');
   const definition = defineReaction({ name, params: z.null(), event, result });
   return bindReaction(implementReaction(definition, {

@@ -7,7 +7,8 @@ import { implementResource, type ResourceReadContext } from './implementation.ts
 import { bindResource, type ResourceInstance } from './binding.ts';
 
 export type LocalResourceOptions<V extends z.ZodType> = {
-  readonly name: string;
+  /** 可选诊断标签；局部实例身份由实际对象与 Scope 决定，不按名称登记。 */
+  readonly name?: string;
   readonly value: V;
 } & (
   | { observe(context: ResourceReadContext): Observable<Observation<z.input<V>>>; readonly read?: never; readonly invalidations?: never }
@@ -22,7 +23,7 @@ export function createResource<V extends z.ZodType>(scope: Scope, options: Local
   if (options.observe !== undefined
     ? typeof options.observe !== 'function' || options.read !== undefined || options.invalidations !== undefined
     : typeof options.read !== 'function') throw new Error('REACTIVE_RESOURCE_IMPLEMENTATION_INVALID');
-  const definition = defineResource({ name: options.name, params: z.null(), value: options.value });
+  const definition = defineResource({ name: options.name ?? 'local.resource', params: z.null(), value: options.value });
   if (options.observe !== undefined) {
     const observe = options.observe;
     return bindResource(implementResource(definition, { observe: (_params, context) => observe(context) }), { scope }).instance(null);

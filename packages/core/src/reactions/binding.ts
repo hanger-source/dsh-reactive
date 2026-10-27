@@ -27,6 +27,34 @@ function resultSource<T>(value: T | PromiseLike<T> | Observable<T>): Observable<
   return of(value);
 }
 
+/**
+ * 同步终止先等待 subscribe 返回，才能接收来源随后登记的 teardown 错误。
+ * 查询订阅仍在执行 producer 前归属下游；退出可以立即停止同步来源。
+ */
+function reactionSource<T>(factory: () => Observable<T>): Observable<T> {
+  return new Observable(subscriber => {
+    let connecting = true;
+    let terminal: { readonly kind: 'complete' } | { readonly kind: 'error'; readonly error: unknown } | undefined;
+    const deliver = () => {
+      if (terminal?.kind === 'error') subscriber.error(terminal.error);
+      else if (terminal?.kind === 'complete') subscriber.complete();
+    };
+    const connection = new Subscriber<T>({
+      next: value => subscriber.next(value),
+      error: (error: unknown) => { terminal = { kind: 'error', error }; if (!connecting) deliver(); },
+      complete: () => { terminal = { kind: 'complete' }; if (!connecting) deliver(); },
+    });
+    subscriber.add(connection);
+    try { factory().subscribe(connection); }
+    catch (error) {
+      terminal = { kind: 'error', error: terminal?.kind === 'error'
+        ? new AggregateError([terminal.error, error], 'REACTIVE_REACTION_SOURCE_DISPOSAL_FAILED') : error };
+    }
+    connecting = false;
+    deliver();
+  });
+}
+
 /** 一个运行持有唯一实际订阅；观察运行不会再次执行处理器。 */
 export class ReactionRun<D extends ReactionContract> {
   #state: ReactionState = Object.freeze({ status: 'running', emitted: 0 });
@@ -70,10 +98,10 @@ export class ReactionRun<D extends ReactionContract> {
     });
     // 同步来源也必须在首个业务回调之前取得 owner 的取消连接。
     this.#connection.add(subscriber);
-    defer(() => defer(() => this.implementation.observe(this.params, { signal: this.#controller.signal })).pipe(
+    defer(() => reactionSource(() => this.implementation.observe(this.params, { signal: this.#controller.signal })).pipe(
       map(raw => ({ sequence: ++sequence, event: z.parse<D['event']>(this.definition.event, raw) })),
       this.implementation.operator((occurrence: { readonly sequence: number; readonly event: ReactionInput<D> }) =>
-        defer(() => resultSource(this.implementation.execute(occurrence.event, { params: this.params })))
+        reactionSource(() => resultSource(this.implementation.execute(occurrence.event, { params: this.params })))
           .pipe(map(raw => Object.freeze({ ...occurrence, result: z.parse<D['result']>(this.definition.result, raw) })))),
     )).subscribe(subscriber);
   }

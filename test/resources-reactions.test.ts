@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Subject, Subscription, concatMap, firstValueFrom, lastValueFrom, map, of, take, tap } from 'rxjs';
-import { Scope, createResource, defineResource, implementResource, bindResource, defineReaction, implementReaction, bindReaction, z } from '@hanger-source/dsh-reactive';
+import { Observable, Subject, Subscription, concatMap, firstValueFrom, lastValueFrom, map, of, take, tap } from 'rxjs';
+import { Scope, createResource, createReaction, defineResource, implementResource, bindResource, defineReaction, implementReaction, bindReaction, z } from '@hanger-source/dsh-reactive';
 
 test('同步退出资源观察不启动业务读取，连接中退出也立即撤销来源，后续显式读取仍可正常建立连接', async () => {
   const scope = new Scope();
   let reads = 0;
-  const resource = createResource(scope, { name: 'document.current', value: z.number(), read: () => ++reads });
+  const resource = createResource(scope, { value: z.number(), read: () => ++reads });
   try {
     // 只取当前状态的消费者在基线交付时已经退出，不应为它启动查询。
     assert.equal((await firstValueFrom(resource.observations$)).status, 'pending');
@@ -24,7 +24,7 @@ test('同步退出资源观察不启动业务读取，连接中退出也立即�
 test('基线观察中接入持续消费者再同步退出，留下的消费者仍共享实际读取', async () => {
   const scope = new Scope();
   let reads = 0;
-  const resource = createResource(scope, { name: 'document.monitor', value: z.number(), read: () => ++reads });
+  const resource = createResource(scope, { value: z.number(), read: () => ++reads });
   const values: number[] = [];
   let monitor = new Subscription();
   try {
@@ -83,15 +83,13 @@ test('停止持续反应撤掉排队关系，已经受理的业务仍可按原 o
   const accepted = Promise.withResolvers<string>();
   const started: string[] = [];
   const committed: string[] = [];
-  const reaction = defineReaction({ name: 'accepted-delivery', params: z.object({ workspaceId: z.string() }),
-    event: z.object({ commandId: z.string() }), result: z.string() });
-  const implementation = implementReaction(reaction, { observe: () => source, operator: concatMap,
+  const instance = createReaction(scope, { event: z.object({ commandId: z.string() }), result: z.string(),
+    observe: () => source, operator: concatMap,
     execute(event) {
       started.push(event.commandId);
       return accepted.promise.then(value => { committed.push(event.commandId); return value; });
     },
   });
-  const instance = bindReaction(implementation, { scope }).instance({ workspaceId: 'one' });
   const run = instance.start();
   const one = run.events$.subscribe(), two = run.state$.subscribe();
   assert.throws(() => instance.start(), /ALREADY_RUNNING/);
@@ -105,6 +103,66 @@ test('停止持续反应撤掉排队关系，已经受理的业务仍可按原 o
   assert.deepEqual(started, ['accepted-one']);
   assert.equal(run.snapshot().emitted, 0);
   one.unsubscribe(); two.unsubscribe(); scope.dispose();
+});
+
+test('同步来源完成后登记的清理失败进入原运行结算，并保留先发生的来源错误', async () => {
+  const scope = new Scope();
+  const failure = new Error('source cleanup failed'), original = new Error('source failed before cleanup');
+  let released = 0;
+  try {
+    const completed = createReaction(scope, { event: z.number(), result: z.number(), operator: concatMap,
+      observe: () => new Observable<number>(subscriber => {
+        subscriber.next(1); subscriber.complete();
+        return () => { released++; throw failure; };
+      }), execute: event => event,
+    }).start();
+    const completedSettlement = await completed.settled;
+    assert.equal(completedSettlement.status, 'failed');
+    if (completedSettlement.status === 'failed') assert.equal(completedSettlement.error, failure);
+    assert.equal(completedSettlement.emitted, 1, '已经完成的业务不因来源释放失败而回滚');
+    const failed = createReaction(scope, { event: z.number(), result: z.number(), operator: concatMap,
+      observe: () => new Observable<number>(subscriber => {
+        subscriber.error(original);
+        return () => { released++; throw failure; };
+      }), execute: event => event,
+    }).start();
+    const failedSettlement = await failed.settled;
+    assert.equal(failedSettlement.status, 'failed');
+    if (failedSettlement.status === 'failed') {
+      assert.ok(failedSettlement.error instanceof AggregateError);
+      assert.deepEqual(failedSettlement.error.errors, [original, failure]);
+    }
+    assert.equal(released, 2);
+  } finally { scope.dispose(); }
+});
+
+test('同步业务结果的清理失败停止后续工作，晚到监控取得失败而不重新执行业务', async () => {
+  const scope = new Scope();
+  const started: number[] = [], released: number[] = [];
+  const failure = new Error('result cleanup failed');
+  let sourceSignal: AbortSignal | undefined;
+  try {
+    const reaction = createReaction(scope, { event: z.number(), result: z.number(), operator: concatMap,
+      observe: ({ signal }) => { sourceSignal = signal; return of(1, 2); },
+      execute(event) {
+        started.push(event);
+        return new Observable<number>(subscriber => {
+          subscriber.next(event); subscriber.complete();
+          return () => { released.push(event); throw failure; };
+        });
+      },
+    });
+    const run = reaction.start();
+    const settlement = await run.settled;
+    assert.equal(settlement.status, 'failed');
+    if (settlement.status === 'failed') assert.equal(settlement.error, failure);
+    const reported: unknown[] = [];
+    run.state$.subscribe(state => { if (state.status === 'failed') reported.push(state.error); });
+    assert.deepEqual(reported, [failure]);
+    assert.deepEqual(started, [1]); assert.deepEqual(released, [1]);
+    assert.equal(sourceSignal?.aborted, true);
+    assert.equal(settlement.emitted, 1);
+  } finally { scope.dispose(); }
 });
 
 test('来源失败成为可观察结算，Scope 退出释放另一项持续感知', async () => {
