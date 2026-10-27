@@ -1,5 +1,13 @@
 # @hanger-source/dsh-reactive-native-ui
 
+## 0.19.2
+
+### Patch Changes
+
+- Updated dependencies [ebf227d]
+  - @hanger-source/dsh-reactive-client@0.19.2
+  - @hanger-source/dsh-reactive@0.19.2
+
 ## 0.19.1
 
 ### Patch Changes
