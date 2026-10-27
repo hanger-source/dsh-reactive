@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { capture, run, root, configuration, save, json, independent, assertVersion, clean } from './common.mjs';
 import { artifactManifest, currentArtifacts } from './artifacts.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
 
 async function metadata(name, version, registry) {
   try {
@@ -18,6 +19,23 @@ async function metadata(name, version, registry) {
 function checkMetadata(value, item, manifest) {
   if (!value || value.name !== item.name || value.version !== item.version || value.dist?.integrity !== item.integrity) throw new Error('RELEASE_REGISTRY_ARTIFACT_MISMATCH: ' + item.name);
   if (value.gitHead !== undefined && value.gitHead !== manifest.commit) throw new Error('RELEASE_REGISTRY_COMMIT_MISMATCH: ' + item.name);
+}
+export async function publishedMetadata(item, manifest) {
+  const deadline = Date.now() + 15 * 60_000;
+  let announced = false;
+  for (;;) {
+    const value = await metadata(item.name, item.version, manifest.registry);
+    if (value) {
+      checkMetadata(value, item, manifest);
+      return value;
+    }
+    if (Date.now() >= deadline) throw new Error('RELEASE_REGISTRY_VERSION_NOT_VISIBLE: ' + item.name + '@' + item.version);
+    if (!announced) {
+      console.log('等待 npm 已受理版本在 registry 可见：' + item.name + '@' + item.version);
+      announced = true;
+    }
+    await delay(5000);
+  }
 }
 async function distTags(name, registry, allowMissing = false) {
   try { return JSON.parse(await capture('npm', ['view', name, 'dist-tags', '--json', '--prefer-online', '--registry', registry])); }
@@ -106,42 +124,44 @@ export async function publish(options) {
     await save(stateFile, state);
   }
   // 首先核所有已有版本。不可用/E404 不是写权证明；真正 npm publish 的响应才确认受理。
-  const existing = new Map();
+  const existing = new Set();
   for (const item of manifest.artifacts) {
     const actual = await metadata(item.name, item.version, manifest.registry);
-    if (actual) { checkMetadata(actual, item, manifest); existing.set(item.name, actual); }
-  }
-  for (const item of manifest.artifacts) {
-    let publishError;
-    if (!existing.has(item.name)) {
-      try {
-        await run('npm', ['publish', join(artifact.directory, item.file), '--ignore-scripts', '--registry', manifest.registry,
-          '--tag', manifest.channel, '--access', 'public']);
-      } catch (error) { publishError = error; }
-    } else {
-      // 部分发行继续只接受同一不可变版本/完整性；不覆盖现有版本，不强制回退其他版本的 tag。
+    if (actual) {
+      checkMetadata(actual, item, manifest);
+      // 部分发行继续只接受同一不可变版本与渠道，不覆盖版本或回退 tag。
       const tags = await distTags(item.name, manifest.registry);
       if (tags[manifest.channel] !== manifest.version) throw new Error('RELEASE_EXISTING_VERSION_CHANNEL_MISMATCH: ' + item.name);
+      existing.add(item.name);
     }
-    // 即使 npm 回执失败也核正式 registry；未知渠道变化硬拒，不自动改写其他 tag。
-    try {
-    let after = await distTags(item.name, manifest.registry, true);
+  }
+  const confirm = async (item, accepted) => {
+    const actual = accepted ? await publishedMetadata(item, manifest) : await metadata(item.name, item.version, manifest.registry);
+    const after = await distTags(item.name, manifest.registry, true);
     const before = state.beforeTags[item.name];
     if (manifest.channel === 'next') {
       for (const tag of ['latest', 'stable']) {
         if (before[tag] !== after[tag]) throw new Error('RELEASE_UNEXPECTED_STABLE_TAG_CHANGE: ' + item.name + ':' + tag);
       }
     }
-    const actual = await metadata(item.name, item.version, manifest.registry);
     checkMetadata(actual, item, manifest); checkTags(after, manifest);
     state[item.name] = { integrity: actual.dist.integrity, tags: after };
     await save(stateFile, state);
-    } catch (error) {
-      if (publishError) throw new AggregateError([publishError, error], 'RELEASE_PUBLISH_AND_REGISTRY_CONFIRMATION_FAILED: ' + item.name);
-      throw error;
+  };
+  // 先提交整批缺失版本，再核对 registry；各包扫描和分发可同时进行。
+  for (const item of manifest.artifacts) {
+    if (existing.has(item.name)) continue;
+    try {
+      await run('npm', ['publish', join(artifact.directory, item.file), '--ignore-scripts', '--registry', manifest.registry,
+        '--tag', manifest.channel, '--access', 'public']);
+    } catch (publishError) {
+      // 回执失败时立即核实际状态，不把认证或未知失败当作已受理的传播等待。
+      try { await confirm(item, false); }
+      catch (error) { throw new AggregateError([publishError, error], 'RELEASE_PUBLISH_AND_REGISTRY_CONFIRMATION_FAILED: ' + item.name); }
+      throw publishError;
     }
-    if (publishError) throw publishError;
   }
+  for (const item of manifest.artifacts) await confirm(item, true);
   await verify(artifact.file, 'registry');
   if (options['also-latest']) {
     for (const item of manifest.artifacts) await run('npm', ['dist-tag', 'add', item.name + '@' + item.version, 'latest', '--registry', manifest.registry]);
