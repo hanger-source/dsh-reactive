@@ -55,6 +55,8 @@ prepare 只执行一次总 build，然后 npm pack（`--ignore-scripts`）。对
 
 六个 npm 包分别将以下配置登记为 Trusted Publisher：GitHub owner `hanger-source`、repository `dsh-reactive`、workflow file `release.yml`，不设置额外 environment。发行需要允许 `npm publish` 和 `npm dist-tag`，分别用于发布产物与确认稳定版的默认安装渠道。这些是 npm 侧的信任配置，不是 GitHub Actions Secret。
 
+批量配置发布信任时，使用同一 npm 登录会话和网络出口，在 `npm trust` 写入请求的验证页选择接下来五分钟不再验证，然后连续完成各包配置。该窗口适用于 `npm publish` 与 `npm trust`，不适用于 `npm stage approve`；暂存批准要求逐份证明人工在场。直接发行由已配置的 OIDC 执行，不再逐包请求人工验证。
+
 新包尚无包级设置时，使用官方 staged publishing 完成首次发行。提供同一仓库内已完成 prepare、候选验收通过的发行 run ID：
 
 ```sh
@@ -62,6 +64,8 @@ gh workflow run release.yml -f tag=dsh-reactive@VERSION -f registration_run=VERI
 ```
 
 登记 job 核验原 run 的仓库、工作流、源码提交、prepare 结果及候选完整性，不重新构建或改包。它输出 npm 官方网页登录地址，在临时 runner 中建立会话，将原始 tgz 提交 staging 并附 provenance；结束时撤销该登录会话。不要把凭据写入 Actions Secrets 或聊天。下载 `npm-registration-receipt` 中的 `staging.json`，核对六包版本和完整性后，以 `npm stage approve STAGE_ID` 完成各包 2FA 批准。登记 job 成功仅表示已暂存，尚未代表正式发行完成。
+
+暂存会占用该版本，不能再以 `npm publish` 覆盖。若保留未批准的候选并改走直接 OIDC 发行，先为占位包配置发布信任，再通过 Changesets 生成后续版本；已有发行 tag 和候选产物保持不变。
 
 npm 拒绝新包唯一的暂存记录时，也会撤销其 `0.0.0-stage` 占位包；不要把“先暂存正式版本、再拒绝、再直接发布同版本”当作登记流程。首次批准后为实际包配置上述 OIDC 信任，再重跑原发行 run 的失败 job。publish 会核验已经受理版本的完整性，完成 registry 消费、dist-tags 和 GitHub Release。后续版本直接由 OIDC 发布，不需要首次登记的网页登录步骤。
 
