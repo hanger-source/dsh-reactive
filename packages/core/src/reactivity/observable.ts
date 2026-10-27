@@ -1,4 +1,4 @@
-import { Observable, Subject, ReplaySubject, Subscription, connectable, takeUntil, defer, from, tap, distinctUntilChanged, EmptyError, filter, isObservable, map, materialize, scan, startWith } from 'rxjs';
+import { Observable, Subject, ReplaySubject, Subscription, connectable, takeUntil, defer, from, tap, distinctUntilChanged, EmptyError, filter, isObservable, map, materialize, scan, startWith, share, observeOn, queueScheduler, switchMap, EMPTY, type OperatorFunction } from 'rxjs';
 import type { Observation } from '../resources/observation.ts';
 import type { Scope } from './scope.ts';
 
@@ -56,6 +56,26 @@ export function abortable<T>(run: (signal: AbortSignal) => PromiseLike<T> | T): 
     defer(() => from(Promise.resolve(run(controller.signal)))).pipe(
       tap({ next: () => { settled = true; }, error: () => { settled = true; } }),
     ).subscribe(subscriber);
+  });
+}
+
+/** @internal 立即撤销旧读，RxJS同步队列串行切换；清理中再次通知不能留下失管连接。 */
+export function switchLatest<T, U>(project: (value: T) => Observable<U>, beforeSwitch: (value: T) => void): OperatorFunction<T, U> {
+  return source => defer(() => {
+    let latest = 0;
+    const changes = source.pipe(
+      map(value => ({ value, version: ++latest })),
+      tap(change => beforeSwitch(change.value)),
+      // 取消监听不能重启已经结束的有限来源；同次观察共享同一个终止事实。
+      share({ resetOnComplete: false, resetOnError: false }),
+    );
+    return changes.pipe(
+      observeOn(queueScheduler),
+      filter(change => change.version === latest),
+      switchMap(change => defer(() => change.version === latest ? project(change.value) : EMPTY)
+        // 通知先登记；工厂尚未返回时到达的新事实也立即取消旧读。
+        .pipe(takeUntil(changes.pipe(filter(next => next.version > change.version))))),
+    );
   });
 }
 

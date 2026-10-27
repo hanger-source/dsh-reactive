@@ -4,6 +4,34 @@ import { NEVER, Observable, Subject, Subscription, concatMap, firstValueFrom, la
 import { Scope, createResource, createReaction, defineResource, implementResource, bindResource, defineReaction, implementReaction, bindReaction, z } from '@hanger-source/dsh-reactive';
 import type { Observation } from '@hanger-source/dsh-reactive';
 
+test('观察来源清理中再次失效先完成旧连接释放，只连接最新一代且没有失管观察', () => {
+  const scope = new Scope(), active = new Set<number>();
+  let connections = 0, repeat = true;
+  const resource = createResource(scope, { value: z.number(), observe() {
+    if (active.size) throw new Error('PREVIOUS_RESOURCE_CONNECTION_STILL_ACTIVE');
+    const id = ++connections; active.add(id);
+    return new Observable<Observation<number>>(subscriber => {
+      subscriber.next({ status: 'ready', generation: id, observedAt: Date.now(), value: id });
+      return () => {
+        // 通知先于关闭完成，下一次工厂必须等整个清理返回才能取得独占来源。
+        if (repeat) { repeat = false; resource.invalidate(); }
+        active.delete(id);
+      };
+    });
+  } });
+  const values: number[] = [], errors: unknown[] = [];
+  const watch = resource.observations$.subscribe(value => {
+    if (value.status === 'ready') values.push(value.value);
+    else if (value.status === 'error') errors.push(value.error);
+  });
+  try {
+    resource.invalidate();
+    assert.deepEqual(values, [1, 2]); assert.deepEqual(errors, []);
+    assert.equal(connections, 2); assert.deepEqual([...active], [2]);
+  } finally { watch.unsubscribe(); scope.dispose(); }
+  assert.equal(active.size, 0);
+});
+
 test('读取中同步失效先释放独占来源，下一次读取才能取得连接，迟到结果不覆盖当前事实', async () => {
   const scope = new Scope(), invalidations = new Subject<void>();
   const active = new Set<symbol>();

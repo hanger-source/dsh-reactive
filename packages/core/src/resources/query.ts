@@ -1,5 +1,5 @@
-import { Observable, EMPTY, of, merge, defer, switchMap, map, startWith, catchError } from 'rxjs';
-import { abortable } from '../reactivity/observable.ts';
+import { Observable, EMPTY, of, merge, map, catchError } from 'rxjs';
+import { abortable, switchLatest } from '../reactivity/observable.ts';
 import type { Observation } from './observation.ts';
 
 export interface ResourceObservationOptions<K, T> {
@@ -11,19 +11,19 @@ export interface ResourceObservationOptions<K, T> {
 
 /** 标准冷流；是否共享以及共享多久由调用者的 owner 连接决定。 */
 export function observeResource<K, T>(options: ResourceObservationOptions<K, T>): Observable<Observation<T>> {
-  return defer(() => {
+  return new Observable<Observation<T>>(subscriber => {
     let generation = 0;
-    return options.key$.pipe(switchMap(key => {
+    const pending = () => subscriber.next({ status: 'pending', generation: ++generation });
+    options.key$.pipe(switchLatest(key => {
       // 先订阅 owner 通知再触发初读，读取期间同步到达的失效不会遗失。
       const invalidations$ = options.invalidations?.(key) ?? EMPTY;
-      return merge(invalidations$, of(undefined)).pipe(switchMap(() => {
-        const current = ++generation;
+      return merge(invalidations$, of(undefined)).pipe(switchLatest(() => {
+        const current = generation;
         return abortable(signal => options.read(key, signal)).pipe(
           map((value): Observation<T> => ({ status: 'ready', generation: current, value, observedAt: Date.now() })),
           catchError((error: unknown) => of<Observation<T>>({ status: 'error', generation: current, error })),
-          startWith<Observation<T>>({ status: 'pending', generation: current }),
         );
-      }));
-    }));
+      }, pending));
+    }, pending)).subscribe(subscriber);
   });
 }

@@ -7,6 +7,67 @@ import { combineResources, mapResource, switchResource } from '@hanger-source/ds
 
 const ready = <T>(value: T, generation: number): Observation<T> => ({ status: 'ready', generation, value, observedAt: Date.now() });
 
+test('key切换和失效的取消回调再次通知，独占读取先退出且只接受最新结果', async () => {
+  for (const mode of ['key', 'invalidation'] as const) {
+    const keys = new BehaviorSubject('a'), invalidations = new Subject<void>(), active = new Set<number>();
+    const reads: { key: string; result: ReturnType<typeof Promise.withResolvers<string>> }[] = [];
+    let repeat = true;
+    const seen: Observation<string>[] = [];
+    const subscription = observeResource({ key$: keys, invalidations: () => invalidations, read(key, signal) {
+      if (active.size) throw new Error('PREVIOUS_QUERY_STILL_ACTIVE');
+      const id = reads.length + 1, result = Promise.withResolvers<string>();
+      active.add(id); reads.push({ key, result });
+      signal.addEventListener('abort', () => {
+        if (repeat) { repeat = false; if (mode === 'key') keys.next('c'); else invalidations.next(); }
+        active.delete(id);
+      }, { once: true });
+      return result.promise.finally(() => active.delete(id));
+    } }).subscribe(value => seen.push(value));
+    try {
+      if (mode === 'key') keys.next('b'); else invalidations.next();
+      assert.deepEqual(reads.map(read => read.key), mode === 'key' ? ['a', 'c'] : ['a', 'a']);
+      reads[0]!.result.resolve('stale'); reads[1]!.result.resolve('current');
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.deepEqual(seen.flatMap(value => value.status === 'ready' ? [value.value] : []), ['current']);
+      assert.equal(seen.some(value => value.status === 'error'), false); assert.equal(active.size, 0);
+    } finally { subscription.unsubscribe(); }
+  }
+});
+
+test('派生来源清理中更新依赖，立即撤下旧资格，整次清理结束后才连接最新来源', () => {
+  const upstream = new BehaviorSubject(ready('a', 1)), active = new Set<string>(), opened: string[] = [];
+  const seen: Observation<string>[] = [];
+  let repeat = true, redirect = false;
+  const subscription = upstream.pipe(switchResource(key => {
+    if (active.size) throw new Error('PREVIOUS_DEPENDENCY_STILL_ACTIVE');
+    active.add(key); opened.push(key);
+    return new Observable<Observation<string>>(subscriber => {
+      subscriber.next(ready(key, 1));
+      return () => {
+        if (repeat) {
+          repeat = false; upstream.next(ready('c', 3));
+          assert.equal(seen.at(-1)?.status, 'pending', '新依赖到达即撤下旧 ready，不等清理返回');
+        }
+        active.delete(key);
+      };
+    });
+  })).subscribe(value => {
+    seen.push(value);
+    // 消费者在 pending 回调中也可明确选择另一个依赖；外层旧通知稍后返回不能撤掉它。
+    if (value.status === 'pending' && redirect) { redirect = false; upstream.next(ready('e', 5)); }
+  });
+  try {
+    upstream.next(ready('b', 2));
+    assert.deepEqual(opened, ['a', 'c']);
+    assert.deepEqual(seen.flatMap(value => value.status === 'ready' ? [value.value] : []), ['a', 'c']);
+    assert.equal(seen.some(value => value.status === 'error'), false);
+    redirect = true; upstream.next(ready('d', 4));
+    assert.deepEqual(opened, ['a', 'c', 'e']);
+    assert.deepEqual([...active], ['e'], '较早通知返回后，最新依赖仍保持实际连接');
+  } finally { subscription.unsubscribe(); }
+  assert.equal(active.size, 0);
+});
+
 test('持续组合在任一依赖失效时撤销旧资格，读取和投影错误可随新事实恢复且不能扩大业务许可', () => {
   const preparation = new BehaviorSubject(ready({ onboardingId: 'a', prepared: true }, 7));
   const knowledge = new BehaviorSubject(ready({ onboardingId: 'a', usable: true }, 7));

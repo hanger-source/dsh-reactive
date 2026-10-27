@@ -1,6 +1,6 @@
-import { catchError, combineLatest, defer, filter, map, of, switchMap, type Observable, type OperatorFunction } from 'rxjs';
+import { catchError, combineLatest, defer, filter, map, of, EMPTY, Observable, type OperatorFunction } from 'rxjs';
 import type { Observation } from './observation.ts';
-import { normalizeResource } from '../reactivity/observable.ts';
+import { normalizeResource, switchLatest } from '../reactivity/observable.ts';
 
 export type ResourceSources = Readonly<Record<string, Observable<Observation<unknown>>>>;
 export type ResourceValues<S extends ResourceSources> = {
@@ -31,7 +31,7 @@ export function switchResource<T, U>(project: (value: T) => Observable<Observati
   return source => defer(() => {
     let generation = 0;
     let previous: readonly unknown[] | undefined;
-    return normalizeResource(source).pipe(
+    const upstream$ = normalizeResource(source).pipe(
       map((upstream): Observation<T> | null => {
         if (upstream.status !== 'ready') { previous = undefined; return upstream; }
         if (selectDependencies === undefined) return upstream;
@@ -49,14 +49,18 @@ export function switchResource<T, U>(project: (value: T) => Observable<Observati
         }
       }),
       filter((upstream): upstream is Observation<T> => upstream !== null),
-      switchMap((upstream): Observable<Observation<U>> => {
-        if (upstream.status !== 'ready') return of(Object.freeze({ ...upstream, generation: ++generation }));
+    );
+    return new Observable<Observation<U>>(subscriber => upstream$.pipe(
+      switchLatest((upstream): Observable<Observation<U>> => {
+        if (upstream.status !== 'ready') return EMPTY;
         return defer(() => normalizeResource(project(upstream.value))).pipe(
           map(observation => Object.freeze({ ...observation, generation: ++generation })),
           catchError((error: unknown) => of(Object.freeze({ status: 'error' as const, generation: ++generation, error }))),
         );
-      }),
-    );
+      }, upstream => subscriber.next(Object.freeze(upstream.status === 'ready'
+        ? { status: 'pending', generation: ++generation }
+        : { ...upstream, generation: ++generation }))),
+    ).subscribe(subscriber));
   });
 }
 
