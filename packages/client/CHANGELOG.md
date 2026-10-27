@@ -1,5 +1,11 @@
 # @hanger-source/dsh-reactive-client
 
+## 0.18.2
+
+### Patch Changes
+
+- @hanger-source/dsh-reactive@0.18.2
+
 ## 0.18.1
 
 ### Patch Changes
