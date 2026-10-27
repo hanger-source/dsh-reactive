@@ -73,12 +73,13 @@ export class ResourceInstance<D extends ResourceContract> implements ResourceRea
     this.observations$ = new Observable(subscriber => {
       if (this.#closed || scope.disposed) { subscriber.error(new ScopeDisposedError()); return; }
       this.#observers++;
-      const subscription = snapshots$.subscribe(subscriber);
-      if (this.#observers === 1) start();
-      return () => {
-        subscription.unsubscribe();
+      // 基线和来源均可同步通知；先登记退出，take/firstValueFrom 才能立即撤销最后一个连接。
+      subscriber.add(() => {
         if (--this.#observers === 0) disconnect();
-      };
+      });
+      snapshots$.subscribe(subscriber);
+      // 同步基线可以接入另一个观察者并关闭当前消费者；仍有人观察时须建立同一条连接。
+      if (this.#observers > 0) start();
     });
     this.values$ = this.observations$.pipe(mergeMap(observation => observation.status === 'pending' ? EMPTY
       : observation.status === 'error' ? throwError(() => observation.error) : of(observation.value)));

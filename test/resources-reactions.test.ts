@@ -1,7 +1,44 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Subject, concatMap, map, of } from 'rxjs';
-import { Scope, defineResource, implementResource, bindResource, defineReaction, implementReaction, bindReaction, z } from '@hanger-source/dsh-reactive';
+import { Subject, Subscription, concatMap, firstValueFrom, lastValueFrom, map, of, take, tap } from 'rxjs';
+import { Scope, createResource, defineResource, implementResource, bindResource, defineReaction, implementReaction, bindReaction, z } from '@hanger-source/dsh-reactive';
+
+test('同步退出资源观察不启动业务读取，连接中退出也立即撤销来源，后续显式读取仍可正常建立连接', async () => {
+  const scope = new Scope();
+  let reads = 0;
+  const resource = createResource(scope, { name: 'document.current', value: z.number(), read: () => ++reads });
+  try {
+    // 只取当前状态的消费者在基线交付时已经退出，不应为它启动查询。
+    assert.equal((await firstValueFrom(resource.observations$)).status, 'pending');
+    assert.equal(reads, 0);
+    // 来源建立连接时也会同步交付 pending；此时退出必须阻止后续实际读取。
+    assert.equal((await lastValueFrom(resource.observations$.pipe(take(2)))).status, 'pending');
+    assert.equal(reads, 0);
+    assert.equal(resource.peek().status, 'pending');
+    assert.equal(await resource.read(), 1);
+    assert.equal(reads, 1);
+    assert.equal(resource.peek().status, 'pending');
+  } finally { scope.dispose(); }
+});
+
+test('基线观察中接入持续消费者再同步退出，留下的消费者仍共享实际读取', async () => {
+  const scope = new Scope();
+  let reads = 0;
+  const resource = createResource(scope, { name: 'document.monitor', value: z.number(), read: () => ++reads });
+  const values: number[] = [];
+  let monitor = new Subscription();
+  try {
+    await firstValueFrom(resource.observations$.pipe(take(1), tap(() => {
+      monitor = resource.values$.subscribe(value => values.push(value));
+    })));
+    assert.equal(reads, 1);
+    assert.equal(await resource.read(), 1);
+    assert.deepEqual(values, [1]);
+    assert.equal(reads, 1);
+    monitor.unsubscribe();
+    assert.equal(resource.peek().status, 'pending');
+  } finally { monitor.unsubscribe(); scope.dispose(); }
+});
 
 test('两个资源消费者共享读取；失效取消旧读且迟到旧结果不能覆盖新现场', async () => {
   const scope = new Scope();
