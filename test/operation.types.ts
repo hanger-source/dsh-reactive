@@ -106,6 +106,7 @@ async function consume(execution: ActionExecutionContext) {
   const exposed: BoundAction<typeof prepare> = bound;
   const invocation = bound({ commandId: 'prepare-1', revision: '7' });
   const handle: OperationHandle<typeof preparation> = await invocation.operation;
+  (await handle.state.read()).updatedAt.toISOString();
   const receipt = await invocation.result;
   receipt.operation.operationId.toUpperCase();
   const terminal: OperationSettled<typeof preparation> = await handle.settled();

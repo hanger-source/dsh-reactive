@@ -130,6 +130,8 @@ test('动态模块集合经真实Gateway保留Date、单向目标与独立Operat
   assert.equal((await remoteB.resolveAction('save', 'merchant-b')).bindingId, captured.get('b').bindingId);
   const located = await a.locate(); assert.equal(located.status, 'accepted');
   const operation = a.attach(located.reference), settled = operation.settled();
+  assert.deepEqual(await operation.state.read(), { merchantId: 'merchant-a', phase: 'running' });
+  assert.equal(operation.observations$, operation.state.observations$);
   states.a.next({ status: 'ready', generation: 2, observedAt: Date.now(), value: { merchantId: 'merchant-a', phase: 'done' } });
   assert.deepEqual(await settled, { merchantId: 'merchant-a', phase: 'done' });
   assert.equal((await b.locate()).state.phase, 'running');

@@ -8,7 +8,7 @@ import type { RemoteProgramSession } from '@hanger-source/dsh-reactive-client';
 import type { SessionBinding } from '@deepseek-ai/dsh-api-session-controller/client';
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots';
 import { defer, fromEvent, takeUntil, type Observable } from 'rxjs';
-import { nativeSource, observeNativeResource, observeNativeSource, type NativeReadable } from './sources.ts';
+import { nativeSource, observeNativeSource, type NativeReadable } from './sources.ts';
 
 /**
  * 一个明确 Program 与真实 Client Session generation 的借用绑定。
@@ -81,7 +81,7 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
 
   operation<D extends OperationContract>(operation: OperationHandle<D>): HostObservable<Observation<OperationState<D>>> {
     this.assertActive();
-    return this.guard(observeNativeResource(this.scope, operation.observations$));
+    return this.resource(operation.state);
   }
 
   invocation<T, O extends Json>(invocation: Invocation<T, O>): HostObservable<Observation<InvocationActivity<O>>> {

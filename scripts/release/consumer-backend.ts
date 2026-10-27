@@ -1,5 +1,7 @@
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction,
-  resourceView, type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, z } from '@hanger-source/dsh-reactive';
+  resourceView, shareResource, type Scope, type Observation, type OperationContract, type OperationHandle,
+  type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, z } from '@hanger-source/dsh-reactive';
+import type { Observable } from 'rxjs';
 import { implementProgram, useResource, useResourceInstance, useReaction } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, type ConversationHandle, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import { createProgramClient, type RemoteProgramSession } from '@hanger-source/dsh-reactive-client';
@@ -27,3 +29,5 @@ export function usePublicView(session: ConversationHandle<typeof contract> | Rem
   const resource: ResourceReadable<number> = session.viewResource('revision');
   return useResource(resource);
 }
+export const publicResource = (scope: Scope, source: Observable<Observation<number>>) => shareResource(source, { signal: scope.signal });
+export function useOperationState<D extends OperationContract>(operation: OperationHandle<D>) { return useResource(operation.state); }

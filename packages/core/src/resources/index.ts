@@ -5,7 +5,8 @@ export type { ResourceImplementation, ResourceImplementationOptions, ResourceRea
 export { bindResource, ResourceInstance } from './binding.ts';
 export type { ResourceBinding } from './binding.ts';
 export { ResourceReader } from './reader.ts';
-export type { ResourceReadable } from './reader.ts';
+export type { ResourceReadable, ResourceReaderOptions } from './reader.ts';
+export { shareResource } from './sharing.ts';
 export { ResourceValue } from './value.ts';
 export type { Observation } from './observation.ts';
 export { observeResource } from './query.ts';

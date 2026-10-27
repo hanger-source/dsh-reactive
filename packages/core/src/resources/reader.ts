@@ -9,13 +9,22 @@ export interface ResourceReadable<T> {
   subscribe(accept: (observation: Observation<T>) => void): () => void;
 }
 
+export interface ResourceReaderOptions {
+  readonly signal: AbortSignal;
+  readonly onObserverError?: (error: unknown) => void;
+}
+
 /** 借用已有事实；只限制读取寿命，不缓存状态、不持有来源连接或重试。 */
 export class ResourceReader<T> implements ResourceReadable<T> {
   readonly observations$: Observable<Observation<T>>;
   readonly values$: Observable<T>;
+  private readonly signal: AbortSignal;
+  private readonly onObserverError: ResourceReaderOptions['onObserverError'];
   constructor(private readonly source: Pick<ResourceReadable<T>, 'observations$' | 'peek'>,
-    private readonly options: { readonly signal: AbortSignal; readonly onObserverError?: (error: unknown) => void }) {
+    options: ResourceReaderOptions) {
     const { signal } = options;
+    this.signal = signal;
+    this.onObserverError = options.onObserverError;
     this.observations$ = new Observable(subscriber => {
       if (signal.aborted) { subscriber.complete(); return; }
       const close = () => subscriber.complete();
@@ -26,11 +35,11 @@ export class ResourceReader<T> implements ResourceReadable<T> {
     this.values$ = this.observations$.pipe(mergeMap(observation => observation.status === 'pending' ? EMPTY
       : observation.status === 'error' ? throwError(() => observation.error) : of(observation.value)));
   }
-  peek(): Observation<T> { this.options.signal.throwIfAborted(); return this.source.peek(); }
+  peek(): Observation<T> { this.signal.throwIfAborted(); return this.source.peek(); }
   subscribe(accept: (observation: Observation<T>) => void): () => void {
-    this.options.signal.throwIfAborted();
+    this.signal.throwIfAborted();
     const report = (error: unknown) => {
-      if (this.options.onObserverError) this.options.onObserverError(error);
+      if (this.onObserverError) this.onObserverError(error);
       else console.error('reactive.observer.failed', error);
     };
     const subscription = this.observations$.subscribe({
@@ -41,7 +50,7 @@ export class ResourceReader<T> implements ResourceReadable<T> {
   }
   /** 等待当前有效值；失效跟随新代次，退出和空完成都必须结算等待。 */
   read(signal?: AbortSignal): Promise<T> {
-    this.options.signal.throwIfAborted();
+    this.signal.throwIfAborted();
     if (signal?.aborted) return Promise.reject(signal.reason);
     return new Promise<T>((resolve, reject) => {
       let settled = false;
@@ -55,7 +64,7 @@ export class ResourceReader<T> implements ResourceReadable<T> {
           else if (observation.status === 'error') finish(() => reject(observation.error));
         },
         error: (error: unknown) => finish(() => reject(error)),
-        complete: () => finish(() => reject(this.options.signal.aborted ? this.options.signal.reason : new EmptyError())),
+        complete: () => finish(() => reject(this.signal.aborted ? this.signal.reason : new EmptyError())),
       });
       const abort = () => finish(() => reject(signal!.reason));
       signal?.addEventListener('abort', abort, { once: true });

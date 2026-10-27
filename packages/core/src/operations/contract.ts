@@ -1,10 +1,11 @@
-import { Observable, ReplaySubject, defer, filter, firstValueFrom, from, fromEvent, isObservable, map, mergeMap, share, takeUntil, throwError, type MonoTypeOperatorFunction } from 'rxjs';
+import { Observable, EMPTY, EmptyError, concatWith, defer, filter, firstValueFrom, from, fromEvent, isObservable, map, mergeMap, takeUntil, tap, throwError, type MonoTypeOperatorFunction } from 'rxjs';
 import { z } from 'zod';
 import type { ActionSource, ActionTarget } from '../actions/contract.ts';
 import { continuationSchema, waitSchema, type Continuation, type Json, type WaitReference } from '../conversations/protocol.ts';
 import type { InputReceipt } from '../conversations/conversation.ts';
 import type { Observation } from '../resources/observation.ts';
-import { normalizeResource } from '../reactivity/observable.ts';
+import { shareResource } from '../resources/sharing.ts';
+import type { ResourceReader } from '../resources/reader.ts';
 
 /** 纯业务操作合同；身份与事实独立于某次函数、工具和组件的生存期。 */
 export interface OperationContract {
@@ -124,6 +125,8 @@ export interface OperationOwnerOptions<D extends OperationContract> {
 export interface OperationHandle<D extends OperationContract> {
   readonly definition: D;
   readonly reference: OperationReference<D>;
+  /** 当前查询的完整资源读侧；read读取当前值，settled另行等待权威业务终态。 */
+  readonly state: ResourceReader<OperationState<D>>;
   /** 冷查询共享来源；订阅不会启动、重试或取消业务操作。 */
   readonly observations$: Observable<Observation<OperationState<D>>>;
   /** 只等待权威终态；query error/abort 会拒绝，业务失败和取消则作为领域值返回。 */
@@ -217,8 +220,9 @@ export function implementOperation<D extends OperationContract>(definition: D,
     attach(raw, initialAccess, admit) {
       const reference = parseIdentity<D['reference']>(definition.reference, raw);
       const access = ownAccess(initialAccess);
-      const observations$ = normalizeResource(defer(() => {
+      const state = shareResource(defer(() => {
         access.signal.throwIfAborted();
+        let last: Observation<OperationState<D>> | undefined;
         return from(acknowledgement(admit?.())).pipe(mergeMap(() => {
           access.signal.throwIfAborted();
           const source = observe(reference.value, access);
@@ -229,21 +233,24 @@ export function implementOperation<D extends OperationContract>(definition: D,
           return observation.status === 'ready'
             ? { ...observation, value: parseState(observation.value) }
             : observation;
-        }), untilAbort(access.signal));
-      })).pipe(share({ connector: () => new ReplaySubject<Observation<OperationState<D>>>(1),
-        resetOnRefCountZero: true, resetOnError: false, resetOnComplete: false }));
+        }), tap(observation => { last = observation; }), concatWith(defer(() =>
+          // 操作来源结束仍未给出业务终态时，不能让settled永远等待一个已结束的查询。
+          last?.status === 'ready' && settled(last.value) === undefined ? throwError(() => new EmptyError()) : EMPTY)), untilAbort(access.signal));
+      }), { signal: access.signal });
+      const observations$ = state.observations$;
       const handle: OperationHandle<D> = Object.freeze({
         definition,
         reference: reference.wire,
+        state,
         observations$,
         async settled(readOptions: { readonly signal?: AbortSignal } = {}) {
-          const signal = readOptions.signal;
-          signal?.throwIfAborted();
+          const signal = readOptions.signal ? AbortSignal.any([access.signal, readOptions.signal]) : access.signal;
+          signal.throwIfAborted();
           const terminal$ = observations$.pipe(map(observation => {
             if (observation.status === 'error') throw observation.error;
             return observation.status === 'ready' ? settled(observation.value) : undefined;
           }), filter((state): state is OperationSettled<D> => state !== undefined));
-          return firstValueFrom(signal ? terminal$.pipe(untilAbort(signal)) : terminal$);
+          return firstValueFrom(terminal$.pipe(untilAbort(signal)));
         },
       });
       return handle;

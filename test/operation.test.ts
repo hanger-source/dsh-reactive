@@ -12,10 +12,11 @@ import { observeResource } from '@hanger-source/dsh-reactive';
 import type { Observation } from '@hanger-source/dsh-reactive';
 
 test('同次受理回执派生操作观察，持久准备被等待，声明退出不丢回执且多个观察不重复执行', async () => {
+  let stateParses = 0;
   const stateSchema = z.discriminatedUnion('status', [
     z.object({ status: z.literal('running') }),
     z.object({ status: z.literal('failed'), reason: z.string() }),
-  ]);
+  ]).transform(value => { stateParses++; return value; });
   let state: z.input<typeof stateSchema> = { status: 'running' };
   const changed = new Subject<void>();
   const queryEntered = Promise.withResolvers<void>();
@@ -63,6 +64,7 @@ test('同次受理回执派生操作观察，持久准备被等待，声明退�
   returned.resolve({ operation: { merchantId: 'merchant-a', operationId: 'operation-a' } });
   const receipt = await invocation.result;
   const handle = await invocation.operation;
+  assert.equal(handle.observations$, handle.state.observations$);
   assert.deepEqual(handle.reference, receipt.operation);
   assert.deepEqual(stages, ['prepare', 'receipt']);
   assert.equal(outputParses, 1);
@@ -74,10 +76,12 @@ test('同次受理回执派生操作观察，持久准备被等待，声明退�
     await queryEntered.promise;
     await firstValueFrom(handle.observations$.pipe(filter(value => value.status === 'ready')));
     assert.equal(queries, 1);
+    assert.deepEqual(await handle.state.read(), { status: 'running' }); assert.equal(stateParses, 1);
     const settlement = handle.settled();
     state = { status: 'failed', reason: '业务 owner 确认准备失败' };
     changed.next();
     assert.deepEqual(await settlement, state);
+    assert.deepEqual(await handle.state.read(), state); assert.equal(stateParses, 2);
     assert.equal(executions, 1);
     assert.equal(outputParses, 1);
     assert.deepEqual(observations[0], observations[1]);
@@ -88,6 +92,7 @@ test('同次受理回执派生操作观察，持久准备被等待，声明退�
     await assert.rejects(action({ commandId: 'prepare-again' }).result, /REACTIVE_ACTION_BINDING_RELEASED/u);
     assert.equal(executions, 1);
   } finally { first.unsubscribe(); second.unsubscribe(); }
+  assert.equal(handle.state.peek().status, 'pending');
 });
 
 test('query失败或等待者取消只结束读取，之后可重读原操作并取得领域取消终态', async () => {
@@ -189,7 +194,7 @@ test('owner资源空完成、异步pending后完成和来源异常均向观察�
   ]);
   const definition = defineOperation({ kind: 'resource-endings', version: 1, command: z.string(), reference: z.string(),
     state, settled: value => value.status === 'running' ? undefined : value });
-  for (const mode of ['empty', 'pending-complete', 'source-error'] as const) {
+  for (const mode of ['empty', 'pending-complete', 'ready-not-terminal', 'source-error'] as const) {
     const source = new Subject<Observation<z.input<typeof state>>>();
     const entered = Promise.withResolvers<void>();
     const failure = new Error('owner来源已终止');
@@ -207,9 +212,11 @@ test('owner资源空完成、异步pending后完成和来源异常均向观察�
     try {
       await entered.promise;
       if (mode !== 'empty') {
-        source.next({ status: 'pending', generation: 7 });
+        source.next(mode === 'ready-not-terminal'
+          ? { status: 'ready', generation: 7, value: { status: 'running' }, observedAt: Date.now() }
+          : { status: 'pending', generation: 7 });
         await setImmediate();
-        if (mode === 'pending-complete') source.complete();
+        if (mode === 'pending-complete' || mode === 'ready-not-terminal') source.complete();
         else source.error(failure);
       }
       await assert.rejects(settlement, error => {
