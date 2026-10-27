@@ -219,7 +219,7 @@ export function useRelation<T>(factory: () => Observable<T>, dependencies: Depen
   }, [owner, source$]);
 }
 
-/** 声明原生步骤前须完成的业务检查；执行、等待和错误由宿主步骤边界处理。 */
+/** 声明幂等的步骤前检查；依赖替换或组件退出撤销本登记的信号和等待，真实失败仍交宿主处理。 */
 export function useBeforeStep(check: (signal: AbortSignal) => void | Promise<void>, dependencies: DependencyList): void {
   const owner = useOwner();
   const current = useMemo(() => check, dependencies);

@@ -44,6 +44,8 @@ Context 默认 required=true：pending/error 阻止模型取得不完整现场�
 
 `useRelation(() => standardObservable, deps)` 在提交后持有关系；未处理错误使程序失败。需要显式执行/停止/观察的持续工作用 Reaction。`useBeforeStep` 用于原生步骤前必须完成的检查。渲染函数和数据投影不发命令。
 
+`useBeforeStep(check, dependencies)` 的每次登记有独立身份，即使多个组件使用同一 check 函数，退出一个组件也不撤销其他登记。依赖替换或组件退出会中止旧检查收到的 signal 并结束本次等待，准备过程重新核对当前集合；不配合取消的 Promise 迟到完成或失败都不代表当前检查结果。原生步骤取消、Program 失败或退出同样结束等待，当前有效检查的错误仍传播。检查必须幂等，应使用传入 signal 等待真实依赖，例如 `await resource.read(signal)`；业务动作仍从 Action 或其他显式执行入口发起。
+
 ## 框架承担命名与公开映射
 
 ```tsx

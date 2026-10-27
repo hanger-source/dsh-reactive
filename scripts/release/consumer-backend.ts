@@ -2,7 +2,7 @@ import { defineApplication, defineEnvironment, defineProgram, defineSurface, def
   resourceView, shareResource, type Scope, type Observation, type OperationContract, type OperationHandle,
   type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, type Invocation, type Json, z } from '@hanger-source/dsh-reactive';
 import { concatMap, type Observable } from 'rxjs';
-import { implementProgram, useResource, useResourceInstance, useReaction } from '@hanger-source/dsh-reactive/program';
+import { implementProgram, useResource, useResourceInstance, useReaction, useBeforeStep } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, type ConversationHandle, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-reactive-dsh/tools';
@@ -30,6 +30,7 @@ export function useBackendBindings(resource: ResourceImplementation<typeof curre
 }
 export function useLocalBackend(target: string, changes$: Observable<number>) {
   const resource = useResourceInstance(() => ({ value: z.string(), read: () => target }), [target]);
+  useBeforeStep(async signal => { await resource.read(signal); }, [resource]);
   const reaction = useReaction(() => ({ event: z.number(), result: z.string(),
     observe: () => changes$, operator: concatMap, execute: revision => target + ':' + (revision + 1) }), [target, changes$]);
   return { resource, reaction, observed: useResource(resource) };

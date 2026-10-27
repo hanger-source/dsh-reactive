@@ -1,4 +1,5 @@
 import { createElement, type ReactElement } from 'react';
+import { defer, firstValueFrom, fromEvent, mergeMap, raceWith, throwError } from 'rxjs';
 import { invokeBoundAction, type ActionCallContext, type ActionExecutionContext, type ActionReference, type ActionOperationEvent, type Invocation } from '../actions/contract.ts';
 import type { Json } from '../conversations/protocol.ts';
 import type { OperationAccessContext, OperationBindingReference, OperationContract, OperationFeedbackRead, OperationFeedbackPayload, OperationReference, OperationFollowMode } from '../operations/contract.ts';
@@ -46,6 +47,7 @@ export interface ProgramInstanceOptions {
     access: OperationAccessContext): Promise<OperationFeedbackRead<OperationReference<D>, OperationFeedbackPayload<D>>>;
 }
 type TrustedExecution = { readonly action: ActionReference; readonly allowed: () => boolean };
+type StepBoundary = { readonly check: (signal: AbortSignal) => void | Promise<void>; readonly signal: AbortSignal };
 
 /** 会话拥有组件树、声明快照与查询；原生执行及已受理业务拥有各自生存期。 */
 export class ProgramInstance<P extends ProgramContract> implements ProgramHookOwner {
@@ -57,7 +59,7 @@ export class ProgramInstance<P extends ProgramContract> implements ProgramHookOw
   readonly outputs: ReturnType<typeof createProgramOutputs<P['surface']>>;
   readonly signal: AbortSignal;
   #contexts = new Map<string, ContextBinding>();
-  #boundaries = new Set<(signal: AbortSignal) => void | Promise<void>>();
+  #boundaries = new Set<StepBoundary>();
   #trusted = new WeakMap<ActionExecutionContext, TrustedExecution>();
   #failure?: { error: unknown };
   #failed = new AbortController();
@@ -187,18 +189,41 @@ export class ProgramInstance<P extends ProgramContract> implements ProgramHookOw
   }
   beforeStep(check: (signal: AbortSignal) => void | Promise<void>): () => void {
     this.assertActive();
-    this.#boundaries.add(check); this.revision.update(value => value + 1);
-    return () => {
-      if (!this.#boundaries.delete(check) || this.scope.disposed) return;
+    const controller = new AbortController();
+    const boundary = { check, signal: controller.signal };
+    const release = this.reactivityScope.own(() => {
+      this.#boundaries.delete(boundary);
+      controller.abort();
+      if (this.scope.disposed || this.signal.aborted) return;
       this.revision.update(value => value + 1);
-    };
+    });
+    this.#boundaries.add(boundary); this.revision.update(value => value + 1);
+    return release;
   }
   async prepare(signal: AbortSignal): Promise<void> {
-    this.flush();
-    for (const check of [...this.#boundaries]) {
-      signal.throwIfAborted(); this.assertActive(); await check(signal);
+    for (;;) {
+      signal.throwIfAborted(); this.flush();
+      const boundaries = [...this.#boundaries];
+      const same = () => boundaries.length === this.#boundaries.size && boundaries.every(boundary => this.#boundaries.has(boundary));
+      for (const boundary of boundaries) {
+        const checking = AbortSignal.any([signal, this.signal, boundary.signal]);
+        try {
+          checking.throwIfAborted();
+          // 先连接取消再执行用户检查；旧Promise即使不配合取消，也不再阻塞当前准备。
+          await firstValueFrom(fromEvent(checking, 'abort').pipe(
+            mergeMap(() => throwError(() => checking.reason)),
+            raceWith(defer(() => { checking.throwIfAborted(); return Promise.resolve(boundary.check(checking)); })),
+          ));
+        } catch (error) {
+          signal.throwIfAborted(); this.assertActive();
+          if (this.#boundaries.has(boundary)) throw error;
+        }
+        signal.throwIfAborted(); this.flush();
+        if (!same()) break;
+      }
+      signal.throwIfAborted(); this.flush();
+      if (same()) return;
     }
-    signal.throwIfAborted(); this.flush();
   }
   /** 只信任由本会话的宿主入口签发的原始执行对象。 */
   async admit(action: ActionReference, input: unknown, call: ActionCallContext<unknown>, originalExecution: ActionExecutionContext): Promise<void> {

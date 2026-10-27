@@ -233,7 +233,7 @@ const application = defineApplication({
 - `mapResource(project)` 只派生有效值，失效和错误继续传播；同步投影错误进入同代 error，后续有效代次可以恢复。
 - `switchResource(project, { dependencies: value => [value.id, value.revision] })` 根据当前有效依赖连接另一资源。依赖 tuple 按元素 `Object.is` 比较，连续 ready 的依赖相同就保留原查询；只选择实际影响查询的标量或稳定引用，不需要 JSON 编码或自行比较 pending/error。任何上游 pending/error 都立即退订旧查询并清除依赖身份，同一依赖恢复也会重新连接。selector 抛错变为当前 error，后续有效观察仍可恢复；新查询先进入 pending，迟到结果不能回写。tuple 在观察时被捕获，后续修改原数组不会改变已选身份。省略 dependencies 时，每次 ready 选择新来源。它只切换读取，不重发业务命令；共享仍由既有 owner 和 `useShared` 持有。
 - `useRelation(factory, dependencies)` 提交后建立长期关系，流内未恢复的错误进入程序失败边界。异步组合返回 Promise 或 Observable 进入高阶操作符，不依赖 tap(async ...) 等待。
-- `useBeforeStep(check, dependencies)` 登记幂等检查，原生步骤实际等待它的返回值。它不用于执行业务命令。
+- `useBeforeStep(check, dependencies)` 登记幂等检查，原生步骤实际等待它的返回值。每次登记有独立身份，相同函数被多个组件使用也各自拥有退出寿命。依赖替换或组件退出会中止旧检查收到的 signal 并结束等待；准备过程重新核对当前检查集合，旧 Promise 迟到完成或失败不再作为当前准备结果。原生步骤取消或 Program 失败同样结束等待，仍有效的检查失败则继续传播。检查应使用信号读取真实依赖并等待其工作完成，不在检查中执行业务命令。
 - `workspace.share(source$)` 把明确共享的连接交给工作区；应在订阅阶段连接，而非组件纯求值中启动来源。同一工作区与来源复用一个连接，会话或最后一个消费者退出不停止它；有限来源的终态只在工作区 owner 活跃时保留。owner 退出结束已有观察，之前捕获的流在迟到订阅时直接完成，不重放旧值或旧错误，也不重新连接来源。
 
 factory 纯构造来源或目标，依赖数组决定其身份。重复求值不应发起业务操作。普通 React state 和 Transition 仍遵循 React 调度；它们不自动获得模型准入或权限事实的同步保证。
