@@ -22,7 +22,7 @@ export const ItemProgram = defineProgram({ input: Target, surface: ItemSurface }
 
 在模块中用 `useAction(saveImplementation, () => target, [target.sku])` 取得绑定。target factory 只构造数据，deps 表达身份；未列依赖会错误保留旧目标，不能把每次 render 当新绑定修补它。
 
-显式调用返回唯一 Invocation：`const invocation = save({ note }); await invocation.result`。`activity$`、result 与可选 operation 指向同次调用；多订阅不重执行。`invocations$` 是该绑定新调用的热流，不 replay；`activeInvocations$` 是当前在途集合，适合晚挂载关系。结束观察或卸载不解释为取消已执行的业务。
+显式调用返回唯一 Invocation：`const invocation = save({ note }); await invocation.result`。activity、result 与可选 operation 指向同次调用；`invocation.activity.read()` 读取当前事实，`useResource(invocation.activity)` 让业务 hook 借入它，activity$ 是同一资源的 values$。read 不等待业务完成，业务 pending/running/failed 是可有效读取的事实；资源 error 表达观察失败。returned/failed 后流结束，晚读取保留终态，多订阅不重执行。纯本地事实由 Invocation 持有，不随组件或绑定退出撤销；远程读取随所属 SDK 退出。invocations$ 是该绑定新调用的热流，不 replay；activeInvocations$ 是当前在途集合，适合晚挂载关系。结束观察或卸载不解释为取消已执行的业务。
 
 ## 组件只贡献当前声明
 

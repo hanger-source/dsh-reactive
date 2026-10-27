@@ -11,7 +11,7 @@ import { assertProgramSessionConnection } from '@hanger-source/dsh-reactive-clie
 import type { SessionBinding } from '@deepseek-ai/dsh-api-session-controller/client';
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots';
 import { defer, fromEvent, takeUntil, type Observable } from 'rxjs';
-import { nativeSource, observeNativeSource, type NativeReadable } from './sources.ts';
+import { nativeSource, type NativeReadable } from './sources.ts';
 
 export interface NativeHumanQuestion {
   readonly callId: string;
@@ -148,7 +148,7 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
 
   invocation<T, O extends Json>(invocation: Invocation<T, O>): HostObservable<Observation<InvocationActivity<O>>> {
     this.assertActive();
-    return this.guard(observeNativeSource(this.scope, invocation.activity$));
+    return this.resource(invocation.activity);
   }
 
   readonly resolveAction: RemoteProgramSession<P>['resolveAction'] = async (name, scope, options) => {

@@ -185,6 +185,10 @@ execution 表示会话活动，不代表某个请求独占执行。一个步骤�
 
 ## 命令身份与未知受理
 
+本地和远程 Invocation 的 `activity` 都是 `ResourceReader<InvocationActivity>`；`activity$` 直接引用它的 values$，result 继续表达业务返回。`activity.read()` 读取当前事实，可能是业务 pending/running，并不等待业务完成；业务 failed 保持为 ready.value，观察错误保留为资源 error。流在 returned/failed 后结束，SDK 有效期间晚读取仍取得终态。远程资源初次等待真实活动帧时保留 pending，不从调用回执猜业务阶段；SDK 退出结束资源读取与订阅，不撤销 Host 已执行工作。原生 UI 的 invocation 入口直接借用同一资源和 Observation，不另存一份活动状态。
+
+尚未取得终态的活动连接断开时，资源立即进入 pending，重连后从同一调用取得真实当前帧；取消某一次 activity.read 不关闭共享观察，也不重发 Action。已确认的 returned/failed 不因观察流清理失败改写，清理错误保留诊断日志；业务结果、观察可用性和连接退出分别表达。
+
 `create(environmentId, { workspaceId, sessionId? })` 在精确获准的 Workspace 中使用指定 Environment 创建会话；创建目录和注册目录由调用前的应用流程负责。`completeCreation(reference)`、`open(sessionId)`、`resume(sessionId)` 分别表达补齐登记、只读打开与显式激活。只读打开及观察不会创建 Agent 或调用模型。`pause()` 暂停当前原生 Goal，`cancel()` 停止原生推理及待处理输入，不取消外部业务任务。
 
 ```ts

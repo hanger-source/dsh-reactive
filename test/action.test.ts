@@ -256,6 +256,9 @@ test('公开观察投影失败不改写已经完成的业务结果，晚订阅�
   const settled = await firstValueFrom(invocation.activity$);
   assert.equal(settled.state, 'returned');
   if (settled.state === 'returned') assert.equal(settled.observationError, projectionError);
+  const current = await invocation.activity.read();
+  assert.equal(current.state, 'returned');
+  if (current.state === 'returned') assert.equal(current.observationError, projectionError);
 });
 
 test('准入等待期间声明失活拒绝旧调用，重新激活只允许新的显式调用', async () => {

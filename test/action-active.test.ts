@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, lastValueFrom } from 'rxjs';
 import { bindAction, defineAction, implementAction, z, type ActionExecutionContext } from '@hanger-source/dsh-reactive';
 
 test('绑定当前调用集合包含并发准入与执行，晚订和退订不丢调用，release后原业务独立结算', async () => {
@@ -27,21 +27,27 @@ test('绑定当前调用集合包含并发准入与执行，晚订和退订不�
   const late = await firstValueFrom(action.activeInvocations$);
   assert.deepEqual(late, [first, second]);
   assert.deepEqual(await firstValueFrom(second.activity$), { state: 'pending' });
+  assert.deepEqual(await second.activity.read(), { state: 'pending' });
   assert.deepEqual(effects, ['first']);
   const seen: string[][] = [];
   const subscription = action.activeInvocations$.subscribe(current => seen.push(current.map(invocation => invocation.id)));
   firstResult.resolve('first-recorded');
   assert.equal(await first.result, 'first-recorded');
+  assert.equal((await lastValueFrom(first.activity$)).state, 'returned');
+  assert.equal((await first.activity.read()).state, 'returned');
   assert.deepEqual(await firstValueFrom(action.activeInvocations$), [second]);
   assert.deepEqual(late, [first, second], '此前交付的快照不会随当前集合删除成员');
   secondAdmission.resolve();
   await secondStarted.promise;
+  assert.equal((await second.activity.read()).state, 'running');
   action.release();
   await assert.rejects(action('first', execution('after-release')).result, /REACTIVE_ACTION_BINDING_RELEASED/u);
   assert.deepEqual(await firstValueFrom(action.activeInvocations$), [second]);
   subscription.unsubscribe();
   secondResult.resolve('second-recorded');
   assert.equal(await second.result, 'second-recorded');
+  assert.equal((await lastValueFrom(second.activity.observations$)).status, 'ready');
+  assert.equal((await second.activity.read()).state, 'returned');
   assert.deepEqual(await firstValueFrom(action.activeInvocations$), []);
   assert.deepEqual(effects, ['first', 'second']);
   assert.deepEqual(seen, [['first', 'second'], ['second']]);

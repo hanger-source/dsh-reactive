@@ -6,7 +6,7 @@ import { installConnection, type ConnectionHandle, type ConnectionInstallOptions
 import { type RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { bytesToBase64 } from '@deepseek-ai/dsh-util-crypto';
-import { BehaviorSubject, ReplaySubject, defer, firstValueFrom, from, fromEvent, map, mergeMap, raceWith, throwError, type Observable } from 'rxjs';
+import { BehaviorSubject, defer, firstValueFrom, from, fromEvent, map, mergeMap, raceWith, takeWhile, throwError, type Observable } from 'rxjs';
 import { z, assertProgramDefinition, decodeView, surfaceSlotDefinition, createSurfaceCollectionClient, actionManifestSlot, type ToolActionBinding, type SurfaceCollectionClient, type ActionInput, type ActionInvocation, type ActionContract, type ActionScope, type Invocation, type InvocationActivity, type Observation, type Submission, type Surface, type SurfaceViews, type ViewValue, type OperationContract, type OperationReference, type OperationCommand, type OperationHandle, type OperationLocation, type OperationState, type HumanInputState, type HumanForegroundQuestion, type HumanAnswer, type HumanWaitFrame, type BoundOperation, type OperationFeedbackRead, type OperationFeedbackPayload, type ConversationProgressSnapshot, type ConversationEvent, type RequestHandle, type AssistantProgressFrame, type ProgramContract, type ProgramInput, type ProgramParsedInput, type ProgramSurface, type WorkspaceRegistration, type ConversationCreateOptions, type FileUploadSource, type FileUploadValue, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import { decodeProgramFailure } from './errors.ts';
 import './errors.ts';
@@ -477,22 +477,37 @@ function invocation<D extends ActionContract>(remote: ClientRemote, sessionId: s
   const controller = new AbortController();
   observations.add(controller);
   const signal = AbortSignal.any([lifetime, controller.signal]);
-  const activity = new ReplaySubject<InvocationActivity>(1);
+  const activityState = new BehaviorSubject<Observation<InvocationActivity>>({ status: 'pending', generation: 0 });
+  const ongoing = (observation: Observation<InvocationActivity>): boolean => observation.status === 'pending'
+    || (observation.status === 'ready' && (observation.value.state === 'pending' || observation.value.state === 'running'));
+  const activity = new ResourceReader<InvocationActivity>({ peek: () => activityState.value,
+    observations$: activityState.pipe(takeWhile(ongoing, true)),
+  }, { signal: lifetime });
   const address = { sessionId, invocationId: start.id };
   const watch = (async (): Promise<void> => {
     try {
       for await (const item of remote.$stream<ProgramInvocationFrame>({ name: 'program-invocation:' + start.id,
         open: physicalSignal => remote.reactivePrograms.observeAction(address, AbortSignal.any([signal, physicalSignal])),
         ended: () => new Error('REACTIVE_REMOTE_INVOCATION_OBSERVATION_ENDED'),
+        carrierFailed: () => {
+          if (!signal.aborted && ongoing(activityState.value))
+            activityState.next({ status: 'pending', generation: activityState.value.generation + 1 });
+        },
       })) {
         item.accept();
         const value = item.value;
-        activity.next(value.state === 'failed' ? { ...value, error: decodeProgramFailure(value.error) }
-          : value.state === 'returned' ? { ...value, ...(value.observationError ? { observationError: decodeProgramFailure(value.observationError) } : {}) } : value);
+        const decoded = value.state === 'failed' ? { ...value, error: decodeProgramFailure(value.error) }
+          : value.state === 'returned' ? { ...value, ...(value.observationError ? { observationError: decodeProgramFailure(value.observationError) } : {}) } : value;
+        activityState.next({ status: 'ready', generation: activityState.value.generation + 1, observedAt: Date.now(), value: decoded });
         if (value.state === 'returned' || value.state === 'failed') return;
       }
-    } catch (error) { if (!signal.aborted) activity.error(error); }
-    finally { observations.delete(controller); activity.complete(); }
+    } catch (error) {
+      if (!signal.aborted) {
+        if (ongoing(activityState.value)) activityState.next({ status: 'error', generation: activityState.value.generation + 1, error });
+        else console.error('reactive.invocation.observation.cleanup.failed', error);
+      }
+    }
+    finally { observations.delete(controller); }
   })();
   void watch.catch(() => {});
   const settled = remote.reactivePrograms.actionResult(address, lifetime).then(reply => z.decode(contract.output, result(reply)));
@@ -502,6 +517,6 @@ function invocation<D extends ActionContract>(remote: ClientRemote, sessionId: s
     z.json().parse(mapping.reference(receipt as never)), start.source, lifetime)) : undefined;
   void operation?.catch(() => {});
   // 动态 Surface 映射经对应原合同 decode；operation 也只在原合同声明时构造。
-  return Object.freeze({ id: start.id, source: start.source, result: settled, activity$: activity.asObservable(),
+  return Object.freeze({ id: start.id, source: start.source, result: settled, activity, activity$: activity.values$,
     ...(operation ? { operation } : {}) }) as ActionInvocation<D>;
 }

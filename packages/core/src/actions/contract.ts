@@ -1,5 +1,7 @@
-import { ReplaySubject, Subject, type Observable } from 'rxjs';
+import { BehaviorSubject, ReplaySubject, Subject, takeWhile, type Observable } from 'rxjs';
 import { z } from 'zod';
+import { ResourceReader } from '../resources/reader.ts';
+import type { Observation } from '../resources/observation.ts';
 import type { Continuation, InputReference, Json, WaitReference } from '../conversations/protocol.ts';
 import { humanPromptsSchema, humanAskOptionsSchema, humanAskResultSchema, type HumanPrompt, type HumanAskOptions, type HumanAnswer, type HumanAskResult } from '../participation/contract.ts';
 import { attachOperation, isOperationOwner, locateOperation, operationCommand, type OperationContract, type OperationHandle, type OperationLocation, type OperationOwner, type OperationOwnerReference, type OperationReference, type OperationState } from '../operations/contract.ts';
@@ -153,6 +155,8 @@ export interface Invocation<Output, Observed extends Json = Json> {
   readonly source: ActionSource;
   /** 显式调用时即启动；读取或订阅不会重新执行。 */
   readonly result: Promise<Output>;
+  /** 本次调用的同源当前事实；read 不等待业务完成，业务失败仍是 ready 的调用事实。 */
+  readonly activity: ResourceReader<InvocationActivity<Observed>>;
   /** 同一次执行的最近状态与更新；晚订阅仍能取得终态。 */
   readonly activity$: Observable<InvocationActivity<Observed>>;
 }
@@ -371,8 +375,16 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
         return work;
       }
       const origin: ActionCommandOrigin = Object.freeze({ invocationId, sessionId: execution.sessionId, source, inputs });
-      const activity = new ReplaySubject<InvocationActivity<Observed>>(1);
-      activity.next({ state: 'pending' });
+      const activityState = new BehaviorSubject<Observation<InvocationActivity<Observed>>>({
+        status: 'ready', generation: 1, observedAt: Date.now(), value: { state: 'pending' },
+      });
+      const activity = new ResourceReader<InvocationActivity<Observed>>({ peek: () => activityState.value,
+        observations$: activityState.pipe(takeWhile(observation => observation.status === 'pending'
+          || (observation.status === 'ready' && (observation.value.state === 'pending' || observation.value.state === 'running')), true)),
+      });
+      const publishActivity = (value: InvocationActivity<Observed>): void => activityState.next({
+        status: 'ready', generation: activityState.value.generation + 1, observedAt: Date.now(), value,
+      });
       const call: ActionCallContext<ActionTarget<z.output<S>>> = Object.freeze({
         invocationId,
         sessionId: execution.sessionId,
@@ -428,7 +440,7 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
           }
           // 准入和持久准备的所有异步等待结束后，在副作用开始的同一同步边界核验宿主权威。
           executionGuards.get(execution)?.();
-          activity.next({ state: 'running' });
+          publishActivity({ state: 'running' });
           phase = 'execute';
           let rawOutput: z.input<O>;
           try {
@@ -457,9 +469,9 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
           // 观察投影失败不改写已经返回的业务结果，更不冒充 tool.settled。
           try {
             const observation = observe(output);
-            activity.next({ state: 'returned', ...(observation === undefined ? {} : { observation }) });
+            publishActivity({ state: 'returned', ...(observation === undefined ? {} : { observation }) });
           } catch (observationError) {
-            activity.next({ state: 'returned', observationError });
+            publishActivity({ state: 'returned', observationError });
           }
           return output;
         } catch (error) {
@@ -470,10 +482,9 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
             try { await options.operation?.({ phase: 'not-started', ...prepared }, execution); }
             catch (checkpointError) { failure = new AggregateError([error, checkpointError], 'REACTIVE_ACTION_NOT_STARTED_CHECKPOINT_FAILED'); }
           }
-          activity.next({ state: 'failed', phase, error: failure });
+          publishActivity({ state: 'failed', phase, error: failure });
           throw failure;
         } finally {
-          activity.complete();
           finished = true;
           if (invocation && active.delete(invocation)) publishActive();
           if (released && !active.size) activeInvocations.complete();
@@ -486,7 +497,7 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
         return attached;
       }) : undefined;
       void operation?.catch(() => {});
-      invocation = Object.freeze({ id: invocationId, source, result, activity$: activity.asObservable(),
+      invocation = Object.freeze({ id: invocationId, source, result, activity, activity$: activity.values$,
         ...(operation ? { operation } : {}) }) as ActionInvocation<Definition>;
       if (!finished) { active.add(invocation); publishActive(); }
       // 所有入口汇入同一 invoke；观察者取得调用方返回的同一个句柄。

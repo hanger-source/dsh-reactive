@@ -37,7 +37,7 @@
 - 同一 Action 可以通过 AI 工具、普通代码和 Gateway SDK 调用，入口保留各自真实身份；同一业务来源同时更新上下文、能力条件和外部观察。
 - SDK 通过 `resolveAction(name, expectedScope)` 捕获具体业务绑定；切换目标、撤下或重挂后，旧句柄不会悄悄调用新对象。调用前与异步准入后均重新核验，已执行的业务沿原 owner 结算。
 - 输入以 `content` 保留文字、图片和上传文件的顺序，业务 `intent` 与 `delivery: 'followup' | 'steer' | 'inject'` 分开；投递复用原生 inbox，inject 不唤醒模型。文件使用同会话上传签发的 receipt，受理回执、模型消费和业务完成分别观察。
-- `action.invocations$` 观察这个具体绑定新产生的类型化调用，同一个 Invocation 同时提供结果、活动和 Operation。业务关系可以直接组合调用流，无需按工具字符串名筛选会话事件。
+- `action.invocations$` 观察这个具体绑定新产生的类型化调用，同一个 Invocation 同时提供结果、活动和 Operation。`invocation.activity` 是可 read、peek、组合和交给 useResource 的同源资源，`activity$` 是其值流；当前事实与等待业务完成的 result 分开。业务关系可以直接组合调用流，无需按工具字符串名筛选会话事件。
 - `action.activeInvocations$` 提供本绑定当前在途调用集合；晚挂载的自定义业务 hook 也能继续组合多次调用，各次结果和长期 Operation 保持独立。结束观察或撤下模块不取消已执行业务。
 - `NativeTools` 声明宿主已安装的原生能力与可选异步业务政策，保留官方工具身份、执行及 guard。可用性同时落实到原生工具与 PTC SDK，等待政策后再次核验声明，不必为文件、待办等工具重写 Action。
 - `actionManifest$` 提供真实工具名、Action、绑定、完整模块路径与公开地址；原生结果及 PTC 结果的 metadata 携带同源结构。业务卡片用 `readActionPresentation` 读取合同结果，无需反解工具 namespace 或模型文本。

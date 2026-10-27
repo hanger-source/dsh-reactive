@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Fragment, createElement as h, useLayoutEffect } from 'react';
-import { BehaviorSubject, Observable, Subject, filter, firstValueFrom, of, timeout } from 'rxjs';
+import { BehaviorSubject, Observable, Subject, filter, firstValueFrom, lastValueFrom, of, timeout } from 'rxjs';
 import WebSocket from 'ws';
 import { LlmAdapter, ToolCallId } from '@deepseek-ai/dsh-llm';
 import { expandAssistantStream } from '@deepseek-ai/dsh-llm/assistant-stream';
@@ -324,7 +324,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     } },
   });
   const clients = [];
-  const questionSockets = [];
+  const streamSockets = [];
   let loseSubmitAck = false;
   const connect = async actor => {
     const client = await createProgramClient(program, { baseUrl: gateway.url,
@@ -338,7 +338,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
       createWebSocket: url => {
         const socket = new WebSocket(url, { headers: { authorization: 'Bearer ' + actor } });
         const tracked = { actor, socket, endpoint: undefined };
-        questionSockets.push(tracked);
+        streamSockets.push(tracked);
         const send = socket.send.bind(socket);
         socket.send = (data, ...rest) => {
           const message = JSON.parse(String(data));
@@ -490,16 +490,31 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     assert.deepEqual(failure((await broken).error), { code: 'gateway/internal', message: 'QUERY_FAILED', details: {} });
     const checkAction = await created.resolveAction('check', null);
     const invocation = await checkAction({ amount: '7' }); await entered.promise;
+    const currentInvocation = await next(invocation.activity.observations$, value => value.status === 'ready' && value.value.state === 'running');
+    assert.equal(currentInvocation.value.state, 'running');
+    const activityDisconnected = next(invocation.activity.observations$,
+      value => value.status === 'pending' && value.generation > currentInvocation.generation, '调用活动连接失效');
+    const activitySocket = streamSockets.findLast(item => item.actor === 'alice'
+      && item.endpoint === 'reactivePrograms/observeAction' && item.socket.readyState === WebSocket.OPEN);
+    assert.ok(activitySocket); activitySocket.socket.terminate(); await activityDisconnected;
+    const activityAbort = new AbortController(), activityReason = new Error('CANCEL_ONLY_ACTIVITY_READ');
+    const interruptedActivity = assert.rejects(invocation.activity.read(activityAbort.signal), error => error === activityReason);
+    const recoveredActivity = invocation.activity.read();
+    activityAbort.abort(activityReason); await interruptedActivity;
+    assert.equal((await recoveredActivity).state, 'running');
     assert.equal(inputParses, 1); assert.equal(executions, 1);
     assert.equal(invocation.source.actorId, 'alice');
     const id = invocation.id, sessionId = created.id;
     const disconnected = assert.rejects(invocation.result);
     await client.dispose(); await disconnected;
+    await assert.rejects(async () => invocation.activity.read(), /REACTIVE_REMOTE_CLIENT_DISPOSED/u);
     finish.resolve();
     const reconnected = await connect('alice'), session = await reconnected.open(sessionId);
     console.info('gateway.human.reconnected', { sessionId });
     const original = await session.invocation('check', id);
     const receipt = await original.result;
+    assert.equal((await lastValueFrom(original.activity$)).state, 'returned');
+    assert.equal((await original.activity.read()).state, 'returned');
     assert.equal(receipt.at.toISOString(), '2026-10-26T00:00:07.000Z');
     assert.equal((await session.readView('current')).toISOString(), receipt.at.toISOString());
     assert.equal(inputParses, 1); assert.equal(executions, 1);
@@ -533,6 +548,9 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
       const rejected = await failAction(null);
       await assert.rejects(rejected.result, error => { assert.deepEqual(failure(error), failure(businessFailure)); return true; });
       assert.deepEqual(failure((await next(rejected.activity$, value => value.state === 'failed')).error), failure(businessFailure));
+      const failedActivity = rejected.activity.peek();
+      assert.equal(failedActivity.status, 'ready');
+      assert.deepEqual(failure(failedActivity.value.error), failure(businessFailure));
       facts.next({ status: 'error', generation: 4, error: businessFailure });
       assert.equal((await next(localFailureHandle.observeView('current'), value => value.status === 'error')).error, businessFailure);
       assert.deepEqual(failure((await next(session.observeView('current'), value => value.status === 'error' && value.generation >= 4)).error), failure(businessFailure));
@@ -661,7 +679,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     try {
       await next(boundQuestion.state.observations$, value => value.status === 'ready', '断线前问题基线');
       const questionDisconnected = next(boundQuestion.state.observations$, value => value.status === 'pending', '问题连接失效');
-      const humanSocket = questionSockets.findLast(item => item.actor === 'alice'
+      const humanSocket = streamSockets.findLast(item => item.actor === 'alice'
         && item.endpoint === 'reactivePrograms/questions' && item.socket.readyState === WebSocket.OPEN);
       assert.ok(humanSocket);
       humanSocket.socket.terminate();

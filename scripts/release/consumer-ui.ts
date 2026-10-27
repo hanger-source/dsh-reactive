@@ -1,4 +1,4 @@
-import { defineAction, defineProgram, defineSurface, resourceView, z, type OperationContract, type OperationHandle } from '@hanger-source/dsh-reactive';
+import { defineAction, defineProgram, defineSurface, resourceView, z, type OperationContract, type OperationHandle, type Invocation, type Json } from '@hanger-source/dsh-reactive';
 import { bindProgramClient, type RemoteProgramSession } from '@hanger-source/dsh-reactive-client';
 import { createNativeActionViews, defineNativeActionView, bindNativeSession, retainNativeSession,
   type NativeSession, type NativeActionViewProps } from '@hanger-source/dsh-reactive-native-ui';
@@ -18,6 +18,9 @@ export function operationState<D extends OperationContract>(native: NativeSessio
   return native.resource(operation.state);
 }
 export const humanQuestion = (native: NativeSession<typeof program>, callId: string) => native.question(callId);
+export const invocationActivity = <T, O extends Json>(native: NativeSession<typeof program>, invocation: Invocation<T, O>) => ({
+  resource: invocation.activity, native: native.invocation(invocation),
+});
 export const requestProgress = (native: NativeSession<typeof program>, requestId: string) => ({
   session: native.progress, request: native.request(requestId),
 });

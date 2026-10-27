@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { StrictMode, createElement as h, useLayoutEffect } from 'react';
 import { BehaviorSubject, Observable, Subject, Subscription, isObservable, tap } from 'rxjs';
 import { z } from 'zod';
-import { defineAction, implementAction, type ActionExecutionContext, type BoundAction } from '@hanger-source/dsh-reactive';
+import { defineAction, implementAction, type ActionExecutionContext, type BoundAction, type Invocation } from '@hanger-source/dsh-reactive';
 import { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { observeResource } from '@hanger-source/dsh-reactive';
 import { type Observation } from '@hanger-source/dsh-reactive';
@@ -26,6 +26,7 @@ test('StrictMode 与目标替换只改变声明准入；普通调用由 owner �
   const errors: unknown[] = [];
   const committed: BoundAction<typeof definition, true>[] = [];
   let identities = 0, admissions = 0, executions = 0, setups = 0, cleanups = 0;
+  const activityStates: string[] = [];
   const definition = defineAction({ name: 'prepare_target', description: '准备绑定目标', scope: z.object({ merchantId: z.string() }),
     input: z.null(), output: z.string() });
   const definitionImplementation = implementAction(definition, {
@@ -60,8 +61,14 @@ test('StrictMode 与目标替换只改变声明准入；普通调用由 owner �
     useLayoutEffect(() => { setups++; committed.push(action); return () => { cleanups++; }; }, [action]);
     return declaration(props.merchantId);
   }
+  function Activity({ invocation }: { invocation: Invocation<string> }) {
+    const { state } = useResource(invocation.activity);
+    useLayoutEffect(() => { if (state.status === 'ready') activityStates.push(state.value.state); }, [state]);
+    return null;
+  }
   const renderer = createDeclarationRenderer({ decode: value => z.string().parse(value), onCommit() {}, onError: owner.fail });
-  const tree = (merchantId: string) => h(StrictMode, null, h(ProgramHookProvider, { owner }, h(Work, { merchantId })));
+  const tree = (merchantId: string, invocation?: Invocation<string>) => h(StrictMode, null,
+    h(ProgramHookProvider, { owner }, h(Work, { merchantId }), invocation ? h(Activity, { invocation }) : null));
   try {
     renderer.render(tree('first'));
     const first = committed.at(-1)!;
@@ -84,13 +91,18 @@ test('StrictMode 与目标替换只改变声明准入；普通调用由 owner �
     await assert.rejects(second(null, forged).result, /UNTRUSTED_EXECUTION/u);
     const accepted = second.invoke(null);
     await started.promise;
+    renderer.render(tree('second', accepted)); renderer.flush();
+    assert.equal(activityStates.at(-1), 'running');
     renderer.unmount();
+    const observedBeforeExit = activityStates.length;
     operation.resolve('accepted-operation');
     assert.equal(await accepted.result, 'accepted-operation');
+    assert.equal(activityStates.length, observedBeforeExit, '组件退出只停止自己的调用事实观察');
     await assert.rejects(second(null).result, /REACTIVE_ACTION_BINDING_INACTIVE/u);
     assert.equal(executions, 1);
     assert.equal(first.released, false);
     scope.dispose();
+    assert.equal((await accepted.activity.read()).state, 'returned', '本地调用事实不借用已退出的程序执行信号');
     assert.equal(first.released, true);
     assert.equal(second.released, true);
     assert.equal(setups, cleanups);
