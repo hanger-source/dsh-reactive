@@ -186,7 +186,8 @@ jobs:
           node --input-type=module -e '
             import { execFileSync } from "node:child_process";
             import { currentArtifacts } from "./scripts/release/artifacts.mjs";
-            import { json } from "./scripts/release/common.mjs";
+            import { json, configuration } from "./scripts/release/common.mjs";
+            import { assertConsumerVerification } from "./scripts/release/consumer-profiles.mjs";
             const id = process.env.REGISTRATION_RUN;
             if (!/^[1-9][0-9]*$/.test(id)) throw new Error("REGISTRATION_RUN_INVALID");
             const api = path => JSON.parse(execFileSync("gh", ["api", `repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${id}${path}`], { encoding: "utf8" }));
@@ -196,8 +197,10 @@ jobs:
             if (run.repository.full_name !== process.env.GITHUB_REPOSITORY || run.path !== ".github/workflows/release.yml"
               || run.head_sha !== manifest.commit || !jobs.jobs.some(job => job.name === "prepare" && job.conclusion === "success")
               || manifest.tag !== process.env.RELEASE_TAG || proof.source !== "artifacts"
-              || proof.commit !== manifest.commit || proof.manifestSha256 !== manifestSha256)
+              || proof.commit !== manifest.commit || proof.manifestSha256 !== manifestSha256
+              || proof.version !== manifest.version || proof.registry !== manifest.registry)
               throw new Error("REGISTRATION_CANDIDATE_NOT_VERIFIED");
+            assertConsumerVerification(proof, await configuration());
             console.log(JSON.stringify({ sourceRun: id, commit: manifest.commit, manifestSha256 }));
           '
       - name: 首次登记的 npm 官方网页登录

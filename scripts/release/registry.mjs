@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { capture, run, root, configuration, save, json, independent, assertVersion, clean } from './common.mjs';
 import { artifactManifest, currentArtifacts } from './artifacts.mjs';
-import { consumerKinds, consumerPackages, consumerEnvironment, prepareConsumerSources } from './consumer-profiles.mjs';
+import { consumerKinds, consumerPackages, consumerEnvironment, prepareConsumerSources, checkConsumerDependencies, assertConsumerVerification } from './consumer-profiles.mjs';
 import { buildConsumerBrowser } from './consumer-browser.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -84,13 +84,14 @@ export async function verify(path, source) {
   }
   const location = await realpath(await mkdtemp(join(tmpdir(), 'dsh-reactive-' + source + '-consumer-')));
   const consumers = [];
-  const hostTarball = resolve(directory, manifest.artifacts.find(item => item.name === '@hanger-source/dsh-reactive-dsh').file);
+  const tarballs = { host: resolve(directory, manifest.artifacts.find(item => item.name === '@hanger-source/dsh-reactive-dsh').file),
+    core: resolve(directory, manifest.artifacts.find(item => item.name === '@hanger-source/dsh-reactive').file) };
   for (const kind of consumerKinds) {
     const names = consumerPackages(config, kind);
     const cwd = join(location, kind); await mkdir(cwd); await independent(cwd);
     const dependencies = Object.fromEntries(names.map(name => [name, source === 'registry' ? manifest.version
       : resolve(directory, manifest.artifacts.find(item => item.name === name).file)]));
-    const environment = await consumerEnvironment(config, kind, hostTarball);
+    const environment = await consumerEnvironment(config, kind, tarballs);
     await save(join(cwd, 'package.json'), { name: 'dsh-release-' + kind, private: true, type: 'module',
       dependencies: { ...dependencies, ...environment.dependencies }, devDependencies: environment.devDependencies });
     // 只固定 registry，不复制凭据。认证继续由用户正式 npm 配置提供。
@@ -109,14 +110,16 @@ export async function verify(path, source) {
     await save(join(cwd, 'expected.json'), { kind, source, packages: names, version: manifest.version,
       commit: manifest.commit, tag: manifest.tag, registry: manifest.registry });
     await run(process.execPath, [join(cwd, 'node_modules/typescript/bin/tsc'), '-p', 'tsconfig.json'], cwd);
+    await checkConsumerDependencies(cwd, kind);
     // 执行同一份实际类型消费者，保证所有可选子入口也在仓外的物理安装中加载。
     await run(process.execPath, [join(cwd, 'compiled/consumer.js')], cwd);
     await run(process.execPath, [join(cwd, 'runtime.mjs')], cwd);
     const browser = kind === 'ui' ? await buildConsumerBrowser(cwd) : undefined;
-    consumers.push({ kind, directory: cwd, packages: names, strict: true, runtimeImport: true, ...browser ? { browser } : {} });
+    consumers.push({ kind, directory: cwd, packages: names, strict: true, declaredDependencies: true, runtimeImport: true, ...browser ? { browser } : {} });
   }
   const report = { source, commit: manifest.commit, version: manifest.version, registry: manifest.registry,
     manifestSha256: artifact.manifestSha256, consumers };
+  assertConsumerVerification(report, config);
   await save(join(directory, source === 'registry' ? 'registry-verification.json' : 'candidate-verification.json'), report);
   console.log(JSON.stringify(report, null, 2));
   return report;
@@ -125,7 +128,9 @@ export async function verify(path, source) {
 export async function publish(options) {
   const artifact = await currentArtifacts(options.manifest, true), { manifest } = artifact;
   const proof = await json(join(artifact.directory, 'candidate-verification.json'));
-  if (proof.source !== 'artifacts' || proof.manifestSha256 !== artifact.manifestSha256 || proof.commit !== manifest.commit) throw new Error('RELEASE_VERIFIED_CANDIDATE_REQUIRED');
+  if (proof?.source !== 'artifacts' || proof.manifestSha256 !== artifact.manifestSha256 || proof.commit !== manifest.commit
+    || proof.version !== manifest.version || proof.registry !== manifest.registry) throw new Error('RELEASE_VERIFIED_CANDIDATE_REQUIRED');
+  assertConsumerVerification(proof, await configuration());
   if (options['also-latest'] && manifest.channel !== 'stable') throw new Error('RELEASE_LATEST_REQUIRES_STABLE');
   const stateFile = join(artifact.directory, 'publication.json');
   let state;

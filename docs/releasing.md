@@ -53,6 +53,8 @@ prepare 只执行一次总 build，然后 npm pack（`--ignore-scripts`）。对
 
 候选验证将 tgz 安装到仓外物理目录，分别验证默认后台 React 19、选择全部可选原生域的 React 19、原生 UI React 18 消费者，以 `skipLibCheck:false` 编译并运行同一份消费者。原生域所需的 optional peers 从实际宿主 tgz 的 package.json 取得，不借工作区 node_modules 补齐；Jobs、MCP、Approval、Clock、Schedule、Team、Files 子入口均实际加载。日常 CI 与发行沿用相同环境选择和消费者源码，后台默认安装仍独立验证。Skill 通过真实 `getDeveloperSkill()` 和 `dsh-reactive-skill` CLI 定位安装内容，核对版本、入口与五个 references。这个阶段只证明候选产物可消费，不称为已发布。
 
+后台消费者直接使用的 RxJS 版本取自实际 core tgz，并显式写入消费者依赖。三类消费者的源码和编译后入口都在各自安装目录内运行 dependency-cruiser，沿用工作区的未声明依赖与未解析入口规则；间接依赖即使恰好提升到 node_modules 根部，也不能作为直接依赖使用。候选报告为每类记录 declaredDependencies、strict、runtimeImport 与实际包集合，UI 另保留浏览器构建证据。正式发布和首次登记都要求三类完整证据、精确包覆盖以及 manifest 摘要、源码、版本和 registry 一致，缺项报告不能受理。
+
 真实浏览器行为使用 `npm run browser:remote` 启动认证 Runtime/Gateway 试验宿主。打开输出的 url 验证 Date、Action/Operation 和错误详情；打开 nativeUrl 验证原生会话引用。每个流程使用一次新启动的独立宿主。原生引用流程通过官方 rc.3 bootInjections 与 ClientModuleSystem 装配真正的 Client Sessions，观察其引用计数、取消和失败清理、代际重开、Context 退出及真实 WebSocket 的关闭后发送；这些行为不由包打包或类型检查代替。
 
 ## GitHub CI 发布

@@ -40,7 +40,7 @@ jobs:
           npm run test --workspace @hanger-source/dsh-reactive-remote
       - name: 严格编译业务和原生 UI 示例
         run: npm run typecheck:examples
-      - name: 打包并严格编译及运行仓外消费者
+      - name: 打包并检查仓外依赖、类型与运行入口
         run: |
           npm pack --workspaces --ignore-scripts --pack-destination .tmp --json > .tmp/workspace-pack.json
           node scripts/check-packed-types.mjs .tmp/workspace-pack.json

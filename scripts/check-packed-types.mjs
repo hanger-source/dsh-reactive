@@ -4,7 +4,7 @@ import { access, lstat, mkdir, mkdtemp, readFile, realpath, writeFile } from 'no
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { consumerKinds, consumerPackages, consumerEnvironment, prepareConsumerSources } from './release/consumer-profiles.mjs';
+import { consumerKinds, consumerPackages, consumerEnvironment, prepareConsumerSources, checkConsumerDependencies } from './release/consumer-profiles.mjs';
 import { buildConsumerBrowser } from './release/consumer-browser.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -33,13 +33,14 @@ async function run(command, args, cwd) {
   });
 }
 const location = await realpath(await mkdtemp(join(tmpdir(), 'dsh-reactive-packed-types-')));
-const hostTarball = join(dirname(report), packed.get('@hanger-source/dsh-reactive-dsh').filename);
+const tarballs = { host: join(dirname(report), packed.get('@hanger-source/dsh-reactive-dsh').filename),
+  core: join(dirname(report), packed.get('@hanger-source/dsh-reactive').filename) };
 for (const kind of consumerKinds) {
   const directory = join(location, kind);
   await mkdir(directory);
   const names = consumerPackages(config, kind);
   const dependencies = Object.fromEntries(names.map(name => [name, join(dirname(report), packed.get(name).filename)]));
-  const environment = await consumerEnvironment(config, kind, hostTarball);
+  const environment = await consumerEnvironment(config, kind, tarballs);
   await writeFile(join(directory, 'package.json'), JSON.stringify({ private: true, type: 'module',
     dependencies: { ...dependencies, ...environment.dependencies }, devDependencies: environment.devDependencies }, null, 2));
   await writeFile(join(directory, '.npmrc'), 'registry=https://registry.npmjs.org\n@hanger-source:registry=https://registry.npmjs.org\n');
@@ -52,8 +53,9 @@ for (const kind of consumerKinds) {
   }
   await prepareConsumerSources(directory, kind);
   await run(process.execPath, [join(directory, 'node_modules/typescript/bin/tsc'), '-p', 'tsconfig.json'], directory);
+  await checkConsumerDependencies(directory, kind);
   // 执行同一份仓外消费者：Program 的根合同必须被 /program 接受，UI 消费不加载后台 renderer。
   await run(process.execPath, [join(directory, 'compiled/consumer.js')], directory);
   const browser = kind === 'ui' ? await buildConsumerBrowser(directory) : undefined;
-  console.log(JSON.stringify({ consumer: kind, directory, packages: names, strict: true, runtime: true, browser, source: 'workspace-tarballs' }));
+  console.log(JSON.stringify({ consumer: kind, directory, packages: names, strict: true, declaredDependencies: true, runtime: true, browser, source: 'workspace-tarballs' }));
 }
