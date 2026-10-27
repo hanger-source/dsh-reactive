@@ -40,9 +40,13 @@ export function inventory(scope: Scope, service: {
 
 后台组件从 `@hanger-source/dsh-reactive/program` 调用 `useResource(instance)`，或 `useResource(implementation, params)`。后者按当前程序 Scope 共享同一实现与参数；跨会话共享时显式把绑定放到适当共享 Scope，再把实例传入。`useResource(factory, deps)` 用于已有 Observation 流，不让 hooks 成为唯一 owner。
 
+需要普通函数读取、写后失效或将对象交给其他业务 hook 时，用 `useResourceInstance(implementation, params)` 取得相同实例，再按需 `useResource(instance)`。取得实例不启动读取；不要为 read、Context 和公开 View 各建一个资源。
+
 ## 反应是显式运行
 
 可复用反应采用 `defineReaction({ name, params, event, result })`、`implementReaction`、`bindReaction`；局部采用 `createReaction(scope, options)`。两者都是 `instance.start()` 才执行。
+
+程序内用 `useReaction(implementation, params)` 取得程序拥有的相同参数实例，不手工创建 Scope 或绑定表。hook 不自动 start；同实例的重复并行 start 会失败。组件卸载不停止程序拥有的运行，显式 `run.stop()` 才结束关系；Program 失败或退出会释放查询、感知和排队工作，已受理业务仍归原 owner。Reaction 执行失败由 run 结算，只有业务明确传播时才进入 Program 失败。
 
 ```ts
 import { createReaction, z, type Scope } from '@hanger-source/dsh-reactive';

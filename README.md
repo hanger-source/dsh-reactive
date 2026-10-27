@@ -21,6 +21,7 @@
 - `defineResource`、`implementResource`、`bindResource` 定义事实来源并按参数取得稳定实例；普通函数、业务 hook 与公开视图消费同一观察。多个消费者共享来源，失效取消旧读取，最后观察者退出后撤掉旧的有效现场。
 - `defineReaction`、`implementReaction`、`bindReaction` 定义持续感知与动作之间的关系。实例显式 `start()`，`state$`、`events$` 与 `settled` 观察同一次运行；条件、去重和并发直接使用 RxJS。停止反应释放关系，已受理的业务仍由原 owner 结算。
 - 局部关系使用 `createResource(scope, options)`、`createReaction(scope, options)` 直接取得同一类运行实例；资源构造不读取，反应构造不执行。组件用 `useResource(implementation, params)` 从程序 owner 取得共享绑定，自定义业务 hook 继续组合标准观察流。
+- `useResourceInstance(implementation, params)` 与 `useReaction(implementation, params)` 取得程序拥有的完整实例；普通函数、Promise、流与 hooks 共用同一对象。反应仍须显式 `start()`，程序失败或退出停止查询、感知和排队关系，已受理业务保留原 owner。
 - `host.service(sessionId, Program)` 提供固定服务来源的业务调用与输入入口。它与人工 SDK 共享准入链，持久保留各自来源，服务事件不会继承人的输入或 Goal 授权。
 - `defineAction` 定义共享业务合同，`implementAction` 接入宿主执行，`useAction` 绑定明确目标。显式调用产生一次 Invocation；关联的 Operation 可以独立定位和持续观察。
 - `defineProgram` 定义可共享的输入与公开 Surface 合同，`implementProgram` 将宿主组件接到同一合同；`defineEnvironment` 组合程序、指令、Skill 与 Preset。`createWorkspace` 注册明确目录，创建会话时同时选择环境与工作区。

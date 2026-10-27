@@ -1,8 +1,8 @@
 import { implementProgram } from '@hanger-source/dsh-reactive/program';
 import { Fragment } from 'react';
-import { map, of } from 'rxjs';
-import { Context, Expose, Offer, useAction, useObservable, useResource } from '@hanger-source/dsh-reactive/program';
-import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, observeResource, resourceView, z, type CancellationOptions, type SubmitOptions } from '@hanger-source/dsh-reactive';
+import { concatMap, map, of } from 'rxjs';
+import { Context, Expose, Offer, useAction, useObservable, useResource, useResourceInstance, useReaction } from '@hanger-source/dsh-reactive/program';
+import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, implementResource, defineReaction, implementReaction, observeResource, resourceView, z, type CancellationOptions, type SubmitOptions } from '@hanger-source/dsh-reactive';
 import type { ApplicationHost } from '@hanger-source/dsh-reactive-dsh';
 
 const save = defineAction({
@@ -129,3 +129,31 @@ async function authoring(host: ApplicationHost<typeof application.environments>,
   await parsed.submit({ requestId: 'parsed-input', content: '读取修订', intent: 'question', delivery: 'followup' as const, scope: { revision: 7 } });
 }
 void authoring;
+
+const parsedResource = implementResource(defineResource({ name: 'parsed-resource',
+  params: z.object({ key: z.string().transform(Number) }), value: z.string().transform(value => new Date(value)),
+}), { read: params => { params.key.toFixed(); return '2026-10-27T00:00:00Z'; } });
+const parsedReaction = implementReaction(defineReaction({ name: 'parsed-reaction',
+  params: z.object({ key: z.string().transform(Number) }), event: z.string().transform(Number), result: z.string().transform(Number),
+}), { observe: () => of('7'), operator: concatMap, execute: (event, context) => String(event + context.params.key) });
+function useTypedProgramBindings() {
+  const resource = useResourceInstance(parsedResource, { key: '7' });
+  resource.params.key.toFixed();
+  const read: () => Promise<Date> = () => resource.read();
+  const values = resource.values$.pipe(map(value => value.toISOString()));
+  const observed = useResource(resource);
+  if (observed.state.status === 'ready') observed.state.value.toISOString();
+  // @ts-expect-error 资源入口接受参数 schema 的 input，不接受解析后的 number。
+  useResourceInstance(parsedResource, { key: 7 });
+  // @ts-expect-error 直接观察实现时同样遵循原参数输入类型。
+  useResource(parsedResource, { key: 7 });
+  // @ts-expect-error 资源值已经由 schema 解析为 Date。
+  resource.values$.pipe(map(value => value.trim()));
+  const reaction = useReaction(parsedReaction, { key: '7' });
+  reaction.params.key.toFixed();
+  const start = () => reaction.start().events$.pipe(map(event => event.event + event.result));
+  // @ts-expect-error 反应入口接受原参数，不能因调用参数错误扩大实现的合同。
+  useReaction(parsedReaction, { key: 7 });
+  return { resource, reaction, read, values, start };
+}
+void useTypedProgramBindings;

@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setImmediate as immediate } from 'node:timers/promises';
-import { useLayoutEffect } from 'react';
-import { BehaviorSubject, Observable, Subject, map, of, tap } from 'rxjs';
+import { Fragment, createElement, useLayoutEffect } from 'react';
+import { BehaviorSubject, Observable, Subject, Subscription, concatMap, map, of, tap } from 'rxjs';
 import { z } from 'zod';
 import { defineAction, implementAction, type BoundAction } from '@hanger-source/dsh-reactive';
 import { Conversation } from '@hanger-source/dsh-reactive/kernel';
@@ -17,6 +17,8 @@ import { defineSurface, resourceView } from '@hanger-source/dsh-reactive';
 import { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { observeResource } from '@hanger-source/dsh-reactive';
 import { type Observation } from '@hanger-source/dsh-reactive';
+import { defineResource, implementResource, defineReaction, implementReaction, type ResourceInstance, type ReactionInstance } from '@hanger-source/dsh-reactive';
+import { useResourceInstance, useReaction } from '@hanger-source/dsh-reactive/program';
 
 test('Program fatal 在同次广播中停止其他关系与查询，已受理的 Action 仍按原执行寿命结算', async () => {
   const scope = new Scope();
@@ -26,6 +28,16 @@ test('Program fatal 在同次广播中停止其他关系与查询，已受理的
   const trigger = new BehaviorSubject(false), events = new Subject<number>();
   const started = Promise.withResolvers<AbortSignal>(), finish = Promise.withResolvers<string>();
   const read = Promise.withResolvers<number>();
+  const directRead = Promise.withResolvers<number>(), acceptedReaction = Promise.withResolvers<number>();
+  const reactionEvents = new Subject<number>();
+  const directSignals: AbortSignal[] = [], startedReactions: number[] = [], committedReactions: number[] = [];
+  const record = defineResource({ name: 'direct-record', params: z.null(), value: z.number() });
+  const recordOwner = implementResource(record, { read(_params, { signal }) { directSignals.push(signal); return directRead.promise; } });
+  const process = defineReaction({ name: 'process-change', params: z.null(), event: z.number(), result: z.number() });
+  const processOwner = implementReaction(process, { observe: () => reactionEvents, operator: concatMap,
+    async execute(event) { startedReactions.push(event); const result = await acceptedReaction.promise; committedReactions.push(event); return result; } });
+  const attached: { record: ResourceInstance<typeof record>; process: ReactionInstance<typeof process> }[] = [];
+  let directObservation = new Subscription();
   const failure = new Error('BUSINESS_RELATION_FAILED');
   const delivered: number[] = [], queryValues: number[] = [], signals: AbortSignal[] = [];
   const save = defineAction({ name: 'save_record', description: '保存已受理的业务资料',
@@ -46,6 +58,9 @@ test('Program fatal 在同次广播中停止其他关系与查询，已受理的
       read(_key, signal) { signals.push(signal); return read.promise; },
     }).pipe(tap<Observation<number>>(value => { if (value.status === 'ready') queryValues.push(value.value); })), []);
     const action = useAction(saveOwner, () => null, []);
+    const resource = useResourceInstance(recordOwner, null);
+    const reaction = useReaction(processOwner, null);
+    useLayoutEffect(() => { attached.push({ record: resource, process: reaction }); }, [resource, reaction]);
     useLayoutEffect(() => { bindings.push(action); }, [action]);
     useLayoutEffect(() => { if (changed.status === 'ready' && changed.value) events.next(1); }, [changed]);
     return Expose({ surface, value: { views: { current: current.observations$ }, actions: { save: action } } });
@@ -58,6 +73,14 @@ test('Program fatal 在同次广播中停止其他关系与查询，已受理的
   try {
     program.mount();
     assert.equal(signals.length, 1);
+    assert.equal(directSignals.length, 0, '取得资源实例不启动读取');
+    assert.equal(reactionEvents.observed, false, '取得反应实例不开始感知');
+    const resource = attached.at(-1)!.record, reaction = attached.at(-1)!.process;
+    directObservation = resource.values$.subscribe(value => queryValues.push(value));
+    const directWaiting = assert.rejects(resource.read(), /REACTIVE_SCOPE_DISPOSED/);
+    const run = reaction.start();
+    reactionEvents.next(1); reactionEvents.next(2);
+    assert.deepEqual(startedReactions, [1]);
     const invocation = bindings.at(-1)!(null);
     const executingSignal = await started.promise;
     events.next(0);
@@ -66,14 +89,92 @@ test('Program fatal 在同次广播中停止其他关系与查询，已受理的
     assert.throws(() => program.flush(), error => error === failure);
     assert.deepEqual(delivered, [0], '关系 A 的 fatal 必须在同次 Subject 广播交付 B 之前断开 B');
     assert.equal(signals[0]!.aborted, true, '查询立即停止，不等待 React 延后卸载');
+    assert.equal(directSignals[0]!.aborted, true, '普通函数和直接流的读取也归程序拥有');
+    assert.equal(directObservation.closed, true);
+    await directWaiting;
+    assert.equal((await run.settled).status, 'stopped');
+    assert.throws(() => reaction.start(), /REACTIVE_SCOPE_DISPOSED/);
+    assert.throws(() => resource.read(), /REACTIVE_SCOPE_DISPOSED/);
     assert.equal(conversation.scope.disposed, false);
     assert.equal(executingSignal.aborted, false, '程序失败不能冒充已受理业务的取消');
     finish.resolve('saved');
     assert.equal(await invocation.result, 'saved');
-    read.resolve(9); await immediate();
+    acceptedReaction.resolve(7); directRead.resolve(8); read.resolve(9); await immediate();
+    assert.deepEqual(committedReactions, [1], '已进入业务函数的处理继续由业务 owner 完成');
+    assert.deepEqual(startedReactions, [1], '尚未开始的第二项不在程序失败后执行');
     assert.deepEqual(queryValues, [], '迟到的查询结果不能在 fatal 后重新交付');
     await assert.rejects(program.outputs.views.current.read(), error => error === failure);
-  } finally { finish.resolve('cleanup'); read.resolve(9); scope.dispose(); }
+  } finally { directObservation.unsubscribe(); finish.resolve('cleanup'); acceptedReaction.resolve(7); directRead.resolve(8); read.resolve(9); scope.dispose(); }
+});
+
+test('程序 hooks 跨组件共享资源和反应，跨会话隔离，目标切换不改写已取得实例', async () => {
+  const scope = new Scope();
+  const workspace: WorkspaceContext = { id: 'workspace', directory: '/workspace', scope, share: source => source };
+  const selected = new BehaviorSubject('a'), changes = new Subject<number>();
+  const reads: string[] = [];
+  let observing = 0, rendering = false;
+  const record = defineResource({ name: 'shared-record', params: z.object({ target: z.string() }), value: z.string() });
+  const recordOwner = implementResource(record, { read({ target }) { assert.equal(rendering, false); reads.push(target); return target; } });
+  const process = defineReaction({ name: 'shared-process', params: z.object({ target: z.string() }), event: z.number(), result: z.string() });
+  const processOwner = implementReaction(process, {
+    observe: () => new Observable<number>(subscriber => {
+      observing++; const subscription = changes.subscribe(subscriber);
+      return () => { observing--; subscription.unsubscribe(); };
+    }), operator: concatMap, execute: (event, context) => context.params.target + ':' + event,
+  });
+  type Binding = { record: ResourceInstance<typeof record>; process: ReactionInstance<typeof process>; observed: Observable<Observation<string>> };
+  const attached = new Map<string, Binding>();
+  function Consumer(props: { session: string; side: string; target: string }) {
+    rendering = true;
+    const resource = useResourceInstance(recordOwner, { target: props.target });
+    const reaction = useReaction(processOwner, { target: props.target });
+    const current = useResource(recordOwner, { target: props.target });
+    useLayoutEffect(() => { attached.set(props.session + ':' + props.side, { record: resource, process: reaction, observed: current.observations$ }); }, [props.session, props.side, resource, reaction, current.observations$]);
+    rendering = false;
+    return null;
+  }
+  const definition = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+  const implementation = implementProgram(definition, { Component({ conversation }) {
+    const current = useObservable(() => selected, []);
+    if (current.status !== 'ready') return null;
+    return createElement(Fragment, null, ...['left', 'right'].map(side => createElement(Consumer,
+      { key: side, session: conversation.identity.sessionId, side, target: current.value })));
+  } });
+  const programs = ['one', 'two'].map(sessionId => {
+    const identity = { sessionId, workspaceId: workspace.id, environmentId: 'work', directory: workspace.directory, parentSessionId: null };
+    const conversation = new Conversation(identity, workspace, definition, { sessionId, sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });
+    return new ProgramInstance(conversation.scope, implementation, conversation, workspace, {
+      execution() { throw new Error('UNEXPECTED_EXECUTION'); },
+    });
+  });
+  try {
+    for (const program of programs) program.mount();
+    const first = attached.get('one:left')!, sibling = attached.get('one:right')!, other = attached.get('two:left')!;
+    assert.equal(first.record, sibling.record);
+    assert.equal(first.process, sibling.process);
+    assert.equal(first.observed, first.record.observations$);
+    assert.notEqual(first.record, other.record);
+    assert.notEqual(first.process, other.process);
+    assert.deepEqual(reads, ['a', 'a'], '两个会话各读取一次，同会话两个组件不重复查询');
+    assert.equal(await first.record.read(), 'a');
+    assert.equal(observing, 0);
+    const run = first.process.start();
+    assert.throws(() => sibling.process.start(), /ALREADY_RUNNING/);
+    const delivered: string[] = [];
+    run.events$.subscribe(event => delivered.push(event.result));
+    selected.next('b');
+    for (const program of programs) program.flush();
+    const next = attached.get('one:left')!;
+    assert.notEqual(next.record, first.record);
+    assert.notEqual(next.process, first.process);
+    assert.equal(await next.record.read(), 'b');
+    changes.next(3);
+    assert.deepEqual(delivered, ['a:3'], '旧运行保留原目标，组件切换不重定向或停止显式启动的工作');
+    programs[0].fail(new Error('FIRST_PROGRAM_FAILED'));
+    assert.equal((await run.settled).status, 'stopped');
+    assert.equal(observing, 0);
+    assert.equal(await attached.get('two:left')!.record.read(), 'b', '另一个会话的资源继续有效');
+  } finally { scope.dispose(); }
 });
 
 test('nullable Operation 只撤下当前绑定，恢复和换目标不重定向旧 command 或中止已有读取', async () => {

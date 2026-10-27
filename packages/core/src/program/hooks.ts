@@ -6,14 +6,19 @@ import type { Json } from '../conversations/protocol.ts';
 import { bindOperation, type BoundOperation, type OperationAccessContext, type OperationBindingReference, type OperationCommand, type OperationContract, type OperationFeedbackPayload, type OperationFeedbackRead, type OperationOwner, type OperationReference } from '../operations/contract.ts';
 import { Scope } from '../reactivity/scope.ts';
 import { type Observation } from '../resources/observation.ts';
-import { bindResource, type ResourceReadable } from '../resources/binding.ts';
+import { bindResource, type ResourceInstance, type ResourceReadable } from '../resources/binding.ts';
 import { isResourceImplementation, type ResourceImplementation } from '../resources/implementation.ts';
 import type { ResourceContract, ResourceParameters, ResourceData } from '../resources/definition.ts';
+import { bindReaction, type ReactionInstance } from '../reactions/binding.ts';
+import type { ReactionContract, ReactionParameters } from '../reactions/definition.ts';
+import type { ReactionImplementation } from '../reactions/implementation.ts';
 import { connect, normalizeResource, type SnapshotSource } from '../reactivity/observable.ts';
 
 /** 宿主拥有程序寿命、真实执行来源与步骤准入；组件不自行授予业务权限。 */
 export interface ProgramHookOwner {
   readonly scope: Scope;
+  /** 参数化资源与反应共享此程序作用域；程序失败即释放，不取消已受理业务。 */
+  readonly reactivityScope: Scope;
   /** 程序失败或释放的查询/关系寿命；已受理业务执行保留自己的 signal。 */
   readonly signal: AbortSignal;
   execution(action: ActionReference): ActionExecutionContext;
@@ -130,18 +135,38 @@ export interface ObservedResource<T> {
 }
 
 /**
+ * 取得程序拥有的正式资源实例，构造不读取；read、失效、流及其他 hook 共用同一对象。
+ * 相同实现与解析参数跨组件共享；替换目标不改写已取得的实例。
+ */
+export function useResourceInstance<D extends ResourceContract>(implementation: ResourceImplementation<D>,
+  params: ResourceParameters<NoInfer<D>>): ResourceInstance<D> {
+  const owner = useOwner();
+  return bindResource(implementation, { scope: owner.reactivityScope }).instance(params);
+}
+
+/**
+ * 取得程序拥有的持续反应，不在 render 或 commit 隐式 start。
+ * 运行属于程序，组件退出不冒充停止；调用 run.stop 或程序退出才释放感知和排队关系。
+ */
+export function useReaction<D extends ReactionContract>(implementation: ReactionImplementation<D>,
+  params: ReactionParameters<NoInfer<D>>): ReactionInstance<D> {
+  const owner = useOwner();
+  return bindReaction(implementation, { scope: owner.reactivityScope }).instance(params);
+}
+
+/**
  * factory 纯构造已有资源观察流；deps 决定来源身份，订阅随已提交组件的查询连接存在。
  * 原资源状态直接供 Context 和资源 View 共享，不嵌套 Observation，也不丢弃失效事件。
  * 来源终止错误与未就绪完成进入同一条 error 观察；不隐式重试。
  */
 export function useResource<T>(resource: ResourceReadable<T>): ObservedResource<T>;
 export function useResource<T>(factory: () => Observable<Observation<T>>, dependencies: DependencyList): ObservedResource<T>;
-export function useResource<D extends ResourceContract>(implementation: ResourceImplementation<D>, params: ResourceParameters<D>): ObservedResource<ResourceData<D>>;
+export function useResource<D extends ResourceContract>(implementation: ResourceImplementation<D>, params: ResourceParameters<NoInfer<D>>): ObservedResource<ResourceData<D>>;
 export function useResource(source: ResourceReadable<unknown> | ResourceImplementation | (() => Observable<Observation<unknown>>),
   paramsOrDependencies: unknown = []): ObservedResource<unknown> {
   const owner = useOwner();
   const current = isResourceImplementation(source)
-    ? bindResource(source, { scope: owner.scope }).instance(paramsOrDependencies) : source;
+    ? bindResource(source, { scope: owner.reactivityScope }).instance(paramsOrDependencies) : source;
   const original$ = useSource(typeof current === 'function' ? current : () => current.observations$,
     typeof current === 'function' ? paramsOrDependencies as DependencyList : [current]);
   const observations$ = useMemo(() => typeof current === 'function'

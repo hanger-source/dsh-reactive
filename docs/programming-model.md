@@ -225,6 +225,8 @@ const application = defineApplication({
 - `useShared(factory, dependencies)` memo 来源并使用 RxJS share/ReplaySubject 共享查询。最后一个查询观察退出时释放来源；已完成或失败的同一来源保留终态。
 - `useObservable(factory, dependencies)` 通过 useSyncExternalStore 读取普通来源的当前 Observation，提交后才订阅；退出停止此组件的查询观察。
 - `useResource(factory, dependencies)` 共享资源来源，直接返回 state 与 observations$。来源错误、空完成或停在 pending 后完成都进入资源 error；业务空值仍是 ready 中的值。
+- `useResourceInstance(implementation, params)` 取得当前 Program 共享的正式资源实例。普通函数通过它 read、invalidate 或订阅，组件通过 `useResource(instance)` 观察，同一实现与解析参数只持有一个实例；直接 `useResource(implementation, params)` 也连接这个实例。
+- `useReaction(implementation, params)` 取得当前 Program 共享的持续反应，`start()` 才开始感知和执行。同实例不能同时 start 两次；组件退出不停止程序拥有的运行，业务显式调用 `run.stop()`。程序失败或退出会停止查询、持续感知及尚未开始的排队工作，已受理业务仍由原 owner 结算。
 - `combineResources({ a: a$, b: b$ })` 组合具名资源，任一 error 保留为 error，尚有 pending 则不能产生 ready；全部有效才给出具名领域值。
 - `mapResource(project)` 只派生有效值，失效和错误继续传播；同步投影错误进入同代 error，后续有效代次可以恢复。
 - `switchResource(project, { dependencies: value => [value.id, value.revision] })` 根据当前有效依赖连接另一资源。依赖 tuple 按元素 `Object.is` 比较，连续 ready 的依赖相同就保留原查询；只选择实际影响查询的标量或稳定引用，不需要 JSON 编码或自行比较 pending/error。任何上游 pending/error 都立即退订旧查询并清除依赖身份，同一依赖恢复也会重新连接。selector 抛错变为当前 error，后续有效观察仍可恢复；新查询先进入 pending，迟到结果不能回写。tuple 在观察时被捕获，后续修改原数组不会改变已选身份。省略 dependencies 时，每次 ready 选择新来源。它只切换读取，不重发业务命令；共享仍由既有 owner 和 `useShared` 持有。

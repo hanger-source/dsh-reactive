@@ -26,6 +26,10 @@
 
 React effect 遵循 React 的重建与清理规则，业务不能把 effect 挂载当成可靠的“只执行一次”凭据。持久去重和跨重启执行仍由业务 owner 的正式设施承担。
 
+`useResourceInstance(implementation, params)` 与 `useReaction(implementation, params)` 只取得当前程序持有的参数实例，不建立来源或执行命令。解析后的参数与实现对象决定共享身份，组件位置和 key 不另建资源缓存；目标变化取得另一实例，原对象不重定向。`useResource(implementation, params)` 与显式实例入口共用同一个绑定。跨会话共享仍须由外部 Scope 持有并传入实际实例。
+
+这些参数绑定的 Scope 由 Program 持有，并随 Program 失败或会话退出释放。组件卸载只结束其查询观察，已经显式启动的 Reaction 保留到 `run.stop()` 或程序终止；未处理的 Reaction 执行失败留在本次 `run.state$` 和 `run.settled`，不隐式使 Program 失败。需要传播失败时由业务关系明确处理。退出停止感知和排队工作，不追加已受理 Action、Job 或业务 Operation 的取消。
+
 `fromSnapshot` 先建立监听再读取基线。`abortable` 把退订接到本次异步读取的 AbortSignal，并阻止迟到结果继续发出。串行、并行、切换、调度和重试均使用 RxJS 的标准操作符。
 
 ## 资源失效与 Context

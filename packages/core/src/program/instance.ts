@@ -49,6 +49,7 @@ type TrustedExecution = { readonly action: ActionReference; readonly allowed: ()
 
 /** 会话拥有组件树、声明快照与查询；原生执行及已受理业务拥有各自生存期。 */
 export class ProgramInstance<P extends ProgramContract> implements ProgramHookOwner {
+  readonly reactivityScope: Scope;
   readonly revision: Cell<number>;
   readonly contexts = new Map<string, ResourceValue<string>>();
   readonly offers = new Map<string, BoundOffer>();
@@ -75,6 +76,13 @@ export class ProgramInstance<P extends ProgramContract> implements ProgramHookOw
   ) {
     this.revision = scope.state(0);
     this.signal = AbortSignal.any([scope.signal, this.#failed.signal]);
+    this.reactivityScope = scope.child();
+    const releaseReactivity = () => {
+      try { this.reactivityScope.dispose(); }
+      catch (error) { scope.observerError(error); }
+    };
+    this.signal.addEventListener('abort', releaseReactivity, { once: true });
+    this.reactivityScope.own(() => this.signal.removeEventListener('abort', releaseReactivity));
     this.outputs = createProgramOutputs(scope, program.definition.surface);
     this.#renderer = createDeclarationRenderer({
       decode: decodeProgramDeclaration,
