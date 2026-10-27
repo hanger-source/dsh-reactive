@@ -1,5 +1,17 @@
 # @hanger-source/dsh-reactive-skills
 
+## 0.8.0
+
+### Patch Changes
+
+- 7451ffd: Jobs、Schedule、Team 的会话 SDK 和固定任务提供 state 资源，Job 的 output 提供非消费输出资源；函数、Promise、RxJS、hooks 和公开 View 共用正式资源机制。Schedule 与 Team 的原生变化先撤销旧 ready，异步读取失败作为可恢复的 error，后续通知继续读取。最后资源消费者退出取消读取且不停止已受理原生执行；各域的控制、单次权威查询和持久性责任保持独立。
+- Updated dependencies [7451ffd]
+  - @hanger-source/dsh-reactive-dsh@0.8.0
+  - @hanger-source/dsh-reactive-remote@0.8.0
+  - @hanger-source/dsh-reactive-client@0.8.0
+  - @hanger-source/dsh-reactive@0.8.0
+  - @hanger-source/dsh-reactive-native-ui@0.8.0
+
 ## 0.7.0
 
 ### Patch Changes

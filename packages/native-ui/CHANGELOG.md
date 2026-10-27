@@ -1,5 +1,12 @@
 # @hanger-source/dsh-reactive-native-ui
 
+## 0.8.0
+
+### Patch Changes
+
+- @hanger-source/dsh-reactive-client@0.8.0
+  - @hanger-source/dsh-reactive@0.8.0
+
 ## 0.7.0
 
 ### Patch Changes
