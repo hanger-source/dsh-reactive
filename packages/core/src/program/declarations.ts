@@ -185,7 +185,7 @@ export function NativeTools(props: NativeToolsProps): ReactElement {
   if (props.admit !== undefined && typeof props.admit !== 'function') throw new Error('REACTIVE_NATIVE_TOOL_ADMISSION_INVALID');
   const names = new Set<string>();
   const children = props.names.map(tool => {
-    if (typeof tool !== 'string' || !/^[a-z][a-z0-9_]{0,79}$/u.test(tool) || tool === 'run_code') throw new Error('REACTIVE_NATIVE_TOOL_NAME_INVALID');
+    if (typeof tool !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,79}$/u.test(tool) || tool === 'run_code') throw new Error('REACTIVE_NATIVE_TOOL_NAME_INVALID');
     if (names.has(tool)) throw new Error('REACTIVE_NATIVE_TOOL_DUPLICATE: ' + tool);
     names.add(tool);
     return createElement(Fragment, { key: tool }, leaf({ kind: 'native-tool', name: tool,

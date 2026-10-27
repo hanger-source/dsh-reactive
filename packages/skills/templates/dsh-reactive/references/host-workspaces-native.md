@@ -86,6 +86,8 @@ Jobs 与 MCP 实例的 `toolNames`、MCP 的 `resourceToolNames` 是 ResourceRea
 
 将资源交给 `useResource` 后，按当前有效状态声明，例如 `NativeTools({ names: observed.state.status === 'ready' ? observed.state.value : [] })`。显式空数组贡献零个工具声明，可表达 pending/error 或实际空集合；名称、重复项及准入参数仍严格校验，工具读取不代替调用时的授权。
 
+`NativeTools.names` 使用原生注册名，保留大小写与连字符，例如 MCP 的 `mcp__Inventory-North__Stock-Count`。不要为通过声明校验而自行小写、改名或重新构造 MCP 名称；原生 client 持有服务器与原工具的精确映射，名称资源直接提供其当前公开身份。
+
 ## 子程序沿原生 owner
 
 `createRuntime(assembly => ...)` 的 assembly 提供 `implementDelegation(action, { program, mode:'spawn'|'fork', childInput, objective, authorize })`。返回普通 ActionImplementation，继续 useAction/Offer/Operation/Follow；不用新增 Delegate 组件或子队列。

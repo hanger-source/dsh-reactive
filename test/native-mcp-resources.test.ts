@@ -24,7 +24,7 @@ for (const resources of ['disabled', 'install'] as const) {
     const errors: unknown[] = [];
     let models = 0, executions = 0;
     const server = new McpServer({ name: 'inventory', version: '1.0.0' });
-    const stock = server.registerTool('stock', { description: '库存查询', inputSchema: {} }, async () => {
+    const stock = server.registerTool('Stock-Count', { description: '库存查询', inputSchema: {} }, async () => {
       executions++; return { content: [{ type: 'text', text: '10' }] };
     });
     server.registerResource('inventory', 'inventory://current', {}, async uri => ({
@@ -41,7 +41,7 @@ for (const resources of ['disabled', 'install'] as const) {
     const address = http.address();
     assert.ok(address && typeof address !== 'string');
     const mcp = createNativeMcp({ resources, connection: {
-      transport: 'streamable-http', serverName: 'inventory', url: `http://127.0.0.1:${address.port}/mcp`,
+      transport: 'streamable-http', serverName: 'Inventory-North', url: `http://127.0.0.1:${address.port}/mcp`,
       headers: {}, toolCallTimeoutMs: 3_000, failOnStartupError: true, reconnect: { enabled: false },
     } });
     const jobs = createNativeJobs({ registry: { kind: 'local' }, tools: { completionDelivery: 'quiet' } });
@@ -76,7 +76,7 @@ for (const resources of ['disabled', 'install'] as const) {
         resources: mcp.resourceToolNames.observations$ }).subscribe(snapshots);
       const combined = await firstValueFrom(snapshots.pipe(filter(state => state.status === 'ready'), timeout(3_000)));
       assert.equal(combined.status, 'ready');
-      assert.ok(combined.value.mcp.includes('mcp__inventory__stock'));
+      assert.ok(combined.value.mcp.includes('mcp__Inventory-North__Stock-Count'));
       assert.ok(combined.value.jobs.includes('job_output'));
       assert.equal(combined.value.resources.includes('read_mcp_resource'), resources === 'install');
       assert.equal(mcp.toolNames$, mcp.toolNames.values$);
@@ -85,30 +85,30 @@ for (const resources of ['disabled', 'install'] as const) {
 
       const workspace = await runtime.application.createWorkspace({ directory: root });
       const session = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
-      const initial = await firstValueFrom(programNames.pipe(filter(names => names.includes('mcp__inventory__stock')), timeout(3_000)));
+      const initial = await firstValueFrom(programNames.pipe(filter(names => names.includes('mcp__Inventory-North__Stock-Count')), timeout(3_000)));
       assert.equal(await mcp.toolNames.read(), initial, 'hooks与普通函数读取同一个资源快照');
       const agent = runtime.native.get('agents')!.get(SessionId(session.id))!;
-      assert.ok(runtime.native.get('tools')!.schemas(agent).some(tool => tool.name === 'mcp__inventory__stock'));
+      assert.ok(runtime.native.get('tools')!.schemas(agent).some(tool => tool.name === 'mcp__Inventory-North__Stock-Count'));
       assert.ok(runtime.native.get('tools')!.schemas(agent).some(tool => tool.name === 'job_list'));
 
-      const added = namesContaining('mcp__inventory__lookup');
+      const added = namesContaining('mcp__Inventory-North__lookup');
       const lookup = server.registerTool('lookup', { description: '新注册查询', inputSchema: {} }, async () => {
         executions++; return { content: [] };
       });
       await added;
-      await firstValueFrom(programNames.pipe(filter(names => names.includes('mcp__inventory__lookup')), timeout(3_000)));
-      const removed = firstValueFrom(mcp.toolNames.values$.pipe(filter(names => !names.includes('mcp__inventory__stock')), timeout(3_000)));
+      await firstValueFrom(programNames.pipe(filter(names => names.includes('mcp__Inventory-North__lookup')), timeout(3_000)));
+      const removed = firstValueFrom(mcp.toolNames.values$.pipe(filter(names => !names.includes('mcp__Inventory-North__Stock-Count')), timeout(3_000)));
       stock.remove(); await removed;
-      await firstValueFrom(programNames.pipe(filter(names => !names.includes('mcp__inventory__stock')), timeout(3_000)));
+      await firstValueFrom(programNames.pipe(filter(names => !names.includes('mcp__Inventory-North__Stock-Count')), timeout(3_000)));
       const empty = firstValueFrom(mcp.toolNames.values$.pipe(filter(names => names.length === 0), timeout(3_000)));
       lookup.remove(); await empty;
       await firstValueFrom(programNames.pipe(filter(names => names.length === 0), timeout(3_000)));
-      assert.equal(runtime.native.get('tools')!.schemas(agent).some(tool => tool.name.startsWith('mcp__inventory__')), false);
+      assert.equal(runtime.native.get('tools')!.schemas(agent).some(tool => tool.name.startsWith('mcp__Inventory-North__')), false);
 
       await runtime.application.close(session.id); session.release();
       subscription.unsubscribe();
       assert.equal(mcp.toolNames.peek().status, 'pending', '最后消费者退出只撤下查询快照');
-      const connected = namesContaining('mcp__inventory__connected');
+      const connected = namesContaining('mcp__Inventory-North__connected');
       server.registerTool('connected', { description: '查询退出后连接仍存活', inputSchema: {} }, async () => {
         executions++; return { content: [] };
       });
