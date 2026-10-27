@@ -78,6 +78,10 @@ Schedule 创建与 Team spawn/send 尚无 Program 来源准入接点。它们与
 
 目录由原生 `schemas(agent)` 生成，保留真实继承、遮蔽和限制，且只含模型 schema 数据，不外泄 execute、presentResult 等闭包。它表达注册表当前视图；Program 的 enabled/admit 与模型请求前的 prepare 仍属于执行边界，目录读取不主动 prepare，也不授予调用权。PTC 模式仍提供完整可见工具目录，模型直接调用折叠到 run_code 由原生执行管线决定。业务操作继续使用已有 Action/Invocation 或原生工具入口，不通过目录对象绕过 guard。
 
+Approval 的 `capability.forSession(source).policy` 提供 ResourceReader，read(signal)、peek、subscribe、values$、observations$ 与 useResource 使用同一份政策观察；policy$ 直接是其 values$。首次观察读取正式会话切面，相关 approval/policy 日志和真实 Agent 代际变化先撤下旧 ready 再重读；读取错误保留为 error，后续正式通知可恢复。冷会话可以读取持久政策，不恢复 Agent；没有会话 override 时使用已确认切面对应的部署默认政策。
+
+政策值不是一次调用的 grant。setPolicy 仍要求真实活跃 Agent，由原生服务追加日志；SDK 退出只释放观察，不改变政策。audit$ 与 readAudit 保留原生 asked/decided/policy 事件的顺序与身份，历史 asked 不代表仍可批准。业务问答继续与原生权限批准分开，读取、组合或展示政策不会触发 answerer。MCP 注册通知与 Clock 实际采样继续作为各自原生流使用，不根据政策资源合成批准或时间事件。
+
 ## 子程序沿原生 owner
 
 `createRuntime(assembly => ...)` 的 assembly 提供 `implementDelegation(action, { program, mode:'spawn'|'fork', childInput, objective, authorize })`。返回普通 ActionImplementation，继续 useAction/Offer/Operation/Follow；不用新增 Delegate 组件或子队列。

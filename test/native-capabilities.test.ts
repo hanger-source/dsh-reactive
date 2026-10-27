@@ -251,7 +251,7 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
       Component({ conversation }) {
         const jobs = capability.forSession(conversation);
         useResource(jobs.state);
-        useObservable(() => approval.forSession(conversation).policy$, [conversation]);
+        useResource(approval.forSession(conversation).policy);
         useRelation(() => retired.pipe(filter(id => id === conversation.identity.sessionId), tap(() => { throw retiredFailure; })), [conversation]);
         useLayoutEffect(() => { programSessions.set(conversation.identity.sessionId, { source: conversation, jobs }); }, [conversation, jobs]);
         return NativeTools({ names: ['job_output', 'job_list', 'job_kill'] });

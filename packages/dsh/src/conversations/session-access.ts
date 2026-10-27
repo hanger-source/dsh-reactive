@@ -2,8 +2,8 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { SessionId, SessionEvent } from '@deepseek-ai/dsh-session';
 import type { SessionInspection } from '@deepseek-ai/dsh-session-persistence';
-import { Observable, defer, filter, fromEvent, merge, switchMap, map, takeUntil } from 'rxjs';
-import { abortable } from '@hanger-source/dsh-reactive';
+import { Observable, defer, filter, fromEvent, switchMap, takeUntil } from 'rxjs';
+import { observeResource, type Observation } from '@hanger-source/dsh-reactive';
 
 /** @internal Host 对 exact 本地句柄或 Program 来源签发的权限；不从 sessionId 反查或启动 Agent。 */
 export interface NativeSessionAccess {
@@ -92,21 +92,23 @@ function nativeEventCut(access: NativeSessionAccess): Observable<SessionEvent> {
   });
 }
 
-/** @internal 官方日志的当前切面；新事件只触发重读，不以通知内容充当权威。 */
+/** @internal 官方日志的当前切面及读取有效性；通知仅失效，不以通知内容充当权威。 */
 export function nativeSessionInspections(access: NativeSessionAccess,
-  relevant: (event: SessionEvent) => boolean): Observable<SessionInspection> {
+  relevant: (event: SessionEvent) => boolean): Observable<Observation<SessionInspection>> {
   return defer(() => {
     access.signal.throwIfAborted(); access.assertCurrent();
     const changes$ = new Observable<SessionEvent>(subscriber => access.context.on('session/event', (session, event) => {
       if (session.id === access.sessionId) subscriber.next(event);
     })).pipe(filter(relevant));
-    // 先监听日志，再由当前实际 owner 触发初读；切换会取消旧切面，不重试一个已经失败的读取。
-    return merge(changes$, access.liveAgent$).pipe(
-      switchMap(() => abortable(signal => access.inspect(AbortSignal.any([signal, access.signal])))),
-      map(inspection => {
-        access.assertCurrent(); access.signal.throwIfAborted();
+    // 先监听日志再初读；代际和相关日志变化都撤下旧ready，错误等待下一次正式失效恢复。
+    return observeResource({ key$: access.liveAgent$, invalidations: () => changes$,
+      read: async (_agent, reading) => {
+        const signal = AbortSignal.any([reading, access.signal]);
+        const inspection = await access.inspect(signal);
+        signal.throwIfAborted(); access.assertCurrent();
         if (inspection.meta.id !== access.sessionId) throw new Error('REACTIVE_NATIVE_SESSION_MISMATCH');
         return inspection;
-      }), takeUntil(fromEvent(access.signal, 'abort')));
+      },
+    }).pipe(takeUntil(fromEvent(access.signal, 'abort')));
   });
 }

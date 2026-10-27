@@ -20,6 +20,8 @@
 
 `@hanger-source/dsh-reactive-dsh/tools` 的 `createNativeTools({ service: 'provided' })` 提供同样可组合的 `forSession(source).catalog`，读取真实 Agent 作用域下的原生 Tool schema。注册、撤销与 restriction 变化使资源失效；快照不含执行或展示函数。目录可以与 Skill、Files 和业务资源直接组合；具体调用仍由 NativeTools 声明、原生 guard 与执行边界决定，PTC 模式的完整可见目录和模型直调入口保持各自语义。
 
+Approval 的 `forSession(source).policy` 是同源政策资源，可与工具、业务资源及 hooks 组合；policy$ 是它的值流，审计继续使用原生有序事件和 readAudit。读取和冷会话恢复观察不产生批准请求或 grant，政策变更继续显式调用 setPolicy 并由原生服务持久化。
+
 后台 Program renderer 使用 React `19.3.1` 与 react-reconciler `0.34.0`。原生 UI 扩展把呈现函数交给 dsh 自己的 Slot renderer，不创建第二个 React root，也不安装后台 reconciler；它可以随原生 React `18.2` 界面使用。两种运行环境分别安装、分别编译。
 
 ## 编程模型

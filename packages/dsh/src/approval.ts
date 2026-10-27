@@ -2,11 +2,11 @@ import Approval, { type ApprovalPolicy, type ApprovalOutcome } from '@deepseek-a
 import type { ApprovalRequestEvent } from '@deepseek-ai/dsh-user-approval/types';
 import type { ToolExecution } from '@deepseek-ai/dsh-tools';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
-import { filter, map, distinctUntilChanged, type Observable } from 'rxjs';
-import type { CancellationOptions } from '@hanger-source/dsh-reactive';
+import { filter, map, type Observable } from 'rxjs';
+import { mapResource, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin } from './native-installation.ts';
-import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, ownNativeValue, type NativeCapability, type NativeSessionSource } from './native-capability.ts';
+import { NativeCapabilityOwner, nativeObservation, nativeResource, nativeObservationScope, ownNativeValue, type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, nativeSessionEvents, nativeSessionInspections, type NativeSessionAccess } from './conversations/session-access.ts';
 
 export type { ApprovalPolicy, ApprovalOutcome } from '@deepseek-ai/dsh-user-approval';
@@ -26,6 +26,8 @@ export interface NativeApprovalOptions {
 
 export interface NativeSessionApproval {
   readonly audit$: Observable<NativeApprovalEvent>;
+  /** 当前政策及读取有效性；政策是原生配置事实，不是任何一次工具调用的grant。 */
+  readonly policy: ResourceReader<ApprovalPolicy>;
   readonly policy$: Observable<ApprovalPolicy>;
   readAudit(options?: CancellationOptions): Promise<readonly NativeApprovalEvent[]>;
   setPolicy(policy: ApprovalPolicy, options?: CancellationOptions): void;
@@ -34,6 +36,7 @@ export interface NativeSessionApproval {
 
 class SessionApproval implements NativeSessionApproval {
   readonly audit$: Observable<NativeApprovalEvent>;
+  readonly policy: ResourceReader<ApprovalPolicy>;
   readonly policy$: Observable<ApprovalPolicy>;
   #scope: Scope;
   get disposed(): boolean { return this.#scope.disposed; }
@@ -42,14 +45,14 @@ class SessionApproval implements NativeSessionApproval {
     this.audit$ = nativeObservation(this.#scope, nativeSessionEvents(access).pipe(filter((event): event is NativeApprovalEvent =>
       event.type === 'approval/asked' || event.type === 'approval/decided' || event.type === 'approval/policy'), map(ownNativeValue)));
     // 直接读取正式 policy 事件；没有事件也交付明确部署默认政策，不等下一次批准。
-    this.policy$ = nativeObservation(this.#scope, nativeSessionInspections(access, event => event.type === 'approval/policy').pipe(
-      map(inspection => {
+    this.policy = nativeResource(this.#scope, () => nativeSessionInspections(access, event => event.type === 'approval/policy').pipe(
+      mapResource(inspection => {
         let current = defaultPolicy;
         for (const event of inspection.events) if (event.type === 'approval/policy') current = event.data.policy;
         return current;
       }),
-      distinctUntilChanged(),
     ));
+    this.policy$ = this.policy.values$;
   }
   /** 完整原生日志审计；历史 asked 不是一个仍待批准的请求或可再次使用的 grant。 */
   async readAudit(options: CancellationOptions = {}): Promise<readonly NativeApprovalEvent[]> {

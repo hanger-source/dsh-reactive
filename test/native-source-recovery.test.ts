@@ -7,7 +7,7 @@ import { setImmediate as immediate } from 'node:timers/promises';
 import { ReplaySubject, filter, firstValueFrom, timeout, type Subscription } from 'rxjs';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
 import type { SessionInspection } from '@deepseek-ai/dsh-session-persistence';
-import { defineApplication, defineEnvironment, defineProgram, defineSurface, z } from '@hanger-source/dsh-reactive';
+import { defineApplication, defineEnvironment, defineProgram, defineSurface, z, type Observation } from '@hanger-source/dsh-reactive';
 import { implementProgram } from '@hanger-source/dsh-reactive/program';
 import type { ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
 import { nativeSessionAccess, nativeSessionEvents, nativeSessionInspections } from '../packages/dsh/src/conversations/session-access.ts';
@@ -25,6 +25,10 @@ test('实际原生owner关闭并恢复时取消旧切面，长期观察接上新
   const release = Promise.withResolvers<void>();
   const snapshots = new ReplaySubject<SessionInspection>(1), events = new ReplaySubject<SessionEvent>(1);
   const deliveredSnapshots: SessionInspection[] = [], deliveredEvents: SessionEvent[] = [], errors: unknown[] = [];
+  const states: Observation<SessionInspection>[] = [];
+  const observations = new ReplaySubject<Observation<SessionInspection>>(1);
+  const failure = new Error('INSPECTION_DELIVERY_FAILED');
+  let failNext = false;
   let session: ConversationHandle<typeof program> | undefined, resumed: ConversationHandle<typeof program> | undefined;
   let snapshotSubscription: Subscription | undefined, eventSubscription: Subscription | undefined;
   try {
@@ -33,6 +37,7 @@ test('实际原生owner关闭并恢复时取消旧切面，长期观察接上新
     let first = true;
     const delayed = { ...access, async inspect(signal?: AbortSignal) {
       const snapshot = await access.inspect(signal);
+      if (failNext) { failNext = false; throw failure; }
       if (first) {
         first = false; assert.ok(signal);
         // 延后已经取得的真实切面，模拟忽略取消的迟到交付；不另造Agent、历史或持久状态。
@@ -41,7 +46,10 @@ test('实际原生owner关闭并恢复时取消旧切面，长期观察接上新
       return snapshot;
     } };
     snapshotSubscription = nativeSessionInspections(delayed, () => false).subscribe({
-      next: snapshot => { deliveredSnapshots.push(snapshot); snapshots.next(snapshot); },
+      next: state => {
+        states.push(state); observations.next(state);
+        if (state.status === 'ready') { deliveredSnapshots.push(state.value); snapshots.next(state.value); }
+      },
       error: error => { errors.push(error); snapshots.error(error); },
     });
     const old = await entered.promise;
@@ -50,7 +58,9 @@ test('实际原生owner关闭并恢复时取消旧切面，长期观察接上新
       next: event => { deliveredEvents.push(event); events.next(event); },
       error: error => { errors.push(error); events.error(error); },
     });
+    const beforeClose = states.length;
     await app.host.close(session.id);
+    assert.ok(states.slice(beforeClose).some(state => state.status === 'pending'), 'owner切换先撤下旧切面的有效性');
     assert.equal(old.signal.aborted, true);
     assert.equal(access.liveAgent(), undefined);
     resumed = await app.host.resume(session.id, program);
@@ -64,10 +74,20 @@ test('实际原生owner关闭并恢复时取消旧切面，长期观察接上新
     assert.equal(deliveredSnapshots.includes(old.snapshot), false, '旧读取迟到不能回写当前owner的现场');
     assert.equal(deliveredSnapshots.at(-1)!.events.at(-1)!.seq, last);
     assert.deepEqual(deliveredEvents.map(event => event.seq), expected, '完整历史和恢复通知只按原始日志顺序交付一次');
+    assert.equal(states.some(state => state.status === 'error'), false);
+    // 只在公开读取的交付边界制造一次失败，实际会话、日志和恢复仍由原生owner执行。
+    failNext = true;
+    await app.host.close(session.id);
+    await firstValueFrom(observations.pipe(filter(state => state.status === 'error' && state.error === failure), timeout(8_000)));
+    const failedAt = states.length;
+    resumed.release(); resumed = await app.host.resume(session.id, program);
+    await firstValueFrom(observations.pipe(filter(state => state.status === 'ready'), timeout(8_000)));
+    assert.ok(states.slice(failedAt).some(state => state.status === 'pending'));
+    assert.equal(states.at(-1)?.status, 'ready', '真实owner恢复通知可恢复读取错误，不重建另一套状态或无条件retry');
     assert.equal(modelCalls, 0);
     assert.deepEqual(errors, []); assert.deepEqual(app.errors, []);
   } finally {
     release.resolve(); snapshotSubscription?.unsubscribe(); eventSubscription?.unsubscribe();
-    snapshots.complete(); events.complete(); resumed?.release(); session?.release(); await app.dispose();
+    snapshots.complete(); events.complete(); observations.complete(); resumed?.release(); session?.release(); await app.dispose();
   }
 });
