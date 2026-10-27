@@ -3,7 +3,8 @@ import type { NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import type { NativeJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
 import type { NativeSchedule } from '@hanger-source/dsh-reactive-dsh/schedule';
 import type { NativeTeam, NativeTeamTask, TeamTaskView } from '@hanger-source/dsh-reactive-dsh/team';
-import type { NativeFiles } from '@hanger-source/dsh-reactive-dsh/files';
+import type { NativeFiles, NativeSessionFiles, WorkspaceFileText } from '@hanger-source/dsh-reactive-dsh/files';
+import type { ResourceReadable } from '@hanger-source/dsh-reactive';
 import type { NativeApproval } from '@hanger-source/dsh-reactive-dsh/approval';
 import type { NativeClock } from '@hanger-source/dsh-reactive-dsh/time';
 
@@ -27,3 +28,9 @@ function taskConsumer(task: NativeTeamTask) {
   return { reading, updating, stream: task.state$ };
 }
 void taskConsumer;
+
+function fileConsumer(files: NativeSessionFiles) {
+  const page: ResourceReadable<WorkspaceFileText> = files.text('report.txt', { offset: 2, limit: 5 });
+  return { page, directory: files.directory('.'), metadata: files.metadata('report.txt') };
+}
+void fileConsumer;

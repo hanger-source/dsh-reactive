@@ -11,6 +11,8 @@ export interface NativeSessionAccess {
   readonly sessionId: SessionId;
   readonly signal: AbortSignal;
   assertCurrent(): void;
+  /** 原会话header的工作目录；读取文件范围不需要冲刷或重读会话日志。 */
+  workspaceRoot(): string;
   readonly liveAgent$: Observable<Agent | undefined>;
   liveAgent(): Agent | undefined;
   inspect(signal?: AbortSignal): Promise<SessionInspection>;

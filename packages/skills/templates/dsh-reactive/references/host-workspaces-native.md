@@ -62,6 +62,10 @@ Jobs、Schedule、Team、Files、Approval、Clock 用 `capability.forSession(con
 
 Team 任务可用 `const task = await team.forSession(source).task(id)` 取得。`task.state$` 供 RxJS 和 `useObservable` 使用，`task.read({ signal })` 读取同一原生投影；显式 `task.update({ expectedRevision, action, ... })` 由原生 CAS 决定是否受理，不重复传 taskId，也不能向请求中塞入 taskId 更换目标。对象身份属于原来源与任务，不按当前界面选择重定向。删除后流和 read 返回 undefined；需要原生墓碑时用活跃成员的 getTask。冷 Lead 可以读取与取得对象，修改仍要求真实活跃成员，不会为此自动 resume、spawn 或 send。
 
+Files 复用已安装的 WorkspaceFiles、fs、sandboxPolicy 和 Typert，不自动安装文件服务或改变沙箱政策。`const page = files.forSession(source).text(path, { offset, limit })` 返回正式 Resource 实例；metadata(path) 与 directory(path) 分别提供元数据和目录资源。同一原始路径与窗口取得同一对象，read、peek、values$、observations$、invalidate 与 `useResource(page)` 共用它。构造不做 I/O；首次观察等待 watch ready，之后变化取消旧读、重新取权威切面；同一 SDK 的文本页和元数据共享该路径的 watch，最后一个查询退出后释放它。读取失败保留为资源 error，后续文件变化可恢复；watch 初始化失败明确进入 error，不偷偷轮询或降级。SDK dispose 等待实际 unwatch，Agent close 不取消仍有效来源的文件观察。readBytes 继续每次返回独立缓冲区。产物需要公开时，用 mapResource 选择领域字段交给资源 View，沿现有本地或远程 Surface 消费，不给 UI 复制文件监听。
+
+原生FS可合并短窗口的失效通知；资源读取当前切面，通知不承担每次写入的持久事件含义。业务已知写入成功时可显式 invalidate，内容版本仍以实际读取的 version 为准。
+
 Schedule 创建与 Team spawn/send 尚无 Program 来源准入接点。它们与已支持的提醒观察/更新、任务板创建/CAS、等待和 interrupt 分开；不能因为插件可安装，就声称 UI 或服务创建链已经贯通。
 
 ## 子程序沿原生 owner

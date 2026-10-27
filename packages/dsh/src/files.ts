@@ -9,6 +9,9 @@ import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { NativeCapabilityOwner, nativeObservationScope, ownNativeValue,
   type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
+import { createFileResources, type NativeFileResource } from './files/resources.ts';
+
+export type { NativeFileResource } from './files/resources.ts';
 
 export type { WorkspaceFileRange, WorkspaceByteReadOptions, WorkspaceFileText, WorkspaceFileBytes,
   WorkspaceFileStat, WorkspaceDirectoryListing, WorkspaceFileWatchFrame, WorkspaceFileChange } from '@deepseek-ai/dsh-api-workspace-files';
@@ -33,6 +36,10 @@ export interface NativeFileWatch {
 }
 
 export interface NativeSessionFiles {
+  /** 固定路径与原始行窗口的共享资源；构造不读，首次观察先建立原生watch。 */
+  text(path: string, range?: WorkspaceFileRange): NativeFileResource<WorkspaceFileText>;
+  metadata(path: string): NativeFileResource<WorkspaceFileStat>;
+  directory(path: string): NativeFileResource<WorkspaceDirectoryListing>;
   readText(path: string, range?: WorkspaceFileRange, options?: CancellationOptions): Promise<WorkspaceFileText>;
   readBytes(path: string, range?: WorkspaceByteReadOptions, options?: CancellationOptions): Promise<WorkspaceFileBytes>;
   stat(path: string, options?: CancellationOptions): Promise<WorkspaceFileStat>;
@@ -80,6 +87,7 @@ class FileWatch implements NativeFileWatch {
 
 class SessionFiles implements NativeSessionFiles {
   readonly scope: Scope;
+  #resources: ReturnType<typeof createFileResources>;
   #watches = new Set<NativeFileWatch>();
   #reads = new Set<Promise<unknown>>();
   #closing?: Promise<void>;
@@ -87,6 +95,7 @@ class SessionFiles implements NativeSessionFiles {
   constructor(private readonly owner: NativeCapabilityOwner, private readonly access: NativeSessionAccess,
     private readonly released: () => void) {
     this.scope = nativeObservationScope(owner, access);
+    this.#resources = createFileResources(this, this.scope);
     const logger = owner.context().logger;
     this.scope.signal.addEventListener('abort', () => {
       void this.dispose().catch(error => logger.error(error));
@@ -106,10 +115,7 @@ class SessionFiles implements NativeSessionFiles {
   /** @internal 仅从 exact 句柄的当前原生 header 构造 scope；路径不根据进程 cwd 猜测。 */
   async resolve(path: string, signal: AbortSignal, baseFile?: string) {
     signal.throwIfAborted(); this.assertCurrent();
-    const inspection = await this.access.inspect(signal);
-    signal.throwIfAborted(); this.assertCurrent();
-    const workspaceRoot = inspection.meta.cwd;
-    if (!workspaceRoot) throw new Error('REACTIVE_NATIVE_FILE_WORKSPACE_REQUIRED');
+    const workspaceRoot = this.access.workspaceRoot();
     const ctx = this.owner.session(this.access, 'workspaceFiles');
     const service: WorkspaceFiles | undefined = ctx.get('workspaceFiles');
     const fs: FileSystem | undefined = ctx.get('fs');
@@ -138,6 +144,15 @@ class SessionFiles implements NativeSessionFiles {
     this.#reads.add(reading);
     void reading.then(() => this.#reads.delete(reading), () => this.#reads.delete(reading));
     return reading;
+  }
+  text(path: string, range: WorkspaceFileRange = {}): NativeFileResource<WorkspaceFileText> {
+    this.assertCurrent(); return this.#resources.text(path, range);
+  }
+  metadata(path: string): NativeFileResource<WorkspaceFileStat> {
+    this.assertCurrent(); return this.#resources.metadata(path);
+  }
+  directory(path: string): NativeFileResource<WorkspaceDirectoryListing> {
+    this.assertCurrent(); return this.#resources.directory(path);
   }
   readText(path: string, range: WorkspaceFileRange = {}, options: CancellationOptions = {}): Promise<WorkspaceFileText> {
     const selected = structuredClone(range);

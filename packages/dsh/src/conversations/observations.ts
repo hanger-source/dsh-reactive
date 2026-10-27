@@ -77,6 +77,12 @@ export class ConversationObservations {
     registerSessionAccess(handle: object, session: ConversationSession, signal: AbortSignal, assertHandle: () => void) {
         registerNativeSession(handle, { context: this.ctx, sessionId: session.header.id, signal,
             assertCurrent: () => { assertHandle(); this.sessions().assertSessionWorkspace(session); },
+            workspaceRoot: () => {
+                signal.throwIfAborted(); assertHandle(); this.sessions().assertSessionWorkspace(session);
+                const directory = session.header.cwd;
+                if (!directory) throw new Error('REACTIVE_NATIVE_FILE_WORKSPACE_REQUIRED');
+                return directory;
+            },
             liveAgent$: session.live.pipe(map(entry => entry?.agent), distinctUntilChanged()),
             liveAgent: () => session.live.value?.agent,
             inspect: async (callerSignal?: AbortSignal) => {
