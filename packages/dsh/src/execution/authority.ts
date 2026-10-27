@@ -55,7 +55,7 @@ export class ActionAuthority {
     async admitAction(session: ConversationSession, action: ActionReference, input: unknown, call: ActionCallContext<unknown>, execution: ActionExecutionContext) {
         this.assertActionExecution(session, execution);
         this.sessions.assertSessionWorkspace(session);
-        if (!session.live) {
+        if (!session.live.value) {
             const inspection = await this.facts.inspect(session.header.id);
             this.workspaces.verifyInspection(inspection, session.workspace, session.environment);
             this.sessions.assertSessionWorkspace(session);

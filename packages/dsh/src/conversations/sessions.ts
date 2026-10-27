@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { BehaviorSubject } from 'rxjs';
 import { isAbsolute } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
@@ -60,8 +61,8 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         const session = this.#sessions.get(id);
         if (!session)
             throw new Error('REACTIVE_CONVERSATION_NOT_OPEN');
-        if (session.live) {
-            const native = session.live.agent.session;
+        if (session.live.value) {
+            const native = session.live.value.agent.session;
             this.assertCreated({ meta: native.header, events: native.snapshotEvents(), inheritedEventCount: native.inheritedEventCount }, session.workspace, session.environment);
         }
         return session;
@@ -79,9 +80,9 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         this.ctx.on('agent/disposed', ({ agent }) => {
             const entry = this.#entries.get(agent);
             this.#entries.delete(agent);
-            if (!entry || entry.session.live !== entry)
+            if (!entry || entry.session.live.value !== entry)
                 return;
-            entry.session.live = undefined;
+            entry.session.live.next(undefined);
             entry.session.conversation[conversationBindings]().resetProgress();
             entry.session.conversation[conversationBindings]().publishForegroundQuestions([]);
             this.facts.publish(entry.session);
@@ -126,7 +127,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         return failures;
     }
     collect(entry: ConversationSession) {
-        if (entry.live || entry.pins !== 0)
+        if (entry.live.value || entry.pins !== 0)
             return;
         if (this.#sessions.get(entry.header.id) === entry)
             this.#sessions.delete(entry.header.id);
@@ -135,16 +136,16 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
     release(entry: ConversationSession) { entry.pins--; this.collect(entry); }
     live(entry: ConversationSession) {
         this.assertActive();
-        if (!entry.live)
+        if (!entry.live.value)
             throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
-        return entry.live;
+        return entry.live.value;
     }
     private bindAgent(session: ConversationSession, agent: Agent): LiveConversation {
-        if (session.live) throw new Error('REACTIVE_CONVERSATION_ALREADY_RUNNING');
+        if (session.live.value) throw new Error('REACTIVE_CONVERSATION_ALREADY_RUNNING');
         this.programs().scope(agent, session.conversation.scope);
         const entry = this.programs().createLive(agent, session);
-        session.live = entry;
         this.#entries.set(agent, entry);
+        session.live.next(entry);
         return entry;
     }
     compose(inspection: SessionInspection, workspace: ManagedWorkspace, environment: AnyEnvironment, implementation: ProgramImplementation = environment.program, child?: DelegationRecord, agent?: Agent) {
@@ -157,7 +158,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
                 throw new Error('REACTIVE_WORKSPACE_BINDING_MISMATCH');
             if (existing.implementation !== implementation)
                 throw new Error('REACTIVE_PROGRAM_IMPLEMENTATION_MISMATCH');
-            if (!existing.live) {
+            if (!existing.live.value) {
                 if (agent) this.bindAgent(existing, agent);
                 const { state, questions } = this.facts.stateOf(inspection);
                 existing.conversation[conversationBindings]().accept(state.current);
@@ -176,7 +177,9 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             const program = this.programs().create(conversation, implementation, workspace, () => entry);
             const views = Object.freeze(Object.fromEntries(Object.entries(program.outputs.views)
                 .map(([name, value]) => [name, value.values$])));
-            const entry: ConversationSession = { header: inspection.meta, workspace, environment, implementation, child, conversation, state, program, views, pins: 0 };
+            const live = new BehaviorSubject<LiveConversation | undefined>(undefined);
+            conversation.scope.own(() => live.complete());
+            const entry: ConversationSession = { header: inspection.meta, workspace, environment, implementation, child, conversation, state, program, views, pins: 0, live };
             this.inputs().bindConversation(entry);
             this.facts.registerSessionAccess(conversation, entry, program.signal, () => program.signal.throwIfAborted());
             if (agent) this.bindAgent(entry, agent);
@@ -251,7 +254,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         try {
             const session = this.compose({ meta: agent.session.header, events: agent.session.snapshotEvents(),
                 inheritedEventCount: agent.session.inheritedEventCount }, workspace, environment, child?.implementation ?? environment.program, child?.record, agent);
-            const entry = session.live;
+            const entry = session.live.value;
             if (!entry || entry.agent !== agent) throw new Error('REACTIVE_AGENT_NOT_BOUND');
             await this.programs().attach(entry);
             this.facts.publish(session);
@@ -260,7 +263,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         catch (error) {
             const entry = this.#entries.get(agent);
             this.#entries.delete(agent);
-            if (entry) entry.session.live = undefined;
+            if (entry) entry.session.live.next(undefined);
             this.programs().release(agent);
             if (entry) this.collect(entry.session);
             throw error;
@@ -269,8 +272,8 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
     assertSessionWorkspace(session: ConversationSession) {
         this.assertActive();
         session.conversation.scope.assertActive();
-        if (session.live)
-            this.workspaces.assertMember(session.live.agent.session, session.workspace, session.environment);
+        if (session.live.value)
+            this.workspaces.assertMember(session.live.value.agent.session, session.workspace, session.environment);
         else
             this.workspaces.assertMemberHeader(session.header, session.workspace, session.environment);
     }
@@ -350,9 +353,9 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
     async readSession(sessionId: string) {
         this.assertActive();
         const live = this.#sessions.get(sessionId);
-        if (live?.live) {
+        if (live?.live.value) {
             this.require(sessionId);
-            this.workspaces.assertMember(live.live.agent.session, live.workspace, live.environment);
+            this.workspaces.assertMember(live.live.value.agent.session, live.workspace, live.environment);
             return live;
         }
         const inspection = await this.facts.inspect(sessionId);
@@ -385,7 +388,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         return this.require(reference.sessionId);
     }
     async activate(sessionId: string) {
-        if (this.#sessions.get(sessionId)?.live)
+        if (this.#sessions.get(sessionId)?.live.value)
             return;
         const pending = this.#starting.get(sessionId);
         if (pending)
@@ -394,12 +397,12 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             const session = await this.readSession(sessionId);
             if (session.child) {
                 await this.activate(session.child.command.parentSessionId);
-                if (session.live)
+                if (session.live.value)
                     return;
                 const parent = this.live(this.#sessions.get(session.child.command.parentSessionId)!).agent;
                 await this.inputs().revalidateCauses(session.child.causes, this.signal);
                 await this.delegations.resume(session.child, parent, this.signal);
-                if (!session.live)
+                if (!session.live.value)
                     throw new Error('REACTIVE_CHILD_NOT_RUNNING');
                 return;
             }

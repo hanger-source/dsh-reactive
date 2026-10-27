@@ -111,7 +111,7 @@ export class ConversationInputs {
         const entry = this.sessions.live(session);
         return editQueuedInput({ ctx: this.ctx, agent: entry.agent, requestId, content, actorId, participant, signal,
             state: () => this.facts.liveState(entry.agent.session),
-            assertCurrent: () => { this.sessions.assertSessionWorkspace(session); if (session.live !== entry)
+            assertCurrent: () => { this.sessions.assertSessionWorkspace(session); if (session.live.value !== entry)
                 throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING'); },
             admit: input => Promise.resolve(this.definition.admit(input, session.conversation.identity, { actorId, participant, signal })),
             persist: () => this.facts.flush(entry.agent),
@@ -177,7 +177,7 @@ export class ConversationInputs {
         if (previous)
             record = recordSchema.parse(previous);
         else {
-            const agent = session.live?.agent;
+            const agent = session.live.value?.agent;
             const admitted = await admitInputContent(this.ctx, agent, input.content);
             signal.throwIfAborted();
             this.sessions.assertSessionWorkspace(session);
@@ -191,7 +191,7 @@ export class ConversationInputs {
         await this.definition.admit(admittedSubmissionSchema.parse(submission), session.conversation.identity, { actorId, participant, signal });
         signal.throwIfAborted();
         this.sessions.assertSessionWorkspace(session);
-        if (receiptOwner && session.live?.agent !== receiptOwner)
+        if (receiptOwner && session.live.value?.agent !== receiptOwner)
             throw new InputFileNotStagedError();
         await this.sessions.activate(session.header.id);
         signal.throwIfAborted();
@@ -209,7 +209,7 @@ export class ConversationInputs {
     async accept(entry: LiveConversation, record: SubmissionRecord, receiptIds: readonly FileUploadReceiptId[], signal: AbortSignal) {
         signal.throwIfAborted();
         this.sessions.assertSessionWorkspace(entry.session);
-        if (entry.session.live !== entry)
+        if (entry.session.live.value !== entry)
             throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
         const input: AdmittedSubmission = record;
         const previous = entry.session.state.record(input.requestId);
@@ -225,7 +225,7 @@ export class ConversationInputs {
             await this.facts.flush(entry.agent);
             signal.throwIfAborted();
             this.sessions.assertSessionWorkspace(entry.session);
-            if (entry.session.live !== entry)
+            if (entry.session.live.value !== entry)
                 throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
             // 未就绪是已受理的业务进度；它既不是模型输入，也不占用另一条待执行队列。
             if (input.result?.ready === false)

@@ -30,6 +30,8 @@ React effect 遵循 React 的重建与清理规则，业务不能把 effect 挂�
 
 这些参数绑定的 Scope 由 Program 持有，并随 Program 失败或会话退出释放。组件卸载只结束其查询观察，已经显式启动的 Reaction 保留到 `run.stop()` 或程序终止；未处理的 Reaction 执行失败留在本次 `run.state$` 和 `run.settled`，不隐式使 Program 失败。需要传播失败时由业务关系明确处理。退出停止感知和排队工作，不追加已受理 Action、Job 或业务 Operation 的取消。
 
+原生会话读侧在来源仍有效时，跟随实际 Agent 的关闭和恢复。原生挂载引用只有一份，输入、人工等待、Operation 与原生观察都读取它；owner 切换取消在途切面，按当前 owner 重新取原生历史，迟到的旧读取不再交付。日志继续使用原始 seq 去重和排序，不回放已经交付的事件；这是实际 owner 变化引起的查询切换，不是错误重试，也不创建 Agent、投递输入或唤醒模型。真正读取错误仍进入原错误边界。
+
 `fromSnapshot` 先建立监听再读取基线。`abortable` 把退订接到本次异步读取的 AbortSignal，并阻止迟到结果继续发出。串行、并行、切换、调度和重试均使用 RxJS 的标准操作符。
 
 ## 资源失效与 Context

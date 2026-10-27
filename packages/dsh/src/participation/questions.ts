@@ -18,7 +18,7 @@ export class ConversationQuestions {
             throw new Error('REACTIVE_HUMAN_RESPONDER_REQUIRED');
         const signal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
         signal.throwIfAborted();
-        if (!session.live) {
+        if (!session.live.value) {
             session.program.flush();
             const policy = session.program.humanInput;
             if (!policy)
@@ -45,9 +45,9 @@ export class ConversationQuestions {
         const actorId = options.actorId ?? this.options.actorId;
         if (!actorId?.trim())
             throw new Error('REACTIVE_HUMAN_RESPONDER_REQUIRED');
-        if (!session.live)
+        if (!session.live.value)
             throw new Error('REACTIVE_HUMAN_FOREGROUND_UNAVAILABLE');
         const signal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
-        yield* session.live.human.attachWait(id, { actorId, signal });
+        yield* session.live.value.human.attachWait(id, { actorId, signal });
     }
 }

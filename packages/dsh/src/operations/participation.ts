@@ -54,7 +54,7 @@ export class OperationParticipation {
         throw new Error('REACTIVE_HOST_DISPOSED'); }
     installDelegationUpdates(): () => void {
         const changes = this.delegations.updates$.subscribe(({ parentSessionId }) => {
-            const entry = this.sessions.get(parentSessionId)?.live;
+            const entry = this.sessions.get(parentSessionId)?.live.value;
             if (!entry)
                 return;
             const recovery = this.reconcileOperations(entry).catch(error => {
@@ -184,8 +184,8 @@ export class OperationParticipation {
         access.signal.throwIfAborted();
         if (access.sessionId !== session.header.id || this.#follows.forDefinition(binding.definition) !== operationBindingOwner(binding))
             throw new Error('REACTIVE_OPERATION_OWNER_MISMATCH');
-        if (session.live)
-            return this.#follows.readFeedback(session.live.agent, binding.definition, operationBindingCommand(binding), id, access);
+        if (session.live.value)
+            return this.#follows.readFeedback(session.live.value.agent, binding.definition, operationBindingCommand(binding), id, access);
         const inspection = await this.facts.inspect(session.header.id);
         access.signal.throwIfAborted();
         return this.#follows.readInspectedFeedback(inspection, binding.definition, operationBindingCommand(binding), id, access);
@@ -193,8 +193,8 @@ export class OperationParticipation {
     async readOperationFeedback<D extends OperationContract>(sessionId: string, definition: D, command: OperationCommand<D>, id: string, options: SubmitOptions = {}, participant: 'human' | 'service' = 'human'): Promise<OperationFeedbackRead<OperationReference<D>, OperationFeedbackPayload<D>>> {
         const session = await this.sessions.readSession(sessionId);
         const access = this.authority.participantExecution(session, options, participant, 'operation-query');
-        if (session.live)
-            return this.#follows.readFeedback(session.live.agent, definition, command, id, access);
+        if (session.live.value)
+            return this.#follows.readFeedback(session.live.value.agent, definition, command, id, access);
         const inspection = await this.facts.inspect(sessionId);
         access.signal.throwIfAborted();
         return this.#follows.readInspectedFeedback(inspection, definition, command, id, access);
@@ -217,11 +217,11 @@ export class OperationParticipation {
         const callerSignal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
         callerSignal.throwIfAborted();
         const session = await this.sessions.readSession(sessionId);
-        const signal = session.live ? AbortSignal.any([callerSignal, this.nativeScope(session.live.agent).signal]) : callerSignal;
+        const signal = session.live.value ? AbortSignal.any([callerSignal, this.nativeScope(session.live.value.agent).signal]) : callerSignal;
         signal.throwIfAborted();
-        const inspection = session.live ? undefined : await this.facts.inspect(sessionId);
-        const link = session.live ? this.#follows.link(session.live.agent, followId) : this.#follows.inspectedLink(inspection!, followId);
-        const notStarted = session.live ? this.#follows.isNotStarted(session.live.agent, followId) : this.#follows.inspectedNotStarted(inspection!, followId);
+        const inspection = session.live.value ? undefined : await this.facts.inspect(sessionId);
+        const link = session.live.value ? this.#follows.link(session.live.value.agent, followId) : this.#follows.inspectedLink(inspection!, followId);
+        const notStarted = session.live.value ? this.#follows.isNotStarted(session.live.value.agent, followId) : this.#follows.inspectedNotStarted(inspection!, followId);
         const access: OperationAccess = { sessionId, source: {
                 kind: 'participant', participant: 'service', actorId, entrypoint: 'operation-feedback',
             }, signal };

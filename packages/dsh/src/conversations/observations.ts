@@ -1,6 +1,7 @@
 import { registerNativeSession } from "./session-access.ts";
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
+import { map, distinctUntilChanged } from 'rxjs';
 import { SessionLogOffset, type Session } from "@deepseek-ai/dsh-session";
 import { SessionPersistenceNotFoundError, type SessionInspection } from "@deepseek-ai/dsh-session-persistence";
 import { goalProjectionDefinition } from "@deepseek-ai/dsh-goal";
@@ -31,7 +32,7 @@ export class ConversationObservations {
         }
     }
     publish(entry: ConversationSession) {
-        const native = entry.live;
+        const native = entry.live.value;
         const goal = native ? this.ctx.goals.get(native.agent) : undefined;
         const activity: ConversationActivity = native ? { ...entry.state.activity, source: 'live', execution: native.agent.status,
             goal: goal ? { id: goal.id, revision: goal.revision, objective: goal.objective, phase: goal.phase,
@@ -76,26 +77,27 @@ export class ConversationObservations {
     registerSessionAccess(handle: object, session: ConversationSession, signal: AbortSignal, assertHandle: () => void) {
         registerNativeSession(handle, { context: this.ctx, sessionId: session.header.id, signal,
             assertCurrent: () => { assertHandle(); this.sessions().assertSessionWorkspace(session); },
-            liveAgent: () => session.live?.agent,
+            liveAgent$: session.live.pipe(map(entry => entry?.agent), distinctUntilChanged()),
+            liveAgent: () => session.live.value?.agent,
             inspect: async (callerSignal?: AbortSignal) => {
                 const readSignal = callerSignal ? AbortSignal.any([signal, callerSignal]) : signal;
                 readSignal.throwIfAborted();
                 assertHandle();
                 this.sessions().assertSessionWorkspace(session);
-                const live = session.live;
+                const live = session.live.value;
                 if (live) {
                     await this.flush(live.agent);
                     readSignal.throwIfAborted();
                     assertHandle();
                     this.sessions().assertSessionWorkspace(session);
-                    if (session.live !== live || this.ctx.agents.get(live.agent.id) !== live.agent)
+                    if (session.live.value !== live || this.ctx.agents.get(live.agent.id) !== live.agent)
                         throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
                 }
                 const inspection = await this.inspect(session.header.id);
                 readSignal.throwIfAborted();
                 assertHandle();
                 this.sessions().assertSessionWorkspace(session);
-                if (session.live !== live || live && this.ctx.agents.get(live.agent.id) !== live.agent)
+                if (session.live.value !== live || live && this.ctx.agents.get(live.agent.id) !== live.agent)
                     throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
                 this.workspaces.verifyInspection(inspection, session.workspace, session.environment);
                 return inspection;
@@ -144,7 +146,7 @@ export class ConversationObservations {
         }, { prepend: true });
         this.ctx.on('goal/activation-changed', ({ sessionId, goal }) => {
             const entry = this.sessions().get(sessionId);
-            if (!entry?.live)
+            if (!entry?.live.value)
                 return;
             this.publish(entry);
             if (goal)

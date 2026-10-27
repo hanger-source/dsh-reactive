@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { SessionId, SessionEvent } from '@deepseek-ai/dsh-session';
 import type { SessionInspection } from '@deepseek-ai/dsh-session-persistence';
-import { Observable, switchMap, map } from 'rxjs';
+import { Observable, defer, filter, fromEvent, merge, switchMap, map, takeUntil } from 'rxjs';
 import { abortable } from '@hanger-source/dsh-reactive';
 
 /** @internal Host 对 exact 本地句柄或 Program 来源签发的权限；不从 sessionId 反查或启动 Agent。 */
@@ -11,6 +11,7 @@ export interface NativeSessionAccess {
   readonly sessionId: SessionId;
   readonly signal: AbortSignal;
   assertCurrent(): void;
+  readonly liveAgent$: Observable<Agent | undefined>;
   liveAgent(): Agent | undefined;
   inspect(signal?: AbortSignal): Promise<SessionInspection>;
 }
@@ -37,19 +38,28 @@ export function nativeSessionAccess(handle: object): NativeSessionAccess {
  * 句柄退出只停止观察，不取消 Job、模型调用或其他已经受理的执行。
  */
 export function nativeSessionEvents(access: NativeSessionAccess): Observable<SessionEvent> {
+  return defer(() => {
+    access.signal.throwIfAborted(); access.assertCurrent();
+    let last = -1;
+    return access.liveAgent$.pipe(switchMap(() => nativeEventCut(access)), filter(event => {
+      if (event.seq <= last) return false;
+      last = event.seq;
+      return true;
+    }), takeUntil(fromEvent(access.signal, 'abort')));
+  });
+}
+
+/** 一个实际 owner 的历史切面与实时通知；owner 变更由外层 switchMap 撤销整次连接。 */
+function nativeEventCut(access: NativeSessionAccess): Observable<SessionEvent> {
   return new Observable(subscriber => {
     const controller = new AbortController();
     const signal = AbortSignal.any([access.signal, controller.signal]);
     let buffered: SessionEvent[] | undefined = [];
-    let last = -1;
     const deliver = (event: SessionEvent) => {
-      if (subscriber.closed || event.seq <= last) return;
+      if (subscriber.closed) return;
       access.assertCurrent();
-      last = event.seq;
       subscriber.next(event);
     };
-    const stop = () => subscriber.complete();
-    signal.addEventListener('abort', stop, { once: true });
     let release: (() => void) | undefined;
     try {
       signal.throwIfAborted();
@@ -74,7 +84,6 @@ export function nativeSessionEvents(access: NativeSessionAccess): Observable<Ses
       }).catch(error => { if (!subscriber.closed) subscriber.error(error); });
     } catch (error) { subscriber.error(error); }
     return () => {
-      signal.removeEventListener('abort', stop);
       release?.();
       controller.abort();
     };
@@ -84,22 +93,18 @@ export function nativeSessionEvents(access: NativeSessionAccess): Observable<Ses
 /** @internal 官方日志的当前切面；新事件只触发重读，不以通知内容充当权威。 */
 export function nativeSessionInspections(access: NativeSessionAccess,
   relevant: (event: SessionEvent) => boolean): Observable<SessionInspection> {
-  return new Observable<void>(subscriber => {
-    const stop = () => subscriber.complete();
-    access.signal.addEventListener('abort', stop, { once: true });
-    let release: (() => void) | undefined;
-    try {
-      access.signal.throwIfAborted(); access.assertCurrent();
-      release = access.context.on('session/event', (session, event) => {
-        if (session.id === access.sessionId && relevant(event)) subscriber.next();
-      });
-      subscriber.next();
-    } catch (error) { subscriber.error(error); }
-    return () => { release?.(); access.signal.removeEventListener('abort', stop); };
-  }).pipe(switchMap(() => abortable(signal => access.inspect(AbortSignal.any([signal, access.signal])))),
-    map(inspection => {
-      access.assertCurrent(); access.signal.throwIfAborted();
-      if (inspection.meta.id !== access.sessionId) throw new Error('REACTIVE_NATIVE_SESSION_MISMATCH');
-      return inspection;
-    }));
+  return defer(() => {
+    access.signal.throwIfAborted(); access.assertCurrent();
+    const changes$ = new Observable<SessionEvent>(subscriber => access.context.on('session/event', (session, event) => {
+      if (session.id === access.sessionId) subscriber.next(event);
+    })).pipe(filter(relevant));
+    // 先监听日志，再由当前实际 owner 触发初读；切换会取消旧切面，不重试一个已经失败的读取。
+    return merge(changes$, access.liveAgent$).pipe(
+      switchMap(() => abortable(signal => access.inspect(AbortSignal.any([signal, access.signal])))),
+      map(inspection => {
+        access.assertCurrent(); access.signal.throwIfAborted();
+        if (inspection.meta.id !== access.sessionId) throw new Error('REACTIVE_NATIVE_SESSION_MISMATCH');
+        return inspection;
+      }), takeUntil(fromEvent(access.signal, 'abort')));
+  });
 }

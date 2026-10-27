@@ -46,6 +46,8 @@ Jobs、Schedule、Team、Files、Approval、Clock 用 `capability.forSession(con
 
 同一原来源共享 SDK 实例，Program 来源和外部句柄分别拥有观察寿命。组件退订不 dispose 会话 SDK；显式 dispose、Program 失败或来源退出才释放观察，不杀死已受理 Job，不撤回提醒，也不取消 Team 成员。Program 来源不自动取得人工、ToolOccurrence 或 Goal 权限。
 
+来源仍有效时，依赖原生切面或日志的长期观察会跟随实际 Agent 的关闭和恢复：在途旧读取取消，恢复后读取当前历史，日志不重复交付。关闭原生 Agent 不等于退出仍持有的 SDK 观察；读取本身不 resume 或启动模型。不要为这一转换维护第二份 Agent 状态或用无条件 retry 掩盖真正读取错误。
+
 Schedule 创建与 Team spawn/send 尚无 Program 来源准入接点。它们与已支持的提醒观察/更新、任务板创建/CAS、等待和 interrupt 分开；不能因为插件可安装，就声称 UI 或服务创建链已经贯通。
 
 ## 子程序沿原生 owner

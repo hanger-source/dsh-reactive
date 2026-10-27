@@ -1,4 +1,5 @@
 import type { Agent } from '@deepseek-ai/dsh-agent';
+import type { BehaviorSubject } from 'rxjs';
 import type { SessionHeader, UserMessage } from '@deepseek-ai/dsh-session';
 import type { AnyEnvironment, Conversation, ProgramImplementation, ProgramInstance, Views } from '@hanger-source/dsh-reactive/kernel';
 import type { ManagedWorkspace } from '../workspaces/workspaces.ts';
@@ -19,7 +20,8 @@ export interface ConversationSession {
     readonly views: Views;
     state: NativeState;
     pins: number;
-    live?: LiveConversation;
+    /** 唯一的原生挂载引用；普通读取和长期观察共用此事实，不另存 owner 代次。 */
+    readonly live: BehaviorSubject<LiveConversation | undefined>;
 }
 /** 一个实际原生 Agent 的挂载；队列、Goal和持久投影仍归 dsh。 */
 export interface LiveConversation {
