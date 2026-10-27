@@ -1,5 +1,11 @@
 # @hanger-source/dsh-reactive-client
 
+## 0.15.0
+
+### Patch Changes
+
+- @hanger-source/dsh-reactive@0.15.0
+
 ## 0.14.0
 
 ### Minor Changes
