@@ -84,6 +84,11 @@ test('来源失败成为可观察结算，Scope 退出释放另一项持续感�
   assert.equal(settlement.status, 'failed');
   if (settlement.status === 'failed') assert.equal(settlement.error, error);
   assert.equal(signal?.aborted, true);
+  // 已终止的来源会在 start 返回前同步失败，随后接入的应用监控仍须收到原因。
+  const synchronous = binding.instance(3).start();
+  const reported: unknown[] = [];
+  synchronous.state$.subscribe(state => { if (state.status === 'failed') reported.push(state.error); });
+  assert.deepEqual(reported, [error]);
   const never = new Subject<number>();
   let released = false;
   const second = implementReaction(definition, { observe(_params, context) {
@@ -93,6 +98,41 @@ test('来源失败成为可观察结算，Scope 退出释放另一项持续感�
   scope.dispose();
   assert.equal((await run.settled).status, 'stopped');
   assert.equal(released, true);
+});
+
+test('执行失败释放来源并撤掉排队工作；晚到监控取得失败，只有显式重启才继续执行', async () => {
+  const scope = new Scope();
+  try {
+    const source = new Subject<number>();
+    const accepted = Promise.withResolvers<number>();
+    const started: number[] = [];
+    let sourceSignal: AbortSignal | undefined;
+    const definition = defineReaction({ name: 'failed-delivery', params: z.null(), event: z.number(), result: z.number() });
+    const instance = bindReaction(implementReaction(definition, {
+      observe(_params, { signal }) { sourceSignal = signal; return source; },
+      operator: concatMap,
+      execute(event) { started.push(event); return event === 1 ? accepted.promise : event; },
+    }), { scope }).instance(null);
+    const run = instance.start();
+    source.next(1); source.next(2);
+    const failure = new Error('accepted service request failed');
+    accepted.reject(failure);
+    const settlement = await run.settled;
+    assert.equal(settlement.status, 'failed');
+    if (settlement.status === 'failed') assert.equal(settlement.error, failure);
+    assert.equal(sourceSignal?.aborted, true);
+    assert.equal(source.observed, false);
+    // 应用可能在 start 返回后、甚至收到其他异步消息后才接上监控。
+    const reported: unknown[] = [];
+    run.state$.subscribe(state => { if (state.status === 'failed') reported.push(state.error); });
+    assert.deepEqual(reported, [failure]);
+    source.next(3);
+    assert.deepEqual(started, [1]);
+    const restarted = instance.start();
+    source.next(4); source.complete();
+    assert.equal((await restarted.settled).status, 'completed');
+    assert.deepEqual(started, [1, 4]);
+  } finally { scope.dispose(); }
 });
 
 test('同步来源首次业务处理释放Scope后，不再开始下一项处理或资源读取', async () => {

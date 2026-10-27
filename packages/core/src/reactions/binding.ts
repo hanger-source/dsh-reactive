@@ -37,9 +37,11 @@ export class ReactionRun<D extends ReactionContract> {
   #completion = Promise.withResolvers<ReactionSettlement>();
   #release: (() => void) | undefined;
   #activated = false;
+  /** 回放当前运行状态；来源、执行与释放失败均通过 failed 状态交付。 */
   readonly state$ = this.#states.asObservable();
-  /** 热结果流，不回放处理器；当前生命周期由 state$ 与 settled 观察。 */
+  /** 热成功结果流；运行终止时正常 complete，失败通过 state$ 与 settled 观察。 */
   readonly events$ = this.#events.asObservable();
+  /** 始终 resolve 本次运行的终态；失败为带 error 的 failed 结算，不 reject。 */
   readonly settled = this.#completion.promise;
 
   /** @internal 运行构造与实际订阅分开，避免同步完成跨过实例的 active 身份登记。 */

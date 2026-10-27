@@ -62,6 +62,15 @@ export function restock(scope: Scope, events: Observable<{ sku: string; revision
 
 `operator` 直接接 `concatMap`、`mergeMap`、`switchMap`、`exhaustMap`。条件、去重和并发用 RxJS；不要另创策略字符串。execute 可返回普通值、PromiseLike 或 Observable，也可直接返回真实 Action 的 `invocation.result`。
 
-`run.state$`、`run.events$`、`run.settled` 观察同一次运行；events$ 热且不回放执行，state$ 保存运行状态。未处理来源/执行错误使该次运行 failed；重新 start 是显式决定。stop 或 Scope 退出停止感知及尚未开始的 RxJS 工作，不取消已受理 Action/Job。跨重启执行、事务幂等和定时调度归原业务或原生 owner。
+`run.state$`、`run.events$`、`run.settled` 观察同一次运行。`events$` 只交付热的成功结果，不回放执行；运行终止时正常 complete。来源、执行或释放失败保存在 `state$` 的 failed 状态和 `settled` 的 failed 结算中，不进入 `events$` 的 error 回调，也不会使 `settled` reject。`state$` 回放当前状态，先 start 后订阅也能观察同步发生的失败。
+
+```ts
+const run = reaction.start();
+run.state$.subscribe(state => {
+  if (state.status === 'failed') console.error('restock.reaction.failed', state.error);
+});
+```
+
+取消监控订阅不停止运行。未处理错误终止这次运行，重新 start 是显式决定。stop 或 Scope 退出停止感知及尚未开始的 RxJS 工作，不取消已受理 Action/Job。跨重启执行、事务幂等和定时调度归原业务或原生 owner。
 
 持续事件需要提交会话时，先用宿主 `host.service(sessionId, Program)` 得到固定服务身份端口；调用其 `resolveAction` 或 `submit`，不能借人工句柄自报 actor 或继承人的 Goal。
