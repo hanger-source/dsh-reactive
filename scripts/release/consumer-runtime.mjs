@@ -26,6 +26,8 @@ if (expected.kind === 'backend') {
   assert.equal(typeof program.implementProgram, 'function');
   const skills = await import('@hanger-source/dsh-reactive-dsh/skills');
   assert.equal(typeof skills.createNativeSkills, 'function');
+  const tools = await import('@hanger-source/dsh-reactive-dsh/tools');
+  assert.equal(typeof tools.createNativeTools, 'function');
 }
 const skill = await import('@hanger-source/dsh-reactive-skills');
 const manifest = skill.getDeveloperSkill();

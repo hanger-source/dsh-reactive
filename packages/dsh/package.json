@@ -40,6 +40,10 @@
       "types": "./lib/team.d.ts",
       "import": "./lib/team.js"
     },
+    "./tools": {
+      "types": "./lib/tools.d.ts",
+      "import": "./lib/tools.js"
+    },
     "./skills": {
       "types": "./lib/skills.d.ts",
       "import": "./lib/skills.js"

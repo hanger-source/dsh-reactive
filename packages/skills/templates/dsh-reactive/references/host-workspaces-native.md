@@ -74,6 +74,10 @@ Schedule 创建与 Team spawn/send 尚无 Program 来源准入接点。它们与
 
 目录保留原生 `complete`、modelInvocable、userInvocable 与资源基址，不提供 provider locator；发现和读取不授予调用权限。未找到正文返回 ready(undefined)，真正读取失败保留 error，之后 skills/change 可恢复。Agent 关闭时资源保持 pending，显式恢复后按真实新 Agent 层级和该会话工作目录重读；读取不恢复 Agent、不启动模型。SDK dispose 只释放观察，provider 与 Skill 声明仍归原生注册者或 Program。这与独立 `@hanger-source/dsh-reactive-skills` 的开发指导产品分开。
 
+原生工具目录使用 `@hanger-source/dsh-reactive-dsh/tools` 的 `createNativeTools({ service: 'provided' })`，沿相同安装与 exact source 规则取得 `tools.forSession(source).catalog`。它是可 read、peek、invalidate、订阅和交给 useResource 的正式资源，也可以与 Skill 目录、正文和业务资源一起 combineResources。首次观察连接 tools/change；真实注册、撤销、restriction 和 Agent 代际变化先撤下旧 ready。冷会话保持 pending，读取不恢复 Agent、不启动模型；最后消费者或 SDK 退出只释放观察，不撤工具或 restriction。
+
+目录由原生 `schemas(agent)` 生成，保留真实继承、遮蔽和限制，且只含模型 schema 数据，不外泄 execute、presentResult 等闭包。它表达注册表当前视图；Program 的 enabled/admit 与模型请求前的 prepare 仍属于执行边界，目录读取不主动 prepare，也不授予调用权。PTC 模式仍提供完整可见工具目录，模型直接调用折叠到 run_code 由原生执行管线决定。业务操作继续使用已有 Action/Invocation 或原生工具入口，不通过目录对象绕过 guard。
+
 ## 子程序沿原生 owner
 
 `createRuntime(assembly => ...)` 的 assembly 提供 `implementDelegation(action, { program, mode:'spawn'|'fork', childInput, objective, authorize })`。返回普通 ActionImplementation，继续 useAction/Offer/Operation/Follow；不用新增 Delegate 组件或子队列。

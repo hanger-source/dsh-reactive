@@ -18,6 +18,8 @@
 
 运行时业务 Skill 从 `@hanger-source/dsh-reactive-dsh/skills` 的 `createNativeSkills({ service: 'provided' })` 接入宿主原生 Registry。安装后用 `forSession(source).catalog` 和 `definition(name)` 取得同源资源，可 read、peek、invalidate、组合 observations$ 或交给 useResource；目录保留原生 complete 与 invocation policy，正文不存在为 undefined。原生变更或 Agent 代际变化撤下旧事实，冷会话保持 pending，读取不启动模型；provider、Skill 声明与执行准入继续由原 owner 管理。
 
+`@hanger-source/dsh-reactive-dsh/tools` 的 `createNativeTools({ service: 'provided' })` 提供同样可组合的 `forSession(source).catalog`，读取真实 Agent 作用域下的原生 Tool schema。注册、撤销与 restriction 变化使资源失效；快照不含执行或展示函数。目录可以与 Skill、Files 和业务资源直接组合；具体调用仍由 NativeTools 声明、原生 guard 与执行边界决定，PTC 模式的完整可见目录和模型直调入口保持各自语义。
+
 后台 Program renderer 使用 React `19.3.1` 与 react-reconciler `0.34.0`。原生 UI 扩展把呈现函数交给 dsh 自己的 Slot renderer，不创建第二个 React root，也不安装后台 reconciler；它可以随原生 React `18.2` 界面使用。两种运行环境分别安装、分别编译。
 
 ## 编程模型

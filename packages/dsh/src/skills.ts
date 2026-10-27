@@ -1,12 +1,12 @@
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { isSkillName, type SkillRegistry, type SkillCatalogSnapshot, type SkillDefinition } from '@deepseek-ai/dsh-skill';
-import { Observable, map, of } from 'rxjs';
-import { createResource, observeResource, switchResource, z,
-  type Observation, type ResourceReadable } from '@hanger-source/dsh-reactive';
+import { Observable } from 'rxjs';
+import type { ResourceReadable } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
-import { NativeCapabilityOwner, nativeObservationScope, ownNativeValue,
+import { NativeCapabilityOwner, nativeObservationScope,
   type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
+import { nativeAgentResource } from './conversations/agent-resource.ts';
 
 export type { SkillCatalogSnapshot, SkillDefinition, SkillSummary, SkillInvocationPolicy,
   SkillSource, SkillResourceBase } from '@deepseek-ai/dsh-skill';
@@ -44,33 +44,15 @@ class SessionSkills implements NativeSessionSkills {
     this.scope.own(() => this.#definitions.clear());
   }
 
-  private current(agent: Agent): SkillRegistry {
-    this.scope.assertActive();
-    this.owner.session(this.access, 'skills');
-    if (this.access.liveAgent() !== agent) throw new Error('REACTIVE_NATIVE_SKILLS_AGENT_CHANGED');
-    const registry: SkillRegistry | undefined = agent.ctx.get('skills');
-    if (!registry) throw new Error('REACTIVE_NATIVE_SKILLS_REQUIRED');
-    return registry;
-  }
-
   private resource<T>(read: (registry: SkillRegistry, agent: Agent, signal: AbortSignal) => Promise<T>): NativeSkillResource<T> {
-    return createResource(this.scope, { value: z.custom<T>(), observe: () => this.access.liveAgent$.pipe(
-      map((agent, generation): Observation<Agent> => agent
-        ? { status: 'ready', generation, value: agent, observedAt: Date.now() }
-        : { status: 'pending', generation }),
-      switchResource(agent => observeResource({ key$: of(agent),
-        // 先监听正式失效，再读取；切换代际由 switchResource 撤下旧事实并取消旧读取。
-        invalidations: () => new Observable<void>(subscriber => {
-          this.current(agent);
-          return agent.ctx.on('skills/change', () => subscriber.next());
-        }),
-        read: async (_agent, signal) => {
-          const value = await read(this.current(agent), agent, signal);
-          signal.throwIfAborted(); this.current(agent);
-          return ownNativeValue(value);
-        },
-      })),
-    ) });
+    return nativeAgentResource(this.owner, this.access, this.scope, { service: 'skills',
+      changes: agent => new Observable<void>(subscriber => agent.ctx.on('skills/change', () => subscriber.next())),
+      read: (agent, signal) => {
+        const registry: SkillRegistry | undefined = agent.ctx.get('skills');
+        if (!registry) throw new Error('REACTIVE_NATIVE_SKILLS_REQUIRED');
+        return read(registry, agent, signal);
+      },
+    });
   }
 
   definition(name: string): NativeSkillResource<SkillDefinition | undefined> {
