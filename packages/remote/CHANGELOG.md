@@ -1,5 +1,14 @@
 # @hanger-source/dsh-reactive-remote
 
+## 0.18.1
+
+### Patch Changes
+
+- Updated dependencies [48fbba0]
+  - @hanger-source/dsh-reactive@0.18.1
+  - @hanger-source/dsh-reactive-client@0.18.1
+  - @hanger-source/dsh-reactive-dsh@0.18.1
+
 ## 0.18.0
 
 ### Patch Changes
