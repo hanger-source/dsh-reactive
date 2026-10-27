@@ -1,9 +1,10 @@
-import { defer, EMPTY, mergeMap, of, throwError, type Observable } from 'rxjs';
+import { defer, type Observable } from 'rxjs';
 import type { z } from 'zod';
 import type { ActionContract, ActionInput, ActionInvocation, ActionScope } from '../actions/contract.ts';
 import type { BoundOperation, OperationContract } from '../operations/contract.ts';
 import type { CancellationOptions } from '../conversations/protocol.ts';
 import type { Observation } from '../resources/observation.ts';
+import type { ResourceReader } from '../resources/reader.ts';
 import { surfaceCollectionKeysSlot, surfaceInstanceSlot, surfaceSlotDefinition, type Surface, type SurfaceCollectionDefinition, type SurfaceViews, type ViewDefinition, type ViewValue } from './contract.ts';
 
 export type CollectionResult<Async extends boolean, T> = Async extends true ? Promise<T> : T;
@@ -17,6 +18,7 @@ export interface SurfaceInstanceClient<S extends Surface, Options extends Cancel
   readonly key: string;
   readonly surface: S;
   readonly views: SurfaceViews<S>;
+  viewResource<K extends keyof S['views'] & string>(name: K): ResourceReader<ViewValue<S['views'][K]>>;
   observeView<K extends keyof S['views'] & string>(name: K): Observable<Observation<ViewValue<S['views'][K]>>>;
   readView<K extends keyof S['views'] & string>(name: K, options?: Options): Promise<ViewValue<S['views'][K]>>;
   resolveAction<K extends keyof S['actions'] & string>(name: K, expectedScope: z.input<S['actions'][K]['scope']>, options?: Options):
@@ -31,17 +33,11 @@ export interface SurfaceCollectionClient<C extends SurfaceCollectionDefinition, 
 /** SDK 只转交已存在的查询和执行入口；它不持有新的执行信号或程序 owner。 */
 export interface SurfaceCollectionTransport<Options extends CancellationOptions, Async extends boolean> {
   readonly asynchronous: Async;
-  observeView(name: string, definition: ViewDefinition): Observable<Observation<unknown>>;
-  readView(name: string, definition: ViewDefinition, options?: Options): Promise<unknown>;
+  viewResource(name: string, definition: ViewDefinition): ResourceReader<unknown>;
   resolveAction(name: string, definition: ActionContract, expectedScope: unknown, options?: Options):
     CollectionResult<Async, CollectionResolvedAction<ActionContract, Options, Async>>;
   resolveOperation(name: string, definition: OperationContract, options?: Options): CollectionResult<Async, BoundOperation<OperationContract>>;
 }
-function values(source: Observable<Observation<unknown>>): Observable<unknown> {
-  return source.pipe(mergeMap(observed => observed.status === 'pending' ? EMPTY
-    : observed.status === 'error' ? throwError(() => observed.error) : of(observed.value)));
-}
-
 /** 根合同决定 collection 与叶合同；业务 key 始终由框架编码，调用仍核原绑定。 */
 export function createSurfaceCollectionClient<S extends Surface, K extends keyof S['collections'] & string,
   Options extends CancellationOptions, Async extends boolean>(surface: S, name: K,
@@ -52,7 +48,7 @@ export function createSurfaceCollectionClient<S extends Surface, K extends keyof
   const directoryDefinition = surfaceSlotDefinition(surface, 'views', directory)!;
   const instances = new Map<string, SurfaceInstanceClient<Surface, Options, Async>>();
   return Object.freeze({
-    instances$: values(defer(() => transport.observeView(directory, directoryDefinition))) as Observable<readonly string[]>,
+    instances$: defer(() => transport.viewResource(directory, directoryDefinition).values$) as Observable<readonly string[]>,
     instance(key: string) {
       // 编码同时核验非空 key；不把 key 截断、sanitize 或变成业务 Action input。
       surfaceInstanceSlot(name, key, 'instance');
@@ -65,12 +61,12 @@ export function createSurfaceCollectionClient<S extends Surface, K extends keyof
           if (!found) throw new Error('REACTIVE_VIEW_NOT_FOUND');
           return found;
         };
-        const observeView = (slot: string): Observable<Observation<unknown>> =>
-          defer(() => transport.observeView(address(slot), viewDefinition(slot)));
+        const viewResource = (slot: string): ResourceReader<unknown> => transport.viewResource(address(slot), viewDefinition(slot));
         instance = Object.freeze({ key, surface: local,
-          views: Object.freeze(Object.fromEntries(Object.keys(local.views).map(slot => [slot, values(observeView(slot))]))),
-          observeView,
-          readView: (slot: string, options?: Options) => transport.readView(address(slot), viewDefinition(slot), options),
+          views: Object.freeze(Object.fromEntries(Object.keys(local.views).map(slot => [slot, defer(() => viewResource(slot).values$)]))),
+          viewResource,
+          observeView: (slot: string) => viewResource(slot).observations$,
+          readView: (slot: string, options?: Options) => viewResource(slot).read(options?.signal),
           resolveAction(slot: string, expectedScope: unknown, options?: Options) {
             const action = surfaceSlotDefinition(local, 'actions', slot);
             if (!action) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
@@ -80,8 +76,7 @@ export function createSurfaceCollectionClient<S extends Surface, K extends keyof
             (options?: Options) => transport.resolveOperation(address(slot), operation, options)]))),
           collection: (name: string) => createSurfaceCollectionClient<Surface, string, Options, Async>(local, name, {
             asynchronous: transport.asynchronous,
-            observeView: (slot, definition) => transport.observeView(address(slot), definition),
-            readView: (slot, definition, options) => transport.readView(address(slot), definition, options),
+            viewResource: (slot, definition) => transport.viewResource(address(slot), definition),
             resolveAction: (slot, definition, scope, options) => transport.resolveAction(address(slot), definition, scope, options),
             resolveOperation: (slot, definition, options) => transport.resolveOperation(address(slot), definition, options),
           }),

@@ -1,12 +1,12 @@
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction,
-  type ResourceImplementation, type ReactionImplementation, type ProgramSession, z } from '@hanger-source/dsh-reactive';
+  resourceView, type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, z } from '@hanger-source/dsh-reactive';
 import { implementProgram, useResource, useResourceInstance, useReaction } from '@hanger-source/dsh-reactive/program';
-import { createRuntime, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
-import { createProgramClient } from '@hanger-source/dsh-reactive-client';
+import { createRuntime, type ConversationHandle, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
+import { createProgramClient, type RemoteProgramSession } from '@hanger-source/dsh-reactive-client';
 import { mountProgramGateway } from '@hanger-source/dsh-reactive-remote';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
 
-const contract = defineProgram({ input: z.object({ subject: z.string() }).strict(), surface: defineSurface({ views: {}, actions: {} }) });
+const contract = defineProgram({ input: z.object({ subject: z.string() }).strict(), surface: defineSurface({ views: { revision: resourceView(z.number()) }, actions: {} }) });
 const program = implementProgram(contract, { Component: () => null });
 const application = defineApplication({ name: 'registry-consumer', admit: async () => {}, environments: [
   defineEnvironment({ id: 'main', instructions: '发行边界消费，不运行模型', program }),
@@ -22,4 +22,8 @@ const changes = defineReaction({ name: 'consumer-changes', params: z.null(), eve
 export function useBackendBindings(resource: ResourceImplementation<typeof current>, reaction: ReactionImplementation<typeof changes>) {
   const instance = useResourceInstance(resource, null);
   return { resource: instance, observed: useResource(instance), reaction: useReaction(reaction, null) };
+}
+export function usePublicView(session: ConversationHandle<typeof contract> | RemoteProgramSession<typeof contract>) {
+  const resource: ResourceReadable<number> = session.viewResource('revision');
+  return useResource(resource);
 }

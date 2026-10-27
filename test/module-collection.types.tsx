@@ -1,4 +1,4 @@
-import { collectionSurface, composeSurface, selectSurface, defineSurface, resourceView, defineAction, defineOperation, defineProgram, z, type CancellationOptions } from '@hanger-source/dsh-reactive';
+import { collectionSurface, composeSurface, selectSurface, defineSurface, resourceView, defineAction, defineOperation, defineProgram, z, type CancellationOptions, type ResourceReadable } from '@hanger-source/dsh-reactive';
 import { Module } from '@hanger-source/dsh-reactive/program';
 import type { ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
 
@@ -16,6 +16,7 @@ declare const session: ConversationHandle<typeof program>;
 declare const options: CancellationOptions;
 async function consume(key: string) {
   const instance = session.collection('merchants').instance(key);
+  const resource: ResourceReadable<Date> = instance.viewResource('knowledge.loadedAt');
   const loadedAt: Date = await instance.readView('knowledge.loadedAt', options);
   const reviewDate: Date = await instance.collection('reviews').instance('review-a').readView('loadedAt', options);
   const action = await instance.resolveAction('knowledge.record', key, options);
@@ -24,7 +25,9 @@ async function consume(key: string) {
   const recorded: boolean = (await invocation.result).recorded;
   const existing = await instance.operations['knowledge.work'](options);
   const operationMerchant: string = existing.command.merchantId;
-  void loadedAt; void reviewDate; void merchantId; void recorded; void operationMerchant;
+  void resource; void loadedAt; void reviewDate; void merchantId; void recorded; void operationMerchant;
+  // @ts-expect-error 资源地址仍由局部合同决定。
+  instance.viewResource('unknown');
   // @ts-expect-error collection名仍由稳定纯合同决定。
   session.collection('unknown');
   // @ts-expect-error 动态key不放宽本地slot合同。

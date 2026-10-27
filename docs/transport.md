@@ -151,7 +151,9 @@ await session.submit({
 
 调用 `resolveAction` 返回的函数在网络边界取得 `Promise<Invocation>`。它保留 Host 生成的调用身份、可信 source、`activity$` 和 `result`，有 Operation 合同时还提供 `operation`。`result` 是 Action 回执，不表示业务操作终态。客户端只核验输入可 JSON 表达，将原始 `z.input<I>` 原样投递；唯一的 Action input parse 在 Host。纯合同中没有 execute；宿主通过 `implementAction` 提供实现。
 
-每个视图槽提供稳定的 `views.slot`、`observeView(name)` 和 `readView(name, options?)`。前者发出领域值，后两者保留 pending/ready/error 或等待当前可用值。`readView(name, { signal })` 只取消本次读取。`view(schema)` 接收普通值流；`resourceView(schema)` 明确接收现有 Observation 流。pending 立即撤销旧 ready，error 不伪装成空业务值，同源后续状态可以恢复。Program 持有 source 连接，外部观察者退订不停止业务连接。
+本地与远程 SDK 的 `viewResource(name)` 返回同一槽的稳定只读资源，提供 `peek()`、`read(signal?)`、`subscribe`、`observations$` 和 `values$`，可以直接交给 `useResource` 或原生 UI 的 `resource`。它借用已有 View 状态，读取和订阅随当前 SDK 句柄退出，不创建第二份缓存或来源连接。动态集合的 `instance(key).viewResource(name)` 使用相同入口：资源固定逻辑地址，模块撤下报告 error，同地址重新挂载继续观察新来源；它不具有 Action 的绑定身份。
+
+`views.slot`、`observeView(name)` 和 `readView(name, options?)` 消费同一个读侧对象。前者发出领域值，后两者保留 pending/ready/error 或等待当前可用值。`readView(name, { signal })` 和资源的 `read(signal)` 只取消本次读取。`view(schema)` 接收普通值流；`resourceView(schema)` 明确接收现有 Observation 流。pending 立即撤销旧 ready，error 不伪装成空业务值，同源后续状态可以恢复。Program 持有 source 连接，外部观察者退订不停止业务连接。
 
 视图来源已经是 `z.output` 领域值；Host 在每次 ready emission 调用同一 schema 的 `z.encode` 一次，remote 读取已编码 wire 状态，客户端用 Program Surface 的 `decodeView` 恢复领域值。视图需要从领域值产生 wire，所以示例中的 `updatedAt` 使用双向 Date codec；裸 `z.date()` 或不可反向执行的 transform 无法承担这一方向。输入的单向 transform 则从始终保留的原始 JSON 产生领域值。增加观察者和重连不重复编码已存在的视图 emission，编码或解码失败进入观察错误。
 

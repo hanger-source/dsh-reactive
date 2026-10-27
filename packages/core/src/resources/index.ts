@@ -3,7 +3,9 @@ export type { ResourceContract, ResourceDefinition, ResourceParameters, Resource
 export { implementResource } from './implementation.ts';
 export type { ResourceImplementation, ResourceImplementationOptions, ResourceReadContext } from './implementation.ts';
 export { bindResource, ResourceInstance } from './binding.ts';
-export type { ResourceBinding, ResourceReadable } from './binding.ts';
+export type { ResourceBinding } from './binding.ts';
+export { ResourceReader } from './reader.ts';
+export type { ResourceReadable } from './reader.ts';
 export { ResourceValue } from './value.ts';
 export type { Observation } from './observation.ts';
 export { observeResource } from './query.ts';

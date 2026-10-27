@@ -26,7 +26,9 @@ local resolveAction 同步，remote 异步；统一代码 `await` 两者。预�
 
 动态集合：`session.collection('items').instances$` 观察实际成员；`collection.instance(key).readView('facts', options)`、`.resolveAction('save', rawScope, options)`、`.operations` 消费同一局部合同。不要维护第二张 key→工具名表或解析命名 namespace。
 
-readView 返回当前有效业务值，observeView 保完整 Observation；views 是值流，不能用它声称失效仍有效。progress$/request(id)/events$ 观察受理、实际模型消费、工具和回复；一个模型步骤可消费整组输入，不能承诺每请求独占一轮答案。
+`session.viewResource('facts')` 与动态实例的 `viewResource('facts')` 返回稳定只读资源。直接使用 `resource.read(signal)`、`peek()`、`subscribe`、`values$`、`observations$`，或将同一对象交给 `useResource(resource)`、`nativeSession.resource(resource)`；不要再复制 BehaviorSubject 或缓存。SDK release 结束该对象的读取与观察，取消某一次 read 不影响其他消费者或原 Program。动态资源固定逻辑地址，模块撤下报告 error，同地址重挂继续更新；这不改变 Action 旧绑定必须拒绝的规则。
+
+readView 返回当前有效业务值，observeView 保完整 Observation；这些入口共用 viewResource 的状态，views 是值流，不能用它声称失效仍有效。progress$/request(id)/events$ 观察受理、实际模型消费、工具和回复；一个模型步骤可消费整组输入，不能承诺每请求独占一轮答案。
 
 ## 输入保 intent 与 delivery 独立
 

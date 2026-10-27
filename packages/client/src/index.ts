@@ -17,6 +17,7 @@ import { attachRemoteOperation, locateRemoteOperation, bindRemoteOperation, read
 import { ProgramJournal, type ProgramJournalOptions, type ProgramJournalRequest } from './journal.ts';
 import { connectProgress, type RemoteProgress } from './progress.ts';
 import { createActionBindings } from './action-bindings.ts';
+import { ResourceReader } from '@hanger-source/dsh-reactive';
 
 export { createAuthenticatedTransport } from './transport.ts';
 export type { AuthenticatedTransportOptions } from './transport.ts';
@@ -44,6 +45,7 @@ export interface RemoteProgramSession<P extends ProgramContract> {
   readonly definition: P;
   readonly identity: ProgramIdentity;
   readonly views: SurfaceViews<ProgramSurface<P>>;
+  viewResource<K extends keyof ProgramSurface<P>['views'] & string>(name: K): ResourceReader<ViewValue<ProgramSurface<P>['views'][K]>>;
   readonly actionManifest$: Observable<readonly ToolActionBinding[]>;
   collection<K extends keyof ProgramSurface<P>['collections'] & string>(name: K): SurfaceCollectionClient<ProgramSurface<P>['collections'][K], CancellationOptions, true>;
   resolveAction<K extends keyof ProgramSurface<P>['actions'] & string>(name: K,
@@ -118,8 +120,7 @@ function creation<T>(reply: RemoteResult<T>): T {
 }
 
 interface ViewConnection {
-  readonly state: BehaviorSubject<Observation<unknown>>;
-  readonly values: Observable<unknown>;
+  readonly reader: ResourceReader<unknown>;
   close(): Promise<void>;
 }
 
@@ -198,16 +199,15 @@ export async function createProgramClient<const P extends ProgramContract>(progr
         failed: error => { if (!scopeSignal.aborted) state.next({ status: 'error', generation: state.value.generation + 1, error }); },
       });
       const reset = ctx.on('connection/reset', invalidate);
-      const values = state.pipe(mergeMap(observation => observation.status === 'pending' ? EMPTY
-        : observation.status === 'error' ? throwError(() => observation.error) : of(observation.value)));
-      const slot: ViewConnection = { state, values, async close(): Promise<void> { reset(); await stream.dispose(); state.complete(); } };
+      const reader = new ResourceReader({ observations$: state.asObservable(), peek: () => state.value }, { signal: scopeSignal });
+      const slot: ViewConnection = { reader, async close(): Promise<void> { reset(); await stream.dispose(); state.complete(); } };
       slots.set(name, slot);
       stream.start();
       return slot;
     };
     for (const name of Object.keys(surface.views)) viewSlot(name);
     // 每个槽来自原 Surface，并在交付前由同一 schema decode；动态映射在此恢复泛型。
-    const views = Object.freeze(Object.fromEntries([...slots].map(([name, slot]) => [name, slot.values]))) as SurfaceViews<S>;
+    const views = Object.freeze(Object.fromEntries([...slots].map(([name, slot]) => [name, slot.reader.values$]))) as SurfaceViews<S>;
     const resolveOperation = async (name: string, options: CancellationOptions = {}): Promise<BoundOperation<OperationContract>> => {
         assertActive();
         const definition = surfaceSlotDefinition(surface, 'operations', name);
@@ -225,39 +225,16 @@ export async function createProgramClient<const P extends ProgramContract>(progr
     const operations = Object.freeze(Object.fromEntries(Object.keys(surface.operations).map(name => [name,
       (options: CancellationOptions = {}) => resolveOperation(name, options),
     ]))) as RemoteOperations<S>;
-    const read = (name: string, options: CancellationOptions = {}): Promise<unknown> => {
-      assertActive();
-      const slot = viewSlot(name);
-      const signal = options.signal;
-      const lifetimeSignal = signal ? AbortSignal.any([scopeSignal, signal]) : scopeSignal;
-      if (lifetimeSignal.aborted) return Promise.reject(lifetimeSignal.reason);
-      return new Promise<unknown>((resolve, reject) => {
-        let subscription: { unsubscribe(): void } | undefined;
-        let settled = false;
-        const finish = (complete: () => void): void => {
-          if (settled) return;
-          settled = true; subscription?.unsubscribe(); lifetimeSignal.removeEventListener('abort', abort); complete();
-        };
-        const abort = (): void => finish(() => reject(lifetimeSignal.reason));
-        lifetimeSignal.addEventListener('abort', abort, { once: true });
-        subscription = slot.state.subscribe(value => {
-          if (value.status === 'ready') finish(() => resolve(value.value));
-          else if (value.status === 'error') finish(() => reject(value.error));
-        });
-        if (settled) subscription.unsubscribe();
-      });
-    };
     let released: Promise<void> | undefined;
     const handle: RemoteProgramSession<P> = {
       get definition() { assertActive(); return program; },
       id: identity.sessionId, identity, views, operations,
-      get actionManifest$() { return viewSlot(actionManifestSlot).values as Observable<readonly ToolActionBinding[]>; },
+      get actionManifest$() { return viewSlot(actionManifestSlot).reader.values$ as Observable<readonly ToolActionBinding[]>; },
       collection(name) {
         assertActive();
         const untyped = handle as RemoteProgramSession<ProgramContract>;
         return createSurfaceCollectionClient(surface, name, { asynchronous: true,
-          observeView: address => viewSlot(address).state.asObservable(),
-          readView: (address, _definition, options) => read(address, options),
+          viewResource: address => viewSlot(address).reader,
           resolveAction: (address, _definition, scope, options) => untyped.resolveAction(address, scope, options),
           resolveOperation: (address, _definition, options) => resolveOperation(address, options),
         });
@@ -306,10 +283,10 @@ export async function createProgramClient<const P extends ProgramContract>(progr
       foregroundQuestions$: humanValues.pipe(mergeMap(value => of(value.foreground))),
       observeView(name) {
         assertActive();
-        const slot = viewSlot(name);
-        return slot.state.asObservable() as Observable<Observation<ViewValue<S['views'][typeof name]>>>;
+        return handle.viewResource(name).observations$;
       },
-      readView: read as RemoteProgramSession<P>['readView'],
+      viewResource(name) { return viewSlot(name).reader as ResourceReader<ViewValue<S['views'][typeof name]>>; },
+      readView(name, options = {}) { return handle.viewResource(name).read(options.signal); },
       async submit(input, options = {}): Promise<ProgramInputReceipt> {
         assertActive();
         const cancelled = options.signal;

@@ -5,18 +5,11 @@ import { normalizeResource } from '../reactivity/observable.ts';
 import { ownParameters, parameterIdentity } from '../reactivity/parameters.ts';
 import type { Observation } from './observation.ts';
 import { ResourceValue } from './value.ts';
+import type { ResourceReadable } from './reader.ts';
 import { mapResource } from './operators.ts';
 import { observeResource } from './query.ts';
 import type { ResourceContract, ResourceData, ResourceParameters, ResourceTarget } from './definition.ts';
 import { resourceImplementation, type ResourceImplementation, type ResourceImplementationOptions } from './implementation.ts';
-
-/** hooks、服务和公开 View 共用此读侧，不要求 React 或宿主会话。 */
-export interface ResourceReadable<T> {
-  readonly observations$: Observable<Observation<T>>;
-  peek(): Observation<T>;
-  read(signal?: AbortSignal): Promise<T>;
-  subscribe(accept: (observation: Observation<T>) => void): () => void;
-}
 
 /** 实例身份属于绑定 scope；消费者退订不销毁身份，也不保留未经观察的旧 ready。 */
 export class ResourceInstance<D extends ResourceContract> implements ResourceReadable<ResourceData<D>> {

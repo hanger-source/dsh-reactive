@@ -17,6 +17,7 @@ export { connect } from './reactivity/observable.ts';
 export { Scope, batch, type Cell, type Value } from './reactivity/scope.ts';
 export { type Observation } from './resources/observation.ts';
 export { type ResourceValue } from './resources/value.ts';
+export { ResourceReader } from './resources/reader.ts';
 export { createSurfaceCollectionClient, type SurfaceCollectionClient } from './surfaces/collection-client.ts';
 export { surfaceSlotDefinition, type SurfaceViews } from './surfaces/contract.ts';
 export { actionManifestSlot, type ToolActionBinding } from './surfaces/presentation.ts';

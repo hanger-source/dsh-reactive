@@ -76,7 +76,7 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
 
   view<K extends keyof ProgramSurface<P>['views'] & string>(name: K): HostObservable<Observation<ViewValue<ProgramSurface<P>['views'][K]>>> {
     this.assertActive();
-    return this.guard(observeNativeResource(this.scope, this.sdk.observeView(name)));
+    return this.resource(this.sdk.viewResource(name));
   }
 
   operation<D extends OperationContract>(operation: OperationHandle<D>): HostObservable<Observation<OperationState<D>>> {
