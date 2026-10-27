@@ -1,7 +1,7 @@
 import { symbols, type Context, type Fiber } from '@deepseek-ai/cordis';
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools';
 import { Observable, distinctUntilChanged } from 'rxjs';
-import { fromSnapshot, type ConversationIdentity } from '@hanger-source/dsh-reactive';
+import { createResource, fromSnapshot, ResourceReader, z, type Observation, type ConversationIdentity } from '@hanger-source/dsh-reactive';
 import { Scope, connect } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin, type NativeInstallation } from './native-installation.ts';
 import type { NativeSessionAccess } from './conversations/session-access.ts';
@@ -133,6 +133,13 @@ export function nativeObservation<T>(scope: Scope, source: Observable<T>): Obser
     shared ??= connect(scope, source);
     return shared.subscribe(subscriber);
   });
+}
+
+/** @internal 原生事实沿正式资源持有当前观察；构造不连接，最后消费者退出取消读取。 */
+export function nativeResource<T>(scope: Scope, observe: () => Observable<Observation<T>>): ResourceReader<T> {
+  // 值由正式原生服务决定；不复制原生结果schema或建立另一套领域状态。
+  const resource = createResource(scope, { value: z.custom<T>(), observe });
+  return new ResourceReader(resource, { signal: scope.signal, onObserverError: error => scope.observerError(error) });
 }
 
 /** @internal 自有快照保护共享观察，原生注册表对象不暴露为可变应用状态。 */

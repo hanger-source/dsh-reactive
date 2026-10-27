@@ -2,11 +2,11 @@ import ScheduleService, { type Config, type ScheduleCatalogEntry, type ScheduleR
   type ScheduleUpdateRequest, type ScheduleUpdateResult, type ScheduleDeleteResult,
   type ScheduleDeliveryHistoryRequest, type ScheduleDeliveryHistoryResult } from '@deepseek-ai/dsh-schedule';
 import type { ScheduleId } from '@deepseek-ai/dsh-schedule/client';
-import { Observable, map, switchMap } from 'rxjs';
-import { abortable, type CancellationOptions } from '@hanger-source/dsh-reactive';
+import { Observable, map } from 'rxjs';
+import { observeResource, mapResource, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin } from './native-installation.ts';
-import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, ownNativeValue,
+import { NativeCapabilityOwner, nativeResource, nativeObservationScope, ownNativeValue,
   type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
 
@@ -29,6 +29,7 @@ function scheduleRecord(entry: ScheduleCatalogEntry): ScheduleRecord {
 /** 已核验原会话归属的现有提醒；投递 ACK 与模型/业务完成分别表达。 */
 export interface NativeScheduleTask {
   readonly id: ScheduleId;
+  readonly state: ResourceReader<ScheduleCatalogEntry | undefined>;
   readonly state$: Observable<ScheduleCatalogEntry | undefined>;
   /** 完整 ScheduleRecord，可原样用于 expected；不混入 catalog 的额外字段。 */
   read(options?: CancellationOptions): Promise<ScheduleRecord | undefined>;
@@ -38,6 +39,7 @@ export interface NativeScheduleTask {
 }
 
 export interface NativeSessionSchedule {
+  readonly state: ResourceReader<readonly ScheduleCatalogEntry[]>;
   readonly active$: Observable<readonly ScheduleRecord[]>;
   readonly catalog$: Observable<readonly ScheduleCatalogEntry[]>;
   active(options?: CancellationOptions): Promise<readonly ScheduleRecord[]>;
@@ -48,6 +50,7 @@ export interface NativeSessionSchedule {
 }
 
 class SessionSchedule implements NativeSessionSchedule {
+  readonly state: ResourceReader<readonly ScheduleCatalogEntry[]>;
   readonly active$: Observable<readonly ScheduleRecord[]>;
   readonly catalog$: Observable<readonly ScheduleCatalogEntry[]>;
   readonly scope: Scope;
@@ -62,7 +65,8 @@ class SessionSchedule implements NativeSessionSchedule {
       subscriber.next();
       return release;
     });
-    this.catalog$ = nativeObservation(this.scope, changes$.pipe(switchMap(() => abortable(signal => this.catalog({ signal })))));
+    this.state = nativeResource(this.scope, () => observeResource({ key$: changes$, read: (_key, signal) => this.catalog({ signal }) }));
+    this.catalog$ = this.state.values$;
     // 同一提交切面同时含 active/inactive；不另起一条原生变更监听。
     this.active$ = this.catalog$.pipe(map(records => Object.freeze(records.filter(record => record.status === 'active').map(scheduleRecord))));
   }
@@ -98,8 +102,9 @@ class SessionSchedule implements NativeSessionSchedule {
     if (!records.some(record => record.id === id)) throw new Error('REACTIVE_NATIVE_SCHEDULE_NOT_FOUND');
     let task = this.#tasks.get(id);
     if (!task) {
+      const state = nativeResource(this.scope, () => this.state.observations$.pipe(mapResource(current => current.find(record => record.id === id))));
       task = Object.freeze({ id,
-        state$: this.catalog$.pipe(map(current => current.find(record => record.id === id))),
+        state, state$: state.values$,
         read: async (opts: CancellationOptions = {}) => {
           const current = (await this.catalog(opts)).find(record => record.id === id);
           return current === undefined ? undefined : scheduleRecord(current);

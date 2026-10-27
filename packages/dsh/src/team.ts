@@ -4,11 +4,11 @@ import { SessionLogOffset } from '@deepseek-ai/dsh-session/types';
 import type { SessionId } from '@deepseek-ai/dsh-session';
 import type { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection';
 import { foldSubagentDescriptor } from '@deepseek-ai/dsh-subagent';
-import { Observable, map, merge, switchMap } from 'rxjs';
-import { abortable, type CancellationOptions } from '@hanger-source/dsh-reactive';
+import { Observable, map, merge } from 'rxjs';
+import { observeResource, mapResource, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin } from './native-installation.ts';
-import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, ownNativeValue,
+import { NativeCapabilityOwner, nativeResource, nativeObservationScope, ownNativeValue,
   type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
 
@@ -32,6 +32,7 @@ export type NativeTeamTaskUpdate = Omit<UpdateTeamTaskRequest, 'taskId'>;
 /** 原 Team 内固定的一项任务；观察和读取来自同一原生投影，修改仍由原生 CAS 受理。 */
 export interface NativeTeamTask {
   readonly id: TeamTaskId;
+  readonly state: ResourceReader<TeamTaskView | undefined>;
   /** 当前任务板中的记录；删除后为 undefined，不把撤下当成一次读取失败。 */
   readonly state$: Observable<TeamTaskView | undefined>;
   read(options?: CancellationOptions): Promise<TeamTaskView | undefined>;
@@ -39,6 +40,7 @@ export interface NativeTeamTask {
 }
 
 export interface NativeSessionTeam {
+  readonly state: ResourceReader<TeamProjection>;
   readonly projection$: Observable<TeamProjection>;
   /** 持久成员阶段；运行中的 turn 状态另用 listMembers 读取。 */
   readonly members$: Observable<readonly TeamMemberProjection[]>;
@@ -60,6 +62,7 @@ export interface NativeSessionTeam {
 }
 
 class SessionTeam implements NativeSessionTeam {
+  readonly state: ResourceReader<TeamProjection>;
   readonly projection$: Observable<TeamProjection>;
   readonly members$: Observable<readonly TeamMemberProjection[]>;
   readonly tasks$: Observable<readonly TeamTaskView[]>;
@@ -81,8 +84,9 @@ class SessionTeam implements NativeSessionTeam {
       return release;
     });
     // 先监听 Team 日志，再由实际 owner 触发初读；关闭/恢复取消旧切面，不另存 Agent 状态。
-    this.projection$ = nativeObservation(this.#scope, merge(changes$, access.liveAgent$)
-      .pipe(switchMap(() => abortable(signal => this.readProjection({ signal })))));
+    this.state = nativeResource(this.#scope, () => observeResource({ key$: merge(changes$, access.liveAgent$),
+      read: (_owner, signal) => this.readProjection({ signal }) }));
+    this.projection$ = this.state.values$;
     this.members$ = this.projection$.pipe(map(projection => projection.members));
     this.tasks$ = this.projection$.pipe(map(projection => projection.tasks));
   }
@@ -144,8 +148,9 @@ class SessionTeam implements NativeSessionTeam {
     if (!projection.tasks.some(task => task.id === id)) throw new TeamError(`team task "${id}" not found`, 'TEAM_TASK_NOT_FOUND');
     let task = this.#tasks.get(id);
     if (!task) {
+      const state = nativeResource(this.#scope, () => this.state.observations$.pipe(mapResource(projection => projection.tasks.find(current => current.id === id))));
       task = Object.freeze({ id,
-        state$: this.tasks$.pipe(map(tasks => tasks.find(current => current.id === id))),
+        state, state$: state.values$,
         read: async (options: CancellationOptions = {}) => (await this.readProjection(options)).tasks.find(current => current.id === id),
         update: async (request: NativeTeamTaskUpdate, options: CancellationOptions = {}) => {
           if (Object.hasOwn(request, 'taskId')) throw new Error('REACTIVE_NATIVE_TEAM_TASK_SOURCE_RESERVED');

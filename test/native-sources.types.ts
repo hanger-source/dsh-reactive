@@ -21,11 +21,12 @@ function programCapabilities<P extends ProgramContract>(conversation: ProgramSes
 void programCapabilities;
 
 function taskConsumer(task: NativeTeamTask) {
+  const state: ResourceReadable<TeamTaskView | undefined> = task.state;
   const reading: Promise<TeamTaskView | undefined> = task.read();
   const updating: Promise<TeamTaskView> = task.update({ expectedRevision: 1, action: 'claim' });
   // @ts-expect-error 固定任务更新只接受CAS与变更字段，调用者不能重复指定目标。
   task.update({ taskId: task.id, expectedRevision: 1, action: 'claim' });
-  return { reading, updating, stream: task.state$ };
+  return { reading, updating, state, stream: task.state$ };
 }
 void taskConsumer;
 

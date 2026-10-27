@@ -1,11 +1,11 @@
 import type { JobRegistry, JobId, JobEvent, JobSpec, JobView, JobOutputRead } from '@deepseek-ai/dsh-jobs';
 import LocalJobs, { type Config as LocalJobsConfig } from '@deepseek-ai/dsh-jobs-local';
 import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs';
-import { Observable } from 'rxjs';
-import { fromSnapshot, type CancellationOptions } from '@hanger-source/dsh-reactive';
+import { Observable, map } from 'rxjs';
+import { fromSnapshot, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin } from './native-installation.ts';
-import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, nativeToolNames, ownNativeValue, type NativeCapability, type NativeSessionSource } from './native-capability.ts';
+import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, nativeResource, nativeToolNames, ownNativeValue, type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
 
 export { JobId } from '@deepseek-ai/dsh-jobs';
@@ -24,6 +24,8 @@ export type NativeJobSpec = Omit<JobSpec, 'owner' | 'toolCall'>;
 /** 原生 Job 执行实例的非消费读取与显式控制；它不是持久业务 Operation。 */
 export interface NativeJob {
   readonly id: JobId;
+  readonly state: ResourceReader<JobView>;
+  readonly output: ResourceReader<JobOutputRead>;
   readonly state$: Observable<JobView>;
   readonly output$: Observable<JobOutputRead>;
   snapshot(): JobView;
@@ -33,19 +35,24 @@ export interface NativeJob {
 }
 
 class NativeJobReader implements NativeJob {
+  readonly state: ResourceReader<JobView>;
+  readonly output: ResourceReader<JobOutputRead>;
   readonly state$: Observable<JobView>;
   readonly output$: Observable<JobOutputRead>;
   constructor(private readonly jobs: SessionJobs, readonly id: JobId, scope: Scope) {
     const changes = (notify: () => void) => jobs.subscribe(event => {
       if ((event.type === 'output' ? event.id : event.job.id) === id) notify();
     });
-    this.state$ = nativeObservation(scope, fromSnapshot({
+    this.state = nativeResource(scope, () => fromSnapshot({
       getSnapshot: () => this.snapshot(),
       subscribe: notify => jobs.subscribe(event => {
         if (event.type !== 'output' && event.job.id === id) notify();
       }),
-    }));
-    this.output$ = nativeObservation(scope, fromSnapshot({ getSnapshot: () => this.readAt(0), subscribe: changes }));
+    }).pipe(map(value => ({ status: 'ready', generation: 0, observedAt: Date.now(), value }))));
+    this.output = nativeResource(scope, () => fromSnapshot({ getSnapshot: () => this.readAt(0), subscribe: changes })
+      .pipe(map(value => ({ status: 'ready', generation: 0, observedAt: Date.now(), value }))));
+    this.state$ = this.state.values$;
+    this.output$ = this.output.values$;
   }
   snapshot(): JobView { return ownNativeValue(this.jobs.registry().get(this.id, this.jobs.ownerId)); }
   /** 绝对字节偏移不推进模型游标；lossy/next 保留原生含义。 */
@@ -65,6 +72,7 @@ class NativeJobReader implements NativeJob {
 
 /** 同一 exact 会话句柄共享读取连接，原生 Agent 持有已开始执行。 */
 export interface NativeSessionJobs {
+  readonly state: ResourceReader<readonly JobView[]>;
   readonly list$: Observable<readonly JobView[]>;
   readonly events$: Observable<JobEvent>;
   list(): readonly JobView[];
@@ -74,6 +82,7 @@ export interface NativeSessionJobs {
 }
 
 class SessionJobs implements NativeSessionJobs {
+  readonly state: ResourceReader<readonly JobView[]>;
   readonly list$: Observable<readonly JobView[]>;
   readonly events$: Observable<JobEvent>;
   readonly ownerId: NativeSessionAccess['sessionId'];
@@ -89,9 +98,10 @@ class SessionJobs implements NativeSessionJobs {
         try { this.registry(); subscriber.next(ownNativeValue(event)); }
         catch (error) { subscriber.error(error); }
       })));
-    this.list$ = nativeObservation(this.#scope, fromSnapshot({
+    this.state = nativeResource(this.#scope, () => fromSnapshot({
       getSnapshot: () => this.list(), subscribe: notify => this.subscribe(notify),
-    }));
+    }).pipe(map(value => ({ status: 'ready', generation: 0, observedAt: Date.now(), value }))));
+    this.list$ = this.state.values$;
   }
   /** @internal 每次控制/读取都重新核 exact Host、成员及官方服务。 */
   registry(): JobRegistry {

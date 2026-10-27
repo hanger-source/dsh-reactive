@@ -56,7 +56,9 @@ createWorkspace 注册原生 existing 目录，不隐式 mkdir。Environment 不
 
 Jobs、Schedule、Team、Files、Approval、Clock 用 `capability.forSession(conversation)` 消费 Program 收到的原 conversation，也可消费 Host 签发的本地 SDK 句柄。不得拼接 `{ id }` 或复制 identity 对象代替原对象。取得会话能力不建立观察，首次订阅才连接；业务 hook 可以用 `useObservable(() => jobs.list$, [jobs])` 读同一流。启动 Job 或写入仍是显式命令，须在真实会话 owner 已经活跃时调用，不在 render 中执行。
 
-同一原来源共享 SDK 实例，Program 来源和外部句柄分别拥有观察寿命。组件退订不 dispose 会话 SDK；显式 dispose、Program 失败或来源退出才释放观察，不杀死已受理 Job，不撤回提醒，也不取消 Team 成员。Program 来源不自动取得人工、ToolOccurrence 或 Goal 权限。
+同一原来源共享 SDK 实例，Program 来源和外部句柄分别拥有观察寿命。Jobs、Schedule、Team 会话与固定任务的 `state` 是可直接传给 `useResource` 的只读资源，Job 的 `output` 独立表示非消费输出切面。`state.read(signal)`、peek、subscribe、values$、observations$ 共用现有资源机制；原 state$/list$/catalog$/projection$ 是相应值流，不能用它们推断旧值仍有效。最后一个资源消费者退出会撤销查询并撤下旧 ready，组件退订不 dispose 会话 SDK，也不停止已受理工作。SDK dispose、Program 失败或来源退出释放其全部观察，不杀死 Job、不撤回提醒、不取消 Team 成员。Program 来源不自动取得人工、ToolOccurrence 或 Goal 权限。
+
+Schedule 与 Team 的变化先撤下旧 ready 再读取新切面，读错误保留为资源 error，后续原生通知可以恢复，不使用无条件 retry。组合不同能力时直接用 combineResources/mapResource 组合 observations$，将同一观察交给 hooks、Context 和资源 View；不要把查询 pending/error 当成 Job 执行或任务业务状态。需要重新查询权威服务时，使用原 list/catalog/readProjection/任务 read 等显式入口。
 
 来源仍有效时，依赖原生切面或日志的长期观察会跟随实际 Agent 的关闭和恢复：在途旧读取取消，恢复后读取当前历史，日志不重复交付。关闭原生 Agent 不等于退出仍持有的 SDK 观察；读取本身不 resume 或启动模型。不要为这一转换维护第二份 Agent 状态或用无条件 retry 掩盖真正读取错误。
 

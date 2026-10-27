@@ -8,8 +8,8 @@ import { useLayoutEffect } from 'react';
 import { ReplaySubject, filter, firstValueFrom, timeout, type Subscription } from 'rxjs';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
-import { defineApplication, defineEnvironment, defineProgram, defineSurface, z } from '@hanger-source/dsh-reactive';
-import { implementProgram, useObservable } from '@hanger-source/dsh-reactive/program';
+import { defineApplication, defineEnvironment, defineProgram, defineSurface, z, type Observation } from '@hanger-source/dsh-reactive';
+import { implementProgram, useResource } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeModel, type ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeTeam, TeamError, type NativeSessionTeam, type TeamProjection, type TeamTaskView } from '@hanger-source/dsh-reactive-dsh/team';
 import { text } from './native-support.ts';
@@ -25,7 +25,7 @@ test('Team固定任务沿真实任务板执行CAS和依赖派生，关闭恢复�
   const definition = defineApplication({ name: 'native-team', admit: async () => {}, environments: [defineEnvironment({
     id: 'work', instructions: 'Team管理不产生模型输入', program: implementProgram(program, { Component({ conversation }) {
       const team = capability.forSession(conversation);
-      useObservable(() => team.tasks$, [team]);
+      useResource(team.state);
       useLayoutEffect(() => { programTeams.set(conversation.identity.sessionId, team); }, [conversation, team]);
       return null;
     } }),
@@ -56,13 +56,19 @@ test('Team固定任务沿真实任务板执行CAS和依赖派生，关闭恢复�
       return projection;
     };
     const observed = new ReplaySubject<TeamProjection>(1), delivered: TeamProjection[] = [];
-    subscription = team.projection$.subscribe({
-      next: projection => { delivered.push(projection); observed.next(projection); },
+    const states: Observation<TeamProjection>[] = [];
+    assert.equal(team.projection$, team.state.values$);
+    subscription = team.state.observations$.subscribe({
+      next: observation => {
+        states.push(observation);
+        if (observation.status === 'ready') { delivered.push(observation.value); observed.next(observation.value); }
+      },
       error: error => { errors.push(error); observed.error(error); },
     });
     const old = await entered.promise;
     await runtime.application.close(session.id);
     assert.equal(old.signal.aborted, true, '关闭原生owner须撤销SDK在途投影读取');
+    assert.equal(team.state.peek().status, 'pending', '切换真实owner先撤下旧有效性');
     resumed = await runtime.application.resume(session.id, program);
     await firstValueFrom(observed.pipe(timeout(5_000)));
     release.resolve(); await immediate();
@@ -77,6 +83,18 @@ test('Team固定任务沿真实任务板执行CAS和依赖派生，关闭恢复�
     assert.equal(independent.id, original.id);
     const task = await team.task(original.id), dependent = await team.task(waiting.id);
     assert.equal(await team.task(original.id), task);
+    assert.equal((await dependent.state.read())?.ready, false);
+    const failure = new Error('TEAM_PROJECTION_READ_FAILED');
+    team.readProjection = async options => { await inspect(options); throw failure; };
+    const failed = firstValueFrom(team.state.observations$.pipe(filter(value => value.status === 'error'), timeout(5_000)));
+    const extra = await team.createTask({ subject: '读取恢复', description: '真实任务提交产生后续投影通知' });
+    assert.equal((await failed).status, 'error');
+    assert.equal(team.state.peek().status, 'error');
+    team.readProjection = inspect;
+    const recovered = firstValueFrom(team.state.observations$.pipe(filter(value => value.status === 'ready'), timeout(5_000)));
+    await team.updateTask({ taskId: extra.id, expectedRevision: extra.revision, action: 'edit', subject: '读取已恢复' });
+    await recovered;
+    assert.ok(states.some(value => value.status === 'error' && value.error === failure));
     assert.equal((await dependent.read())?.ready, false);
     await assert.rejects(dependent.update({ expectedRevision: waiting.revision, action: 'claim' }),
       error => error instanceof TeamError && error.code === 'TEAM_TASK_BLOCKED');

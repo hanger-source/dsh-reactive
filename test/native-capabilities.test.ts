@@ -14,7 +14,7 @@ import type { JobOutcome } from '@deepseek-ai/dsh-jobs';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
 import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, composeSurface, readActionPresentation, Scope, z, type NativeToolCall, type ProgramSession } from '@hanger-source/dsh-reactive';
-import { implementProgram, NativeTools, Offer, Expose, Module, useAction, useObservable, useRelation } from '@hanger-source/dsh-reactive/program';
+import { implementProgram, NativeTools, Offer, Expose, Module, useAction, useObservable, useResource, useRelation } from '@hanger-source/dsh-reactive/program';
 import { boot, text, tool } from './native-support.ts';
 import type { ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
 import { createRuntime, nativeModel, requireActivePlugin } from '@hanger-source/dsh-reactive-dsh';
@@ -250,7 +250,7 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     program: implementProgram(program, {
       Component({ conversation }) {
         const jobs = capability.forSession(conversation);
-        useObservable(() => jobs.list$, [jobs]);
+        useResource(jobs.state);
         useObservable(() => approval.forSession(conversation).policy$, [conversation]);
         useRelation(() => retired.pipe(filter(id => id === conversation.identity.sessionId), tap(() => { throw retiredFailure; })), [conversation]);
         useLayoutEffect(() => { programSessions.set(conversation.identity.sessionId, { source: conversation, jobs }); }, [conversation, jobs]);
@@ -315,6 +315,10 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     const firstObserver = firstValueFrom(reader.output$.pipe(filter(value => value.chunks.some(chunk => chunk.text.includes('native-job-ready')))));
     const secondObserver = firstValueFrom(reader.output$.pipe(filter(value => value.chunks.some(chunk => chunk.text.includes('native-job-ready')))));
     const [observed, secondObserved] = await Promise.all([firstObserver, secondObserver]);
+    assert.equal(observedSession.job(first).state, reader.state);
+    assert.equal((await reader.state.read()).status, 'running');
+    assert.deepEqual(await reader.output.read(), observed, '资源读取同样不推进原生输出游标');
+    assert.equal(reader.output.peek().status, 'pending', '最后一个资源消费者退出撤下有效快照');
     assert.deepEqual(secondObserved, observed, '两个SDK观察者读取同一个真实输出，均不消费模型cursor');
     assert.throws(() => capability.forSession(foreign).job(first), '另一个真实owner不能读取输出');
     assert.deepEqual(reader.readAt(0), observed, '重复SDK观察不消耗模型游标');
