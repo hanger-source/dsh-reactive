@@ -9,6 +9,10 @@ on:
         description: 已存在的 annotated 发行 tag，例如 dsh-reactive@0.2.1
         required: true
         type: string
+      registration_run:
+        description: 仅首次登记：提供已完成 prepare 的发行 run ID，将其原始产物提交 npm staging，待 2FA 批准
+        required: false
+        type: string
 
 concurrency:
   group: npm-release
@@ -22,6 +26,7 @@ env:
 
 jobs:
   prepare:
+    if: ${{ !inputs.registration_run }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -139,5 +144,95 @@ jobs:
           path: |
             .tmp/release/publication.json
             .tmp/release/registry-verification.json
+          if-no-files-found: ignore
+          retention-days: 90
+
+  register:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.registration_run != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: 隔离首次登记的 npm 会话
+        run: echo "NPM_CONFIG_USERCONFIG=$RUNNER_TEMP/npm-first-registration.npmrc" >> "$GITHUB_ENV"
+      - name: 安装发行工具
+        run: |
+          npm ci --ignore-scripts --registry https://registry.npmjs.org
+          npm install --global npm@11
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release-candidate
+          path: .tmp/release
+          run-id: ${{ inputs.registration_run }}
+          github-token: ${{ github.token }}
+      - name: 核对原始发行来源和候选验收
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REGISTRATION_RUN: ${{ inputs.registration_run }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node --input-type=module -e '
+            import { execFileSync } from "node:child_process";
+            import { currentArtifacts } from "./scripts/release/artifacts.mjs";
+            import { json } from "./scripts/release/common.mjs";
+            const id = process.env.REGISTRATION_RUN;
+            if (!/^[1-9][0-9]*$/.test(id)) throw new Error("REGISTRATION_RUN_INVALID");
+            const api = path => JSON.parse(execFileSync("gh", ["api", `repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${id}${path}`], { encoding: "utf8" }));
+            const run = api(""), jobs = api("/jobs?filter=all&per_page=100");
+            const { manifest, manifestSha256 } = await currentArtifacts(".tmp/release/release-manifest.json", true);
+            const proof = await json(".tmp/release/candidate-verification.json");
+            if (run.repository.full_name !== process.env.GITHUB_REPOSITORY || run.path !== ".github/workflows/release.yml"
+              || run.head_sha !== manifest.commit || !jobs.jobs.some(job => job.name === "prepare" && job.conclusion === "success")
+              || manifest.tag !== process.env.RELEASE_TAG || proof.source !== "artifacts"
+              || proof.commit !== manifest.commit || proof.manifestSha256 !== manifestSha256)
+              throw new Error("REGISTRATION_CANDIDATE_NOT_VERIFIED");
+            console.log(JSON.stringify({ sourceRun: id, commit: manifest.commit, manifestSha256 }));
+          '
+      - name: 首次登记的 npm 官方网页登录
+        run: npm login --auth-type=web --browser=false --registry https://registry.npmjs.org
+      - name: 将 CI 原始产物提交 npm staging
+        env:
+          NPM_CONFIG_PROVENANCE: 'true'
+          REGISTRATION_RUN: ${{ inputs.registration_run }}
+        run: |
+          node --input-type=module -e '
+            import { execFileSync } from "node:child_process";
+            import { join } from "node:path";
+            import { currentArtifacts } from "./scripts/release/artifacts.mjs";
+            import { save } from "./scripts/release/common.mjs";
+            const { directory, manifest, manifestSha256 } = await currentArtifacts(".tmp/release/release-manifest.json", true);
+            const receipt = { sourceRun: process.env.REGISTRATION_RUN, workflowCommit: process.env.GITHUB_SHA,
+              commit: manifest.commit, version: manifest.version, manifestSha256, packages: [] };
+            for (const item of manifest.artifacts) {
+              const result = JSON.parse(execFileSync("npm", ["stage", "publish", join(directory, item.file), "--access", "public",
+                "--tag", manifest.channel, "--ignore-scripts", "--registry", manifest.registry, "--json"], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }));
+              const stage = result[item.name];
+              if (stage.version !== item.version || stage.integrity !== item.integrity || !stage.stageId)
+                throw new Error(`REGISTRATION_ARTIFACT_MISMATCH: ${item.name}`);
+              receipt.packages.push({ name: item.name, version: item.version, stageId: stage.stageId, integrity: stage.integrity });
+              await save(join(directory, "staging.json"), receipt);
+              console.log(JSON.stringify(receipt.packages.at(-1)));
+            }
+          '
+      - name: 撤销 runner 的临时登录会话
+        if: always()
+        run: npm logout --registry https://registry.npmjs.org
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: npm-registration-receipt
+          path: .tmp/release/staging.json
           if-no-files-found: ignore
           retention-days: 90
