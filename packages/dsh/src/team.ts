@@ -1,10 +1,10 @@
-import TeamService, { type Config, type TeamId, type TeamTaskId, type TeamMemberView, type TeamMemberProjection,
+import TeamService, { TeamError, type Config, type TeamId, type TeamTaskId, type TeamMemberView, type TeamMemberProjection,
   type TeamTaskView, type TeamProjection, type CreateTeamTaskRequest, type UpdateTeamTaskRequest, type TeamWaitResult } from '@deepseek-ai/dsh-experimental-agent-team';
 import { SessionLogOffset } from '@deepseek-ai/dsh-session/types';
 import type { SessionId } from '@deepseek-ai/dsh-session';
 import type { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection';
 import { foldSubagentDescriptor } from '@deepseek-ai/dsh-subagent';
-import { Observable, map, switchMap } from 'rxjs';
+import { Observable, map, merge, switchMap } from 'rxjs';
 import { abortable, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin } from './native-installation.ts';
@@ -26,6 +26,18 @@ export interface NativeTeamMembership {
 export interface NativeTeamOptions {
   readonly service: { readonly kind: 'install'; readonly config?: Config } | { readonly kind: 'provided' };
 }
+
+export type NativeTeamTaskUpdate = Omit<UpdateTeamTaskRequest, 'taskId'>;
+
+/** 原 Team 内固定的一项任务；观察和读取来自同一原生投影，修改仍由原生 CAS 受理。 */
+export interface NativeTeamTask {
+  readonly id: TeamTaskId;
+  /** 当前任务板中的记录；删除后为 undefined，不把撤下当成一次读取失败。 */
+  readonly state$: Observable<TeamTaskView | undefined>;
+  read(options?: CancellationOptions): Promise<TeamTaskView | undefined>;
+  update(request: NativeTeamTaskUpdate, options?: CancellationOptions): Promise<TeamTaskView>;
+}
+
 export interface NativeSessionTeam {
   readonly projection$: Observable<TeamProjection>;
   /** 持久成员阶段；运行中的 turn 状态另用 listMembers 读取。 */
@@ -37,6 +49,8 @@ export interface NativeSessionTeam {
   listMembers(): readonly TeamMemberView[];
   listTasks(): readonly TeamTaskView[];
   getTask(id: TeamTaskId): TeamTaskView;
+  /** 先核现有任务的归属；冷 Lead 可绑定，读取不会激活 Agent。 */
+  task(id: TeamTaskId, options?: CancellationOptions): Promise<NativeTeamTask>;
   createTask(request: CreateTeamTaskRequest, options?: CancellationOptions): Promise<TeamTaskView>;
   updateTask(request: UpdateTeamTaskRequest, options?: CancellationOptions): Promise<TeamTaskView>;
   waitForChange(timeoutMs: number, options?: CancellationOptions): Promise<TeamWaitResult>;
@@ -50,6 +64,7 @@ class SessionTeam implements NativeSessionTeam {
   readonly members$: Observable<readonly TeamMemberProjection[]>;
   readonly tasks$: Observable<readonly TeamTaskView[]>;
   #scope: Scope;
+  #tasks = new Map<TeamTaskId, NativeTeamTask>();
   get disposed(): boolean { return this.#scope.disposed; }
   constructor(private readonly owner: NativeCapabilityOwner, private readonly access: NativeSessionAccess) {
     this.#scope = nativeObservationScope(owner, access);
@@ -63,10 +78,11 @@ class SessionTeam implements NativeSessionTeam {
           if (session.id === rootId) subscriber.next();
         } catch (error) { subscriber.error(error); }
       });
-      subscriber.next();
       return release;
     });
-    this.projection$ = nativeObservation(this.#scope, changes$.pipe(switchMap(() => abortable(signal => this.readProjection({ signal })))));
+    // 先监听 Team 日志，再由实际 owner 触发初读；关闭/恢复取消旧切面，不另存 Agent 状态。
+    this.projection$ = nativeObservation(this.#scope, merge(changes$, access.liveAgent$)
+      .pipe(switchMap(() => abortable(signal => this.readProjection({ signal })))));
     this.members$ = this.projection$.pipe(map(projection => projection.members));
     this.tasks$ = this.projection$.pipe(map(projection => projection.tasks));
   }
@@ -123,6 +139,23 @@ class SessionTeam implements NativeSessionTeam {
   listMembers(): readonly TeamMemberView[] { return ownNativeValue(this.service().listMembers(this.agent())); }
   listTasks(): readonly TeamTaskView[] { return ownNativeValue(this.service().listTasks(this.agent())); }
   getTask(id: TeamTaskId): TeamTaskView { return ownNativeValue(this.service().getTask(this.agent(), id)); }
+  async task(id: TeamTaskId, options: CancellationOptions = {}): Promise<NativeTeamTask> {
+    const projection = await this.readProjection(options);
+    if (!projection.tasks.some(task => task.id === id)) throw new TeamError(`team task "${id}" not found`, 'TEAM_TASK_NOT_FOUND');
+    let task = this.#tasks.get(id);
+    if (!task) {
+      task = Object.freeze({ id,
+        state$: this.tasks$.pipe(map(tasks => tasks.find(current => current.id === id))),
+        read: async (options: CancellationOptions = {}) => (await this.readProjection(options)).tasks.find(current => current.id === id),
+        update: async (request: NativeTeamTaskUpdate, options: CancellationOptions = {}) => {
+          if (Object.hasOwn(request, 'taskId')) throw new Error('REACTIVE_NATIVE_TEAM_TASK_SOURCE_RESERVED');
+          return this.updateTask({ ...request, taskId: id }, options);
+        },
+      });
+      this.#tasks.set(id, task);
+    }
+    return task;
+  }
   async createTask(request: CreateTeamTaskRequest, options: CancellationOptions = {}): Promise<TeamTaskView> {
     this.signal(options);
     // 原生事务受理后由 Team journal 结算；取消观察不能回滚已追加的 task。

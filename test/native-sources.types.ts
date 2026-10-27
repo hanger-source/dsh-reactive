@@ -2,7 +2,7 @@ import type { ProgramContract, ProgramSession } from '@hanger-source/dsh-reactiv
 import type { NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import type { NativeJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
 import type { NativeSchedule } from '@hanger-source/dsh-reactive-dsh/schedule';
-import type { NativeTeam } from '@hanger-source/dsh-reactive-dsh/team';
+import type { NativeTeam, NativeTeamTask, TeamTaskView } from '@hanger-source/dsh-reactive-dsh/team';
 import type { NativeFiles } from '@hanger-source/dsh-reactive-dsh/files';
 import type { NativeApproval } from '@hanger-source/dsh-reactive-dsh/approval';
 import type { NativeClock } from '@hanger-source/dsh-reactive-dsh/time';
@@ -18,3 +18,12 @@ function programCapabilities<P extends ProgramContract>(conversation: ProgramSes
   };
 }
 void programCapabilities;
+
+function taskConsumer(task: NativeTeamTask) {
+  const reading: Promise<TeamTaskView | undefined> = task.read();
+  const updating: Promise<TeamTaskView> = task.update({ expectedRevision: 1, action: 'claim' });
+  // @ts-expect-error 固定任务更新只接受CAS与变更字段，调用者不能重复指定目标。
+  task.update({ taskId: task.id, expectedRevision: 1, action: 'claim' });
+  return { reading, updating, stream: task.state$ };
+}
+void taskConsumer;

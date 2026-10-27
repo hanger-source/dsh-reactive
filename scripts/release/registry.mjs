@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { capture, run, root, configuration, save, json, independent, assertVersion, clean } from './common.mjs';
 import { artifactManifest, currentArtifacts } from './artifacts.mjs';
+import { consumerKinds, consumerPackages, consumerEnvironment } from './consumer-profiles.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 async function metadata(name, version, registry) {
@@ -82,17 +83,15 @@ export async function verify(path, source) {
   }
   const location = await realpath(await mkdtemp(join(tmpdir(), 'dsh-reactive-' + source + '-consumer-')));
   const consumers = [];
-  for (const kind of ['backend', 'ui']) {
-    const names = kind === 'backend' ? config.packages.filter(item => item.name !== '@hanger-source/dsh-reactive-native-ui').map(item => item.name)
-      : ['@hanger-source/dsh-reactive', '@hanger-source/dsh-reactive-client', '@hanger-source/dsh-reactive-native-ui', '@hanger-source/dsh-reactive-skills'];
+  const hostTarball = resolve(directory, manifest.artifacts.find(item => item.name === '@hanger-source/dsh-reactive-dsh').file);
+  for (const kind of consumerKinds) {
+    const names = consumerPackages(config, kind);
     const cwd = join(location, kind); await mkdir(cwd); await independent(cwd);
     const dependencies = Object.fromEntries(names.map(name => [name, source === 'registry' ? manifest.version
       : resolve(directory, manifest.artifacts.find(item => item.name === name).file)]));
-    dependencies.react = kind === 'backend' ? config.consumerTooling.backendReact : config.consumerTooling.uiReact;
-    if (kind === 'backend') dependencies['react-reconciler'] = config.consumerTooling.backendReconciler;
-    await save(join(cwd, 'package.json'), { name: 'dsh-release-' + kind, private: true, type: 'module', dependencies,
-      devDependencies: { typescript: config.consumerTooling.typescript, '@types/node': config.consumerTooling.nodeTypes,
-        '@types/react': kind === 'backend' ? config.consumerTooling.backendReactTypes : config.consumerTooling.uiReactTypes } });
+    const environment = await consumerEnvironment(config, kind, hostTarball);
+    await save(join(cwd, 'package.json'), { name: 'dsh-release-' + kind, private: true, type: 'module',
+      dependencies: { ...dependencies, ...environment.dependencies }, devDependencies: environment.devDependencies });
     // 只固定 registry，不复制凭据。认证继续由用户正式 npm 配置提供。
     await writeFile(join(cwd, '.npmrc'), `registry=${manifest.registry}\n@hanger-source:registry=${manifest.registry}\n`);
     await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--registry', manifest.registry], cwd);
@@ -109,8 +108,10 @@ export async function verify(path, source) {
     await save(join(cwd, 'expected.json'), { kind, source, packages: names, version: manifest.version,
       commit: manifest.commit, tag: manifest.tag, registry: manifest.registry });
     await save(join(cwd, 'tsconfig.json'), { compilerOptions: { target: 'ES2024', module: 'NodeNext', moduleResolution: 'NodeNext',
-      strict: true, skipLibCheck: false, noEmit: true, types: ['node'], jsx: 'react-jsx' }, include: ['consumer.ts'] });
+      strict: true, skipLibCheck: false, outDir: 'compiled', types: ['node'], jsx: 'react-jsx' }, include: ['consumer.ts'] });
     await run(process.execPath, [join(cwd, 'node_modules/typescript/bin/tsc'), '-p', 'tsconfig.json'], cwd);
+    // 执行同一份实际类型消费者，保证所有可选子入口也在仓外的物理安装中加载。
+    await run(process.execPath, [join(cwd, 'compiled/consumer.js')], cwd);
     await run(process.execPath, [join(cwd, 'runtime.mjs')], cwd);
     consumers.push({ kind, directory: cwd, packages: names, strict: true, runtimeImport: true });
   }

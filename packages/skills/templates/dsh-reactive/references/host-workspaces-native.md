@@ -36,6 +36,18 @@ createWorkspace 注册原生 existing 目录，不隐式 mkdir。Environment 不
 
 ## 嵌入与可选能力
 
+各子入口的原生依赖是版本固定为 `0.2.1-rc.3` 的 optional peers。应用选择某个域时，显式安装该行依赖；import 不等于安装原生服务，服务装配仍经 installNative 或已有宿主完成。默认后台和原生 UI 消费不因这些入口自动装入所有原生集成。
+
+| 子入口 | 需安装的 `@deepseek-ai/` 包 |
+| --- | --- |
+| jobs | dsh-jobs、dsh-jobs-local、dsh-tool-jobs |
+| mcp | dsh-mcp-client、dsh-mcp-resources |
+| approval | dsh-user-approval |
+| time | dsh-time-context |
+| schedule | dsh-schedule |
+| team | dsh-experimental-agent-team |
+| files | dsh-api-workspace-files |
+
 已有 Cordis 宿主使用 `mountApplication(ctx, factory, options)`；需真实安装 agents、sessions、persistence/query/projections、workspaceRegistry、goals/tools/systemPrompt/loader、preset、skills/fs/cwd、userQuestions、attachments/fileUploads 等正式服务。不要只提供同名空对象满足 inject，也不要另装一套不同 home 的附件服务。
 
 `RuntimeOptions.installNative` 在任何 Agent 创建前安装可选能力；`nativeCapabilities(...selected)` 组合正式能力安装。Jobs、MCP、Approval、Time、Files 等按包公开 subpath 和实际插件能力选择，原生 owner 继续拥有状态、权限、取消和资源寿命。使用当前安装 subpath 的 DTS，不为了统一外形给所有工具再包 Action。
@@ -47,6 +59,8 @@ Jobs、Schedule、Team、Files、Approval、Clock 用 `capability.forSession(con
 同一原来源共享 SDK 实例，Program 来源和外部句柄分别拥有观察寿命。组件退订不 dispose 会话 SDK；显式 dispose、Program 失败或来源退出才释放观察，不杀死已受理 Job，不撤回提醒，也不取消 Team 成员。Program 来源不自动取得人工、ToolOccurrence 或 Goal 权限。
 
 来源仍有效时，依赖原生切面或日志的长期观察会跟随实际 Agent 的关闭和恢复：在途旧读取取消，恢复后读取当前历史，日志不重复交付。关闭原生 Agent 不等于退出仍持有的 SDK 观察；读取本身不 resume 或启动模型。不要为这一转换维护第二份 Agent 状态或用无条件 retry 掩盖真正读取错误。
+
+Team 任务可用 `const task = await team.forSession(source).task(id)` 取得。`task.state$` 供 RxJS 和 `useObservable` 使用，`task.read({ signal })` 读取同一原生投影；显式 `task.update({ expectedRevision, action, ... })` 由原生 CAS 决定是否受理，不重复传 taskId，也不能向请求中塞入 taskId 更换目标。对象身份属于原来源与任务，不按当前界面选择重定向。删除后流和 read 返回 undefined；需要原生墓碑时用活跃成员的 getTask。冷 Lead 可以读取与取得对象，修改仍要求真实活跃成员，不会为此自动 resume、spawn 或 send。
 
 Schedule 创建与 Team spawn/send 尚无 Program 来源准入接点。它们与已支持的提醒观察/更新、任务板创建/CAS、等待和 interrupt 分开；不能因为插件可安装，就声称 UI 或服务创建链已经贯通。
 

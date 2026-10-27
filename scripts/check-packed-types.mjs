@@ -4,6 +4,7 @@ import { access, copyFile, lstat, mkdir, mkdtemp, readFile, realpath, writeFile 
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { consumerKinds, consumerPackages, consumerEnvironment } from './release/consumer-profiles.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const config = JSON.parse(await readFile(join(root, 'scripts/release.config.json'), 'utf8'));
@@ -31,18 +32,15 @@ async function run(command, args, cwd) {
   });
 }
 const location = await realpath(await mkdtemp(join(tmpdir(), 'dsh-reactive-packed-types-')));
-for (const kind of ['backend', 'ui']) {
+const hostTarball = join(dirname(report), packed.get('@hanger-source/dsh-reactive-dsh').filename);
+for (const kind of consumerKinds) {
   const directory = join(location, kind);
   await mkdir(directory);
-  const names = kind === 'backend'
-    ? config.packages.filter(item => item.name !== '@hanger-source/dsh-reactive-native-ui').map(item => item.name)
-    : ['@hanger-source/dsh-reactive', '@hanger-source/dsh-reactive-client', '@hanger-source/dsh-reactive-native-ui', '@hanger-source/dsh-reactive-skills'];
+  const names = consumerPackages(config, kind);
   const dependencies = Object.fromEntries(names.map(name => [name, join(dirname(report), packed.get(name).filename)]));
-  dependencies.react = kind === 'backend' ? config.consumerTooling.backendReact : config.consumerTooling.uiReact;
-  if (kind === 'backend') dependencies['react-reconciler'] = config.consumerTooling.backendReconciler;
-  await writeFile(join(directory, 'package.json'), JSON.stringify({ private: true, type: 'module', dependencies,
-    devDependencies: { typescript: config.consumerTooling.typescript, '@types/node': config.consumerTooling.nodeTypes,
-      '@types/react': kind === 'backend' ? config.consumerTooling.backendReactTypes : config.consumerTooling.uiReactTypes } }, null, 2));
+  const environment = await consumerEnvironment(config, kind, hostTarball);
+  await writeFile(join(directory, 'package.json'), JSON.stringify({ private: true, type: 'module',
+    dependencies: { ...dependencies, ...environment.dependencies }, devDependencies: environment.devDependencies }, null, 2));
   await writeFile(join(directory, '.npmrc'), 'registry=https://registry.npmjs.org\n@hanger-source:registry=https://registry.npmjs.org\n');
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--registry', config.registry], directory);
   for (const name of names) {

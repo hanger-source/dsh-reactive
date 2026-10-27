@@ -167,6 +167,8 @@ operations 槽的 resolver 从当前声明取得原 command，之后的查询保
 
 Jobs、Schedule、Team、Files、Approval 与 Clock 的 `forSession` 接受 Host 签发的本地 SDK 句柄或 Program 原 conversation。同形字段不授予访问权；每次调用仍核 exact 来源、原生服务、工作区和观察寿命。实际 Agent 在首次 Program 求值前完成绑定，原生来源的观察在首次订阅时连接，组件求值不启动读取。Program 来源随程序失败或退出释放，外部句柄按自己的 release 释放，原生已受理工作继续归各自 owner。
 
+Team 的 `task(id)` 先从当前原生任务板核验存在与归属，返回固定会话、固定 id 的任务对象。同一 SDK 重复取得同一任务会复用对象；`state$`、`read` 与显式 `update` 共用原生投影和任务 CAS，不保存另一份任务状态或修订。删除从任务板撤下后，原对象的读侧返回 undefined；原生 getTask 的墓碑查询保留其独立语义。冷 Lead 可读取和绑定任务，写入仍要求真实活跃成员；任务对象不会随其他选择或调用参数改指目标。Team 投影观察跟随实际 Agent 关闭、恢复，取消旧读取，不因读取创建成员或启动模型。
+
 创建根会话时，宿主持久写入原工作区 binding 并完成原生 workspace 成员登记，之后才构造 Program；最终创建回执仍在实际 Agent setup 成功后写入并确认持久 flush。登记失败保留原 CreationIncompleteError 引用；只有成员、或完成记录仍在等待创建 ACK 的会话不能经普通 open、resume、conversation 或 service 取得外部句柄，须沿原创建引用完成登记。创建和已有会话激活由同一启动 owner 区分，普通只读访问不等待或借用新会话的创建许可。已有完整回执的恢复只核成员，不重新加入已被撤销的成员关系。
 
 子程序通过原生 spawn / fork 在同一工作区与环境运行独立 Program 与 Goal，沿原调用持久保存父原因、真实子输入及双边确认，见[原生子程序委托](native-delegation.md)。长会话以及真实运营服务的整体消费仍需连续验证。编译、确定性模型试验、发布产物和正式业务验收分别报告，不由依赖安装推定成立。

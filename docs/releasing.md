@@ -51,7 +51,7 @@ npm run release -- verify-artifacts --manifest /absolute/release-candidate/relea
 
 prepare 只执行一次总 build，然后 npm pack（`--ignore-scripts`）。对每个最终 tgz 运行 publint，不再次触发 prepack/build。每个包包含 `release.json`，记录真实源码 commit、拟用 tag、channel、registry、六包版本和锁摘要；外部 manifest 保存各 tgz 的 SHA-512 完整性。打包 staging 不修改源码树，也不在包内写入自身 tarball hash。
 
-候选验证将 tgz 安装到仓外物理目录，分成后台 React 19 和原生 UI React 18 消费者，以 `skipLibCheck:false` 编译并加载正式入口。Skill 通过真实 `getDeveloperSkill()` 和 `dsh-reactive-skill` CLI 定位安装内容，核对版本、入口与五个 references。这个阶段只证明候选产物可消费，不称为已发布。
+候选验证将 tgz 安装到仓外物理目录，分别验证默认后台 React 19、选择全部可选原生域的 React 19、原生 UI React 18 消费者，以 `skipLibCheck:false` 编译并运行同一份消费者。原生域所需的 optional peers 从实际宿主 tgz 的 package.json 取得，不借工作区 node_modules 补齐；Jobs、MCP、Approval、Clock、Schedule、Team、Files 子入口均实际加载。日常 CI 与发行沿用相同环境选择和消费者源码，后台默认安装仍独立验证。Skill 通过真实 `getDeveloperSkill()` 和 `dsh-reactive-skill` CLI 定位安装内容，核对版本、入口与五个 references。这个阶段只证明候选产物可消费，不称为已发布。
 
 ## GitHub CI 发布
 

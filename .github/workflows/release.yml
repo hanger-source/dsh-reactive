@@ -78,7 +78,7 @@ jobs:
           npm run test --workspace @hanger-source/dsh-reactive-remote
       - name: 编译公开用法
         run: npm run typecheck:examples
-      - name: 从实际候选安装并验收后台、原生 UI 和 Skill
+      - name: 从实际候选安装并验收后台、可选原生域、原生 UI 和 Skill
         run: npm run release -- verify-artifacts --manifest .tmp/release/release-manifest.json
       - uses: actions/upload-artifact@v7.0.2
         with:
