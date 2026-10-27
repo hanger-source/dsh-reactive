@@ -1,5 +1,19 @@
 # @hanger-source/dsh-reactive-skills
 
+## 0.4.0
+
+### Patch Changes
+
+- 923671d: 局部 createResource 和 createReaction 可省略仅用于诊断的名称，继续使用相同的参数实例、Scope 和流，不增加名称注册或共享状态。Reaction 的来源与执行结果在同步完成时，等待订阅返回并接收清理函数后再结算；连接传播出的清理失败进入 failed，不回滚已交付的业务结果。开发 Skill 同步这两项公共语义。
+- baaa98b: 原生长期切面和日志观察跟随实际 Agent 的关闭与恢复，取消旧 owner 的在途读取并接续当前原生日志，避免迟到切面覆盖新现场或重复交付事件。原生挂载只保留一份可观察引用，输入、人工等待与 Operation 共用该事实；观察不自动恢复会话或启动模型，真正读取错误保持原语义。开发 Skill 同步说明观察寿命。
+- Updated dependencies [923671d]
+- Updated dependencies [baaa98b]
+  - @hanger-source/dsh-reactive@0.4.0
+  - @hanger-source/dsh-reactive-dsh@0.4.0
+  - @hanger-source/dsh-reactive-client@0.4.0
+  - @hanger-source/dsh-reactive-native-ui@0.4.0
+  - @hanger-source/dsh-reactive-remote@0.4.0
+
 ## 0.3.0
 
 ### Minor Changes
