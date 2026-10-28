@@ -9,6 +9,21 @@ import { observeResource } from '@hanger-source/dsh-reactive';
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
+test('共享来源工厂内同步退出owner立即关闭实际订阅，返回的清理仍释放且不再接入副作用', () => {
+  const scope = new Scope();
+  let opened = 0, released = 0;
+  const source = new Observable<number>(subscriber => {
+    scope.dispose();
+    if (!subscriber.closed) opened++;
+    subscriber.next(99);
+    return () => { released++; };
+  });
+  const shared = connect(scope, source), late: number[] = [];
+  assert.equal(opened, 0); assert.equal(released, 1);
+  assert.equal(shared.subscribe(value => late.push(value)).closed, true);
+  assert.deepEqual(late, []);
+});
+
 test('外部signal结束本次Promise等待并保留原因，其他消费者、已完成结果及迟到拒绝各自结算', async () => {
   const source = Promise.withResolvers<number>();
   const first = new AbortController(), second = new AbortController();

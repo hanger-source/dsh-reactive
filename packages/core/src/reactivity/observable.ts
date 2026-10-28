@@ -13,7 +13,11 @@ export function connect<T>(scope: Scope, source$: Observable<T>): Observable<T> 
   if (previous) return previous as Observable<T>;
   let replay: ReplaySubject<T> | undefined = new ReplaySubject<T>(1);
   const connection = new Subscription();
-  const shared$ = connectable(source$, {
+  const shared$ = connectable(new Observable<T>(subscriber => {
+    // 来源工厂返回前也可能同步释放Scope；实际订阅必须已经归owner持有。
+    connection.add(subscriber);
+    if (!subscriber.closed) source$.subscribe(subscriber);
+  }), {
     connector: () => replay!, resetOnDisconnect: false,
   });
   let current: Observable<T> | undefined = shared$;
