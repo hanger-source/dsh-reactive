@@ -19,7 +19,9 @@ Changesets 负责 SemVer、预发布递增、依赖更新与 CHANGELOG；发行�
 
 ## 记录与版本化
 
-框架优先以补丁和小版本完成增量建设，每一批同时落到相关公共合同、实现、直接消费者和版本指导。缺陷修复使用补丁版本，现有模型能够自然组合的新能力使用小版本。只有能力建设开始要求改变公共模型、状态 owner、生命周期责任或依赖方向，而继续叠加会造成重复状态、双轨执行或持续机械装配时，才进入大版本调整。版本升级由实际合同变化决定，不按改动文件数、示例数量或预定时间触发，也不为了维持版本号保留已退出的旧链路。
+项目目前处于 0.x 建设阶段，公共编程模型、owner 与生命周期合同仍在收敛。1.0 需要这些公共合同足够成熟，能够支撑开发者持续使用与有明确边界的演进；历史源码版本号不能作为成熟度证明。
+
+每轮建设同时落实相关公共合同、实现、直接消费者与版本指导，Changeset 随对应代码提交积累。一个自洽的能力变化及其直接影响完成并取得相称证据后统一版本化，不按每次 commit 发版，也不把无关变化无限积成一个大包。0.x 中，保持合同的缺陷修复记录 patch，新增能力或需要消费者迁移的合同调整记录 minor；不兼容调整提供对应迁移说明，不为内部重排或局部完成提升到 1.0。六包的最终版本继续由官方 release plan 合并决定，不增加另一套版本算法。
 
 在提交功能时同时记录用户可感知的变化：
 
@@ -27,7 +29,7 @@ Changesets 负责 SemVer、预发布递增、依赖更新与 CHANGELOG；发行�
 npm run changeset -- --minor @hanger-source/dsh-reactive --message "说明实际新增能力与行为边界"
 ```
 
-fixed 组会统一提升六包。修复使用 `--patch`，不兼容变化按正式 SemVer 选择相应变更类型，不手工编写版本递增算法；实际版本以 Changesets plan 和生成的 CHANGELOG 为准。
+fixed 组会统一提升六包。0.x 修复使用 `--patch`，能力扩展或不兼容合同调整使用 `--minor`；实际版本以 Changesets plan 和生成的 CHANGELOG 为准。进入 1.0 后，不兼容公共合同变化才按 major 管理。
 
 `plan` 读取 Changesets 的完整 release plan，不按默认比较分支过滤已经提交的变更。prepare、tag 与 publish 共用这一来源：仍有待应用的版本计划时拒绝发行，先执行 version 并提交其产物。预发布已归档的 Changeset 由 Changesets 自身识别，不重复计为未生成版本；next 要求对应的预发布状态，stable 要求正式版本化已完成。各包 CHANGELOG 的首个版本必须与包版本一致。
 
@@ -38,7 +40,7 @@ npm run release -- plan
 npm run release -- version --channel stable
 ```
 
-需要候选版时选择 `version --channel next`，使用标准 `changeset pre enter next` 与 `changeset version`。下一次候选继续同一预发布模式；正式版本用 `version --channel stable` 执行 `pre exit` 后再 version。脚本统一更新锁，但不 commit。检查六包版本、内部依赖、各包 CHANGELOG、Skill optional peers 与锁后，运行本批相称的检查并提交版本变更。
+需要候选版时选择 `version --channel next`，使用标准 `changeset pre enter next` 与 `changeset version`。下一次候选继续同一预发布模式；正式版本用 `version --channel stable` 执行 `pre exit` 后再 version。脚本在修改原有预发布状态或消费 Changesets 前，将对应原文复制到唯一的 `.trash/release-version-*` 目录；归档失败不进入官方 version。脚本统一更新锁，不 commit、tag、push 或 publish。检查六包版本、内部依赖、各包 CHANGELOG、Skill optional peers 与锁后，运行本批相称的检查并提交版本变更。
 
 `pack:workspaces` 仅验证六个 workspace 能被 npm 打包，跳过 lifecycle；它不是带源码追溯的发行候选，也不表示 registry 已发布。日常 CI 将实际 tgz 安装到仓外消费者，严格编译并实际加载公开能力；原生 UI 的物理安装同时按 browser 条件完整打包纯合同、SDK 与可选 UI，核验无外部导入、后台 renderer 或另一份 core。日常 CI 与发行验收共用这些消费者和唯一编译配置。发行工作流额外检查来源与 receipt，并执行 registry 发布和安装验收。
 
