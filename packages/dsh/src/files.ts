@@ -98,7 +98,10 @@ class SessionFiles implements NativeSessionFiles {
     this.#resources = createFileResources(this, this.scope);
     const logger = owner.context().logger;
     this.scope.signal.addEventListener('abort', () => {
-      void this.dispose().catch(error => logger.error(error));
+      void this.dispose().catch(error => {
+        owner.recordCleanupFailure(error);
+        logger.error(error);
+      });
     }, { once: true });
   }
   assertCurrent(): void {
@@ -214,9 +217,9 @@ export function createNativeFiles(options: NativeFilesOptions): NativeFiles {
   if (options.service !== 'provided') throw new Error('REACTIVE_NATIVE_FILES_PROVIDED_REQUIRED');
   const active = new Set<SessionFiles>();
   const sessions = new WeakMap<object, SessionFiles>();
-  const owner = new NativeCapabilityOwner('reactive-native-files', ['workspaceFiles', 'fs'], ctx => {
+  const owner: NativeCapabilityOwner = new NativeCapabilityOwner('reactive-native-files', ['workspaceFiles', 'fs'], function* (ctx) {
     if (!ctx.get('workspaceFiles') || !ctx.get('fs')) throw new Error('REACTIVE_NATIVE_FILES_REQUIRED');
-    ctx.effect(() => async () => {
+    yield owner.cleanup(async () => {
       const results = await Promise.allSettled([...active].map(session => session.dispose()));
       const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
       if (failures.length) throw new AggregateError(failures, 'REACTIVE_NATIVE_FILES_DISPOSAL_FAILED');

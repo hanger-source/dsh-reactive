@@ -5,7 +5,6 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session';
 import { filter, map, type Observable } from 'rxjs';
 import { mapResource, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
-import { requireActivePlugin } from './native-installation.ts';
 import { NativeCapabilityOwner, nativeObservation, nativeResource, nativeObservationScope, ownNativeValue, type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, nativeSessionEvents, nativeSessionInspections, type NativeSessionAccess } from './conversations/session-access.ts';
 
@@ -89,10 +88,10 @@ export function createNativeApproval(options: NativeApprovalOptions): NativeAppr
   }
   const sessions = new WeakMap<object, SessionApproval>();
   const policy = options.policy, require = options.require, answer = options.answer;
-  const owner = new NativeCapabilityOwner('reactive-native-approval', ['approval', 'tools'], async ctx => {
-    await requireActivePlugin(ctx.plugin(Approval, { policy }));
-    if (answer !== 'provided') ctx.on('approval/request', (request, next) => answer(request, next));
-    ctx.on('tools/pre-execute', async (execution, next) => {
+  const owner = new NativeCapabilityOwner('reactive-native-approval', ['approval', 'tools'], function* (ctx) {
+    yield ctx.plugin(Approval, { policy });
+    if (answer !== 'provided') yield ctx.on('approval/request', (request, next) => answer(request, next));
+    yield ctx.on('tools/pre-execute', async (execution, next) => {
       const previous = await next();
       if (previous.kind !== 'allow') return previous;
       execution.signal.throwIfAborted();

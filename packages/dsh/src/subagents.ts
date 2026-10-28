@@ -62,7 +62,7 @@ export interface NativeSubagents extends NativeCapability {
 /** 原生发现读侧。创建和投递仍须通过具有正式Program准入的执行入口。 */
 export function createNativeSubagents(options: NativeSubagentsOptions): NativeSubagents {
   if (options.service !== 'provided') throw new Error('REACTIVE_NATIVE_SUBAGENTS_PROVIDED_REQUIRED');
-  const owner = new NativeCapabilityOwner('reactive-native-subagents', ['subagents'], ctx => {
+  const owner = new NativeCapabilityOwner('reactive-native-subagents', ['subagents'], function* (ctx) {
     if (!ctx.get('subagents')) throw new Error('REACTIVE_NATIVE_SUBAGENTS_REQUIRED');
   });
   const sessions = new WeakMap<object, SessionSubagents>();

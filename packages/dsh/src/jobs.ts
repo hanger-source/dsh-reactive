@@ -4,7 +4,6 @@ import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs';
 import { Observable, map, of } from 'rxjs';
 import { fromSnapshot, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
-import { requireActivePlugin } from './native-installation.ts';
 import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, nativeResource, nativeToolNames, ownNativeValue, type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
 
@@ -159,13 +158,13 @@ export function createNativeJobs(options: NativeJobsOptions): NativeJobs {
     throw new Error('REACTIVE_NATIVE_JOBS_DELIVERY_REQUIRED');
   }
   const sessions = new WeakMap<object, SessionJobs>();
-  const owner = new NativeCapabilityOwner('reactive-native-jobs', ['jobs', ...(selected.tools ? ['tools'] : [])], async ctx => {
-    if (selected.registry.kind === 'local') await requireActivePlugin(ctx.plugin(LocalJobs, selected.registry.config ?? {}));
-    if (!ctx.get('jobs')) throw new Error('REACTIVE_NATIVE_JOBS_REQUIRED');
-    await requireActivePlugin(ctx.inject(['jobs'], native => {
+  const owner = new NativeCapabilityOwner('reactive-native-jobs', ['jobs', ...(selected.tools ? ['tools'] : [])], function* (ctx) {
+    if (selected.registry.kind === 'local') yield ctx.plugin(LocalJobs, selected.registry.config ?? {});
+    else if (!ctx.get('jobs')) throw new Error('REACTIVE_NATIVE_JOBS_REQUIRED');
+    yield ctx.inject(['jobs'], native => {
       native.jobs.attachController('reactive-native-jobs-sdk');
-    }));
-    if (selected.tools) await requireActivePlugin(ctx.plugin(ToolJobs, selected.tools));
+    });
+    if (selected.tools) yield ctx.plugin(ToolJobs, selected.tools);
   });
   const names = new Set(['job_list', 'job_output', 'job_kill']);
   const toolNames = selected.tools ? nativeToolNames(owner, name => names.has(name)) : nativeResource<readonly string[]>(owner.scope, () => {

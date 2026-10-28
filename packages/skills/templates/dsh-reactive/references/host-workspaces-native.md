@@ -50,11 +50,15 @@ createWorkspace 注册原生 existing 目录，不隐式 mkdir。Environment 不
 
 Subagents 的 dispose 只撤销读侧，不停止已有 Activation。普通原生发现不要求 Goal；带独立 Goal 的子程序委托继续通过 assembly.implementDelegation 和 NativeChildWork 组合 Action、Operation 与反馈。此入口不包装缺少可信 Program 执行前准入的 raw start/send，也不把这个缺口扩大为整个子 Agent 域不可用。
 
-Schedule 管理读取、冷 Team 投影及 Files 的显式读取使用所属 SDK 与调用者的取消信号；等待立即结算，不被迟到的原生查询回执拖住。Schedule task.update/delete 也以同一信号结束回执等待；预取消不进入原生操作，已受理的 CAS 和持久投递继续由原生 owner 完成，取消等待不表示回滚，不能据此自动重试。Files 仍独立跟踪真实 I/O，实例退出等待这些读取与 unwatch 完成。只读等待的取消不改变原生任务、提醒投递或成员执行的 owner。
+Schedule 管理读取、冷 Team 投影及 Files 的显式读取使用所属 SDK 与调用者的取消信号；等待立即结算，不被迟到的原生查询回执拖住。Files 仍独立跟踪真实 I/O，实例退出等待这些读取与 unwatch 完成。只读等待的取消不改变原生任务、提醒投递或成员执行的 owner。
 
-Team 的 createTask、updateTask 与 task.update 同样以调用信号和 SDK 寿命结束本次回执等待；预取消不进入原生事务。已经进入的原生创建或 CAS 更新继续由 Team journal 持久化，取消或 SDK 退出不代表回滚，不能据此无条件重试；通过原任务身份与实际 revision 核对结果。
+Team 的 createTask、updateTask、task.update 与 Schedule 的 task.update/delete 在通过执行前检查后同步返回 `NativeInvocation<T>`。已退出的 Scope、预取消、保留来源字段或固定目标不匹配等检查同步抛错，不启动原生调用，也没有可等待的调用对象；已经进入原生方法的拒绝才由 call.result 与 failed 活动表达。调用对象复用核心 Invocation 合同，source 包含真实 native 来源、原 sessionId、capability 与 operation，不冒充 Action 或工具调用。id 只关联本次内存调用，不是持久 commandId；进程重启仍按领域任务身份与原生持久事实恢复。
 
-能力实例的 `dispose()` 撤销观察并等待本次安装范围真正退出，即使外层 Context 已开始卸载或同步清理中再次调用退出。观察清理失败在实际原生资源静止后报告。实例自行安装的服务由原生 owner 执行 drain；选择 provided 的服务继续归外部宿主。`forSession(source)` 返回的会话 SDK 只释放自己的观察，不借此停止原生执行。
+普通代码保存 `const call = task.update(request)` 后用 `await call.result` 取得原生最终结果，订阅或重新等待不重做写入。`call.activity` 是同源 ResourceReader，可 read、peek、组合 observations$ 或交给 useResource；activity$ 是同一次调用的值流。读取活动只取得当下事实，不等待写入完成；running 仅表示已经调用原生方法，不证明通过了 FIFO、CAS 或持久化，原生方法拒绝是 ready 的 failed 调用事实。活动按本次 result 有限结算，独立于 SDK 与能力的观察 Scope；SDK 或能力退出期间及结束后，晚订阅仍取得同一次调用的实际终态，不把来源释放改判为写入取消。
+
+需要可取消的回执等待时使用 `call.wait({ signal })`。方法的 options.signal 保留执行前取消并作为默认 wait 信号；预取消不进入原生事务，调用者取消只结束该次 wait，SDK 退出结束所属 wait 与会话资源观察，原调用的 result 与有限活动继续结算。已经开始的原生创建、CAS 或删除仍由原生 owner 负责。保留原 call.result 可以在退出等待后继续取得成功或失败，不把取消误认为回滚，也不据此无条件重试；需要核对权威事实时仍使用原任务身份与实际 revision。
+
+能力实例的 `dispose()` 撤销 SDK 资源观察，等待本实例已经开始的实际写入及安装范围真正退出，即使外层 Context 已开始卸载或同步清理中再次调用退出。原生写入拒绝保留在原 call.result 与 failed 活动中，不冒充清理失败；观察或安装清理失败在实际原生资源静止后报告。实例自行安装的服务由原生 owner 执行 drain；provided 服务的卸载仍由外部宿主决定，框架不延长它的寿命，服务卸载导致的调用拒绝同样保留原 result/failed 事实。`forSession(source)` 返回的会话 SDK 只释放自己的资源观察和 call.wait，不借此停止原生执行或覆盖原调用结果及活动终态。
 
 必需的原生服务由正式 Fiber inject 持有依赖。provider 卸载会撤销能力实例及其借出的资源，并释放该实例自行安装的范围；之后安装同名 provider 不复活旧能力或重定向旧 SDK，需要创建并安装新实例。只读资源通过 error Observation 通知仍活跃的外部消费者；值流随自身 owner 正常完成。组件需要在 provider 退出后呈现失效时，应按 conversation 身份取得并保留原资源，观察该对象，不在每次重渲染时重新请求已退出能力。
 
@@ -78,7 +82,9 @@ Team 的 createTask、updateTask 与 task.update 同样以调用信号和 SDK �
 
 Jobs、Schedule、Team、Files、Approval、Clock 用 `capability.forSession(conversation)` 消费 Program 收到的原 conversation，也可消费 Host 签发的本地 SDK 句柄。不得拼接 `{ id }` 或复制 identity 对象代替原对象。取得会话能力不建立观察，首次订阅才连接；业务 hook 可以用 `useObservable(() => jobs.list$, [jobs])` 读同一流。启动 Job 或写入仍是显式命令，须在真实会话 owner 已经活跃时调用，不在 render 中执行。
 
-同一原来源共享 SDK 实例，Program 来源和外部句柄分别拥有观察寿命。Jobs、Schedule、Team 会话与固定任务的 `state` 是可直接传给 `useResource` 的只读资源，Job 的 `output` 独立表示非消费输出切面。`state.read(signal)`、peek、subscribe、values$、observations$ 共用现有资源机制；原 state$/list$/catalog$/projection$ 是相应值流，不能用它们推断旧值仍有效。最后一个资源消费者退出会撤销查询并撤下旧 ready，组件退订不 dispose 会话 SDK，也不停止已受理工作。SDK dispose、Program 失败或来源退出释放其全部观察，不杀死 Job、不撤回提醒、不取消 Team 成员。Program 来源不自动取得人工、ToolOccurrence 或 Goal 权限。
+同一原来源共享 SDK 实例，Program 来源和外部句柄分别拥有观察寿命。Jobs、Schedule、Team 会话与固定任务的 `state` 是可直接传给 `useResource` 的只读资源，Job 的 `output` 独立表示非消费输出切面。`state.read(signal)`、peek、subscribe、values$、observations$ 共用现有资源机制；原 state$/list$/catalog$/projection$ 是相应值流，不能用它们推断旧值仍有效。最后一个资源消费者退出会撤销查询并撤下旧 ready，组件退订不 dispose 会话 SDK，也不停止已受理工作。SDK dispose、Program 失败或来源退出释放其会话资源观察，不杀死 Job、不撤回提醒、不取消 Team 成员；独立的有限调用活动仍沿原 result 结算。Program 来源不自动取得人工、ToolOccurrence 或 Goal 权限。
+
+Team 的 `roster` 是原生 listMembers 的实时成员资源，`roster$` 直接使用它的 values$；保留原生 running、inactive、provisioning、failed 状态，不把持久 `state`、projection$ 或 members$ 的成员阶段当成当前 turn 运行态。普通函数用 roster.read(signal)、peek 或 listMembers 读取，RxJS 从 roster.observations$ 派生并保留 pending/error，hooks 用 useResource(roster) 消费同源事实；可直接与任务板、Subagents 目录或其他资源 combineResources。构造不读取，首次观察连接真实成员与 Agent 状态通知，最后消费者退出释放观察。冷会话保持 pending，实际 Agent 恢复后重新读取，读取不 resume、创建成员或启动模型。
 
 Jobs 的 jobs.job(id)、Schedule 与 Team 的 task(id) 都同步返回固定目标，同一来源与 id 复用对象。构造不读原生注册表、catalog 或投影，也不授予存在性与修改权限；可立即把它们的 state/output 交给 combineResources、useResource、Context 或资源 View。读取、历史和修改才分别进入原生存在性、所属会话、成员及 CAS 核验。Workspace、Conversation、值、资源和反应句柄同样不暴露所属 Scope；借用对象不能用于销毁共享 owner。
 

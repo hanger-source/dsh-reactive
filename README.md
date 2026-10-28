@@ -101,6 +101,8 @@ React 负责组件身份和声明提交，RxJS 负责业务流组合，dsh 负�
 
 `/schedule` 提供现有原生提醒的绑定、变更与历史观察、CAS 更新和删除；`/team` 提供真实成员和任务板的观察、任务创建与 CAS、等待及 interrupt；`/files` 在明确提供 WorkspaceFiles 的宿主按原会话目录读取并异步释放文件监听。它们位于 `@hanger-source/dsh-reactive-dsh` 的独立可选入口，未安装的能力不会进入宿主根入口的类型依赖。Schedule 创建与 Team spawn/send 的 Program 来源准入仍受上述原生接点限制。
 
+Team.roster 提供可与任务板共同组合的实时成员资源；持久成员阶段继续来自 Team.state 与 members$。Team 和 Schedule 的写入返回 NativeInvocation，保存 `const call = task.update(request)` 后用 `call.result` 取得完整结果、`call.activity` 观察同一次调用，或用 `call.wait({ signal })` 独立等待回执。释放 SDK 不改写原调用结果。迁移方式见[原生调用与独立等待](docs/migration-native-invocations.md)。
+
 [多工作区周期巡检](examples/fleet-inspection/application.ts) 把共享感知、普通 Action、程序资源、定时反应和异常人工参与组合为完整应用。周期关系直接使用 RxJS `timer`，寿命属于应用进程；普通检查不启动模型，异常才通过固定服务来源进入选定会话。持久提醒仍归原生 Schedule，业务修订与正式结果仍归实际业务服务。
 
 ## 开发

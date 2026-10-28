@@ -2,7 +2,6 @@ import * as TimeContext from '@deepseek-ai/dsh-time-context';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
 import { filter, map, type Observable } from 'rxjs';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
-import { requireActivePlugin } from './native-installation.ts';
 import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, ownNativeValue, type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, nativeSessionEvents, type NativeSessionAccess } from './conversations/session-access.ts';
 
@@ -42,8 +41,8 @@ export function createNativeClock(options: NativeClockOptions): NativeClock {
   const selected = structuredClone(options);
   const timeZone = new Intl.DateTimeFormat('en', { timeZone: selected.timeZone }).resolvedOptions().timeZone;
   const sessions = new WeakMap<object, SessionClock>();
-  const owner = new NativeCapabilityOwner('reactive-native-clock', ['sessionProjections'], async ctx => {
-    await requireActivePlugin(ctx.plugin(TimeContext, { ...selected, timeZone }));
+  const owner = new NativeCapabilityOwner('reactive-native-clock', ['sessionProjections'], function* (ctx) {
+    yield ctx.plugin(TimeContext, { ...selected, timeZone });
   });
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(), timeZone,
     format(instant: Date | number, format: Omit<Intl.DateTimeFormatOptions, 'timeZone'> = {}) {

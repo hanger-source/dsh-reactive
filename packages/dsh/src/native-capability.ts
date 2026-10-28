@@ -1,7 +1,7 @@
 import { symbols, type Context, type Fiber } from '@deepseek-ai/cordis';
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools';
-import { Observable, distinctUntilChanged, map } from 'rxjs';
-import { createResource, fromSnapshot, ResourceReader, z, type Observation, type ConversationIdentity } from '@hanger-source/dsh-reactive';
+import { BehaviorSubject, Observable, distinctUntilChanged, firstValueFrom, map, takeWhile } from 'rxjs';
+import { abortable, createResource, fromSnapshot, ResourceReader, z, type CancellationOptions, type Invocation, type InvocationActivity, type Json, type Observation, type ConversationIdentity } from '@hanger-source/dsh-reactive';
 import { Scope, connect } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin, type NativeInstallation } from './native-installation.ts';
 import type { NativeSessionAccess } from './conversations/session-access.ts';
@@ -9,9 +9,25 @@ import type { NativeSessionAccess } from './conversations/session-access.ts';
 /** 宿主选择的一次能力安装；必需服务退出会撤销实例，不转向替换后的provider。 */
 export interface NativeCapability {
   readonly install: NativeInstallation;
-  /** 撤销本实例观察并等待其安装范围真正退出；安装前回滚也可调用，借入服务仍由外部宿主持有。 */
+  /** 撤销本实例观察，等待已开始调用结算并释放安装范围；调用拒绝保留在各自result中，借入服务仍由外部宿主持有。 */
   dispose(): Promise<void>;
 }
+
+/** 一次真实原生调用的来源事实；不替代原生成员、权限与事务校验。 */
+export interface NativeInvocationSource {
+  readonly kind: 'native';
+  readonly sessionId: string;
+  readonly capability: string;
+  readonly operation: string;
+}
+
+/** 原生调用立即开始一次；result与有限调用事实独立于SDK等待，不能据running推断事务已受理。 */
+export interface NativeInvocation<T> extends Invocation<T, Json, NativeInvocationSource> {
+  /** 只等待本次回执；SDK或本次signal退出不改变result，也不回滚已经开始的原生写入。 */
+  wait(options?: CancellationOptions): Promise<T>;
+}
+
+type NativeSetupResource = (Fiber & PromiseLike<Fiber>) | (() => unknown);
 
 /** 仅用于编程时选择句柄；真正身份由 Host 的 exact 对象登记核验。 */
 export interface NativeSessionHandle { readonly id: string; }
@@ -35,33 +51,54 @@ export class NativeCapabilityOwner {
   #reader?: Fiber;
   #parent?: Context;
   #disposing?: Promise<void>;
+  #draining?: Promise<void>;
+  #pending = new Set<Promise<void>>();
   #failures = new Set<unknown>();
 
-  constructor(name: string, services: readonly string[], setup: (ctx: Context) => void | PromiseLike<void>) {
+  constructor(private readonly name: string, services: readonly string[], setup: (ctx: Context) => Iterable<NativeSetupResource>) {
     this.install = async parent => {
       this.scope.assertActive();
       if (this.#installation) throw new Error('REACTIVE_NATIVE_CAPABILITY_ALREADY_INSTALLED');
       const stop = () => this.stopObservations();
+      const stopAndDrain = () => this.stopAndDrain();
       let reader: Fiber | undefined;
       this.#parent = parent;
       const owner = this;
       const installation = parent.plugin({ name, async apply(ctx: Context) {
-        // 启动失败也结束观察；成功时另登记在子插件之后，退出先撤观察再等原生释放。
-        ctx.effect(() => stop);
-        await setup(ctx);
-        ctx.effect(() => stop);
-        reader = await requireActivePlugin(ctx.plugin({ name: name + ':queries', inject: [...services], apply(readContext: Context) {
-          owner.scope.assertActive();
-          readContext.effect(() => () => {
-            try { stop(); }
-            finally {
-              // 读依赖退出也释放本实例安装的资源；不等待自己的父Fiber，避免卸载自等待。
-              if (owner.#installation?.state === 1 || owner.#installation?.state === 2) {
-                void owner.dispose().catch(() => {});
+        const resources = (function* (): Generator<NativeSetupResource, void> {
+          yield stopAndDrain;
+          yield* setup(ctx);
+          const queries = ctx.plugin({ name: name + ':queries', inject: [...services], apply(readContext: Context) {
+            owner.scope.assertActive();
+            readContext.effect(() => () => {
+              try { stop(); }
+              finally {
+                // 读依赖退出也释放本实例安装的资源；不等待自己的父Fiber，避免卸载自等待。
+                if (owner.#installation?.state === 1 || owner.#installation?.state === 2) {
+                  void owner.dispose().catch(() => {});
+                }
               }
-            }
-          });
-        } }));
+            });
+          } });
+          reader = queries;
+          yield queries;
+          yield stopAndDrain;
+        })();
+        // IteratorResult保留原thenable disposer身份；下一项只在前一Fiber活跃后构造。
+        // async generator会自动await yield值，丢失Cordis收拢同级disposer所需的函数身份。
+        await ctx.effect(() => ({
+          [Symbol.asyncIterator]() {
+            let previous: Fiber & PromiseLike<Fiber> | undefined;
+            return { async next(): Promise<IteratorResult<() => unknown, void>> {
+              if (previous) await requireActivePlugin(previous);
+              const next = resources.next();
+              if (next.done) return next;
+              const resource = next.value;
+              previous = typeof resource === 'function' ? undefined : resource;
+              return { done: false, value: typeof resource === 'function' ? resource : resource.dispose };
+            } };
+          },
+        }));
       } });
       this.#installation = installation;
       await requireActivePlugin(installation);
@@ -93,9 +130,65 @@ export class NativeCapabilityOwner {
     return context;
   }
 
+  recordCleanupFailure(error: unknown): void {
+    this.#failures.add(error);
+  }
+
+  /** 自有清理失败交由最终dispose报告，正式effect仍继续释放其余资源。 */
+  cleanup(release: () => void | PromiseLike<void>): () => Promise<void> {
+    return async () => {
+      try { await release(); }
+      catch (error) { this.recordCleanupFailure(error); }
+    };
+  }
+
+  invoke<T>(source: Pick<NativeInvocationSource, 'sessionId' | 'operation'>, run: () => PromiseLike<T> | T, signal: AbortSignal): NativeInvocation<T> {
+    signal.throwIfAborted(); this.context();
+    const id = globalThis.crypto.randomUUID();
+    const completion = Promise.withResolvers<T>();
+    const state = new BehaviorSubject<Observation<InvocationActivity>>({ status: 'ready', generation: 1,
+      observedAt: Date.now(), value: { state: 'running' } });
+    const activity = new ResourceReader<InvocationActivity>({ peek: () => state.value,
+      observations$: state.pipe(takeWhile(value => value.status === 'ready' && value.value.state === 'running', true)) });
+    const publish = (value: InvocationActivity) => state.next({ status: 'ready', generation: state.value.generation + 1,
+      observedAt: Date.now(), value });
+    const settled = completion.promise.then(() => { publish({ state: 'returned' }); }, error => {
+      publish({ state: 'failed', phase: 'execute', error });
+    });
+    // 进入原生方法之前登记；同步重入的释放也必须加入同一次真实结算。
+    this.#pending.add(settled);
+    void settled.then(() => this.#pending.delete(settled), error => {
+      this.#failures.add(error); this.#pending.delete(settled);
+    });
+    const invocation: NativeInvocation<T> = Object.freeze({ id,
+      source: Object.freeze({ kind: 'native' as const, sessionId: source.sessionId, capability: this.name, operation: source.operation }),
+      result: completion.promise, activity, activity$: activity.values$,
+      wait(options: CancellationOptions = {}) {
+        const waiting = options.signal ? AbortSignal.any([signal, options.signal]) : signal;
+        return firstValueFrom(abortable(() => completion.promise, waiting));
+      },
+    });
+    try { completion.resolve(run()); } catch (error) { completion.reject(error); }
+    return invocation;
+  }
+
   private stopObservations(): void {
     try { this.scope.dispose(); }
     catch (error) { this.#failures.add(error); throw error; }
+  }
+
+  private stopAndDrain(): Promise<void> {
+    if (this.#draining) return this.#draining;
+    const completion = Promise.withResolvers<void>();
+    this.#draining = completion.promise;
+    void (async () => {
+      try { this.stopObservations(); } catch { /* 已保存清理失败，仍等待每个原生调用。 */ }
+      while (this.#pending.size) {
+        const results = await Promise.allSettled(this.#pending);
+        for (const result of results) if (result.status === 'rejected') this.#failures.add(result.reason);
+      }
+    })().then(completion.resolve, completion.reject);
+    return this.#draining;
   }
 
   dispose(): Promise<void> {
@@ -103,7 +196,7 @@ export class NativeCapabilityOwner {
     const completion = Promise.withResolvers<void>();
     this.#disposing = completion.promise;
     void (async () => {
-      try { this.stopObservations(); } catch { /* 该owner已保存失败，仍须等待原生资源。 */ }
+      try { await this.stopAndDrain(); } catch (error) { this.#failures.add(error); }
       if (this.#installation) {
         try { await this.#installation.dispose(); } catch (error) { this.#failures.add(error); }
         // 原生公开disposer是single-shot；外层已经开始卸载时仍加入原Fiber。

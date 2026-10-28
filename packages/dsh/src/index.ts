@@ -19,4 +19,4 @@ export { deepseek, nativeModel, piAi } from './models.ts';
 export type { RuntimeModel, DeepSeekOptions, PiAiOptions } from './models.ts';
 export type { ServiceConversation } from './conversations/handle.ts';
 export { nativeCapabilities } from './native-capability.ts';
-export type { NativeCapability, NativeSessionHandle, NativeSessionSource } from './native-capability.ts';
+export type { NativeCapability, NativeSessionHandle, NativeSessionSource, NativeInvocation, NativeInvocationSource } from './native-capability.ts';

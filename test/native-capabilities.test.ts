@@ -32,8 +32,11 @@ const nativeArguments = z.object({ marker: z.string().regex(/^[a-z-]+$/u) }).str
 test('外层原生卸载与能力退出加入同一清理，观察释放失败也要等原生资源静止', async () => {
   const parent = new Context();
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
-  const owner = new NativeCapabilityOwner('native-owner-cleanup', [], ctx => {
-    ctx.effect(() => async () => { entered.resolve(); await release.promise; });
+  const cleanupFailure = new Error('NATIVE_RESOURCE_RELEASE_FAILED');
+  let released = false;
+  const owner: NativeCapabilityOwner = new NativeCapabilityOwner('native-owner-cleanup', [], function* () {
+    yield () => { released = true; };
+    yield owner.cleanup(async () => { entered.resolve(); await release.promise; throw cleanupFailure; });
   });
   const failure = new Error('OBSERVATION_RELEASE_FAILED');
   let reentrant: Promise<void> | undefined;
@@ -55,7 +58,11 @@ test('外层原生卸载与能力退出加入同一清理，观察释放失败�
     release.resolve();
     const error = await result;
     assert.ok(error instanceof AggregateError);
-    assert.deepEqual(error.errors, [failure]);
+    assert.equal(released, true, '原生资源清理拒绝后仍释放同一正式effect中其余资源');
+    assert.equal(error.errors.length, 2);
+    assert.ok(error.errors[0] instanceof AggregateError);
+    assert.deepEqual(error.errors[0].errors, [failure]);
+    assert.equal(error.errors[1], cleanupFailure);
   } finally {
     release.resolve();
     await external;

@@ -161,9 +161,9 @@ export type InvocationActivity<Observed extends Json = Json> =
   | { readonly state: 'returned'; readonly observation?: Observed; readonly observationError?: unknown }
   | { readonly state: 'failed'; readonly phase: InvocationPhase; readonly error: unknown };
 
-export interface Invocation<Output, Observed extends Json = Json> {
+export interface Invocation<Output, Observed extends Json = Json, Source = ActionSource> {
   readonly id: string;
-  readonly source: ActionSource;
+  readonly source: Source;
   /** 显式调用时即启动；读取或订阅不会重新执行。 */
   readonly result: Promise<Output>;
   /** 本次调用的同源当前事实；read 不等待业务完成，业务失败仍是 ready 的调用事实。 */

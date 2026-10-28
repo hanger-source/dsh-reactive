@@ -5,9 +5,8 @@ import type { ScheduleId } from '@deepseek-ai/dsh-schedule/client';
 import { Observable, firstValueFrom, map } from 'rxjs';
 import { abortable, observeResource, mapResource, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
-import { requireActivePlugin } from './native-installation.ts';
 import { NativeCapabilityOwner, nativeResource, nativeObservationScope, ownNativeValue,
-  type NativeCapability, type NativeSessionSource } from './native-capability.ts';
+  type NativeCapability, type NativeInvocation, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
 
 export type { ScheduleId, ScheduleRecord, ScheduleCatalogEntry, ScheduleDeliveryReceipt, ScheduleDeliveryRecord,
@@ -34,8 +33,8 @@ export interface NativeScheduleTask {
   /** 完整 ScheduleRecord，可原样用于 expected；不混入 catalog 的额外字段。 */
   read(options?: CancellationOptions): Promise<ScheduleRecord | undefined>;
   history(page: NativeScheduleHistory, options?: CancellationOptions): Promise<ScheduleDeliveryHistoryResult>;
-  update(request: NativeScheduleUpdate, options?: CancellationOptions): Promise<ScheduleUpdateResult>;
-  delete(options?: CancellationOptions): Promise<ScheduleDeleteResult>;
+  update(request: NativeScheduleUpdate, options?: CancellationOptions): NativeInvocation<ScheduleUpdateResult>;
+  delete(options?: CancellationOptions): NativeInvocation<ScheduleDeleteResult>;
 }
 
 export interface NativeSessionSchedule {
@@ -115,16 +114,20 @@ class SessionSchedule implements NativeSessionSchedule {
           signal.throwIfAborted(); this.context();
           return ownNativeValue(result);
         },
-        update: async (request: NativeScheduleUpdate, opts: CancellationOptions = {}) => {
+        update: (request: NativeScheduleUpdate, opts: CancellationOptions = {}) => {
           const signal = this.signal(opts);
           const selected = structuredClone(request);
           if (selected.expected.id !== id) throw new Error('REACTIVE_NATIVE_SCHEDULE_EXPECTED_MISMATCH');
-          // 原生 signal 保留执行前取消；写入受理后，取消只结束消费者等待。
-          return firstValueFrom(abortable(async () => ownNativeValue(await this.service().update({ ...selected, id, sessionId: this.access.sessionId }, signal)), signal));
+          const service = this.service(), sessionId = this.access.sessionId;
+          // 原生signal保留FIFO后的执行前取消；结果与独立回执等待分别结算。
+          return this.owner.invoke({ sessionId, operation: 'update' }, async () =>
+            ownNativeValue(await service.update({ ...selected, id, sessionId }, signal)), signal);
         },
-        delete: async (opts: CancellationOptions = {}) => {
+        delete: (opts: CancellationOptions = {}) => {
           const signal = this.signal(opts);
-          return firstValueFrom(abortable(async () => ownNativeValue(await this.service().delete({ id, sessionId: this.access.sessionId }, signal)), signal));
+          const service = this.service(), sessionId = this.access.sessionId;
+          return this.owner.invoke({ sessionId, operation: 'delete' }, async () =>
+            ownNativeValue(await service.delete({ id, sessionId }, signal)), signal);
         },
       });
       this.#tasks.set(id, task);
@@ -145,8 +148,8 @@ export interface NativeSchedule extends NativeCapability {
 export function createNativeSchedule(options: NativeScheduleOptions): NativeSchedule {
   const selected = structuredClone(options);
   if (selected.service.kind !== 'install' && selected.service.kind !== 'provided') throw new Error('REACTIVE_NATIVE_SCHEDULE_SERVICE_SELECTION_INVALID');
-  const owner = new NativeCapabilityOwner('reactive-native-schedule', ['schedule'], async ctx => {
-    if (selected.service.kind === 'install') await requireActivePlugin(ctx.plugin(ScheduleService, selected.service.config ?? {}));
+  const owner = new NativeCapabilityOwner('reactive-native-schedule', ['schedule'], function* (ctx) {
+    if (selected.service.kind === 'install') yield ctx.plugin(ScheduleService, selected.service.config ?? {});
     else if (!ctx.get('schedule')) throw new Error('REACTIVE_NATIVE_SCHEDULE_REQUIRED');
   });
   const sessions = new WeakMap<object, SessionSchedule>();

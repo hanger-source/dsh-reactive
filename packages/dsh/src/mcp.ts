@@ -2,7 +2,6 @@ import * as McpClient from '@deepseek-ai/dsh-mcp-client';
 import McpResources from '@deepseek-ai/dsh-mcp-resources';
 import type { Observable } from 'rxjs';
 import type { ResourceReader } from '@hanger-source/dsh-reactive';
-import { requireActivePlugin } from './native-installation.ts';
 import { NativeCapabilityOwner, nativeToolNames, type NativeCapability } from './native-capability.ts';
 
 export type { Config as NativeMcpConnection, ReconnectConfig } from '@deepseek-ai/dsh-mcp-client';
@@ -35,10 +34,10 @@ export function createNativeMcp(options: NativeMcpOptions): NativeMcp {
   }
   if (selected.connection.failOnStartupError !== true) throw new Error('REACTIVE_MCP_STARTUP_MUST_BE_CONFIRMED');
   if (!/^[A-Za-z0-9_-]{1,32}$/u.test(selected.connection.serverName)) throw new Error('REACTIVE_MCP_SERVER_NAME_INVALID');
-  const owner = new NativeCapabilityOwner('reactive-native-mcp', ['tools', ...(selected.resources === 'disabled' ? [] : ['mcpResources'])], async ctx => {
-    if (selected.resources === 'install') await requireActivePlugin(ctx.plugin(McpResources));
+  const owner = new NativeCapabilityOwner('reactive-native-mcp', ['tools', ...(selected.resources === 'disabled' ? [] : ['mcpResources'])], function* (ctx) {
+    if (selected.resources === 'install') yield ctx.plugin(McpResources);
     if (selected.resources === 'provided' && !ctx.get('mcpResources')) throw new Error('REACTIVE_MCP_RESOURCES_REQUIRED');
-    await requireActivePlugin(ctx.plugin(McpClient, selected.connection));
+    yield ctx.plugin(McpClient, selected.connection);
   });
   const prefix = `mcp__${selected.connection.serverName}__`;
   const resourceNames = new Set(['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']);

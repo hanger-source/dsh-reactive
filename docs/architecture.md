@@ -81,7 +81,7 @@ flowchart LR
 
 子 Agent 的发现与执行保留不同责任。Subagents 读侧直接消费原生父目录和递归查询，one-shot、continuable、external 及分支诊断使用原生类型；catalog 是现有 Scope 下的资源，冷读不加载 Agent。NativeChildWork 只表达带独立 Goal 的子程序委托，Team 继续拥有具名成员及任务板；三者不合并为泛化任务状态，也不因观察目录建立新的 Goal 或输入。
 
-Jobs 的 `job(id)`、Schedule 与 Team 的 `task(id)` 同步构造原来源下的固定目标，复用同一个目标对象及资源。构造不读注册表、投影或 catalog，也不证明目标存在或授予控制权；读取、历史及原生修改各自在实际边界核验归属与权限。三类对象的资源可以直接组合，首次观察才建立查询。Schedule 与 Team 的缺席目标在资源或 read 中为 undefined；Job 未知或外来目标由其原生读取与控制边界拒绝。Schedule update/delete 的取消结束本次回执等待，预取消不开始工作；已受理 CAS 和持久投递仍归原生 owner，不能把等待取消当作回滚或自动重试依据。
+Jobs 的 `job(id)`、Schedule 与 Team 的 `task(id)` 同步构造原来源下的固定目标，复用同一个目标对象及资源。构造不读注册表、投影或 catalog，也不证明目标存在或授予控制权；读取、历史及原生修改各自在实际边界核验归属与权限。三类对象的资源可以直接组合，首次观察才建立查询。Schedule 与 Team 的缺席目标在资源或 read 中为 undefined；Job 未知或外来目标由其原生读取与控制边界拒绝。Team 与 Schedule 的写入同步返回 NativeInvocation，result 保存同一次原生结算的自有快照，activity 是有限调用事实，wait 单独控制消费者等待。预取消不开始调用，已开始的 CAS 和持久投递仍归原生 owner，不能把等待取消当作回滚或自动重试依据。
 
 显式 owner 的资源把“来源完成”与“有效性结束”分开：正常有限来源立即释放自己的连接，资源仍可观察 owner 的后续撤销，不让外部活跃消费者永久保留旧 ready。值流同样沿读取 owner 完成；业务结果使用 Invocation.result 或 Operation.settled，活动状态不借用 RxJS EOF 表示业务完成。无显式读取 owner 的不可变事实和普通 Observable 保留自己的有限完成语义。
 
@@ -206,6 +206,10 @@ Jobs、Schedule、Team、Files、Approval 与 Clock 的 `forSession` 接受 Host
 Jobs、Schedule 与 Team 的会话 SDK 和固定任务提供只读 `state` 资源；Job 的 `output` 单独提供非消费输出切面。普通 read、peek、完整 Observation、RxJS、hooks 和资源 View 共享正式 Resource 实例，不从值流另存有效性。状态构造不读取，首次消费者建立原生监听后读取，最后消费者退出撤销查询并撤下旧 ready。Schedule 和 Team 发生变化时立即 pending，旧切面失效，读取失败成为 error，后续原生通知可恢复。资源只持有观察，执行、CAS、投递与成员仍由各自原生 owner 负责。显式 SDK list、catalog、readProjection、任务 read 等单次查询保留原生权威读取含义，不因已有资源快照跳过调用。
 
 Team 的 `task(id)` 同步绑定固定来源会话与 id，构造不读取原生任务板或证明目标存在。同一 SDK 重复取得同一任务会复用对象；`state`、`state$`、`read` 与显式 `update` 共用原生投影和任务 CAS，在实际读取或修改时核验存在、归属与权限，不保存另一份任务状态或修订。删除从任务板撤下后，原对象的读侧返回 undefined；原生 getTask 的墓碑查询保留其独立语义。冷 Lead 可读取和绑定任务，写入仍要求真实活跃成员；任务对象不会随其他选择或调用参数改指目标。Team 投影观察跟随实际 Agent 关闭、恢复，取消旧读取，不因读取创建成员或启动模型。
+
+Team 的 roster 与 roster$ 读取原生 listMembers 的运行态，和持久 state、members$ 分别表达运行状态与成员阶段。首次观察连接公开成员及 Agent 状态通知，再读取同一原生成员；冷会话保持 pending，不通过读取创建 Agent。运行态可与任务板和其他资源共同派生参与条件，不在业务 hook 里复制 waitForChange 循环。
+
+NativeCapabilityOwner 只保留本实例已开始调用的结算关系，不建立原生写入队列。调用的原始拒绝进入自身 result 与 failed 活动；正常业务拒绝不会污染能力清理。SDK 退出只撤本消费者等待和读侧，有限调用事实继续保留终态。正式 Cordis effect 收拢实际 Fiber 的 disposer，在退出时先截新调用、撤观察并等写入结算，再释放读依赖与自有 provider。provided 服务仍由外部宿主持有，框架不延长其寿命；它提前退出引起的调用拒绝仍沿原调用报告。
 
 Files 的 text(path, range)、metadata(path)、directory(path) 返回既有 ResourceInstance，固定原始路径和读取窗口，提供同一个 read、peek、values$、observations$ 与失效入口。构造只建立参数身份，首次观察等待正式 watch 的 ready 后读取；同一 SDK、同一原始路径的不同资源共享原生 watch，最后一个查询退出触发原生异步 unwatch，SDK dispose 等待实际退出。文本页、目录与元数据仍由 WorkspaceFiles 决定版本、范围、限额和错误，目录每次变更都重新列举，不因目录版本相同忽略子项变化。文件范围直接来自已核验会话 header，不为文件读取冲刷会话日志，也不因关闭 Agent 停止仍有效来源的文件观察。字节读取保留每次独立缓冲区，不加入共享快照。公开产物通过 Program 的资源 View 选择内容并沿原权限提供，本地与远程不维护另一份文件状态。
 
