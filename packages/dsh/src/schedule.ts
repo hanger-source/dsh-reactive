@@ -141,7 +141,7 @@ export interface NativeSchedule extends NativeCapability {
 export function createNativeSchedule(options: NativeScheduleOptions): NativeSchedule {
   const selected = structuredClone(options);
   if (selected.service.kind !== 'install' && selected.service.kind !== 'provided') throw new Error('REACTIVE_NATIVE_SCHEDULE_SERVICE_SELECTION_INVALID');
-  const owner = new NativeCapabilityOwner('reactive-native-schedule', async ctx => {
+  const owner = new NativeCapabilityOwner('reactive-native-schedule', ['schedule'], async ctx => {
     if (selected.service.kind === 'install') await requireActivePlugin(ctx.plugin(ScheduleService, selected.service.config ?? {}));
     else if (!ctx.get('schedule')) throw new Error('REACTIVE_NATIVE_SCHEDULE_REQUIRED');
   });

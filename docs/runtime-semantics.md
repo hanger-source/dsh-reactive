@@ -16,6 +16,10 @@
 
 ## 查询、共享与长期关系
 
+`ResourceInstance`、`ResourceValue`、`shareResource` 和显式指定 owner signal 的 `ResourceReader` 把 owner 撤销表达为资源失效。仍活跃的观察先收到原 `signal.reason` 的 error Observation，再正常完成；退出后订阅只取得新的撤销观察，不连接来源或回放旧业务值。`peek`、`read` 和回调式 `subscribe` 拒绝已经结束的 owner。`values$` 在自身 owner 退出时正常完成；owner 活跃时的查询错误仍是值流错误。普通 Observable 的有限完成不被推断为 owner 退出，已结束的有限订阅也不重新开启。
+
+Scope 子树共享父撤销的原原因，父退出后即使尚在执行其他同步清理，子资源也已经不可使用。实际释放仍走原有 Scope 树，父汇总子清理错误；逻辑撤销不代替原生异步释放的完成回执。
+
 `useObservable(factory, deps)` 用 React `useMemo` 保持来源身份，并以 `useSyncExternalStore` 观察当前快照。factory 只构造 Observable；订阅在提交后的观察阶段建立。首次未发出为 pending，成功发出为 ready，来源错误为 error；空完成产生错误，已经发出后完成保留最后值。观察退出后断开所属查询连接，再次观察时按该来源及订阅语义重新准备。
 
 `useShared(factory, deps)` 返回标准 RxJS 共享查询，使用一个值的 ReplaySubject。多个观察者共享来源，最后一个观察者退出时断开尚未终止的来源；完成与错误在该来源身份下保留。它不因为某次通知或重新订阅自动重试，也不把查询变化转换成模型输入。

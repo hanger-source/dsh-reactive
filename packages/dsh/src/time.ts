@@ -42,7 +42,7 @@ export function createNativeClock(options: NativeClockOptions): NativeClock {
   const selected = structuredClone(options);
   const timeZone = new Intl.DateTimeFormat('en', { timeZone: selected.timeZone }).resolvedOptions().timeZone;
   const sessions = new WeakMap<object, SessionClock>();
-  const owner = new NativeCapabilityOwner('reactive-native-clock', async ctx => {
+  const owner = new NativeCapabilityOwner('reactive-native-clock', ['sessionProjections'], async ctx => {
     await requireActivePlugin(ctx.plugin(TimeContext, { ...selected, timeZone }));
   });
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(), timeZone,

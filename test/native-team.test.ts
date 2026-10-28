@@ -4,35 +4,41 @@ import { mkdtemp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as immediate } from 'node:timers/promises';
-import { useLayoutEffect } from 'react';
-import { ReplaySubject, filter, firstValueFrom, timeout, type Subscription } from 'rxjs';
+import { useLayoutEffect, useMemo } from 'react';
+import { ReplaySubject, filter, firstValueFrom, of, timeout, type Subscription } from 'rxjs';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
-import { symbols } from '@deepseek-ai/cordis';
+import { symbols, type Fiber } from '@deepseek-ai/cordis';
+import TeamService from '@deepseek-ai/dsh-experimental-agent-team';
 import { SessionId } from '@deepseek-ai/dsh-session';
-import { defineApplication, defineEnvironment, defineProgram, defineSurface, z, type Observation } from '@hanger-source/dsh-reactive';
-import { implementProgram, useResource } from '@hanger-source/dsh-reactive/program';
-import { createRuntime, nativeModel, type ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
+import { defineApplication, defineEnvironment, defineProgram, defineSurface, view, z, type Observation } from '@hanger-source/dsh-reactive';
+import { Expose, implementProgram, useResource } from '@hanger-source/dsh-reactive/program';
+import { createRuntime, nativeModel, requireActivePlugin, type ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeTeam, TeamError, type NativeSessionTeam, type TeamProjection, type TeamTaskView } from '@hanger-source/dsh-reactive-dsh/team';
 import { text } from './native-support.ts';
 
-test('Team固定任务沿真实任务板执行CAS和依赖派生，关闭恢复不丢观察，冷读与SDK释放不执行模型或重定向目标', async () => {
+for (const service of ['install', 'provided'] as const) {
+test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传播，不执行模型或重定向旧能力`, async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-native-team-'));
   const directory = join(root, 'workspace'); await mkdir(directory);
-  const capability = createNativeTeam({ service: { kind: 'install' } });
-  const program = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+  const capability = createNativeTeam({ service: { kind: service } });
+  let provider: (Fiber & PromiseLike<Fiber>) | undefined;
+  const program = defineProgram({ input: z.null(), surface: defineSurface({ views: { phase: view(z.string()) }, actions: {} }) });
   const programTeams = new Map<string, NativeSessionTeam>();
   const errors: unknown[] = [];
   let modelCalls = 0;
   const definition = defineApplication({ name: 'native-team', admit: async () => {}, environments: [defineEnvironment({
     id: 'work', instructions: 'Team管理不产生模型输入', program: implementProgram(program, { Component({ conversation }) {
-      const team = capability.forSession(conversation);
-      useResource(team.state);
+      const team = useMemo(() => capability.forSession(conversation), [conversation]);
+      const observed = useResource(team.state);
       useLayoutEffect(() => { programTeams.set(conversation.identity.sessionId, team); }, [conversation, team]);
-      return null;
+      return Expose({ surface: program.surface, value: { views: { phase: of(observed.state.status) } } });
     } }),
   })] });
   const runtime = await createRuntime(() => definition, { home: join(root, 'home'), actorId: 'team-owner',
-    installNative: capability.install, onError: event => errors.push(event.error),
+    installNative: async (ctx, home) => {
+      if (service === 'provided') { provider = ctx.plugin(TeamService, {}); await requireActivePlugin(provider); }
+      await capability.install(ctx, home);
+    }, onError: event => errors.push(event.error),
     model: nativeModel({ provider: 'native-team', model: 'unused', create: () => new class extends LlmAdapter {
       stream() { modelCalls++; return text('任务板读写不需要模型'); }
     }() }),
@@ -149,9 +155,32 @@ test('Team固定任务沿真实任务板执行CAS和依赖派生，关闭恢复�
     team.dispose();
     await assert.rejects(task.read(), /REACTIVE_SCOPE_DISPOSED/);
     assert.deepEqual(await programTask.read(), completed, '外部SDK释放不停止Program的独立观察或删除任务');
+    await immediate();
+    assert.equal(await resumed.readView('phase'), 'ready');
+    const held = programTeams.get(session.id)!;
+    const retiring: Observation<TeamProjection>[] = [];
+    held.state.observations$.subscribe(value => retiring.push(value));
+    if (provider) await provider.dispose();
+    else await capability.dispose();
+    await immediate();
+    assert.throws(() => held.state.peek(), /REACTIVE_SCOPE_DISPOSED/);
+    assert.equal(retiring.at(-1)!.status, 'error', '借出资源先撤下旧ready再完成');
+    assert.equal(await resumed.readView('phase'), 'error', '仍活跃的Program hook与公开视图取得同一撤销事实');
+    assert.throws(() => capability.forSession(resumed!), /REACTIVE_SCOPE_DISPOSED/);
+    if (provider) {
+      const replacement = runtime.native.plugin(TeamService, {});
+      await requireActivePlugin(replacement);
+      const fresh = createNativeTeam({ service: { kind: 'provided' } });
+      try {
+        await fresh.install(runtime.native, runtime.home);
+        assert.deepEqual((await fresh.forSession(resumed).state.read()).tasks.find(task => task.id === completed.id), completed);
+        assert.throws(() => capability.forSession(resumed!), /REACTIVE_SCOPE_DISPOSED/, '新provider不复活旧能力');
+      } finally { await fresh.dispose(); await replacement.dispose(); }
+    }
     assert.equal(modelCalls, 0); assert.deepEqual(errors, []);
   } finally {
     release.resolve(); subscription?.unsubscribe(); other?.release(); resumed?.release(); session?.release();
     await runtime.dispose();
   }
 });
+}

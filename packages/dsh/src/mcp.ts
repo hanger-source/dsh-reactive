@@ -35,7 +35,7 @@ export function createNativeMcp(options: NativeMcpOptions): NativeMcp {
   }
   if (selected.connection.failOnStartupError !== true) throw new Error('REACTIVE_MCP_STARTUP_MUST_BE_CONFIRMED');
   if (!/^[A-Za-z0-9_-]{1,32}$/u.test(selected.connection.serverName)) throw new Error('REACTIVE_MCP_SERVER_NAME_INVALID');
-  const owner = new NativeCapabilityOwner('reactive-native-mcp', async ctx => {
+  const owner = new NativeCapabilityOwner('reactive-native-mcp', ['tools', ...(selected.resources === 'disabled' ? [] : ['mcpResources'])], async ctx => {
     if (selected.resources === 'install') await requireActivePlugin(ctx.plugin(McpResources));
     if (selected.resources === 'provided' && !ctx.get('mcpResources')) throw new Error('REACTIVE_MCP_RESOURCES_REQUIRED');
     await requireActivePlugin(ctx.plugin(McpClient, selected.connection));

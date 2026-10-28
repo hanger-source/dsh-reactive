@@ -214,7 +214,7 @@ export function createNativeFiles(options: NativeFilesOptions): NativeFiles {
   if (options.service !== 'provided') throw new Error('REACTIVE_NATIVE_FILES_PROVIDED_REQUIRED');
   const active = new Set<SessionFiles>();
   const sessions = new WeakMap<object, SessionFiles>();
-  const owner = new NativeCapabilityOwner('reactive-native-files', ctx => {
+  const owner = new NativeCapabilityOwner('reactive-native-files', ['workspaceFiles', 'fs'], ctx => {
     if (!ctx.get('workspaceFiles') || !ctx.get('fs')) throw new Error('REACTIVE_NATIVE_FILES_REQUIRED');
     ctx.effect(() => async () => {
       const results = await Promise.allSettled([...active].map(session => session.dispose()));

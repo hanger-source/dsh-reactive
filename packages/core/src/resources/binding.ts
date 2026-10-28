@@ -1,6 +1,6 @@
 import { Observable, Subject, Subscriber, Subscription, defer, mergeMap, of, EMPTY, throwError, startWith } from 'rxjs';
 import { z } from 'zod';
-import { ScopeDisposedError, type Scope } from '../reactivity/scope.ts';
+import type { Scope } from '../reactivity/scope.ts';
 import { normalizeResource, switchLatest } from '../reactivity/observable.ts';
 import { ownParameters, parameterIdentity } from '../reactivity/parameters.ts';
 import type { Observation } from './observation.ts';
@@ -67,7 +67,7 @@ export class ResourceInstance<D extends ResourceContract> implements ResourceRea
       normalizeResource(source$).subscribe(subscriber);
     };
     this.observations$ = new Observable(subscriber => {
-      if (this.#closed || scope.disposed) { subscriber.error(new ScopeDisposedError()); return; }
+      if (scope.disposed) { snapshots$.subscribe(subscriber); return; }
       this.#observers++;
       // 基线和来源均可同步通知；先登记退出，take/firstValueFrom 才能立即撤销最后一个连接。
       subscriber.add(() => {
@@ -77,7 +77,7 @@ export class ResourceInstance<D extends ResourceContract> implements ResourceRea
       // 同步基线可以接入另一个观察者并关闭当前消费者；仍有人观察时须建立同一条连接。
       if (this.#observers > 0) start();
     });
-    this.values$ = this.observations$.pipe(mergeMap(observation => observation.status === 'pending' ? EMPTY
+    this.values$ = this.observations$.pipe(mergeMap(observation => scope.disposed || observation.status === 'pending' ? EMPTY
       : observation.status === 'error' ? throwError(() => observation.error) : of(observation.value)));
     scope.own(() => {
       this.#closed = true;

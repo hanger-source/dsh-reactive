@@ -31,6 +31,10 @@ export function inventory(scope: Scope, service: {
 
 `instance.observations$`、`peek()`、`read(signal?)`、`subscribe(callback)`消费同一实例。`read` 暂时持有观察，signal 取消这次等待。构造不读；多个观察者共享一次连接；最后一个退出撤掉旧 ready，实例身份保留，重新观察重新读取。Scope 退出释放来源，不能继续读已失效快照。
 
+资源 owner 退出时，仍在观察的 observations$ 先交付 error Observation，其 error 是原 signal.reason，再正常完成；迟到订阅只取得撤销观察，不回放旧值或重连。values$ 在自身 owner 退出时正常完成，活跃期间的查询错误仍沿值流报错。借入资源的 useResource、Context 和公开资源消费同一失效，不单独保存旧 ready。普通有限 Observable 的最后值语义保留；跨 owner 借用需要明确的资源对象或 shareResource({ signal })，不要从裸流完成推测 owner。
+
+父 Scope 撤销立即传播到所有子 Scope，后代不能在同步清理重入中读取旧事实或启动 effect；实际清理仍由 Scope 树汇总，子 signal.reason 保留父的原原因。
+
 一次读取的 owner 使用 `read(params, { signal })` 加 `invalidations(params, context)`；推送 owner 使用 `observe` 发出完整 Observation。失效通知只表示需重新读取，不携带替代事实。写入成功后可显式 `instance.invalidate()`；这不会重发写入或唤醒模型。
 
 ## 派生仍使用标准 Observable

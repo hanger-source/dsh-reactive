@@ -189,7 +189,7 @@ export interface NativeTeam extends NativeCapability {
 export function createNativeTeam(options: NativeTeamOptions): NativeTeam {
   const selected = structuredClone(options);
   if (selected.service.kind !== 'install' && selected.service.kind !== 'provided') throw new Error('REACTIVE_NATIVE_TEAM_SERVICE_SELECTION_INVALID');
-  const owner = new NativeCapabilityOwner('reactive-native-team', async ctx => {
+  const owner = new NativeCapabilityOwner('reactive-native-team', ['agentTeams'], async ctx => {
     if (selected.service.kind === 'install') await requireActivePlugin(ctx.plugin(TeamService, selected.service.config ?? {}));
     else if (!ctx.get('agentTeams')) throw new Error('REACTIVE_NATIVE_TEAM_REQUIRED');
   });

@@ -1,9 +1,73 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { BehaviorSubject, EMPTY, EmptyError, Observable, defer, firstValueFrom, of, take, throwError } from 'rxjs';
-import { combineResources, mapResource, shareResource, type Observation } from '@hanger-source/dsh-reactive';
+import { combineResources, mapResource, shareResource, ResourceReader, Scope, createResource, z, type Observation } from '@hanger-source/dsh-reactive';
 
 const ready = <T>(value: T): Observation<T> => ({ status: 'ready', generation: 1, observedAt: Date.now(), value });
+
+test('owner撤销以原原因替代共享资源的旧有效性，值流正常结束，迟到观察不回放也不重连', () => {
+  const owner = new AbortController(), reason = new Error('RESOURCE_OWNER_ENDED');
+  let connections = 0;
+  const source = shareResource(defer(() => { connections++; return of(ready(42)); }), { signal: owner.signal });
+  const observations: Observation<number>[] = [], values: number[] = [], errors: unknown[] = [];
+  let completed = false;
+  source.observations$.subscribe(value => observations.push(value));
+  source.values$.subscribe({ next: value => values.push(value), error: error => errors.push(error), complete: () => { completed = true; } });
+  assert.equal(source.peek().status, 'ready');
+  owner.abort(reason);
+  assert.deepEqual(values, [42]); assert.deepEqual(errors, []); assert.equal(completed, true);
+  const ended = observations.at(-1)!;
+  assert.equal(ended.status, 'error');
+  if (ended.status === 'error') assert.equal(ended.error, reason);
+  assert.ok(ended.generation > observations.at(-2)!.generation);
+  const late: Observation<number>[] = [];
+  assert.equal(source.observations$.subscribe(value => late.push(value)).closed, true);
+  assert.equal(late.length, 1); assert.equal(late[0]!.status, 'error');
+  if (late[0]!.status === 'error') assert.equal(late[0]!.error, reason);
+  assert.equal(connections, 1); assert.throws(() => source.peek(), error => error === reason);
+});
+
+test('父Scope撤销先传播到全部后代，重入清理不可读旧资源或启动effect，失败仍由父清理汇总', async () => {
+  const parent = new Scope(), child = parent.child(), nested = child.child();
+  const value = nested.state(1), resource = createResource(nested, { value: z.number(), read: () => 42 });
+  const failure = new Error('CHILD_CLEANUP_FAILED'), values: number[] = [], errors: unknown[] = [];
+  resource.values$.subscribe({ next: value => values.push(value), error: error => errors.push(error) });
+  await resource.read();
+  value.changes$.subscribe(value => values.push(value));
+  let effects = 0, cleanups = 0;
+  child.own(() => { cleanups++; throw failure; });
+  parent.own(() => {
+    assert.equal(child.disposed, true); assert.equal(nested.disposed, true);
+    assert.equal(nested.signal.reason, parent.signal.reason);
+    assert.throws(() => resource.peek(), error => error === parent.signal.reason);
+    assert.throws(() => nested.effect(() => { effects++; }), error => error === parent.signal.reason);
+    assert.throws(() => value.set(2), error => error === parent.signal.reason);
+  });
+  assert.throws(() => parent.dispose(), error => error instanceof AggregateError
+    && error.errors.some(error => error instanceof AggregateError && error.errors.includes(failure)));
+  assert.deepEqual(values, [42, 1]); assert.deepEqual(errors, []); assert.equal(effects, 0); assert.equal(cleanups, 1);
+  parent.dispose(); child.dispose(); nested.dispose();
+  assert.equal(cleanups, 1);
+  const late: Observation<number>[] = [];
+  assert.equal(resource.observations$.subscribe(value => late.push(value)).closed, true);
+  assert.equal(late.length, 1); assert.equal(late[0]!.status, 'error');
+});
+
+test('来源工厂内同步撤销借用时订阅立即关闭，迟到副作用无法接入消费者', () => {
+  const owner = new AbortController(), reason = new Error('SYNCHRONOUS_OWNER_EXIT');
+  let active = 0, releases = 0;
+  const resource = new ResourceReader({ peek: () => ready(1), observations$: new Observable<Observation<number>>(subscriber => {
+    owner.abort(reason);
+    assert.equal(subscriber.closed, true);
+    if (!subscriber.closed) active++;
+    subscriber.next(ready(99));
+    return () => { releases++; };
+  }) }, { signal: owner.signal });
+  const observed: Observation<number>[] = [];
+  assert.equal(resource.observations$.subscribe(value => observed.push(value)).closed, true);
+  assert.equal(active, 0); assert.equal(releases, 1); assert.equal(observed.length, 1);
+  assert.equal(observed[0]!.status, 'error');
+});
 
 test('同一派生资源共享真实RxJS连接，首帧同步退出不启动来源，取消一次read不影响其他读者且owner不可换绑', async () => {
   const left = new BehaviorSubject<Observation<Date>>({ status: 'pending', generation: 0 });

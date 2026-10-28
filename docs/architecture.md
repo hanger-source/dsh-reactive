@@ -40,6 +40,10 @@ Workspace 由原生 registry 持有目录、稳定身份与成员。`createWorks
 
 hook 自建查询的共享连接和终止缓存受 Program 寿命约束。`useShared` 与 factory 形式的 `useResource` 复用 RxJS 的同一重放值，不另存一份业务状态；Program 失败或退出后，之前捕获的流直接完成，不重放旧事实或重新打开查询。借入的资源实例仍由原 owner 持有，hooks 不改变其身份或销毁共享事实。
 
+受管理资源的有效性由资源 owner 决定。owner 撤销时，仍在观察的 `observations$` 先交付以原取消原因构成的 error，再完成；迟到观察只取得撤销，不回放旧值或重连。借入资源的 hook、Context 和公开资源消费这份同源失效；普通有限 Observable 的完成仍保留其最后值。父 Scope 撤销同步传播到全部子 Scope，实际清理仍由所属 Scope 树汇总。
+
+原生能力将其必需服务声明为正式 Fiber 的 inject 依赖。提供者卸载结束这一能力实例的读取和安装范围；更换 provider 必须建立新的能力实例，旧 SDK 不随同名服务重定向。观察退出不取得 Job、Operation 或已受理调用的执行所有权，原生服务自身的 drain 继续由其原 owner 负责。
+
 `NativeTools` 声明宿主已经安装的原生能力及业务政策。框架不重新注册同名工具，仍由原生实现和所有 guard 执行；异步政策返回后核验当前声明，模型可见性与生成的 PTC SDK 使用同一原生限制。业务文件系统的只读材料、草稿范围和路径准入继续由真实宿主实施。
 
 `actionManifest$` 提供工具名与 Action 名称、合同版本、模块完整路径、绑定和公开槽的关联；原生与 PTC 的持久结果 metadata 提供同源 canonical 输出。原生 UI slot 可以按实际工具名挂业务呈现，通过 `readActionPresentation` 读取相应名称与版本的合同结果，不反解命名编码或解析模型正文。它不定义业务卡片组件或视觉布局。

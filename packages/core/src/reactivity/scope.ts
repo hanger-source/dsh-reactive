@@ -23,13 +23,14 @@ export interface ScopeOptions { onObserverError?: (error: unknown) => void; }
 
 /** 内存依赖的 owner；与页面订阅、原生会话持久化分别拥有生命周期。 */
 export class Scope {
-  #disposed = false;
+  #released = false;
   #controller = new AbortController();
+  #signal = this.#controller.signal;
   #releases = new Set<() => void>();
   constructor(private readonly options: ScopeOptions = {}) {}
-  get disposed() { return this.#disposed; }
-  get signal() { return this.#controller.signal; }
-  assertActive() { if (this.#disposed) throw new ScopeDisposedError(); }
+  get disposed() { return this.#signal.aborted; }
+  get signal() { return this.#signal; }
+  assertActive() { this.#signal.throwIfAborted(); }
   own(release: () => void): () => void {
     this.assertActive();
     const stop = () => { if (this.#releases.delete(stop)) release(); };
@@ -39,6 +40,7 @@ export class Scope {
   child() {
     this.assertActive();
     const child = new Scope(this.options);
+    child.#signal = AbortSignal.any([this.signal, child.signal]);
     const release = this.own(() => child.dispose());
     child.own(() => release());
     return child;
@@ -53,8 +55,8 @@ export class Scope {
   }
   effect(run: () => void | (() => void)) {
     this.assertActive();
-    const release = effect(() => synchronous(run(), 'EFFECT'));
-    if (this.disposed) { release(); throw new ScopeDisposedError(); }
+    const release = effect(() => this.disposed ? undefined : synchronous(run(), 'EFFECT'));
+    if (this.disposed) { release(); this.assertActive(); }
     return this.own(release);
   }
   /** 来源只执行一次，公开读取和观察共享同一份当前状态，不随消费者退订而停止。 */
@@ -83,8 +85,8 @@ export class Scope {
     return new ResourceValue(this, state);
   }
   dispose() {
-    if (this.#disposed) return;
-    this.#disposed = true;
+    if (this.#released) return;
+    this.#released = true;
     this.#controller.abort(new ScopeDisposedError());
     const failures: unknown[] = [];
     for (const release of [...this.#releases].reverse()) {
@@ -102,7 +104,7 @@ export class Value<T> {
       if (scope.disposed) { subscriber.complete(); return; }
       const release = scope.own(() => subscriber.complete());
       let stop: (() => void) | undefined;
-      try { stop = node.subscribe(value => subscriber.next(value)); }
+      try { stop = node.subscribe(value => { if (!scope.disposed) subscriber.next(value); }); }
       catch (error) { subscriber.error(error); }
       return () => { stop?.(); release(); };
     });
@@ -119,6 +121,7 @@ export class Value<T> {
     this.scope.assertActive();
     // signals 的同步订阅先登记依赖，再交付基线；调用者无需自己先读再订阅。
     const stop = this.node.subscribe(value => {
+      if (this.scope.disposed) return;
       try { accept(value); } catch (error) { this.scope.observerError(error); }
     });
     if (this.scope.disposed) { stop(); return () => {}; }

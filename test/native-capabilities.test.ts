@@ -31,7 +31,7 @@ const nativeArguments = z.object({ marker: z.string().regex(/^[a-z-]+$/u) }).str
 test('外层原生卸载与能力退出加入同一清理，观察释放失败也要等原生资源静止', async () => {
   const parent = new Context();
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
-  const owner = new NativeCapabilityOwner('native-owner-cleanup', ctx => {
+  const owner = new NativeCapabilityOwner('native-owner-cleanup', [], ctx => {
     ctx.effect(() => async () => { entered.resolve(); await release.promise; });
   });
   const failure = new Error('OBSERVATION_RELEASE_FAILED');

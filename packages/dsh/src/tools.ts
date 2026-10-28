@@ -54,7 +54,7 @@ export interface NativeTools extends NativeCapability {
 /** 读取与 NativeTools 声明使用同一注册表；执行继续由原生调用管线和 guard 负责。 */
 export function createNativeTools(options: NativeToolsOptions): NativeTools {
   if (options.service !== 'provided') throw new Error('REACTIVE_NATIVE_TOOLS_SERVICE_SELECTION_INVALID');
-  const owner = new NativeCapabilityOwner('reactive-native-tools', ctx => {
+  const owner = new NativeCapabilityOwner('reactive-native-tools', ['tools'], ctx => {
     if (!ctx.get('tools')) throw new Error('REACTIVE_NATIVE_TOOLS_REQUIRED');
   });
   const sessions = new WeakMap<object, SessionTools>();

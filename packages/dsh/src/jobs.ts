@@ -1,7 +1,7 @@
 import type { JobRegistry, JobId, JobEvent, JobSpec, JobView, JobOutputRead } from '@deepseek-ai/dsh-jobs';
 import LocalJobs, { type Config as LocalJobsConfig } from '@deepseek-ai/dsh-jobs-local';
 import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs';
-import { Observable, map } from 'rxjs';
+import { Observable, map, of } from 'rxjs';
 import { fromSnapshot, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin } from './native-installation.ts';
@@ -157,7 +157,7 @@ export function createNativeJobs(options: NativeJobsOptions): NativeJobs {
     throw new Error('REACTIVE_NATIVE_JOBS_DELIVERY_REQUIRED');
   }
   const sessions = new WeakMap<object, SessionJobs>();
-  const owner = new NativeCapabilityOwner('reactive-native-jobs', async ctx => {
+  const owner = new NativeCapabilityOwner('reactive-native-jobs', ['jobs', ...(selected.tools ? ['tools'] : [])], async ctx => {
     if (selected.registry.kind === 'local') await requireActivePlugin(ctx.plugin(LocalJobs, selected.registry.config ?? {}));
     if (!ctx.get('jobs')) throw new Error('REACTIVE_NATIVE_JOBS_REQUIRED');
     await requireActivePlugin(ctx.inject(['jobs'], native => {
@@ -166,7 +166,10 @@ export function createNativeJobs(options: NativeJobsOptions): NativeJobs {
     if (selected.tools) await requireActivePlugin(ctx.plugin(ToolJobs, selected.tools));
   });
   const names = new Set(['job_list', 'job_output', 'job_kill']);
-  const toolNames = nativeToolNames(owner, name => selected.tools !== undefined && names.has(name));
+  const toolNames = selected.tools ? nativeToolNames(owner, name => names.has(name)) : nativeResource<readonly string[]>(owner.scope, () => {
+    owner.context();
+    return of({ status: 'ready', generation: 0, observedAt: Date.now(), value: Object.freeze([]) });
+  });
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(), toolNames, toolNames$: toolNames.values$,
     forSession(session: NativeSessionSource) {
       const access = nativeSessionAccess(session);

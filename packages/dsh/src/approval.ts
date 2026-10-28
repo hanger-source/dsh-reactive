@@ -89,7 +89,7 @@ export function createNativeApproval(options: NativeApprovalOptions): NativeAppr
   }
   const sessions = new WeakMap<object, SessionApproval>();
   const policy = options.policy, require = options.require, answer = options.answer;
-  const owner = new NativeCapabilityOwner('reactive-native-approval', async ctx => {
+  const owner = new NativeCapabilityOwner('reactive-native-approval', ['approval', 'tools'], async ctx => {
     await requireActivePlugin(ctx.plugin(Approval, { policy }));
     if (answer !== 'provided') ctx.on('approval/request', (request, next) => answer(request, next));
     ctx.on('tools/pre-execute', async (execution, next) => {

@@ -6,7 +6,7 @@ import { Scope, connect } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin, type NativeInstallation } from './native-installation.ts';
 import type { NativeSessionAccess } from './conversations/session-access.ts';
 
-/** 宿主选择的能力实例；正式插件与执行资源仍由原生 Fiber 持有。 */
+/** 宿主选择的一次能力安装；必需服务退出会撤销实例，不转向替换后的provider。 */
 export interface NativeCapability {
   readonly install: NativeInstallation;
   /** 撤销本实例观察并等待其安装范围真正退出；借入服务仍由外部宿主持有。 */
@@ -32,33 +32,52 @@ export class NativeCapabilityOwner {
   readonly scope = new Scope();
   readonly install: NativeInstallation;
   #installation?: Fiber & PromiseLike<Fiber>;
-  #fiber?: Fiber;
-  #context?: Context;
+  #reader?: Fiber;
+  #parent?: Context;
   #disposing?: Promise<void>;
   #failures = new Set<unknown>();
 
-  constructor(name: string, setup: (ctx: Context) => void | PromiseLike<void>) {
+  constructor(name: string, services: readonly string[], setup: (ctx: Context) => void | PromiseLike<void>) {
     this.install = async parent => {
       this.scope.assertActive();
       if (this.#installation) throw new Error('REACTIVE_NATIVE_CAPABILITY_ALREADY_INSTALLED');
       const stop = () => this.stopObservations();
+      let reader: Fiber | undefined;
+      this.#parent = parent;
+      const owner = this;
       const installation = parent.plugin({ name, async apply(ctx: Context) {
         // 启动失败也结束观察；成功时另登记在子插件之后，退出先撤观察再等原生释放。
         ctx.effect(() => stop);
         await setup(ctx);
         ctx.effect(() => stop);
+        reader = await requireActivePlugin(ctx.plugin({ name: name + ':queries', inject: [...services], apply(readContext: Context) {
+          owner.scope.assertActive();
+          readContext.effect(() => () => {
+            try { stop(); }
+            finally {
+              // 读依赖退出也释放本实例安装的资源；不等待自己的父Fiber，避免卸载自等待。
+              if (owner.#installation?.state === 1 || owner.#installation?.state === 2) {
+                void owner.dispose().catch(() => {});
+              }
+            }
+          });
+        } }));
       } });
       this.#installation = installation;
-      this.#context = installation.ctx;
-      this.#fiber = await requireActivePlugin(installation);
+      await requireActivePlugin(installation);
       this.scope.assertActive();
+      this.#reader = reader;
     };
   }
 
   context(): Context {
     this.scope.assertActive();
-    if (!this.#fiber || this.#fiber.state !== 2 || !this.#context) throw new Error('REACTIVE_NATIVE_CAPABILITY_NOT_ACTIVE');
-    return this.#context;
+    const ended = (state: number | undefined) => state === 3 || state === 4 || state === 5;
+    if (!this.#reader || this.#reader.state !== 2 || this.#installation?.state !== 2
+      || ended(this.#parent?.fiber.state) || ended(this.#parent?.root.fiber.state)) {
+      throw new Error('REACTIVE_NATIVE_CAPABILITY_NOT_ACTIVE');
+    }
+    return this.#reader.ctx;
   }
 
   /** 只接受本能力实际服务所在的 Host；同进程其他隔离服务不能借此访问。 */

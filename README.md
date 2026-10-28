@@ -4,7 +4,9 @@
 
 组件运行在服务端或 Agent 宿主，渲染目标是对话环境。页面、CLI 和后台服务消费公开状态与行为，不拥有模型循环或已受理业务操作。
 
-项目处于 0.x 阶段，API 与组件主链、SDK、原生接入仍在演进；公开能力的限制以本文和分域文档为准，聚焦试验不代表完整框架已经验收。
+API 与组件主链、SDK、原生接入按公共合同和版本记录演进；公开能力的限制以本文和分域文档为准，聚焦试验不代表完整框架已经验收。
+
+跨大版本升级时查看 [SDK 作用域迁移](docs/migration-sdk-scopes.md)与[资源有效性迁移](docs/migration-resource-ownership.md)，按实际安装版本调整异步装配及 owner 撤销的消费方式。
 
 源码位于 [hanger-source/dsh-reactive](https://github.com/hanger-source/dsh-reactive)，由 hanger 维护。六个公共包统一使用 `@hanger-source/dsh-reactive*` 名称与同一版本；正式发行通过 GitHub Actions 的 Trusted Publishing 完成，源码版本和 GitHub 提交不表示包已在 npm 发布。版本管理、候选验收和发布方式见[发行说明](docs/releasing.md)。
 

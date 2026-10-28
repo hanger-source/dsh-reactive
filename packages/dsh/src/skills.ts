@@ -77,7 +77,7 @@ export interface NativeSkills extends NativeCapability {
 /** 只读业务 Skill 接点，与独立发行的开发指导 Skill 无关，不安装另一套 Registry。 */
 export function createNativeSkills(options: NativeSkillsOptions): NativeSkills {
   if (options.service !== 'provided') throw new Error('REACTIVE_NATIVE_SKILLS_SERVICE_SELECTION_INVALID');
-  const owner = new NativeCapabilityOwner('reactive-native-skills', ctx => {
+  const owner = new NativeCapabilityOwner('reactive-native-skills', ['skills'], ctx => {
     if (!ctx.get('skills')) throw new Error('REACTIVE_NATIVE_SKILLS_REQUIRED');
   });
   const sessions = new WeakMap<object, SessionSkills>();

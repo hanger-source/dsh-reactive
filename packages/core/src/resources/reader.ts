@@ -14,7 +14,11 @@ export interface ResourceReaderOptions {
   readonly onObserverError?: (error: unknown) => void;
 }
 
-/** 借用已有事实；options限定借用寿命，省略时沿用来源寿命，不缓存或重试。 */
+/**
+ * 借用已有事实；options限定借用寿命，省略时沿用来源寿命，不缓存或重试。
+ * owner撤销向仍在观察的消费者交付原reason的error观察后完成；迟到观察只交付该撤销。
+ * values$在自身owner退出时正常完成，普通查询错误仍沿值流报错。
+ */
 export class ResourceReader<T> implements ResourceReadable<T> {
   readonly observations$: Observable<Observation<T>>;
   readonly values$: Observable<T>;
@@ -26,13 +30,29 @@ export class ResourceReader<T> implements ResourceReadable<T> {
     this.signal = signal;
     this.onObserverError = options?.onObserverError;
     this.observations$ = new Observable(subscriber => {
-      if (signal?.aborted) { subscriber.complete(); return; }
-      const close = () => subscriber.complete();
+      let generation = 0, ended = false;
+      const close = () => {
+        if (ended || subscriber.closed) return;
+        ended = true;
+        subscriber.next({ status: 'error', generation: ++generation, error: signal!.reason });
+        subscriber.complete();
+      };
+      if (signal?.aborted) { close(); return; }
       signal?.addEventListener('abort', close, { once: true });
       subscriber.add(() => signal?.removeEventListener('abort', close));
-      source.observations$.subscribe(subscriber);
+      const connection = new Subscriber<Observation<T>>({
+        next: observation => {
+          if (signal?.aborted) { close(); return; }
+          generation = observation.generation;
+          subscriber.next(observation);
+        },
+        error: (error: unknown) => signal?.aborted ? close() : subscriber.error(error),
+        complete: () => signal?.aborted ? close() : subscriber.complete(),
+      });
+      subscriber.add(connection);
+      source.observations$.subscribe(connection);
     });
-    this.values$ = this.observations$.pipe(mergeMap(observation => observation.status === 'pending' ? EMPTY
+    this.values$ = this.observations$.pipe(mergeMap(observation => signal?.aborted || observation.status === 'pending' ? EMPTY
       : observation.status === 'error' ? throwError(() => observation.error) : of(observation.value)));
   }
   peek(): Observation<T> { this.signal?.throwIfAborted(); return this.source.peek(); }
