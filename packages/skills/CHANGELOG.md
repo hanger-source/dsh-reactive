@@ -1,5 +1,17 @@
 # @hanger-source/dsh-reactive-skills
 
+## 0.20.2
+
+### Patch Changes
+
+- 9aca405: useShared 与 factory 形式的 useResource 将共享连接和终止缓存绑定到 Program 寿命。Program 失败或退出后，既有观察完成，之前捕获的流不再重放旧值或错误，也不重新打开尚未读取的查询；完成清理期间的重入订阅遵循同一边界。直接借入的 ResourceReadable 保留原对象与原 owner。
+- Updated dependencies [9aca405]
+  - @hanger-source/dsh-reactive@0.20.2
+  - @hanger-source/dsh-reactive-client@0.20.2
+  - @hanger-source/dsh-reactive-dsh@0.20.2
+  - @hanger-source/dsh-reactive-native-ui@0.20.2
+  - @hanger-source/dsh-reactive-remote@0.20.2
+
 ## 0.20.1
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@hanger-source/dsh-reactive-dsh",
-  "version": "0.20.1",
+  "version": "0.20.2",
   "description": "dsh-reactive 的原生 dsh 运行宿主与可选能力域",
   "license": "UNLICENSED",
   "author": "hanger",
@@ -122,7 +122,7 @@
     "zod": "4.4.3"
   },
   "peerDependencies": {
-    "@hanger-source/dsh-reactive": "0.20.1",
+    "@hanger-source/dsh-reactive": "0.20.2",
     "react": "^19.3.0",
     "react-reconciler": "0.34.0",
     "@deepseek-ai/dsh-jobs": "0.2.1-rc.3",
