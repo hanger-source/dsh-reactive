@@ -6,6 +6,7 @@ export { Conversation, conversationBindings, type CancellationOptions, type Cont
 export { type AssistantProgressFrame, type AssistantStream, type ConversationEvent, type ToolOccurrence } from './conversations/events.ts';
 export type { ProgramSessionClient, HumanProgramSessionClient, ProgramGoalControl, ProgramCancelResult, ProgramRequestStatus } from './conversations/client.ts';
 export { InputEditRejectedError } from './conversations/input-edit.ts';
+export { ConversationAccessRevokedError } from './conversations/access.ts';
 export { admittedSubmissionSchema, continuationSchema, conversationCreateOptionsSchema, creationReferenceSchema, inputReferenceSchema, requestActivitySchema, submissionSchema, type AdmittedPromptContentPart, type AdmittedSubmission, type ConversationActivity, type CreationReference, type EncodedFileUploadRequest, type FileUploadReceiptId, type FileUploadSource, type FileUploadValue, type InputReference, type Json, type NormalizedSubmission, type PromptContentPart, type UploadFileOptions, waitSchema, workspaceRegistrationSchema } from './conversations/protocol.ts';
 export { createRequestHandle, type ConversationProgressSnapshot, type RequestHandle } from './conversations/request.ts';
 export { createFileUploadInvocation } from './files/invocation.ts';

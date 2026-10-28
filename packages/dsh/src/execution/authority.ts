@@ -56,7 +56,7 @@ export class ActionAuthority {
     }
     async admitAction(session: ConversationSession, action: ActionReference, input: unknown, call: ActionCallContext<unknown>, execution: ActionExecutionContext, admissionSignal: AbortSignal) {
         const native = this.#toolCalls.get(execution);
-        const signal = AbortSignal.any([admissionSignal, this.signal, session.program.signal,
+        const signal = AbortSignal.any([admissionSignal, this.signal, session.scope.signal, session.program.signal,
             ...(native ? [native.entry.scope.signal] : [])]);
         const check = () => {
             signal.throwIfAborted();
@@ -77,7 +77,7 @@ export class ActionAuthority {
         await firstValueFrom(abortable(() => this.inputs.revalidateCauses(execution.inputs, signal), signal));
         check();
         // 已开始的原生activate仍归其真实owner；本准入退等后不再继续授权或准备child。
-        await firstValueFrom(abortable(() => this.sessions.activate(session.header.id), signal));
+        await firstValueFrom(abortable(() => this.sessions.activate(session.header.id, session.accessId), signal));
         check();
         const live = this.sessions.live(session);
         const authorizationSignal = AbortSignal.any([signal, live.scope.signal]);

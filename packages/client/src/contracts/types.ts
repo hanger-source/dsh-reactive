@@ -24,11 +24,14 @@ export interface ProgramCreateRequest extends ConversationCreateOptions { readon
 export type ProgramCreationReference = CreationReference;
 export interface ProgramCompleteCreationRequest extends ProgramCreationReference { readonly program: ProgramContractIdentity; }
 export interface ProgramAddress { readonly sessionId: string; readonly program: ProgramContractIdentity; }
+/** 一次明确取得的会话读取资格；引用不授予认证、Program或业务执行权限。 */
+export interface ProgramSessionAddress extends ProgramAddress { readonly accessId: string; }
 /** 参与来源由宿主principal映射签发，客户端请求不能自报。 */
 export interface ProgramIdentity {
   readonly sessionId: string;
   readonly environmentId: string;
   readonly workspaceId: string;
+  readonly accessId: string;
   readonly actorId: string;
   readonly participant: 'human' | 'service';
   readonly program: ProgramContractIdentity;
@@ -43,13 +46,13 @@ type WireSubmission<S> = S extends { readonly result: unknown } ? Omit<S, 'resul
   };
 } : S;
 export type ProgramSubmission = WireSubmission<Submission<JsonValue>>;
-export interface ProgramSubmitRequest extends ProgramAddress { readonly submission: ProgramSubmission; }
+export interface ProgramSubmitRequest extends ProgramSessionAddress { readonly submission: ProgramSubmission; }
 export interface ProgramInputEditRequest extends ProgramRequestAddress { readonly content: Submission['content']; }
 /** 单次有界 unary 上传；canonical base64 与 exact-Session receipt 继续由原生 Host 核验。 */
-export interface ProgramUploadFileRequest extends ProgramAddress, EncodedFileUploadRequest {}
+export interface ProgramUploadFileRequest extends ProgramSessionAddress, EncodedFileUploadRequest {}
 export type ProgramFileUploadValue = FileUploadValue;
 export interface ProgramInputReceipt { readonly sessionId: string; readonly requestId: string; readonly accepted: true; }
-export interface ProgramRequestAddress extends ProgramAddress { readonly requestId: string; }
+export interface ProgramRequestAddress extends ProgramSessionAddress { readonly requestId: string; }
 /** Program journal 的纯 wire 合同；Host 的 Controller 页直接按此结构核验。 */
 export interface ProgramJournalEvent {
   readonly type: string;
@@ -66,7 +69,7 @@ export interface ProgramJournalWindow {
   readonly maxMessages?: number;
   readonly turnWindow?: { readonly minMessages: number; readonly minTurns: number };
 }
-export interface ProgramJournalOpenRequest extends ProgramAddress, ProgramJournalWindow {}
+export interface ProgramJournalOpenRequest extends ProgramSessionAddress, ProgramJournalWindow {}
 export interface ProgramJournalPageRequest extends ProgramJournalOpenRequest { readonly throughSeq: number; readonly beforeSeq?: number; }
 /** 原生水位和原生事件的只读载体；历史与连续性仍由 Controller/Gateway 拥有。 */
 export type ProgramJournalFrame = { readonly type: 'opened'; readonly cursor: number; readonly page: ProgramJournalPage }
@@ -86,18 +89,20 @@ export type ProgramProgressFrame =
   | { readonly type: 'activity'; readonly activity: JsonValue }
   | { readonly type: 'assistant'; readonly progress: JsonValue }
   | { readonly type: 'event'; readonly event: ProgramConversationEvent };
-export interface ProgramViewRequest extends ProgramAddress { readonly name: string; }
+export interface ProgramViewRequest extends ProgramSessionAddress { readonly name: string; }
 /** scope 是调用方明确期望的原始业务目标，只在宿主的合同边界解析。 */
-export interface ProgramActionBindingRequest extends ProgramAddress { readonly name: string; readonly contract: ActionIdentity; readonly scope: JsonValue; }
+export interface ProgramActionBindingRequest extends ProgramSessionAddress { readonly name: string; readonly contract: ActionIdentity; readonly scope: JsonValue; }
 /** 进程内真实绑定的身份；它不是权限凭据，也不承诺跨重启仍然有效。 */
 export interface ProgramActionBinding { readonly bindingId: string; readonly contract: ActionIdentity; readonly scope: JsonValue; }
-export interface ProgramActionRequest extends ProgramAddress { readonly name: string; readonly contract: ActionIdentity; readonly bindingId: string; readonly input: JsonValue; }
+export interface ProgramActionRequest extends ProgramSessionAddress { readonly name: string; readonly contract: ActionIdentity; readonly bindingId: string; readonly input: JsonValue; }
 export interface ProgramInvocationAddress extends ProgramAddress { readonly invocationId: string; }
 export interface ProgramOperationIdentity { readonly kind: string; readonly version: number; }
-export interface ProgramOperationRequest extends ProgramAddress { readonly operation: ProgramOperationIdentity; readonly reference: JsonValue; }
-export interface ProgramOperationLocateRequest extends ProgramAddress { readonly operation: ProgramOperationIdentity; readonly command: JsonValue; }
+export interface ProgramOperationRequest extends ProgramSessionAddress { readonly operation: ProgramOperationIdentity; readonly reference: JsonValue; }
+export interface ProgramOperationLocateRequest extends ProgramSessionAddress { readonly operation: ProgramOperationIdentity; readonly command: JsonValue; }
+/** 只读取原Invocation实际签发的Operation；reference用于精确核对，不授予任意目标读取权。 */
+export interface ProgramInvocationOperationRequest extends ProgramInvocationAddress { readonly operation: ProgramOperationIdentity; readonly reference: JsonValue; }
 /** 读取当前公开槽的真实绑定，不登记参与或取得原生 Goal 续接权。 */
-export interface ProgramOperationBindingRequest extends ProgramAddress { readonly name: string; }
+export interface ProgramOperationBindingRequest extends ProgramSessionAddress { readonly name: string; }
 export interface ProgramOperationBinding { readonly operation: ProgramOperationIdentity; readonly command: JsonValue; }
 /** 显式恢复原 command 与已登记的参与身份，独立于当前组件选择。 */
 export interface ProgramOperationFeedbackRequest extends ProgramOperationLocateRequest { readonly participationId: string; }
@@ -110,7 +115,7 @@ export type ProgramOperationLocation =
   | { readonly status: 'accepted'; readonly reference: JsonValue; readonly state: JsonValue }
   | { readonly status: 'rejected'; readonly reason: JsonValue }
   | { readonly status: 'unknown' };
-export interface ProgramOperationNotification extends ProgramAddress { readonly followId: string; }
+export interface ProgramOperationNotification extends ProgramSessionAddress { readonly followId: string; }
 export type ProgramOperationNotificationResult = { readonly status: 'unknown' | 'pending' | 'not-started' }
   | { readonly status: 'accepted'; readonly receipt: ProgramInputReceipt };
 type WireHumanQuestion<Q extends { readonly origin: HumanQuestionOrigin }> = Omit<Q, 'origin'> & {
@@ -125,7 +130,7 @@ export interface ProgramQuestions {
 }
 export type ProgramQuestionsFrame = { readonly type: 'baseline'; readonly value: ProgramQuestions }
   | { readonly type: 'questions'; readonly value: ProgramQuestions };
-export interface ProgramQuestionRequest extends ProgramAddress { readonly callId: string; }
+export interface ProgramQuestionRequest extends ProgramSessionAddress { readonly callId: string; }
 export interface ProgramAnswerRequest extends ProgramQuestionRequest { readonly answer: HumanAnswer; }
 export type ProgramWaitFrame = HumanWaitFrame;
 /** id/source 由宿主真实受理入口签发，不是客户端生成的任务或幂等键。 */

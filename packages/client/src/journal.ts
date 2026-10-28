@@ -1,26 +1,27 @@
 import { RemoteJournalStream, type ClientRemote, type RemoteJournalFrame, type RemoteJournalStreamOptions } from '@deepseek-ai/dsh-api-gateway/client';
-import type { ProgramAddress, ProgramJournalEntry, ProgramJournalPage, ProgramJournalPageRequest } from './contracts/types.ts';
-import type { ClientScope } from './scope.ts';
+import type { ProgramSessionAddress, ProgramJournalEntry, ProgramJournalPage, ProgramJournalPageRequest } from './contracts/types.ts';
+import { revokeConversationAccess, type ClientScope } from './scope.ts';
 
-export type ProgramJournalRequest = Omit<ProgramJournalPageRequest, 'sessionId' | 'program' | 'throughSeq'>;
+export type ProgramJournalRequest = Omit<ProgramJournalPageRequest, 'sessionId' | 'program' | 'accessId' | 'throughSeq'>;
 export type ProgramJournalOptions = Pick<RemoteJournalStreamOptions<ProgramJournalPage, ProgramJournalEntry, number>, 'publish' | 'failed' | 'carrierFailed'>;
 
 /** Controller 的 durable 原生事件，顺序、重连、缺口修补和分页均交给 Gateway journal。 */
 export class ProgramJournal extends RemoteJournalStream<ProgramJournalPage, ProgramJournalEntry, number, ProgramJournalRequest> {
   #release!: () => Promise<void>;
-  private constructor(private readonly owner: ClientScope, private readonly remote: ClientRemote, private readonly address: ProgramAddress, options: ProgramJournalOptions) {
-    super(remote, { ...options, name: 'program-session-events', emptyCursor: -1,
+  private constructor(private readonly owner: ClientScope, private readonly remote: ClientRemote, private readonly address: ProgramSessionAddress, options: ProgramJournalOptions) {
+    super(remote, { ...options, failed: error => options.failed(revokeConversationAccess(owner, error)),
+      name: 'program-session-events', emptyCursor: -1,
       entries: page => page.records, hasMore: page => page.hasMore,
       first: record => record.event.seq, last: record => record.event.seq,
       compare: (left, right) => left - right, follows: (left, right) => right === left + 1 });
   }
   /** @internal 会话scope在构造前取得所有权，调用者只通过openEvents取得此句柄。 */
-  static async create(owner: ClientScope, address: ProgramAddress, options: ProgramJournalOptions, request: ProgramJournalRequest): Promise<ProgramJournal> {
+  static async create(owner: ClientScope, address: ProgramSessionAddress, options: ProgramJournalOptions, request: ProgramJournalRequest): Promise<ProgramJournal> {
     const lease = owner.acquire(() => new ProgramJournal(owner, owner.context.remote, address, options),
       journal => journal.disposeNative(), 'program-journal:' + address.sessionId);
     lease.value.#release = lease.release;
     try { await lease.value.open(request); owner.assertActive(); return lease.value; }
-    catch (error) { await lease.release(); throw error; }
+    catch (error) { error = revokeConversationAccess(owner, error); await lease.release(); throw error; }
   }
   private disposeNative(): Promise<void> { return super.dispose(); }
   override dispose(): Promise<void> { return this.#release(); }
@@ -36,7 +37,7 @@ export class ProgramJournal extends RemoteJournalStream<ProgramJournalPage, Prog
   protected async readPage(request: ProgramJournalRequest, throughSeq: number, signal: AbortSignal): Promise<ProgramJournalPage> {
     const result = await this.owner.run(signal => this.remote.reactivePrograms.journalPage({ ...request, ...this.address, throughSeq }, signal), signal);
     this.owner.assertActive();
-    if (!result.ok) throw result.error;
+    if (!result.ok) throw revokeConversationAccess(this.owner, result.error);
     return result.value;
   }
   protected repairRequest(request: ProgramJournalRequest): ProgramJournalRequest {

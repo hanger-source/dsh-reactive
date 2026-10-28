@@ -2,11 +2,10 @@ import type { Context } from '@deepseek-ai/cordis';
 import { RemoteError, type Principal } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { ApplicationHost } from '@hanger-source/dsh-reactive-dsh';
-import { z, surfaceSlotDefinition, actionIdentity, assertActionIdentity, programIdentity, assertProgramIdentity, assertSharedProgramDefinition, type ProgramContractIdentity, type ActionIdentity, type AnyEnvironment, type Invocation, type Json } from '@hanger-source/dsh-reactive';
+import { z, surfaceSlotDefinition, actionIdentity, assertActionIdentity, programIdentity, assertProgramIdentity, assertSharedProgramDefinition, type ProgramContractIdentity, type ActionIdentity, type AnyEnvironment, type Invocation, type OperationHandle, type OperationContract, type Json } from '@hanger-source/dsh-reactive';
 import { Inbox } from '@hanger-source/dsh-reactive-client/inbox';
-import type { ProgramActionRequest, ProgramActionStart, ProgramInvocationAddress, ProgramInvocationFrame } from '@hanger-source/dsh-reactive-client/types';
-import { decodeProgramFailure } from '@hanger-source/dsh-reactive-client/errors';
-import { createProgramFailureMapper } from './host-errors.ts';
+import type { ProgramActionRequest, ProgramActionStart, ProgramInvocationAddress, ProgramInvocationOperationRequest, ProgramInvocationFrame } from '@hanger-source/dsh-reactive-client/types';
+import { createProgramFailureMapper, throwProgramFailure } from './host-errors.ts';
 import { resolveProgramParticipant, type ProgramParticipant } from './participant.ts';
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
@@ -18,10 +17,12 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
 
 /** 宿主持有真实 Invocation；连接退出只取消观察，不撤销已经开始的业务。 */
 export interface ProgramActionOwner {
+  readonly signal: AbortSignal;
   start(request: ProgramActionRequest, principal: Principal, signal: AbortSignal): Promise<ProgramActionStart>;
   get(request: ProgramInvocationAddress, principal: Principal, signal: AbortSignal): Promise<ProgramActionStart>;
   result(request: ProgramInvocationAddress, principal: Principal, signal: AbortSignal): Promise<JsonValue>;
   observe(request: ProgramInvocationAddress, principal: Principal, signal: AbortSignal): AsyncIterable<ProgramInvocationFrame>;
+  operation(request: ProgramInvocationOperationRequest, principal: Principal, signal: AbortSignal): Promise<OperationHandle<OperationContract>>;
 }
 
 export interface ProgramActionOwnerOptions {
@@ -43,6 +44,7 @@ type Entry = {
   readonly name: string;
   readonly contract: ActionIdentity;
   readonly invocation: Invocation<unknown, Json>;
+  readonly operation?: Promise<OperationHandle<OperationContract>>;
   readonly wireResult: Promise<JsonValue>;
   completed?: ReturnType<typeof setTimeout>;
 };
@@ -61,7 +63,7 @@ function read<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ctx: Context, application: ApplicationHost<E>,
   options: ProgramActionOwnerOptions): ProgramActionOwner & { dispose(): void } {
   const failure = createProgramFailureMapper(ctx.typertGateway.wireStream);
-  const rethrow = (error: unknown): never => { throw decodeProgramFailure(failure(error)); };
+  const rethrow = (error: unknown): never => throwProgramFailure(failure(error));
   const retention = options.completedRetentionMs ?? 300_000;
   const maxCompleted = options.maxCompleted ?? 1000;
   if (!Number.isSafeInteger(retention) || retention < 1 || retention > 2_147_483_647
@@ -96,12 +98,13 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
   signal.addEventListener('abort', dispose, { once: true });
   if (signal.aborted) dispose();
   return {
+    signal,
     async start(request: ProgramActionRequest, principal: Principal, querySignal: AbortSignal): Promise<ProgramActionStart> {
       const identity = participant(principal);
       querySignal.throwIfAborted();
       const handle = await (identity.participant === 'service'
-        ? application.service(identity.actorId).open(request.sessionId, { contract: request.program })
-        : application.open(request.sessionId, { contract: request.program })).catch(rethrow);
+        ? application.service(identity.actorId).open(request.sessionId, { contract: request.program }, request.accessId)
+        : application.open(request.sessionId, { contract: request.program }, request.accessId)).catch(rethrow);
       let retained = false;
       try {
         signal.throwIfAborted(); querySignal.throwIfAborted();
@@ -117,7 +120,8 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
         const wireResult = invocation.result.then(value => z.json().parse(z.encode(definition.output, value)))
           .catch(rethrow);
         const entry: Entry = { sessionId: request.sessionId, program: programIdentity(program), participant: identity.participant, actorId: identity.actorId,
-          name: request.name, contract: actionIdentity(definition), invocation, wireResult };
+          name: request.name, contract: actionIdentity(definition), invocation, wireResult,
+          ...(definition.operation ? { operation: invocation.operation } : {}) };
         entries.set(invocation.id, entry); retained = true;
         const settle = (): void => {
           handle.release();
@@ -144,6 +148,15 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
     result(request, principal, querySignal) {
       return read(lookup(request, principal).wireResult, AbortSignal.any([signal, querySignal]));
     },
+    async operation(request, principal, querySignal) {
+      const entry = lookup(request, principal);
+      const unavailable = () => new RemoteError('reactive/invocation-operation-unavailable', 'Invocation has no matching Operation receipt', {});
+      if (!entry.operation) throw unavailable();
+      const operation = await read(entry.operation, AbortSignal.any([signal, querySignal])).catch(rethrow);
+      if (operation.definition.kind !== request.operation.kind || operation.definition.version !== request.operation.version
+        || referenceIdentity(z.json().parse(operation.reference)) !== referenceIdentity(request.reference)) throw unavailable();
+      return operation;
+    },
     async *observe(request, principal, querySignal) {
       const entry = lookup(request, principal);
       const inbox = new Inbox<ProgramInvocationFrame>(1024 * 1024);
@@ -167,4 +180,10 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
     },
     dispose,
   };
+}
+
+/** 原句柄reference已是合同签发的wire值；只比较JSON身份，不重跑reference codec。 */
+function referenceIdentity(value: JsonValue): string {
+  return JSON.stringify(value, (_key, item: unknown) => item !== null && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item).sort(([left], [right]) => left.localeCompare(right))) : item);
 }

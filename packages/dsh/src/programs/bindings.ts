@@ -183,8 +183,10 @@ export class AgentBindings {
       }
     });
   }
-  release(agent: Agent): Promise<void> {
+  async release(agent: Agent): Promise<void> {
     const entry = this.#entries.get(agent);
-    return entry ? entry.dispose() : Promise.resolve();
+    if (!entry) return;
+    try { await entry.dispose(); }
+    finally { if (this.#entries.get(agent) === entry) this.#entries.delete(agent); }
   }
 }

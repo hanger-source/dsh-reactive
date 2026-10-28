@@ -1,8 +1,8 @@
 import type { JobRegistry, JobId, JobEvent, JobSpec, JobView, JobOutputRead } from '@deepseek-ai/dsh-jobs';
 import LocalJobs, { type Config as LocalJobsConfig } from '@deepseek-ai/dsh-jobs-local';
 import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs';
-import { Observable, map, of } from 'rxjs';
-import { fromSnapshot, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
+import { Observable, firstValueFrom, map, of } from 'rxjs';
+import { abortable, fromSnapshot, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, nativeResource, nativeToolNames, ownNativeValue, type NativeCapability, type NativeSessionSource } from '../native-capability.ts';
 import { nativeSessionAccess, type NativeSessionAccess } from '../conversations/session-access.ts';
@@ -63,7 +63,9 @@ class NativeJobReader implements NativeJob {
   wait(timeoutMs: number, options: CancellationOptions = {}): Promise<JobView> {
     const signal = this.jobs.signal(options);
     signal.throwIfAborted();
-    return this.jobs.registry().wait(this.id, timeoutMs, this.jobs.ownerId, signal).then(ownNativeValue);
+    const registry = this.jobs.registry();
+    return firstValueFrom(abortable(waitSignal => registry.wait(this.id, timeoutMs, this.jobs.ownerId, waitSignal), signal))
+      .then(ownNativeValue);
   }
   /** 停止是显式命令，不等于已经停止；需要确认时另行 wait。 */
   stop(reason: string, options: CancellationOptions = {}): 'requested' | 'already-finished' {

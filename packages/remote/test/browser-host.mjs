@@ -104,7 +104,7 @@ const gateway = await mountProgramGateway(runtime.native, { application: runtime
       { role: { name: 'native-client-catalog', resource: 'global', actions: ['session/control', 'session/list'] }, resource: { kind: 'global' } },
       { role: {
         name: 'participate', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/view', 'reactivePrograms/questions', 'reactivePrograms/resolveAction', 'reactivePrograms/startAction',
-          'reactivePrograms/actionResult', 'reactivePrograms/observeAction', 'reactivePrograms/observeOperation', 'session/list', 'session/control', 'session/follow', 'session/projections', 'session/page', 'commands/list'],
+          'reactivePrograms/actionResult', 'reactivePrograms/observeAction', 'reactivePrograms/observeOperation', 'reactivePrograms/observeInvocationOperation', 'session/list', 'session/control', 'session/follow', 'session/projections', 'session/page', 'commands/list'],
       }, resource: { kind: 'session', id: sessionId } }];
   } }), carrier: { async authenticate(request) {
     if (!request.headers.get('cookie')?.split(';').some(part => part.trim() === 'remote-proof=' + credential)

@@ -1,7 +1,8 @@
 import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-protocol';
 import { z } from 'zod';
-import { programIdentity, type ActionIdentity, type NativeChildCommand, type NativeChildReference, type ProgramContractIdentity } from '@hanger-source/dsh-reactive';
+import { ConversationAccessRevokedError, programIdentity, type ActionIdentity, type NativeChildCommand, type NativeChildReference, type ProgramContractIdentity } from '@hanger-source/dsh-reactive';
 import type { ProgramCreationReference, ProgramFailure, ProgramIdentity } from './types.ts';
+export { ConversationAccessRevokedError } from '@hanger-source/dsh-reactive';
 
 /** 接受状态未被确认；此错误从不触发自动重发 Action。 */
 export class ActionAdmissionUnknownError extends Error {
@@ -47,10 +48,17 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'reactive/program-contract-mismatch': { readonly expected: ProgramContractIdentity; readonly actual: ProgramContractIdentity };
     'reactive/shared-program-required': Record<string, never>;
     'reactive/input-edit-rejected': { readonly requestId: string; readonly reason: 'unavailable' | 'actor-mismatch' | 'content-conflict' | 'changed' };
+    'reactive/conversation-access-revoked': { readonly sessionId: string; readonly workspaceId: string; readonly reason: 'membership-removed' | 'workspace-deleted' | 'access-expired' };
+    'reactive/invocation-operation-unavailable': Record<string, never>;
   }
 }
 /** 正式 failure 已由 Gateway/贡献合同核验，客户端保留完整公开 details。 */
-export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError {
+export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError | ConversationAccessRevokedError {
+  if (value.code === 'reactive/conversation-access-revoked') {
+    const details = z.object({ sessionId: z.string(), workspaceId: z.string(),
+      reason: z.enum(['membership-removed', 'workspace-deleted', 'access-expired']) }).strict().parse(value.details);
+    return new ConversationAccessRevokedError(details.sessionId, details.workspaceId, details.reason);
+  }
   const details = z.union([z.array(z.json()), z.record(z.string(), z.json())]).parse(value.details);
   return new RemoteError(value.code as RemoteErrorCode, value.message, details);
 }

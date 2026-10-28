@@ -72,7 +72,7 @@ export async function mountAssembledApplication<E extends readonly AnyEnvironmen
             environments.push({ ...environment, skills });
         }
         const hostOptions = { ...options, operations: [...new Set([...options.operations ?? [], ...assembled.operations])] };
-        const required = ['agents', 'sessions', 'sessionPersistence', 'sessionQuery', 'sessionProjections', 'workspaceRegistry',
+        const required = ['agents', 'sessions', 'sessionPersistence', 'sessionQuery', 'sessionProjections', 'workspaceRegistry', 'storageDomain',
             'goals', 'tools', 'systemPrompt', 'loader', 'agentPresets', 'skills', 'fs', 'workingDirectory', 'userQuestions', 'attachments', 'fileUploads'];
         if (delegations.programs().length) required.push('subagents');
         installation = ctx.plugin({ name: 'reactive-application:' + definition.name, async apply(application: Context) {

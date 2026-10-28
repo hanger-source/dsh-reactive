@@ -15,7 +15,7 @@ import { SessionId, pluginRecordOf, type SessionEvent } from '@deepseek-ai/dsh-s
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import { defineAction, implementAction, type ActionCallContext } from '@hanger-source/dsh-reactive';
 import { defineOperation, implementOperation, operationFollowLinkSchema, type OperationAccessContext, type OperationFollowLink } from '@hanger-source/dsh-reactive';
-import { defineApplication, defineEnvironment, z } from '@hanger-source/dsh-reactive';
+import { ConversationAccessRevokedError, defineApplication, defineEnvironment, z } from '@hanger-source/dsh-reactive';
 import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
 import { Expose, Offer, Follow } from '@hanger-source/dsh-reactive/program';
 import { defineProgram } from '@hanger-source/dsh-reactive';
@@ -357,6 +357,50 @@ async function crashCheckpoint(root: string, context: TestContext, mode: 'single
 }
 
 if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-feedback-checkpoint'].includes(process.argv[2] ?? '')) {
+  test('冷通知的成员资格退出及时结束业务准入，迟到ACK不取得新图且独立Operation仍结算', { timeout: 25_000 }, async context => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-operation-membership-'));
+    const entered = Promise.withResolvers<AbortSignal>(), release = Promise.withResolvers<void>(), returned = Promise.withResolvers<void>();
+    let gate = false;
+    const app = await scenario(root, 'settled', { async existingAck(_link, access) {
+      if (!gate || access.source.kind !== 'participant' || access.source.actorId !== 'notifier-one') return;
+      entered.resolve(access.signal); await release.promise; returned.resolve();
+    } });
+    context.after(() => { release.resolve(); return app.dispose(); });
+    const session = await app.runtime.application.create('work', { workspaceId: app.workspace.workspaceId });
+    await session.submit({ requestId: 'original-goal', content: '只准备一次并等待原业务结算', intent: 'goal', delivery: 'followup', scope: { merchantId: 'merchant-a' } });
+    await session.whenIdle();
+    const [link] = app.store.links(); assert.ok(link);
+    const reference = app.store.read('prepare-a')!.reference, sessionId = session.id;
+    session.release(); await app.runtime.application.close(sessionId);
+    const cold = await app.runtime.application.open(sessionId, app.program);
+    const bound = cold.operations.preparation();
+    const independent = await app.runtime.application.attachOperation(sessionId, operation, reference);
+    const terminal = independent.settled(); void terminal.catch(() => {});
+    gate = true;
+    let outcome: unknown;
+    const notifying = app.runtime.application.notifyOperation(sessionId, link.id, { actorId: 'notifier-one' })
+      .then(value => { outcome = value; }, error => { outcome = error; });
+    const admission = await entered.promise;
+    const workspace = app.runtime.native.workspaceRegistry.get(WorkspaceId(app.workspace.workspaceId))!;
+    await workspace.detachSession(SessionId(sessionId)); await immediate();
+    const reason: unknown = cold.signal.reason;
+    assert.ok(reason instanceof ConversationAccessRevokedError && reason.reason === 'membership-removed');
+    assert.equal(admission.aborted, true); assert.equal(admission.reason, reason);
+    assert.equal(outcome, reason, '不配合signal的业务准入ACK尚未返回时，通知等待已按原资格结束');
+    await workspace.attachSession(SessionId(sessionId));
+    const fresh = await app.runtime.application.open(sessionId, app.program);
+    assert.notEqual(fresh.accessId, cold.accessId);
+    await assert.rejects(async () => cold.locateOperation(operation, { merchantId: 'merchant-a', commandId: 'prepare-a' }), error => error === reason);
+    assert.throws(() => bound.locate(), error => error === reason, '旧Bound查询不能从相同sessionId取得新资格');
+    release.resolve(); await returned.promise; await notifying; await immediate();
+    assert.equal(app.runtime.native.agents.get(SessionId(sessionId)), undefined, '迟到ACK没有激活新的原生Agent');
+    assert.equal(app.requests.length, 1); assert.equal(app.store.bodies().length, 1);
+    assert.equal(fresh.snapshot().requests['operation:' + link.id], undefined);
+    app.store.update('prepare-a', { status: 'complete', artifactId: 'artifact-after-membership' });
+    assert.deepEqual(await terminal, { status: 'complete', artifactId: 'artifact-after-membership' }, '原独立Operation观察仍由业务owner结算');
+    assert.deepEqual(app.errors, []); cold.release(); fresh.release();
+  });
+
   test('background受理后继续同一Goal，仍受另一wait和暂停约束，冷恢复不重执且迟到结果不取得新修订权限', async context => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-operation-background-'));
     const app = await scenario(root, 'settled', { backgroundThenWait: true });
@@ -508,25 +552,40 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     const session = await app.runtime.application.create('work', { workspaceId: app.workspace.workspaceId });
     await session.submit({ requestId: 'original-goal', content: '受理商家甲的准备操作', intent: 'goal', delivery: 'followup', scope: { merchantId: 'merchant-a' } });
     const link = await registered.promise;
+    const agent = app.runtime.native.agents.get(SessionId(session.id))!;
     const workspace = app.runtime.native.workspaceRegistry.get(WorkspaceId(app.workspace.workspaceId))!;
     if (boundary === 'cancel') await session.cancel();
     else await workspace.detachSession(SessionId(session.id));
     acknowledge.resolve();
-    await session.whenIdle();
+    let observed = session;
+    let revoked: ConversationAccessRevokedError | undefined;
+    if (boundary === 'workspace-guard') {
+      const reason: unknown = session.signal.reason;
+      assert.ok(reason instanceof ConversationAccessRevokedError && reason.reason === 'membership-removed');
+      revoked = reason;
+      assert.throws(() => session.whenIdle(), error => error === reason);
+      await agent.whenIdle();
+      assert.equal(app.runtime.native.agents.get(agent.id), agent, '成员撤销不退出正在结算原调用的Agent');
+      await workspace.attachSession(agent.id);
+      observed = await app.runtime.application.open(session.id, app.program);
+      assert.notEqual(observed.accessId, session.accessId);
+      assert.equal(session.signal.reason, reason, '新取得不恢复旧句柄资格');
+    }
+    await observed.whenIdle();
     assert.equal(app.store.bodies().length, 0);
     assert.equal(app.bodyWaits.length, 0);
-    assert.deepEqual(session.snapshot().waits, []);
-    assert.equal(session.snapshot().requests['operation:' + link.id], undefined);
-    assert.equal(session.snapshot().goal?.activation, 'disarmed');
-    const events = app.runtime.native.agents.get(SessionId(session.id))!.session.snapshotEvents();
+    assert.deepEqual(observed.snapshot().waits, []);
+    assert.equal(observed.snapshot().requests['operation:' + link.id], undefined);
+    assert.equal(observed.snapshot().goal?.activation, 'disarmed');
+    const events = agent.session.snapshotEvents();
     assert.equal(events.filter(event => pluginRecordOf(event)?.type === 'plugin:reactive/operation-not-started').length, 1);
     assert.equal(events.filter(event => pluginRecordOf(event)?.type === 'plugin:reactive/operation-delivery').length, 0);
     if (boundary === 'workspace-guard') {
       assert.equal(app.requests.length, 1, '原生下一步装配也必须拒绝已被移除的成员，不能再次进入模型');
       assert.equal(app.errors.length, 1);
-      assert.ok(app.errors[0] instanceof Error);
-      assert.equal(app.errors[0].message, 'REACTIVE_WORKSPACE_MEMBERSHIP_REQUIRED');
+      assert.equal(app.errors[0], revoked);
     } else assert.deepEqual(app.errors, []);
+    if (observed !== session) observed.release();
     session.release();
   });
 

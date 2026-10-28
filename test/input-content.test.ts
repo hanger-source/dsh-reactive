@@ -7,7 +7,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import { isAttachmentError } from '@deepseek-ai/dsh-attachment';
 import { SessionId, appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-session';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
-import { defineApplication, defineEnvironment, defineProgram, defineSurface, z, type AdmittedSubmission, type InputDelivery, type PromptContentPart, type Submission } from '@hanger-source/dsh-reactive';
+import { defineApplication, defineEnvironment, defineProgram, defineSurface, ConversationAccessRevokedError, z, type AdmittedSubmission, type InputDelivery, type PromptContentPart, type Submission } from '@hanger-source/dsh-reactive';
+import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import { implementProgram, useBeforeStep } from '@hanger-source/dsh-reactive/program';
 import { InputFileNotStagedError } from '@hanger-source/dsh-reactive-dsh';
 import { admitInputContent } from '../packages/dsh/src/files/input-content.ts';
@@ -16,6 +17,82 @@ import { contentDigest, recordSchema, submissionSourceDigest } from '../packages
 import { boot, text } from './native-support.ts';
 
 const gif = 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+test('成员撤销结束不合作的未受理准入，已send输入仍归原生owner完成持久回执', { timeout: 15_000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-reactive-input-membership-'));
+  const entered = Promise.withResolvers<void>(), policy = Promise.withResolvers<void>();
+  const durable = Promise.withResolvers<void>(), finishFlush = Promise.withResolvers<void>();
+  let holdPolicy = true, models = 0;
+  const program = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+  const definition = defineApplication({ name: 'input-membership', admit: async input => {
+    if (input.requestId === 'before-send' && holdPolicy) { entered.resolve(); await policy.promise; }
+  }, environments: [defineEnvironment({ id: 'work', instructions: '只观察输入受理，不运行模型',
+    program: implementProgram(program, { Component: () => null }),
+  })] });
+  const app = await boot(home, definition, async function* () { models++; yield* text('不得启动模型'); });
+  const handles: { release(): void }[] = [];
+  let stopFlush: (() => void) | undefined;
+  const revoked = (error: unknown) => error instanceof ConversationAccessRevokedError && error.reason === 'membership-removed';
+  try {
+    const first = await app.host.create('work', { workspaceId: app.workspace.workspaceId }); handles.push(first);
+    const agent = app.native.agents.get(SessionId(first.id))!;
+    const sent = (requestId: string) => agent.session.snapshotEvents().filter(event => event.type === 'agent/inbox/spliced'
+      && event.data.inserted.some(message => 'rpcId' in message.source && message.source.rpcId === requestId)).length;
+    const workspace = app.native.workspaceRegistry.get(WorkspaceId(app.workspace.workspaceId))!;
+    const before = { requestId: 'before-send', intent: 'question', delivery: 'inject', scope: null, content: '尚未受理' } satisfies Submission<null>;
+    const rejected = assert.rejects(first.submit(before), revoked);
+    await entered.promise;
+    await workspace.detachSession(agent.id);
+    await rejected;
+    assert.equal(sent(before.requestId), 0);
+    await workspace.attachSession(agent.id);
+    const second = await app.host.open(first.id, program); handles.push(second);
+    assert.notEqual(second.accessId, first.accessId);
+    assert.equal(app.native.agents.get(agent.id), agent, '重新取得只换Program图，不重启实际Agent');
+    holdPolicy = false;
+    assert.equal((await second.submit(before)).accepted, true, '新资格不等旧策略迟到返回');
+    policy.resolve();
+    await second.whenIdle();
+    assert.equal(sent(before.requestId), 1);
+
+    const after = { ...before, requestId: 'after-send', content: '已受理等待持久回执' };
+    let checkpointed = false;
+    stopFlush = app.native.on('session/flush', async nativeSession => {
+      if (nativeSession !== agent.session || checkpointed || sent(after.requestId) !== 1) return;
+      checkpointed = true;
+      await app.native.sessionPersistence.flush();
+      durable.resolve();
+      await finishFlush.promise;
+    });
+    const stoppedWaiting = assert.rejects(second.submit(after), revoked);
+    await durable.promise;
+    await workspace.detachSession(agent.id);
+    await stoppedWaiting;
+    await workspace.attachSession(agent.id);
+    const third = await app.host.open(first.id, program); handles.push(third);
+    let idle = false;
+    const settled = third.whenIdle().then(() => { idle = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(idle, false, '新读取图仍等待原受理owner尚未退出的持久检查点');
+    finishFlush.resolve();
+    await settled;
+    stopFlush(); stopFlush = undefined;
+    const reader = await app.native.sessionPersistence.open(agent.id, 'read');
+    try {
+      const persisted = await reader.read();
+      assert.equal(persisted.events.filter(event => event.type === 'agent/inbox/spliced' && event.data.inserted.some(message =>
+        'rpcId' in message.source && message.source.rpcId === after.requestId)).length, 1);
+    } finally { await reader.close(); }
+    assert.equal((await third.requestStatus(after.requestId)).state, 'accepted');
+    assert.equal((await third.submit(after)).accepted, true);
+    assert.equal(sent(after.requestId), 1);
+    assert.equal(models, 0); assert.deepEqual(app.errors, []);
+  } finally {
+    policy.resolve(); finishFlush.resolve(); stopFlush?.();
+    for (const handle of handles) handle.release();
+    await app.dispose();
+  }
+});
 
 function received(agent: Agent, requestId: string) {
   return agent.session.snapshotEvents().flatMap(event => event.type === 'user/message'

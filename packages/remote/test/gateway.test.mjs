@@ -79,7 +79,7 @@ test('动态模块集合经真实Gateway保留Date、单向目标与独立Operat
   local = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
   const role = { name: 'module-reader', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/view', 'reactivePrograms/questions',
     'reactivePrograms/resolveAction', 'reactivePrograms/startAction', 'reactivePrograms/actionResult', 'reactivePrograms/observeAction',
-    'reactivePrograms/resolveOperation', 'reactivePrograms/locateOperation', 'reactivePrograms/observeOperation'] };
+    'reactivePrograms/resolveOperation', 'reactivePrograms/locateOperation', 'reactivePrograms/observeOperation', 'reactivePrograms/observeInvocationOperation'] };
   gateway = await mountProgramGateway(runtime.native, { application: runtime.application, model: { provider: 'remote-module', model: 'test' },
     participant: principal => ({ participant: 'human', actorId: principal.id }),
     access: service => service.registerPolicy('module-user', { bindings: () => [{ role, resource: { kind: 'session', id: local.id } }] }),
@@ -307,7 +307,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     'reactivePrograms/open', 'reactivePrograms/submit', 'reactivePrograms/view', 'reactivePrograms/resolveAction', 'reactivePrograms/startAction',
     'reactivePrograms/createWorkspace', 'reactivePrograms/describe', 'reactivePrograms/resume', 'reactivePrograms/pause', 'reactivePrograms/cancel',
     'reactivePrograms/actionInvocation', 'reactivePrograms/actionResult', 'reactivePrograms/observeAction',
-    'reactivePrograms/resolveOperation', 'reactivePrograms/locateOperation', 'reactivePrograms/observeOperation', 'reactivePrograms/questions',
+    'reactivePrograms/resolveOperation', 'reactivePrograms/locateOperation', 'reactivePrograms/observeOperation', 'reactivePrograms/observeInvocationOperation', 'reactivePrograms/questions',
     'reactivePrograms/answerQuestion', 'reactivePrograms/attachWait', 'reactivePrograms/requestStatus', 'reactivePrograms/progress',
     'reactivePrograms/journal', 'reactivePrograms/journalPage',
   ] };

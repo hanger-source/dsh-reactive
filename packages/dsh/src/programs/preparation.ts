@@ -15,6 +15,8 @@ import type { ConversationInputs } from '../conversations/inputs.ts';
 import type { ActionAuthority } from '../execution/authority.ts';
 import type { OperationParticipation } from '../operations/participation.ts';
 import type { ProgramTools } from '../execution/tools.ts';
+import { firstValueFrom } from 'rxjs';
+import { abortable } from '@hanger-source/dsh-reactive';
 declare module '@deepseek-ai/dsh-system-prompt' {
     interface AssembleContext {
         reactivePrepared?: true;
@@ -36,15 +38,16 @@ export class ConversationPrograms {
             validateFollow: follow => this.operations.validateFollow(follow, implementation),
             validateOffer: offer => this.operations.validateOffer(offer, implementation) });
     }
-    createLive(agent: Agent, session: ConversationSession): LiveConversation {
+    createLive(agent: Agent, session: ConversationSession, previous?: LiveConversation): LiveConversation {
         let skills: ProgramSkills | undefined;
         const installation = this.bindings.create(agent, session.scope, session.program.signal, () => skills?.dispose());
         session.program.signal.throwIfAborted();
         installation.scope.assertActive();
         skills = new ProgramSkills(agent, installation.context);
         return { agent, session, scope: installation.scope, closed: installation.closed, dispose: installation.dispose,
-            claimed: [], preparing: false, recovery: new Set(), recoveryErrors: [], skills,
-            human: new HumanInputs(installation.context, agent, session.program, installation.scope), progress: new NativeProgress() };
+            claimed: previous ? previous.claimed : [], stepSignal: previous?.stepSignal, preparing: false,
+            recovery: previous ? previous.recovery : new Set(), recoveryErrors: previous ? previous.recoveryErrors : [], skills,
+            human: new HumanInputs(installation.context, agent, session.program, installation.scope), progress: previous ? previous.progress : new NativeProgress() };
     }
     async attach(entry: LiveConversation): Promise<void> {
         const { session, agent } = entry, { conversation } = session;
@@ -105,18 +108,25 @@ export class ConversationPrograms {
                 return next();
             if (!context.signal)
                 throw new Error('REACTIVE_ASSEMBLY_SIGNAL_REQUIRED');
-            await this.delegations.beforeStep(entry.agent, context.signal);
+            const signal = AbortSignal.any([context.signal, entry.scope.signal, entry.session.scope.signal]);
+            signal.throwIfAborted();
+            this.sessions.assertSessionWorkspace(entry.session);
+            await firstValueFrom(abortable(() => this.delegations.beforeStep(entry.agent, signal), signal));
+            signal.throwIfAborted();
+            this.sessions.assertSessionWorkspace(entry.session);
             entry.stepSignal = context.signal;
             if (entry.preparing)
                 throw new Error('REACTIVE_ASSEMBLY_CONCURRENT');
             entry.progress.beginPreparation();
             entry.preparing = true;
             try {
-                await this.inputs.prepare(entry, context.signal);
+                await this.inputs.prepare(entry, signal);
                 // 只使用公开装配 API：重新收集已更新的声明和上下文，不修改 loop 保存的旧快照。
                 for (;;) {
-                    const stable = await this.prepareBindings(entry, context.signal);
-                    const assembled = await entry.agent.ctx.systemPrompt.assemble({ ...context, reactivePrepared: true });
+                    const stable = await this.prepareBindings(entry, signal);
+                    const assembled = await firstValueFrom(abortable(() => entry.agent.ctx.systemPrompt.assemble({ ...context, reactivePrepared: true }), signal));
+                    signal.throwIfAborted();
+                    this.sessions.assertSessionWorkspace(entry.session);
                     if (!stable())
                         continue;
                     const declared = entry.session.program.offers;

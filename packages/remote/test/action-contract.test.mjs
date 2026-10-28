@@ -108,7 +108,7 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
   const invoke = await correct.resolveAction('save', root);
   const beforeStart = { inputs, defaults, bodies };
   for (const contract of [actionIdentity(wrongName), actionIdentity(wrongVersion), undefined]) {
-    const reply = await ctx.remote.reactivePrograms.startAction({ sessionId: local.id, program: { name: program.name, version: program.version }, name: 'save',
+    const reply = await ctx.remote.reactivePrograms.startAction({ sessionId: local.id, program: { name: program.name, version: program.version }, accessId: correct.identity.accessId, name: 'save',
       bindingId: invoke.bindingId, contract, input: { value: '9' } }, t.signal);
     assert.equal(reply.ok, false, '服务器独立拒绝错误或缺失合同，不能只信SDK检查');
     if (contract) assert.equal(reply.error.code, 'reactive/action-contract-mismatch');

@@ -12,6 +12,8 @@ import type { NativeProgress } from './progress.ts';
 export interface ConversationSession {
     /** 本会话事实与Program图的实际owner；冷观察保留它，收集会话时统一撤销。 */
     readonly scope: Scope;
+    /** 本次持久成员关系签发的opaque资格；收集Program图不改变它。 */
+    readonly accessId: string;
     readonly header: SessionHeader;
     readonly workspace: ManagedWorkspace;
     readonly environment: AnyEnvironment;

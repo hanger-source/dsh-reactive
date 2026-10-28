@@ -16,6 +16,7 @@ export class ConversationQuestions {
         throw new Error('REACTIVE_HOST_DISPOSED'); }
     async answerQuestion(session: ConversationSession, id: string, raw: unknown, options: SubmitOptions = {}): Promise<boolean> {
         this.assertActive();
+        this.sessions.assertSessionWorkspace(session);
         if (typeof id !== 'string' || !id.trim())
             throw new Error('REACTIVE_HUMAN_QUESTION_CALL_REQUIRED');
         const actorId = options.actorId ?? this.options.actorId;
@@ -33,6 +34,7 @@ export class ConversationQuestions {
             const assertPolicy = () => {
                 signal.throwIfAborted();
                 this.assertActive();
+                this.sessions.assertSessionWorkspace(session);
                 session.program.flush();
                 if (session.program.humanInput !== policy)
                     throw new Error('REACTIVE_HUMAN_INPUT_CHANGED');
@@ -55,23 +57,25 @@ export class ConversationQuestions {
             if (!current || canonical(current) !== canonical(question))
                 throw new Error('REACTIVE_HUMAN_QUESTION_CHANGED');
             // 取消结束当前阶段的等待；迟到的读取或准入没有继续激活 Agent 的续体。
-            await firstValueFrom(abortable(() => this.sessions.activate(session.header.id), signal));
+            await firstValueFrom(abortable(() => this.sessions.activate(session.header.id, session.accessId), signal));
             assertPolicy();
             const restored = this.sessions.live(session).human.snapshot().active.find(item => item.callId === id);
             if (!restored || canonical(restored) !== canonical(question))
                 throw new Error('REACTIVE_HUMAN_QUESTION_CHANGED');
         }
         signal.throwIfAborted();
+        this.sessions.assertSessionWorkspace(session);
         return this.sessions.live(session).human.answerQuestion(id, answer, { actorId, signal });
     }
     async *attachWait(session: ConversationSession, id: string, options: SubmitOptions = {}): AsyncIterable<HumanWaitFrame> {
         this.assertActive();
+        this.sessions.assertSessionWorkspace(session);
         const actorId = options.actorId ?? this.options.actorId;
         if (!actorId?.trim())
             throw new Error('REACTIVE_HUMAN_RESPONDER_REQUIRED');
         if (!session.live.value)
             throw new Error('REACTIVE_HUMAN_FOREGROUND_UNAVAILABLE');
-        const signal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
+        const signal = AbortSignal.any([this.signal, session.scope.signal, ...(options.signal ? [options.signal] : [])]);
         yield* session.live.value.human.attachWait(id, { actorId, signal });
     }
 }

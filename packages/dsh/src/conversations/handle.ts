@@ -37,6 +37,9 @@ export type EnvironmentOperationReaders<E extends AnyEnvironment> = {
 export type ProgramOperationReaders<P extends ProgramContract> = SurfaceClient<P['surface'], SubmitOptions, false>['operations'];
 type ProgramViews<P extends ProgramContract> = SurfaceViews<P['surface']>;
 export interface ServiceConversation<P extends ProgramContract = ProgramContract> extends ProgramSessionClient<P, CancellationOptions, false> {
+    /** 本次观察与成员资格的有限寿命；不拥有已经开始的业务执行。 */
+    readonly signal: AbortSignal;
+    readonly accessId: string;
     readonly activity$: Observable<ConversationActivity>;
     readonly rawEvents$: Observable<ConversationEvent>;
     observeWireView(name: string): Observable<Observation<Json>>;
@@ -109,6 +112,10 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
             throw new Error('REACTIVE_CONVERSATION_HANDLE_RELEASED');
         this.#scope.assertActive();
     }
+    /** 退出后仍可读取原原因；不表示原生Agent或已受理调用已经停止。 */
+    get signal(): AbortSignal { return this.#scope.signal; }
+    /** 原资格事实不随句柄退出或之后重新attach而变化。 */
+    get accessId(): string { return this.entry.accessId; }
     /** 仅结束本调用者的回执等待；共享受理与已开始的原生工作保留各自执行信号。 */
     private wait<T>(run: (signal: AbortSignal) => PromiseLike<T> | T, options: CancellationOptions = {}): Promise<T> {
         this.assertActive();
@@ -273,25 +280,25 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
         this.assertActive();
         assertParticipantOptions(this.participant, options);
         const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
-        return this.participation.attachOperation(this.id, definition, reference, { ...options, signal }, this.participant);
+        return this.participation.attachOperation(this.entry, definition, reference, { ...options, signal }, this.participant);
     }
     locateOperation<D extends OperationContract>(definition: D, command: OperationCommand<D>, options: SubmitOptions = {}): Promise<OperationLocation<OperationReference<D>, OperationState<D>>> {
         this.assertActive();
         assertParticipantOptions(this.participant, options);
         const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
-        return this.participation.locateOperation(this.id, definition, command, { ...options, signal }, this.participant);
+        return this.participation.locateOperation(this.entry, definition, command, { ...options, signal }, this.participant);
     }
     readOperationFeedback<D extends OperationContract>(definition: D, command: OperationCommand<D>, id: string, options: SubmitOptions = {}): Promise<OperationFeedbackRead<OperationReference<D>, OperationFeedbackPayload<D>>> {
         this.assertActive();
         assertParticipantOptions(this.participant, options);
         const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
-        return this.participation.readOperationFeedback(this.id, definition, command, id, { ...options, signal }, this.participant);
+        return this.participation.readOperationFeedback(this.entry, definition, command, id, { ...options, signal }, this.participant);
     }
     notifyOperation(followId: string, options: SubmitOptions = {}): Promise<OperationNotificationResult> {
         this.assertActive();
         assertParticipantOptions(this.participant, options);
         const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
-        return this.participation.notifyOperation(this.id, followId, { ...options, signal }, this.participant);
+        return this.participation.notifyOperation(this.entry, followId, { ...options, signal }, this.participant);
     }
     async question(callId: string, options: SubmitOptions = {}): Promise<HumanQuestionHandle<SubmitOptions>> {
         this.assertHuman();

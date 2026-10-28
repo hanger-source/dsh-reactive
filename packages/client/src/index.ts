@@ -13,13 +13,13 @@ import { decodeProgramFailure, ActionAdmissionUnknownError, CreationUnknownError
 import contribution from '@hanger-source/dsh-reactive-client/remote';
 import type { ProgramActionStart, ProgramCreationReference, ProgramIdentity, ProgramInputReceipt, ProgramInvocationFrame, ProgramQuestions, ProgramOperationNotificationResult, ProgramWorkspace, ProgramSubmission } from './contracts/types.ts';
 import { createAuthenticatedTransport, type AuthenticatedTransportOptions } from './transport.ts';
-import { createOperationQueries, attachRemoteOperation, locateRemoteOperation, bindRemoteOperation, readRemoteOperationFeedback, type RemoteOperationQueries } from './operations.ts';
+import { createOperationQueries, createInvocationOperationQueries, attachRemoteOperation, attachInvocationRemoteOperation, locateRemoteOperation, bindRemoteOperation, readRemoteOperationFeedback, type RemoteOperationObservation } from './operations.ts';
 import { ProgramJournal, type ProgramJournalOptions, type ProgramJournalRequest } from './journal.ts';
 import { connectProgress, type RemoteProgress } from './progress.ts';
 import { createActionBindings } from './action-bindings.ts';
 import { remoteView } from './views.ts';
 import { createHumanWaits, remoteHuman } from './human.ts';
-import { createClientScope, type ClientScope } from './scope.ts';
+import { createClientScope, revokeConversationAccess, type ClientScope } from './scope.ts';
 import { ResourceReader } from '@hanger-source/dsh-reactive';
 import { actionIdentity, assertActionIdentity } from '@hanger-source/dsh-reactive';
 import { createHumanQuestionResolver } from '@hanger-source/dsh-reactive';
@@ -30,7 +30,7 @@ export { createAuthenticatedTransport } from './transport.ts';
 export type { AuthenticatedTransportOptions } from './transport.ts';
 export { Inbox } from './contracts/inbox.ts';
 export { decodeProgramFailure, ActionAdmissionUnknownError, CreationUnknownError, CreationIncompleteError,
-  ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError } from './contracts/errors.ts';
+  ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError, ConversationAccessRevokedError } from './contracts/errors.ts';
 export { ProgramJournal } from './journal.ts';
 export type { ProgramJournalOptions, ProgramJournalRequest } from './journal.ts';
 
@@ -90,7 +90,7 @@ type ParticipantSession<P extends ProgramContract, Participant extends ProgramId
 type ParticipantClient<P extends ProgramContract, Participant extends ProgramIdentity['participant']> =
   Participant extends 'human' ? ProgramClient<P> : ServiceProgramClient<P>;
 
-function result<T>(value: RemoteResult<T>): T { if (!value.ok) throw value.error; return value.value; }
+function result<T>(value: RemoteResult<T>): T { if (!value.ok) throw decodeProgramFailure(value.error); return value.value; }
 function json(value: unknown): JsonValue { return z.json().parse(value); }
 function creation<T>(reply: RemoteResult<T>): T {
   if (!reply.ok && reply.error.code === 'reactive/creation-incomplete') {
@@ -161,7 +161,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
   try {
     const ctx = lifetime.context;
     // 已受理Invocation的Operation借用SDK寿命，不能由原Session句柄退出撤销。
-    const invocationQueries = createOperationQueries(lifetime, sharedIdentity);
+    const invocationQueries = createInvocationOperationQueries(lifetime, sharedIdentity);
     const remote = ctx.remote.reactivePrograms;
     const active = (): void => {
       lifetime.assertActive();
@@ -177,7 +177,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
       assertProgramIdentity(sharedIdentity, identity.program);
       if (identity.participant !== participant) throw new ProgramParticipantMismatchError(participant, identity);
       identity = Object.freeze({ ...identity, program: sharedIdentity });
-      const address = Object.freeze({ sessionId: identity.sessionId, program: sharedIdentity });
+      const address = Object.freeze({ sessionId: identity.sessionId, program: sharedIdentity, accessId: identity.accessId });
       const lease = lifetime.acquire(() => createClientScope(ctx, 'reactive-program-session:' + identity.sessionId,
         new Error('REACTIVE_CONVERSATION_HANDLE_RELEASED'), lifetime), owner => owner.close(), 'reactive Program session');
       const owner = lease.value;
@@ -187,8 +187,12 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
         const slots = new Map<string, ResourceReader<unknown>>();
         owner.acquire(() => slots, slots => { slots.clear(); }, 'program-view-slots');
         const assertActive = (): void => { active(); scopeSignal.throwIfAborted(); };
+        const sessionResult = <T>(reply: RemoteResult<T>): T => {
+          if (!reply.ok) throw revokeConversationAccess(owner, reply.error);
+          return reply.value;
+        };
         const actionBindings = createActionBindings(owner, address);
-        const operationQueries = createOperationQueries(owner, sharedIdentity);
+        const operationQueries = createOperationQueries(owner, address);
         const accessSource = { kind: 'participant', participant: identity.participant, actorId: identity.actorId, entrypoint: 'operation-query' } as const;
         let progress: RemoteProgress<P> | undefined;
         const progressOwner = (): RemoteProgress<P> => {
@@ -213,12 +217,12 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
             const cancelled = options.signal;
             const signal = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
             signal.throwIfAborted();
-            const binding = result(await remote.resolveOperation({ ...address, name }, signal));
+            const binding = sessionResult(await remote.resolveOperation({ ...address, name }, signal));
             signal.throwIfAborted();
             if (binding.operation.kind !== definition.kind || binding.operation.version !== definition.version) {
               throw new Error('REACTIVE_OPERATION_SLOT_CONTRACT_MISMATCH');
             }
-            return bindRemoteOperation(operationQueries, identity.sessionId, definition, binding.command as OperationCommand<typeof definition>, accessSource, signal);
+            return bindRemoteOperation(operationQueries, definition, binding.command as OperationCommand<typeof definition>, accessSource, signal);
           };
         const operations = Object.freeze(Object.fromEntries(Object.keys(surface.operations).map(name => [name,
           (options: CancellationOptions = {}) => resolveOperation(name, options),
@@ -265,7 +269,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
               if (!started.ok) {
                 if (started.error.code === 'gateway/internal' || started.error.code === 'gateway/cancelled')
                   throw new ActionAdmissionUnknownError(identity.sessionId, name, started.error);
-                throw started.error;
+                throw revokeConversationAccess(owner, started.error);
               }
               // ACK 已可能受理业务；矛盾回执不能被描述成确定未执行，也不能自动重发。
               try {
@@ -287,7 +291,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
             assertActive();
             const contract = surfaceSlotDefinition(surface, 'actions', name);
             if (!contract) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
-            const stored = result(await remote.actionInvocation({ ...address, invocationId: id }, lifetime.signal));
+            const stored = result(await remote.actionInvocation({ sessionId: identity.sessionId, program: sharedIdentity, invocationId: id }, lifetime.signal));
             if (stored.name !== name) throw new Error('REACTIVE_ACTION_INVOCATION_SLOT_MISMATCH');
             return invocation(ctx.remote, identity.sessionId, stored, contract as S['actions'][K], lifetime, invocationQueries, callRemote);
           },
@@ -328,7 +332,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
             if (!reply.ok && (reply.error.code === 'gateway/internal' || reply.error.code === 'gateway/cancelled')) {
               throw new SubmissionAdmissionUnknownError(identity.sessionId, submitted.requestId, reply.error);
             }
-            return result(reply);
+            return sessionResult(reply);
           },
           async editQueuedInput(requestId, content, options = {}): Promise<ProgramInputReceipt> {
             assertActive();
@@ -349,7 +353,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
             });
             if (!reply.ok && (reply.error.code === 'gateway/internal' || reply.error.code === 'gateway/cancelled'))
               throw new InputEditAdmissionUnknownError(identity.sessionId, requestId, reply.error);
-            return result(reply);
+            return sessionResult(reply);
           },
           uploadFile(data, options = {}): FileUploadInvocation {
             assertActive();
@@ -377,7 +381,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
                   { args: input }, lifetime.signal).catch((cause: unknown) => {
                   throw new FileUploadReceiptUnknownError(identity.sessionId, cause);
                 });
-                if (!reply.ok) throw decodeProgramFailure(reply.error);
+                if (!reply.ok) throw revokeConversationAccess(owner, decodeProgramFailure(reply.error));
                 try { return descriptor.result.create().parse(reply.value); }
                 catch (cause) { throw new FileUploadReceiptUnknownError(identity.sessionId, cause); }
               },
@@ -386,23 +390,23 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
           async requestStatus(requestId, options = {}) {
             assertActive();
             const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
-            return result(await callRemote(current => remote.requestStatus({ ...address, requestId }, current), signal));
+            return sessionResult(await callRemote(current => remote.requestStatus({ ...address, requestId }, current), signal));
           },
           attachOperation(definition, reference, options = {}) {
             assertActive();
             const signal = options.signal;
-            return attachRemoteOperation(operationQueries, identity.sessionId, definition, reference, accessSource,
+            return attachRemoteOperation(operationQueries, definition, reference, accessSource,
               signal ? AbortSignal.any([scopeSignal, signal]) : scopeSignal);
           },
           locateOperation(definition, command, options = {}) {
             assertActive();
             const signal = options.signal;
-            return locateRemoteOperation(operationQueries, identity.sessionId, definition, command, accessSource,
+            return locateRemoteOperation(operationQueries, definition, command, accessSource,
               signal ? AbortSignal.any([scopeSignal, signal]) : scopeSignal);
           },
           readOperationFeedback(definition, command, participationId, options = {}) {
             const signal = options.signal;
-            assertActive(); return readRemoteOperationFeedback(operationQueries, identity.sessionId, definition, command, participationId,
+            assertActive(); return readRemoteOperationFeedback(operationQueries, definition, command, participationId,
               signal ? AbortSignal.any([scopeSignal, signal]) : scopeSignal);
           },
           async notifyOperation(followId, options = {}) {
@@ -410,7 +414,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
             const cancelled = options.signal;
             const signal = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
             signal.throwIfAborted();
-            return result(await remote.notifyOperation({ ...address, followId }, signal));
+            return sessionResult(await remote.notifyOperation({ ...address, followId }, signal));
           },
           async openEvents(eventOptions, request = {}) {
             assertActive();
@@ -430,18 +434,18 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
             async pause(options = {}) {
               assertActive();
               const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
-              return result(await callRemote(current => remote.pause(address, current), signal));
+              return sessionResult(await callRemote(current => remote.pause(address, current), signal));
             },
             async cancel(options = {}) {
               assertActive();
               const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
-              return result(await callRemote(current => remote.cancel(address, current), signal));
+              return sessionResult(await callRemote(current => remote.cancel(address, current), signal));
             },
             async answerQuestion(callId, answer, options = {}) {
               assertActive();
               const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
               signal.throwIfAborted();
-              return result(await callRemote(current => remote.answerQuestion({ ...address, callId, answer }, current), signal));
+              return sessionResult(await callRemote(current => remote.answerQuestion({ ...address, callId, answer }, current), signal));
             },
             async *attachWait(callId, options = {}) {
               assertActive();
@@ -507,7 +511,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
 }
 
 function invocation<D extends ActionContract>(remote: ClientRemote, sessionId: string, start: ProgramActionStart, contract: D, lifetime: ClientScope,
-  queries: RemoteOperationQueries, callRemote: <T>(call: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal) => Promise<T>): ActionInvocation<D> {
+  queries: RemoteOperationObservation, callRemote: <T>(call: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal) => Promise<T>): ActionInvocation<D> {
   assertActionIdentity(contract, start.contract);
   const signal = lifetime.signal;
   const activityState = new BehaviorSubject<Observation<InvocationActivity>>({ status: 'pending', generation: 0 });
@@ -549,7 +553,7 @@ function invocation<D extends ActionContract>(remote: ClientRemote, sessionId: s
     .then(reply => z.decode(contract.output, result(reply)));
   void settled.catch(() => {});
   const mapping = contract.operation;
-  const operation = mapping ? settled.then(receipt => attachRemoteOperation(queries, sessionId, mapping.definition,
+  const operation = mapping ? settled.then(receipt => attachInvocationRemoteOperation(queries, address, mapping.definition,
     z.json().parse(mapping.reference(receipt as never)), start.source, signal)) : undefined;
   void operation?.catch(() => {});
   // 动态 Surface 映射经对应原合同 decode；operation 也只在原合同声明时构造。

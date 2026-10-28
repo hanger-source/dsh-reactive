@@ -1,6 +1,8 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { firstValueFrom } from 'rxjs';
-import { abortable } from '@hanger-source/dsh-reactive';
+import { abortable, ConversationAccessRevokedError } from '@hanger-source/dsh-reactive';
+import { RemoteError } from '@deepseek-ai/dsh-typert-protocol';
+import { decodeProgramFailure } from './contracts/errors.ts';
 
 export interface ClientLease<T> {
   readonly value: T;
@@ -16,7 +18,14 @@ export interface ClientScope {
   assertActive(): void;
   run<T>(call: (signal: AbortSignal) => PromiseLike<T>, signal?: AbortSignal): Promise<T>;
   acquire<T>(create: () => T, cleanup: (value: T) => void | PromiseLike<void>, label: string): ClientLease<T>;
-  close(): Promise<void>;
+  close(reason?: unknown): Promise<void>;
+}
+
+/** 只有正式资格撤销结束本会话owner；业务资源错误仍只属于原资源。 */
+export function revokeConversationAccess(owner: ClientScope, error: unknown): unknown {
+  const failure = error instanceof RemoteError && error.code === 'reactive/conversation-access-revoked' ? decodeProgramFailure(error) : error;
+  if (failure instanceof ConversationAccessRevokedError) void owner.close(failure).catch(() => {});
+  return failure;
 }
 
 export function createClientScope(parent: Context, name: string, reason: Error, owner?: ClientScope): ClientScope {
@@ -80,11 +89,11 @@ export function createClientScope(parent: Context, name: string, reason: Error, 
       // 构造中撤销时仍交付已取得的对象；它已归原生effect释放，不丢失已受理的身份。
       return { value, release };
     },
-    close() {
+    close(cause: unknown = reason) {
       if (closing) return closing;
       const completion = Promise.withResolvers<void>();
       closing = completion.promise;
-      controller.abort(reason);
+      controller.abort(cause);
       void (async () => {
         // 公开disposer是single-shot；await Fiber还会加入原生owner已开始的卸载。
         try { await installation.dispose(); await installation; }

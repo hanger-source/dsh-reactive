@@ -9,8 +9,9 @@ import { symbols } from '@deepseek-ai/cordis';
 import { Fragment, createElement as h } from 'react';
 import { BehaviorSubject, filter, firstValueFrom } from 'rxjs';
 import { SessionId } from '@deepseek-ai/dsh-session';
+import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import { createUserMessage, type GenerateOptions } from '@deepseek-ai/dsh-llm';
-import { defineApplication, defineEnvironment, z } from '@hanger-source/dsh-reactive';
+import { ConversationAccessRevokedError, defineApplication, defineEnvironment, z } from '@hanger-source/dsh-reactive';
 import { defineAction, implementAction } from '@hanger-source/dsh-reactive';
 import type { HumanAnswer, HumanQuestionOrigin, HumanResponderAdmission } from '@hanger-source/dsh-reactive';
 import { inputReferenceSchema } from '@hanger-source/dsh-reactive/kernel';
@@ -377,5 +378,56 @@ test('异步响应准入取消及时退出，迟到策略不回答或claim，当
     gates.forEach(held => held.release.resolve());
     nativeQuestions.attachWait = attachWait;
     await app.dispose();
+  }
+});
+
+test('正式成员撤销结束不配合取消的响应准入，迟到allow不答题也不领取前台等待', { timeout: 15_000 }, async () => {
+  for (const entry of ['answer', 'claim'] as const) {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-human-membership-'));
+    const entered = Promise.withResolvers<AbortSignal>(), release = Promise.withResolvers<void>(), returned = Promise.withResolvers<void>();
+    const definition = defineApplication({ name: 'human-membership', admit: async () => {}, environments: [defineEnvironment({
+      id: 'work', instructions: '只由仍有工作区成员资格的响应者受理答复',
+      program: implementProgram(defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) }), {
+        Component: () => HumanInput({ async admitResponder(admission) {
+          admitResponder(admission); entered.resolve(admission.signal); await release.promise; returned.resolve();
+        } }),
+      }),
+    })] });
+    let calls = 0;
+    const app = await boot(join(root, 'home'), definition, async function* () {
+      calls++; yield* tool('ask_user_question', 'human-membership-' + entry, { questions, timeout: 30 });
+    });
+    const nativeQuestions = Reflect.get(app.native.userQuestions, symbols.original) as typeof app.native.userQuestions;
+    const attachWait = nativeQuestions.attachWait;
+    let attached = 0;
+    nativeQuestions.attachWait = function (...args) { attached++; return attachWait.apply(this, args); };
+    try {
+      const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+      const foreground = firstValueFrom(session.foregroundQuestions$.pipe(filter(value => value.length === 1)));
+      await session.submit({ requestId: 'merchant-question', content: '请求商家甲的处理许可', intent: 'question', delivery: 'followup', scope: null });
+      const [question] = await foreground; assert.ok(question);
+      const agent = app.native.agents.get(SessionId(session.id))!;
+      let outcome: unknown;
+      const waiting = (entry === 'answer' ? session.answerQuestion(question.callId, answer)
+        : session.attachWait(question.callId)[Symbol.asyncIterator]().next()).then(value => { outcome = value; }, error => { outcome = error; });
+      const admission = await entered.promise;
+      const workspace = app.native.workspaceRegistry.get(WorkspaceId(app.workspace.workspaceId))!;
+      await workspace.detachSession(SessionId(session.id));
+      await immediate();
+      const reason: unknown = session.signal.reason;
+      assert.ok(reason instanceof ConversationAccessRevokedError && reason.reason === 'membership-removed');
+      assert.equal(admission.aborted, true); assert.equal(admission.reason, reason);
+      assert.equal(outcome, reason, '原策略门闩尚未放行时本次准入已经结案');
+      release.resolve(); await returned.promise; await waiting; await agent.whenIdle();
+      assert.equal(attached, 0, '迟到allow不能进入原生claim');
+      const result = agent.session.snapshotEvents().find(event => event.type === 'tool/result' && event.data.message.toolCallId === question.callId);
+      assert.ok(result?.type === 'tool/result');
+      assert.equal(result.data.message.isError, true, '真实工具记录资格退出，未把迟到答案记录为成功');
+      assert.equal(calls, 1, '已撤下的Program不能因迟到allow继续模型');
+      assert.throws(() => session.answerQuestion(question.callId, answer), error => error === reason);
+      session.release();
+    } finally {
+      release.resolve(); nativeQuestions.attachWait = attachWait; await app.dispose();
+    }
   }
 });

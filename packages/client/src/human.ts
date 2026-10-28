@@ -1,10 +1,10 @@
 import type { CancellationOptions, HumanWaitFrame, ResourceReader } from '@hanger-source/dsh-reactive';
 import { remoteResource } from './resource.ts';
-import type { ClientScope } from './scope.ts';
-import type { ProgramAddress, ProgramQuestions, ProgramQuestionsFrame } from './contracts/types.ts';
+import { revokeConversationAccess, type ClientScope } from './scope.ts';
+import type { ProgramSessionAddress, ProgramQuestions, ProgramQuestionsFrame } from './contracts/types.ts';
 
 /** 只投影原生问答快照；回答和前台claim仍从会话控制端口重新准入。 */
-export function remoteHuman(owner: ClientScope, address: ProgramAddress): ResourceReader<ProgramQuestions> {
+export function remoteHuman(owner: ClientScope, address: ProgramSessionAddress): ResourceReader<ProgramQuestions> {
   const { sessionId } = address;
   return remoteResource<ProgramQuestions, Extract<ProgramQuestionsFrame, { type: 'baseline' }>, Exclude<ProgramQuestionsFrame, { type: 'baseline' }>>(owner, {
     name: 'program-questions:' + sessionId,
@@ -16,7 +16,7 @@ export function remoteHuman(owner: ClientScope, address: ProgramAddress): Resour
 }
 
 /** 前台claim只持有一次原生物理流，不自动重连或重领，也不维护另一份问题状态。 */
-export function createHumanWaits(owner: ClientScope, address: ProgramAddress) {
+export function createHumanWaits(owner: ClientScope, address: ProgramSessionAddress) {
   const remote = owner.context.remote;
   return {
     async *attach(callId: string, options: CancellationOptions = {}): AsyncIterable<HumanWaitFrame> {
@@ -38,7 +38,8 @@ export function createHumanWaits(owner: ClientScope, address: ProgramAddress) {
       try {
         signal.throwIfAborted();
         yield* { [Symbol.asyncIterator]: () => lease.value.iterator };
-      } finally { signal.removeEventListener('abort', abort); await lease.release(); }
+      } catch (error) { throw revokeConversationAccess(owner, error); }
+      finally { signal.removeEventListener('abort', abort); await lease.release(); }
     },
   };
 }

@@ -49,7 +49,7 @@ export class Conversation<T = Json, Raw = T> {
   #activity: Cell<ConversationActivity>;
   #events = new Subject<{ readonly raw$: Observable<ConversationEvent>; readonly typed$: Observable<ConversationEvent<T>> }>();
   #frames = new Subject<AssistantProgressFrame>();
-  #assistant = createAssistantProgress();
+  #assistant: ReturnType<typeof createAssistantProgress>;
   #progressVersion: Cell<number>;
   #progressSnapshot?: Observation<ConversationProgressSnapshot>;
   #requests = new Map<string, RequestHandle<T>>();
@@ -63,8 +63,10 @@ export class Conversation<T = Json, Raw = T> {
     readonly workspace: Workspace,
     private readonly program: ProgramDefinition<z.ZodType<T, Raw>, Surface>,
     initial: ConversationActivity,
+    assistantProgress = createAssistantProgress(),
   ) {
     this.#scope = scope;
+    this.#assistant = assistantProgress;
     this.#inputs = scope.state([]);
     this.#activity = scope.state(ownConversationActivity(initial));
     this.#progressVersion = scope.state(0);
@@ -135,6 +137,7 @@ export class Conversation<T = Json, Raw = T> {
   /** @internal 只由原生宿主更新事实和建立显式输入连接。 */
   [conversationBindings]() {
     return {
+      assistantProgress: this.#assistant,
       activity: this.#activity,
       setSubmit: (submit: (input: Submission<Raw>, options: CancellationOptions) => Promise<InputReceipt>) => { this.#submit = submit; },
       accept: (inputs: readonly InputReference[]) => this.#inputs.set(decodeProgramInputs(this.program, this.identity.sessionId, inputs)),
@@ -154,8 +157,8 @@ export class Conversation<T = Json, Raw = T> {
         batch(() => { this.#activity.set(owned); this.notifyProgress(); });
       },
       emitProgressFrame: (value: AssistantProgressFrame) => {
-        if (this.#scope.disposed) return;
         const owned = this.#assistant.accept(value);
+        if (this.#scope.disposed) return;
         this.notifyProgress();
         this.#frames.next(owned);
       },

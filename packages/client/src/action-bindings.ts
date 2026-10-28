@@ -2,9 +2,9 @@ import { RemoteSnapshotStream, type ClientRemote } from '@deepseek-ai/dsh-api-ga
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { z, actionIdentity, assertActionIdentity, type ActionIdentity, type CancellationOptions } from '@hanger-source/dsh-reactive';
-import type { ProgramAddress, ProgramActionBinding } from './contracts/types.ts';
+import type { ProgramSessionAddress, ProgramActionBinding } from './contracts/types.ts';
 import './contracts/errors.ts';
-import type { ClientScope, ClientLease } from './scope.ts';
+import { revokeConversationAccess, type ClientScope, type ClientLease } from './scope.ts';
 
 export interface RemoteActionCapture {
   readonly descriptor: ProgramActionBinding;
@@ -35,8 +35,8 @@ function freezeJson(value: JsonValue): void {
 }
 
 /** Gateway 的真实流持有远端 Handle；首帧以后只核身份，不自动改指另一个绑定。 */
-function connectBinding(remote: ClientRemote, address: ProgramAddress, name: string, contract: ActionIdentity, scope: JsonValue,
-  lifetime: AbortSignal): BindingConnection {
+function connectBinding(remote: ClientRemote, address: ProgramSessionAddress, name: string, contract: ActionIdentity, scope: JsonValue,
+  lifetime: AbortSignal, failed: (error: unknown) => unknown): BindingConnection {
   const { sessionId } = address;
   const first = Promise.withResolvers<ProgramActionBinding>();
   void first.promise.catch(() => {});
@@ -72,7 +72,7 @@ function connectBinding(remote: ClientRemote, address: ProgramAddress, name: str
     update: () => { throw new RemoteError('gateway/internal', 'Action binding stream emitted an unexpected update', {}); },
     failed: error => {
       if (closed) return;
-      active = false; failure = error; first.reject(error);
+      active = false; failure = failed(error); first.reject(failure);
     },
   });
   return {
@@ -89,7 +89,7 @@ function connectBinding(remote: ClientRemote, address: ProgramAddress, name: str
 }
 
 /** 一次客户端 Session 只为每个槽保留一个已就绪连接；在途解析各自拥有自己的取消。 */
-export function createActionBindings(owner: ClientScope, address: ProgramAddress): RemoteActionBindings {
+export function createActionBindings(owner: ClientScope, address: ProgramSessionAddress): RemoteActionBindings {
   const current = new Map<string, ClientLease<BindingConnection>>();
   owner.acquire(() => current, current => { current.clear(); }, 'program-action-bindings:' + address.sessionId);
   const assertActive = () => owner.assertActive();
@@ -103,7 +103,8 @@ export function createActionBindings(owner: ClientScope, address: ProgramAddress
       const signal = options.signal;
       assertActive(); signal?.throwIfAborted();
       // 取得自己的 raw JSON，避免调用方在官方物理重连前改写这次解析请求。
-      const connection = owner.acquire(() => connectBinding(owner.context.remote, address, name, actionIdentity(contract), z.json().parse(scope), owner.signal),
+      const connection = owner.acquire(() => connectBinding(owner.context.remote, address, name, actionIdentity(contract), z.json().parse(scope), owner.signal,
+        error => revokeConversationAccess(owner, error)),
         connection => connection.close(owner.signal.aborted ? owner.signal.reason : new Error('REACTIVE_REMOTE_ACTION_BINDINGS_CLOSED')),
         'program-action-binding:' + name);
       const aborted = () => { void dispose(connection, signal?.reason); };
@@ -128,6 +129,7 @@ export function createActionBindings(owner: ClientScope, address: ProgramAddress
           },
         });
       } catch (error) {
+        error = revokeConversationAccess(owner, error);
         if (current.get(name) !== connection) await dispose(connection, error);
         throw error;
       } finally {

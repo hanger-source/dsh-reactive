@@ -92,7 +92,7 @@ test('服务SDK贯通真实认证Gateway；身份来自宿主、人工控制隔�
   // 服务principal也明确取得人工endpoint grants；拒绝必须来自participant边界。
   const actions = ['open', 'resume', 'questions', 'progress', 'journal', 'journalPage', 'view', 'requestStatus', 'submit', 'editQueuedInput',
     'uploadFile', 'resolveAction', 'startAction', 'actionInvocation', 'actionResult', 'observeAction', 'resolveOperation', 'locateOperation',
-    'observeOperation', 'pause', 'cancel', 'answerQuestion', 'attachWait'].map(name => 'reactivePrograms/' + name);
+    'observeOperation', 'observeInvocationOperation', 'pause', 'cancel', 'answerQuestion', 'attachWait'].map(name => 'reactivePrograms/' + name);
   gateway = await mountProgramGateway(runtime.native, { application: runtime.application, model: { provider: 'service-client', model: 'unused' },
     participant: principal => ({ participant: principal.id === 'worker' ? 'service' : 'human', actorId }),
     access: service => service.registerPolicy('service-client-test', { bindings: () => [
@@ -127,8 +127,9 @@ test('服务SDK贯通真实认证Gateway；身份来自宿主、人工控制隔�
   const ownTransport = transport('worker');
   const serviceClient = await createServiceProgramClient(program, ownTransport.options); clients.push(serviceClient);
   const created = await serviceClient.create('work', { workspaceId: workspace.workspaceId, sessionId });
+  const local = await runtime.application.open(sessionId); handles.push(local);
   assert.deepEqual(created.identity, { sessionId, environmentId: 'work', workspaceId: workspace.workspaceId, participant: 'service', actorId,
-    program: { name: program.name, version: program.version } });
+    program: { name: program.name, version: program.version }, accessId: local.accessId });
   const connect = async principal => {
     const ctx = new Context(), selected = transport(principal); contexts.push(ctx);
     await ctx.plugin(Registry);
@@ -150,7 +151,6 @@ test('服务SDK贯通真实认证Gateway；身份来自宿主、人工控制隔�
     assert.equal(control in session, false, '服务实际运行对象没有人工方法：' + control);
     assert.equal(control in created, false);
   }
-  const local = await runtime.application.open(sessionId); handles.push(local);
   const initialAgent = runtime.native.agents.get(SessionId(sessionId)); assert.ok(initialAgent);
   await runtime.application.close(sessionId);
   assert.equal(runtime.native.agents.get(SessionId(sessionId)), undefined);
@@ -201,11 +201,12 @@ test('服务SDK贯通真实认证Gateway；身份来自宿主、人工控制隔�
   try { await assert.rejects(deniedActivity[Symbol.asyncIterator]().next(), error => error.code === 'reactive/invocation-unavailable'); }
   finally { await deniedActivity.dispose(); }
   const raw = worker.ctx.remote.reactivePrograms;
-  for (const invoke of [() => raw.pause(sessionAddress), () => raw.cancel(sessionAddress),
-    () => raw.answerQuestion({ ...sessionAddress, callId: 'absent', answer: { answers: [] } })]) {
+  const qualifiedAddress = { ...sessionAddress, accessId: session.identity.accessId };
+  for (const invoke of [() => raw.pause(qualifiedAddress), () => raw.cancel(qualifiedAddress),
+    () => raw.answerQuestion({ ...qualifiedAddress, callId: 'absent', answer: { answers: [] } })]) {
     const result = await invoke(); assert.equal(result.ok, false); assert.equal(result.error.code, 'reactive/human-participant-required');
   }
-  const deniedWait = raw.attachWait({ ...sessionAddress, callId: 'absent' }, t.signal);
+  const deniedWait = raw.attachWait({ ...qualifiedAddress, callId: 'absent' }, t.signal);
   try { await assert.rejects(deniedWait[Symbol.asyncIterator]().next(), error => error.code === 'reactive/human-participant-required'); }
   finally { await deniedWait.dispose(); }
 

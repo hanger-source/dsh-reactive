@@ -231,10 +231,10 @@ export function nativeToolNames(owner: NativeCapabilityOwner, accept: (name: str
 export function nativeObservationScope(owner: NativeCapabilityOwner, access: NativeSessionAccess): Scope {
   owner.context(); access.assertCurrent(); access.signal.throwIfAborted();
   const scope = owner.scope.child();
-  const stop = () => scope.dispose();
+  const stop = () => scope.dispose(access.signal.reason);
   access.signal.addEventListener('abort', stop, { once: true });
   scope.own(() => access.signal.removeEventListener('abort', stop));
-  if (access.signal.aborted) scope.dispose();
+  if (access.signal.aborted) stop();
   scope.assertActive();
   return scope;
 }

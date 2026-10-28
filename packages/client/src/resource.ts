@@ -1,7 +1,7 @@
 import { RemoteSnapshotStream, type RemoteStreamOptions } from '@deepseek-ai/dsh-api-gateway/client';
 import { Observable } from 'rxjs';
 import { shareResource, type Observation, type ResourceReader } from '@hanger-source/dsh-reactive';
-import type { ClientScope } from './scope.ts';
+import { revokeConversationAccess, type ClientScope } from './scope.ts';
 
 /** 查询消费者持有原生流；RxJS持有唯一快照，会话退出等待所有已退休连接真正释放。 */
 export function remoteResource<T, Snapshot, Delta>(owner: ClientScope, options: {
@@ -22,6 +22,8 @@ export function remoteResource<T, Snapshot, Delta>(owner: ClientScope, options: 
       if (subscriber.closed) return;
       const observation = options.observation(frame, generation + 1);
       generation = observation.generation;
+      if (observation.status === 'error') revokeConversationAccess(owner, observation.error);
+      if (subscriber.closed || signal.aborted) return;
       subscriber.next(observation);
     };
     const connection = owner.acquire(() => {
@@ -30,6 +32,8 @@ export function remoteResource<T, Snapshot, Delta>(owner: ClientScope, options: 
       }), { name: options.name, isSnapshot: options.isSnapshot, replace: accept, update: accept,
         failed(error) {
           if (subscriber.closed) return;
+          error = revokeConversationAccess(owner, error);
+          if (subscriber.closed || signal.aborted) return;
           subscriber.next({ status: 'error', generation: ++generation, error });
           subscriber.complete();
         },

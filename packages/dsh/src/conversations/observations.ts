@@ -29,6 +29,7 @@ export class ConversationObservations {
         }
     }
     publish(entry: ConversationSession) {
+        if (this.signal.aborted || entry.scope.disposed) return;
         const native = entry.live.value;
         const goal = native ? this.ctx.goals.get(native.agent) : undefined;
         const activity: ConversationActivity = native ? { ...entry.state.activity, source: 'live', execution: native.agent.status,
@@ -91,6 +92,7 @@ export class ConversationObservations {
                 const messageId = event.data.id;
                 entry.claimed = entry.claimed.filter(message => message.id !== messageId);
             }
+            if (entry.session.scope.disposed) return;
             entry.session.state = this.liveState(session);
             this.publish(entry.session);
             for (const occurrence of sessionOccurrences(session.id, event, previous, entry.session.state, (turn, step) => entry.progress.inputs(turn, step)))
@@ -98,14 +100,14 @@ export class ConversationObservations {
         });
         this.ctx.on('agent/status', ({ agent, status }) => {
             const entry = sessions.forAgent(agent);
-            if (!entry)
+            if (!entry || entry.session.scope.disposed)
                 return;
             this.publish(entry.session);
             this.emit(entry.session, { sessionId: agent.id, time: Date.now(), sequence: null, kind: 'execution.changed', execution: status });
         });
         this.ctx.on('goal/changed', ({ agent, change }) => {
             const entry = sessions.forAgent(agent);
-            if (!entry)
+            if (!entry || entry.session.scope.disposed)
                 return;
             if (change.operation === 'pause')
                 onGoalPause(entry);
@@ -113,7 +115,7 @@ export class ConversationObservations {
         }, { prepend: true });
         this.ctx.on('goal/activation-changed', ({ sessionId, goal }) => {
             const entry = sessions.get(sessionId);
-            if (!entry?.live.value)
+            if (!entry?.live.value || entry.scope.disposed)
                 return;
             this.publish(entry);
             if (goal)
@@ -124,8 +126,10 @@ export class ConversationObservations {
             const entry = sessions.forAgent(agent);
             if (!entry)
                 return;
+            // 资格退出不抹掉原Agent仍在结算的prefix；同一helper供显式fresh图接续，只截断旧公开发布。
             const inputs = entry.progress.accept(frame, entry.session.state.current);
             entry.session.conversation[conversationBindings]().emitProgressFrame({ inputs, frame });
+            if (entry.session.scope.disposed) return;
             const value = assistantFrame(frame);
             if (value)
                 this.emit(entry.session, { sessionId: agent.id, time: frame.type === 'chunk' ? frame.time : Date.now(), sequence: null,
@@ -133,7 +137,7 @@ export class ConversationObservations {
         });
         this.ctx.on('agent/error', ({ agent, turn, step, error }) => {
             const entry = sessions.forAgent(agent);
-            if (!entry)
+            if (!entry || entry.session.scope.disposed)
                 return;
             this.publish(entry.session);
             const inputs = entry.progress.inputs(turn, step);

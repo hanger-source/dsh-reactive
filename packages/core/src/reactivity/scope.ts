@@ -82,7 +82,7 @@ export class Scope {
     source$.subscribe(subscription);
     return new ResourceValue(this, state);
   }
-  dispose() {
+  dispose(reason: unknown = new ScopeDisposedError()) {
     if (this.#released) return;
     this.#released = true;
     const failures: unknown[] = [];
@@ -90,7 +90,7 @@ export class Scope {
       batch(() => {
         // 派生缓存先失效；abort回调和子Scope清理重入时不能再读取旧值。
         this.#availability.value = false;
-        this.#controller.abort(new ScopeDisposedError());
+        this.#controller.abort(reason);
         for (const release of [...this.#releases].reverse()) {
           try { release(); } catch (error) { failures.push(error); }
         }

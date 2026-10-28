@@ -63,6 +63,15 @@ export class OperationParticipation {
     }
     private assertActive() { if (this.signal.aborted)
         throw new Error('REACTIVE_HOST_DISPOSED'); }
+    /** Session调用保留原图；按id调用才是明确新取得，不能在旧句柄的await之后重签资格。 */
+    private async acquireSession(target: string | ConversationSession, signal?: AbortSignal): Promise<ConversationSession> {
+        this.assertActive();
+        signal?.throwIfAborted();
+        const session = typeof target === 'string' ? await this.sessions.readSession(target) : target;
+        signal?.throwIfAborted();
+        this.sessions.assertSessionWorkspace(session);
+        return session;
+    }
     installDelegationUpdates(): () => void {
         const changes = this.delegations.updates$.subscribe(({ parentSessionId }) => {
             const entry = this.sessions.get(parentSessionId)?.live.value;
@@ -98,6 +107,7 @@ export class OperationParticipation {
         this.#follows.validate(owner, offer.follow.when);
     }
     programAccess(session: ConversationSession, binding: OperationBindingReference): OperationAccess {
+        this.sessions.assertSessionWorkspace(session);
         if (this.#follows.forDefinition(binding.definition) !== operationBindingOwner(binding))
             throw new Error('REACTIVE_OPERATION_OWNER_MISMATCH');
         return this.authority.programExecution(session, 'program-operation');
@@ -187,54 +197,80 @@ export class OperationParticipation {
         if (binding.definition !== definition || this.#follows.forDefinition(definition) !== operationBindingOwner(binding))
             throw new Error('REACTIVE_OPERATION_OWNER_MISMATCH');
         return bindOperation(this.#follows.forDefinition(definition), operationBindingCommand(binding), {
-            access: () => this.authority.participantExecution(session, options, identity, 'operation-query'),
+            access: () => {
+                this.sessions.assertSessionWorkspace(session);
+                return this.authority.participantExecution(session, options, identity, 'operation-query');
+            },
             readFeedback: (operation, id, access) => this.readBoundOperationFeedback(session, operation, id, access),
         });
     }
     async readBoundOperationFeedback<D extends OperationContract>(session: ConversationSession, binding: OperationBindingReference<D>, id: string, access: OperationAccess): Promise<OperationFeedbackRead<OperationReference<D>, OperationFeedbackPayload<D>>> {
         this.assertActive();
+        this.sessions.assertSessionWorkspace(session);
         access.signal.throwIfAborted();
         if (access.sessionId !== session.header.id || this.#follows.forDefinition(binding.definition) !== operationBindingOwner(binding))
             throw new Error('REACTIVE_OPERATION_OWNER_MISMATCH');
-        if (session.live.value)
-            return this.#follows.readFeedback(session.live.value.agent, binding.definition, operationBindingCommand(binding), id, access);
-        const inspection = await this.facts.inspect(session.header.id);
-        access.signal.throwIfAborted();
-        return this.#follows.readInspectedFeedback(inspection, binding.definition, operationBindingCommand(binding), id, access);
+        const signal = AbortSignal.any([access.signal, session.scope.signal]);
+        const reading: OperationAccess = { sessionId: access.sessionId, source: access.source, signal };
+        return firstValueFrom(abortable(async () => {
+            const live = session.live.value;
+            const inspection = live ? undefined : await this.facts.inspect(session.header.id, signal);
+            signal.throwIfAborted(); this.sessions.assertSessionWorkspace(session);
+            const value = live ? await this.#follows.readFeedback(live.agent, binding.definition, operationBindingCommand(binding), id, reading)
+                : await this.#follows.readInspectedFeedback(inspection!, binding.definition, operationBindingCommand(binding), id, reading);
+            signal.throwIfAborted(); this.sessions.assertSessionWorkspace(session);
+            return value;
+        }, signal));
     }
-    async readOperationFeedback<D extends OperationContract>(sessionId: string, definition: D, command: OperationCommand<D>, id: string, options: SubmitOptions = {}, identity: ParticipantIdentity = humanParticipant): Promise<OperationFeedbackRead<OperationReference<D>, OperationFeedbackPayload<D>>> {
+    async readOperationFeedback<D extends OperationContract>(target: string | ConversationSession, definition: D, command: OperationCommand<D>, id: string, options: SubmitOptions = {}, identity: ParticipantIdentity = humanParticipant): Promise<OperationFeedbackRead<OperationReference<D>, OperationFeedbackPayload<D>>> {
         assertParticipantOptions(identity, options);
-        const session = await this.sessions.readSession(sessionId);
-        const access = this.authority.participantExecution(session, options, identity, 'operation-query');
-        if (session.live.value)
-            return this.#follows.readFeedback(session.live.value.agent, definition, command, id, access);
-        const inspection = await this.facts.inspect(sessionId);
-        access.signal.throwIfAborted();
-        return this.#follows.readInspectedFeedback(inspection, definition, command, id, access);
+        const session = await this.acquireSession(target, options.signal);
+        const signal = AbortSignal.any([this.signal, ...(typeof target === 'string' ? [] : [session.scope.signal]),
+            ...(options.signal ? [options.signal] : [])]);
+        const access = this.authority.participantExecution(session, { ...options, signal }, identity, 'operation-query');
+        return firstValueFrom(abortable(async () => {
+            const live = session.live.value;
+            const inspection = live ? undefined : await this.facts.inspect(session.header.id, signal);
+            signal.throwIfAborted();
+            if (typeof target !== 'string') this.sessions.assertSessionWorkspace(session);
+            const value = live ? await this.#follows.readFeedback(live.agent, definition, command, id, access)
+                : await this.#follows.readInspectedFeedback(inspection!, definition, command, id, access);
+            signal.throwIfAborted();
+            if (typeof target !== 'string') this.sessions.assertSessionWorkspace(session);
+            return value;
+        }, signal));
     }
-    async attachOperation<D extends OperationContract>(sessionId: string, definition: D, reference: OperationReference<D>, options: SubmitOptions = {}, identity: ParticipantIdentity = humanParticipant): Promise<OperationHandle<D>> {
+    async attachOperation<D extends OperationContract>(target: string | ConversationSession, definition: D, reference: OperationReference<D>, options: SubmitOptions = {}, identity: ParticipantIdentity = humanParticipant): Promise<OperationHandle<D>> {
         assertParticipantOptions(identity, options);
-        const session = await this.sessions.readSession(sessionId);
+        const session = await this.acquireSession(target, options.signal);
+        this.sessions.assertSessionWorkspace(session);
         const access = this.authority.participantExecution(session, options, identity, 'operation-query');
         return attachOwnedOperation(this.#follows.forDefinition(definition), reference, access);
     }
-    async locateOperation<D extends OperationContract>(sessionId: string, definition: D, command: OperationCommand<D>, options: SubmitOptions = {}, identity: ParticipantIdentity = humanParticipant): Promise<OperationLocation<OperationReference<D>, OperationState<D>>> {
+    async locateOperation<D extends OperationContract>(target: string | ConversationSession, definition: D, command: OperationCommand<D>, options: SubmitOptions = {}, identity: ParticipantIdentity = humanParticipant): Promise<OperationLocation<OperationReference<D>, OperationState<D>>> {
         assertParticipantOptions(identity, options);
-        const session = await this.sessions.readSession(sessionId);
-        const access = this.authority.participantExecution(session, options, identity, 'operation-query');
-        return locateOwnedOperation(this.#follows.forDefinition(definition), command, access);
+        const session = await this.acquireSession(target, options.signal);
+        this.sessions.assertSessionWorkspace(session);
+        const signal = AbortSignal.any([this.signal, ...(typeof target === 'string' ? [] : [session.scope.signal]),
+            ...(options.signal ? [options.signal] : [])]);
+        const access = this.authority.participantExecution(session, { ...options, signal }, identity, 'operation-query');
+        const result = await locateOwnedOperation(this.#follows.forDefinition(definition), command, access);
+        signal.throwIfAborted();
+        if (typeof target !== 'string') this.sessions.assertSessionWorkspace(session);
+        return result;
     }
-    async notifyOperation(sessionId: string, followId: string, options: SubmitOptions, identity: ParticipantIdentity): Promise<OperationNotificationResult> {
+    async notifyOperation(target: string | ConversationSession, followId: string, options: SubmitOptions, identity: ParticipantIdentity): Promise<OperationNotificationResult> {
         this.assertActive();
         const actorId = participantActor(identity, options, this.options.actorId);
         const callerSignal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
         callerSignal.throwIfAborted();
         return firstValueFrom(abortable(async (): Promise<OperationNotificationResult> => {
-            const session = await this.sessions.readSession(sessionId);
+            const session = await this.acquireSession(target, callerSignal), sessionId = session.header.id;
             const live = session.live.value;
-            const signal = live ? AbortSignal.any([callerSignal, live.scope.signal]) : callerSignal;
+            const signal = AbortSignal.any([callerSignal, session.scope.signal, ...(live ? [live.scope.signal] : [])]);
             signal.throwIfAborted();
-            const inspection = live ? undefined : await this.facts.inspect(sessionId);
+            const inspection = live ? undefined : await firstValueFrom(abortable(() => this.facts.inspect(sessionId, signal), signal));
+            signal.throwIfAborted(); this.sessions.assertSessionWorkspace(session);
             const link = live ? this.#follows.link(live.agent, followId) : this.#follows.inspectedLink(inspection!, followId);
             const notStarted = live ? this.#follows.isNotStarted(live.agent, followId) : this.#follows.inspectedNotStarted(inspection!, followId);
             const access: OperationAccess = { sessionId, source: {
@@ -242,11 +278,12 @@ export class OperationParticipation {
                 }, signal };
             // 冷会话在加载原生 Agent 前也须取得业务 follow 权限；纯读权不能触发激活。
             await this.#follows.admit(link, access, notStarted);
-            signal.throwIfAborted();
+            signal.throwIfAborted(); this.sessions.assertSessionWorkspace(session);
             if (notStarted)
                 return { status: 'not-started' };
-            await this.sessions.activate(sessionId);
-            const entry = this.sessions.live(this.sessions.get(sessionId)!);
+            await firstValueFrom(abortable(() => this.sessions.activate(sessionId, session.accessId), signal));
+            signal.throwIfAborted(); this.sessions.assertSessionWorkspace(session);
+            const entry = this.sessions.live(session);
             return this.#follows.complete(entry.agent, followId, { ...access,
                 signal: AbortSignal.any([signal, entry.scope.signal]) });
         }, callerSignal));

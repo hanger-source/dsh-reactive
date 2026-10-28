@@ -3,7 +3,7 @@ import { firstValueFrom } from 'rxjs';
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import { appendPluginRecord } from "@deepseek-ai/dsh-session";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
-import { conversationBindings, type Submission, type SubmitOptions } from "@hanger-source/dsh-reactive/kernel";
+import { conversationBindings, type ConversationIdentity, type Submission, type SubmitOptions } from "@hanger-source/dsh-reactive/kernel";
 import { type ApplicationDefinition } from "@hanger-source/dsh-reactive/kernel";
 import { contentDigest, submissionSourceDigest, canonical, recordSchema, submissionSchema, type SubmissionRecord } from "./records.ts";
 import { admitPendingRecovery, followAdmittedInput, isRecoveryControl, resumePendingInput, retainClaimedInputs } from "./pending-input.ts";
@@ -33,6 +33,9 @@ export class ConversationInputs {
         }>;
     }>();
     constructor(private readonly ctx: Context, private readonly definition: ApplicationDefinition, private readonly workspaces: Workspaces, private readonly options: HostOptions, private readonly signal: AbortSignal, private readonly sessions: ConversationSessions, private readonly facts: ConversationObservations, private readonly delegations: NativeDelegations, private readonly operations: () => OperationParticipation) { }
+    private admit(input: AdmittedSubmission, conversation: ConversationIdentity, admission: Admission): Promise<void> {
+        return firstValueFrom(abortable(() => this.definition.admit(input, conversation, admission), admission.signal));
+    }
     bindConversation(session: ConversationSession): void {
         session.conversation[conversationBindings]().setSubmit((input, options) => {
             const signal = AbortSignal.any([session.program.signal, ...(options.signal ? [options.signal] : [])]);
@@ -41,6 +44,8 @@ export class ConversationInputs {
     }
     async prepare(entry: LiveConversation, signal: AbortSignal) {
         const { agent } = entry;
+        signal.throwIfAborted();
+        this.sessions.assertSessionWorkspace(entry.session);
         this.workspaces.assertMember(agent.session, entry.session.workspace, entry.session.environment);
         await this.delegations.settlementNotices(agent, entry.claimed, signal);
         const currentGoal = this.ctx.goals.get(agent);
@@ -61,7 +66,9 @@ export class ConversationInputs {
                 continue;
             const instruction = message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n');
             const { digest: _digest, sourceDigest: _sourceDigest, actorId, participant, ...source } = record;
-            await this.definition.admit(admittedSubmissionSchema.parse(source), entry.session.conversation.identity, { actorId, participant, signal });
+            await this.admit(admittedSubmissionSchema.parse(source), entry.session.conversation.identity, { actorId, participant, signal });
+            signal.throwIfAborted();
+            this.sessions.assertSessionWorkspace(entry.session);
             if (record.intent === 'goal') {
                 const goal = this.ctx.goals.get(agent);
                 const bound = entry.session.state.hasGoalInput(record.requestId);
@@ -80,6 +87,7 @@ export class ConversationInputs {
                 continue;
             seen.add(key);
             const inspection = await this.facts.inspect(cause.sourceSessionId);
+            signal.throwIfAborted();
             const { workspace, environment } = this.workspaces.resolve(inspection);
             if (!workspace.native.sessionIds.includes(inspection.meta.id))
                 throw new Error('REACTIVE_WORKSPACE_MEMBERSHIP_REQUIRED');
@@ -97,23 +105,25 @@ export class ConversationInputs {
             if (!record || !cause.actorId || record.actorId !== cause.actorId || record.participant !== cause.participant)
                 throw new Error('REACTIVE_DELEGATION_INPUT_ORIGIN_REQUIRED');
             const { digest: _digest, sourceDigest: _sourceDigest, actorId, participant, ...submission } = record;
-            await this.definition.admit(admittedSubmissionSchema.parse(submission), { sessionId: inspection.meta.id, workspaceId: workspace.native.id, environmentId: environment.id,
+            await this.admit(admittedSubmissionSchema.parse(submission), { sessionId: inspection.meta.id, workspaceId: workspace.native.id, environmentId: environment.id,
                 directory: workspace.native.path, parentSessionId: inspection.meta.parentSession ?? null }, { actorId, participant, signal });
+            signal.throwIfAborted();
+            this.workspaces.assertMemberHeader(inspection.meta, workspace, environment);
         }
     }
     async editSessionInput(session: ConversationSession, requestId: string, content: Submission['content'], options: SubmitOptions = {}, identity: ParticipantIdentity = humanParticipant) {
         this.sessions.assertSessionWorkspace(session);
         const actorId = participantActor(identity, options, this.options.actorId), participant = identity.participant;
-        const signal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
+        const signal = AbortSignal.any([this.signal, session.scope.signal, ...(options.signal ? [options.signal] : [])]);
         signal.throwIfAborted();
         return firstValueFrom(abortable(async () => {
-            await this.sessions.activate(session.header.id);
+            await this.sessions.activate(session.header.id, session.accessId);
             signal.throwIfAborted();
             const entry = this.sessions.live(session);
             return editQueuedInput({ ctx: this.ctx, agent: entry.agent, requestId, content, actorId, participant, signal,
                 state: () => this.facts.liveState(entry.agent.session),
                 assertCurrent: () => this.assertCurrent(entry),
-                admit: input => Promise.resolve(this.definition.admit(input, session.conversation.identity, { actorId, participant, signal })),
+                admit: input => this.admit(input, session.conversation.identity, { actorId, participant, signal }),
                 persist: () => this.facts.flush(entry.agent),
                 persistAccepted: () => this.finishAccepted(entry, requestId),
             });
@@ -124,7 +134,7 @@ export class ConversationInputs {
         requestId: string;
         accepted: true;
     }> {
-        const signal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
+        const signal = AbortSignal.any([this.signal, session.scope.signal, ...(options.signal ? [options.signal] : [])]);
         const actorId = participantActor(identity, options, this.options.actorId), participant = identity.participant;
         signal.throwIfAborted();
         this.sessions.assertSessionWorkspace(session);
@@ -169,7 +179,7 @@ export class ConversationInputs {
                 const encoded = await prepare(signal);
                 signal.throwIfAborted();
                 this.sessions.assertUploadOpen(session);
-                await this.sessions.activate(session.header.id);
+                await this.sessions.activate(session.header.id, session.accessId);
                 signal.throwIfAborted();
                 this.sessions.assertUploadOpen(session);
                 return { entry: this.sessions.live(session), encoded };
@@ -219,12 +229,12 @@ export class ConversationInputs {
         }
         const { digest: _digest, sourceDigest: _sourceDigest, actorId: _actor, participant: _participant, ...submission } = record;
         // 策略得到独立正文快照；即便策略修改参数，也不能改写已固定的投递和持久事实。
-        await this.definition.admit(admittedSubmissionSchema.parse(submission), session.conversation.identity, { actorId, participant, signal });
+        await this.admit(admittedSubmissionSchema.parse(submission), session.conversation.identity, { actorId, participant, signal });
         signal.throwIfAborted();
         this.sessions.assertSessionWorkspace(session);
         if (receiptOwner && session.live.value?.agent !== receiptOwner)
             throw new InputFileNotStagedError();
-        await this.sessions.activate(session.header.id);
+        await this.sessions.activate(session.header.id, session.accessId);
         signal.throwIfAborted();
         this.sessions.assertSessionWorkspace(session);
         const entry = this.sessions.live(session);
@@ -286,12 +296,16 @@ export class ConversationInputs {
     }
     private finishAccepted(entry: LiveConversation, requestId: string, resume?: () => Promise<void>): Promise<void> {
         return retainRecovery(entry, (async () => {
+            // 真实受理已发生；只核原生执行owner，不用已退出的读取图覆盖这份持久回执。
+            const assertOwner = () => {
+                if (this.ctx.agents.get(entry.agent.id) !== entry.agent) throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
+            };
             if (resume) {
-                this.assertCurrent(entry);
+                assertOwner();
                 await resume();
             }
             await this.facts.flush(entry.agent);
-            this.assertCurrent(entry);
+            assertOwner();
         })(), 'reactive.input.commit.failed', { requestId });
     }
     retainPausedResults(entry: LiveConversation): void {
@@ -316,11 +330,13 @@ export class ConversationInputs {
             if (!entry)
                 return next();
             entry.stepSignal = signal;
+            const admissionSignal = AbortSignal.any([signal, entry.scope.signal, entry.session.scope.signal]);
             return admitPendingRecovery(agent, messages, signal, async () => {
-                const decision = await next();
+                const decision = await firstValueFrom(abortable(() => next(), admissionSignal));
                 if (decision.kind !== 'enter')
                     return decision;
-                signal.throwIfAborted();
+                admissionSignal.throwIfAborted();
+                this.sessions.assertSessionWorkspace(entry.session);
                 const independent = messages.some(message => {
                     if (isRecoveryControl(message))
                         return false;

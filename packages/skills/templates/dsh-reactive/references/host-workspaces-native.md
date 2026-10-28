@@ -8,6 +8,8 @@
 
 允许远程消费的根定义必须使用具名 defineProgram 的 SharedProgramContract；纯本地 Program 可保持无名，Environment 和模块 Surface 不因此增加名称。Program name/version 是发布者的共享合同身份，version 默认 1、独立于 npm 包版本。Gateway 按请求中的预期身份核实际目标，create、completeCreation、resume 先核再进入副作用；本地 open/resume 传实际定义时仍要求 exact 对象，不按名称替换定义。
 
+原生 Workspace 移除 Session 成员时，旧 Program 图、本地和原生 SDK 的读取与准入资格永久失效，工作区共享资源及其他成员不受影响。重新加入后显式 open/resume 取得新句柄；已驻留的同一个 Agent 只更换退出的 Program 安装。ConversationAccessRevokedError 从 core 导入，保留 sessionId、workspaceId 和 membership-removed/workspace-deleted/access-expired 原因。句柄 signal/accessId 只描述借用资格，不能用于取消已受理执行；Invocation、Job、独立 Operation 和已提交输入继续沿原 owner 结算。
+
 ```ts
 import { defineApplication, defineEnvironment,
   type ApplicationDefinition, type ProgramContract, type ProgramImplementation } from '@hanger-source/dsh-reactive';

@@ -1,8 +1,8 @@
-import type { ClientScope } from './scope.ts';
+import { revokeConversationAccess, type ClientScope } from './scope.ts';
 import { RemoteSnapshotStream } from '@deepseek-ai/dsh-api-gateway/client';
-import { BehaviorSubject, Subject, map, type Observable } from 'rxjs';
+import { BehaviorSubject, Subject, defer, EMPTY, fromEvent, map, takeUntil, type Observable } from 'rxjs';
 import { ResourceReader, createAssistantProgress, createRequestHandle, decodeProgramEvent, parseAssistantProgressFrame, parseConversationProgress, type AssistantProgressFrame, type ConversationActivity, type ConversationEvent, type ConversationProgressSnapshot, type Observation, type RequestHandle, type ProgramContract, type ProgramParsedInput } from '@hanger-source/dsh-reactive';
-import type { ProgramAddress, ProgramProgressFrame } from './contracts/types.ts';
+import type { ProgramSessionAddress, ProgramProgressFrame } from './contracts/types.ts';
 import { decodeProgramFailure } from './contracts/errors.ts';
 
 export interface RemoteProgress<P extends ProgramContract> {
@@ -14,7 +14,7 @@ export interface RemoteProgress<P extends ProgramContract> {
 }
 
 /** 会话拥有一个连接；request 只选择 core 的当前事实，不重折日志或重放历史。 */
-export function connectProgress<P extends ProgramContract>(owner: ClientScope, address: ProgramAddress, program: P): RemoteProgress<P> {
+export function connectProgress<P extends ProgramContract>(owner: ClientScope, address: ProgramSessionAddress, program: P): RemoteProgress<P> {
   const { sessionId } = address;
   const { context: ctx, signal: lifetime } = owner;
   const assistant = createAssistantProgress();
@@ -51,18 +51,24 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
       name: 'program-progress:' + sessionId,
       isSnapshot: (frame): frame is Extract<ProgramProgressFrame, { type: 'baseline' }> => frame.type === 'baseline',
       replace: frame => {
+        if (lifetime.aborted) return;
         const observation = frame.observation;
         if (observation.status === 'ready') {
           const value = parseConversationProgress(observation.value);
           assistant.replace(value.attempts); ready(value.activity);
         } else {
           assistant.replace([]);
-          current.next(observation.status === 'error'
-            ? { status: 'error', generation: current.value.generation + 1, error: decodeProgramFailure(observation.error) }
-            : { status: 'pending', generation: current.value.generation + 1 });
+          if (observation.status === 'error') {
+            const error = revokeConversationAccess(owner, decodeProgramFailure(observation.error));
+            if (lifetime.aborted) return;
+            current.next({ status: 'error', generation: current.value.generation + 1, error });
+            return;
+          }
+          current.next({ status: 'pending', generation: current.value.generation + 1 });
         }
       },
       update: frame => {
+        if (lifetime.aborted) return;
         if (frame.type === 'activity') ready(parseConversationProgress({ activity: frame.activity, attempts: [] }).activity);
         else if (frame.type === 'assistant') {
           const observed = current.value;
@@ -77,6 +83,8 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
       },
       failed: error => {
         if (lifetime.aborted) return;
+        error = revokeConversationAccess(owner, error);
+        if (lifetime.aborted) return;
         assistant.replace([]); current.next({ status: 'error', generation: current.value.generation + 1, error });
         events.error(error); progressFrames.error(error);
       },
@@ -90,7 +98,9 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
   }, 'program-progress:' + sessionId);
   if (owner.active) lease.value.stream.start();
   return {
-    progress, progress$: progress.observations$, progressFrames$: progressFrames.asObservable(), events$: events.asObservable(),
+    progress, progress$: progress.observations$,
+    progressFrames$: defer(() => lifetime.aborted ? EMPTY : progressFrames.pipe(takeUntil(fromEvent(lifetime, 'abort')))),
+    events$: defer(() => lifetime.aborted ? EMPTY : events.pipe(takeUntil(fromEvent(lifetime, 'abort')))),
     request(id) {
       lifetime.throwIfAborted();
       let request = requests.get(id);

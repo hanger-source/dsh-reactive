@@ -5,12 +5,11 @@ import { SessionId, SessionLogOffset, type Session, type SessionEvent } from '@d
 import type { ProgramJournalEntry, ProgramJournalPage } from '@hanger-source/dsh-reactive-client/types';
 import { type ApplicationHost, type ConversationHandle, type ServiceConversation } from '@hanger-source/dsh-reactive-dsh';
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
-import { decodeProgramFailure } from '@hanger-source/dsh-reactive-client/errors';
-import { createProgramFailureMapper } from './host-errors.ts';
-import { z, actionIdentity, assertActionIdentity, programIdentity, assertSharedProgramDefinition, surfaceSlotDefinition, encodeOperationFeedback, type AnyEnvironment, type InputReference, type ConversationEvent, type HumanQuestionOrigin } from '@hanger-source/dsh-reactive';
-import { endWith, firstValueFrom, fromEvent, ignoreElements, merge, take, type Observable, type Subscription } from 'rxjs';
-import type { ProgramActionRequest, ProgramActionStart, ProgramAddress, ProgramCreateRequest, ProgramCompleteCreationRequest, ProgramIdentity, ProgramInputReceipt, ProgramInvocationAddress, ProgramInvocationFrame, ProgramSubmitRequest, ProgramWorkspaceRegistration, ProgramViewFrame, ProgramViewRequest, WireObservation, ProgramFailure, ProgramActionBindingRequest, ProgramActionBinding, ProgramUploadFileRequest, ProgramFileUploadValue, ProgramInputEditRequest } from '@hanger-source/dsh-reactive-client/types';
-import type { ProgramOperationRequest, ProgramOperationLocateRequest, ProgramOperationLocation, ProgramOperationNotification, ProgramOperationNotificationResult, ProgramAnswerRequest, ProgramQuestionRequest, ProgramQuestionsFrame, ProgramWaitFrame, ProgramOperationBindingRequest, ProgramOperationBinding, ProgramOperationFeedbackRequest, ProgramOperationFeedbackRead } from '@hanger-source/dsh-reactive-client/types';
+import { createProgramFailureMapper, throwProgramFailure } from './host-errors.ts';
+import { z, abortable, ConversationAccessRevokedError, actionIdentity, assertActionIdentity, programIdentity, assertSharedProgramDefinition, surfaceSlotDefinition, encodeOperationFeedback, type AnyEnvironment, type InputReference, type ConversationEvent, type HumanQuestionOrigin } from '@hanger-source/dsh-reactive';
+import { defer, endWith, firstValueFrom, fromEvent, ignoreElements, merge, take, type Observable, type Subscription } from 'rxjs';
+import type { ProgramActionRequest, ProgramActionStart, ProgramAddress, ProgramSessionAddress, ProgramCreateRequest, ProgramCompleteCreationRequest, ProgramIdentity, ProgramInputReceipt, ProgramInvocationAddress, ProgramInvocationFrame, ProgramSubmitRequest, ProgramWorkspaceRegistration, ProgramViewFrame, ProgramViewRequest, WireObservation, ProgramFailure, ProgramActionBindingRequest, ProgramActionBinding, ProgramUploadFileRequest, ProgramFileUploadValue, ProgramInputEditRequest } from '@hanger-source/dsh-reactive-client/types';
+import type { ProgramOperationRequest, ProgramOperationLocateRequest, ProgramInvocationOperationRequest, ProgramOperationLocation, ProgramOperationNotification, ProgramOperationNotificationResult, ProgramAnswerRequest, ProgramQuestionRequest, ProgramQuestionsFrame, ProgramWaitFrame, ProgramOperationBindingRequest, ProgramOperationBinding, ProgramOperationFeedbackRequest, ProgramOperationFeedbackRead } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramRequestAddress, ProgramRequestStatus, ProgramWorkspace, ProgramGoalControl, ProgramCancelResult, ProgramJournalOpenRequest, ProgramJournalPageRequest, ProgramJournalFrame } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramProgressFrame, ProgramConversationEvent } from '@hanger-source/dsh-reactive-client/types';
 import { Inbox } from '@hanger-source/dsh-reactive-client/inbox';
@@ -35,7 +34,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   static inject: string[] = ['typertGateway', 'remoteAccess', 'sessionController'];
   private readonly actions: ProgramActionOwner;
   private readonly failure: (error: unknown) => ProgramFailure;
-  private readonly rethrow = (error: unknown): never => { throw decodeProgramFailure(this.failure(error)); };
+  private readonly rethrow = (error: unknown): never => throwProgramFailure(this.failure(error));
   constructor(ctx: Context, private readonly options: ProgramRemoteOptions<E>) {
     super(ctx, 'reactivePrograms');
     this.failure = createProgramFailureMapper(ctx.typertGateway.wireStream);
@@ -62,18 +61,37 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   private port(identity: ProgramParticipant) {
     return identity.participant === 'service' ? this.options.application.service(identity.actorId) : this.options.application;
   }
-  private openSession(request: ProgramAddress, identity = this.participant()) {
+  private openReceipt(request: ProgramAddress, identity = this.participant()) {
     return this.port(identity).open(request.sessionId, { contract: request.program }).catch(this.rethrow);
+  }
+  private async openSession(request: ProgramSessionAddress, identity = this.participant()) {
+    const handle = await this.port(identity).open(request.sessionId, { contract: request.program }, request.accessId).catch(this.rethrow);
+    try {
+      handle.signal.throwIfAborted();
+      if (request.accessId !== handle.accessId)
+        throw new ConversationAccessRevokedError(handle.id, handle.identity.workspaceId, 'access-expired');
+      return handle;
+    } catch (error) { handle.release(); return this.rethrow(error); }
   }
   private sessionIdentity(handle: ConversationHandle | ServiceConversation, identity: ProgramParticipant): ProgramIdentity {
     const definition = handle.definition;
     try { assertSharedProgramDefinition(definition); }
     catch (error) { return this.rethrow(error); }
-    return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId,
+    return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, accessId: handle.accessId,
       program: programIdentity(definition), ...identity };
   }
   private callOptions(identity: ProgramParticipant, signal: AbortSignal) {
     return identity.participant === 'human' ? { actorId: identity.actorId, signal } : { signal };
+  }
+  /** 只限定本次读取；已经受理的执行和回执继续使用各自的原owner。 */
+  private reading(handle: ServiceConversation, signal: AbortSignal): AbortSignal {
+    return AbortSignal.any([signal, handle.signal]);
+  }
+  private async read<T>(handle: ServiceConversation, signal: AbortSignal, run: (signal: AbortSignal) => PromiseLike<T> | T): Promise<T> {
+    const reading = this.reading(handle, signal);
+    const value = await firstValueFrom(abortable(run, reading));
+    reading.throwIfAborted();
+    return value;
   }
   /** 注册身份可以返回；成员读取仍按当前 endpoint 的 Workspace 与 Session grant 逐项核对。 */
   private visibleWorkspace(workspace: ProgramWorkspace): ProgramWorkspace {
@@ -143,7 +161,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   async open(request: ProgramAddress, signal: AbortSignal): Promise<ProgramIdentity> {
     const identity = this.participant();
     signal.throwIfAborted();
-    const handle = await this.openSession(request, identity);
+    const handle = await this.openReceipt(request, identity);
     try { return this.sessionIdentity(handle, identity); }
     finally { handle.release(); }
   }
@@ -170,10 +188,10 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
 
   /** 暂停原生 Goal；它不取消外部业务操作。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
-  async pause(request: ProgramAddress, signal: AbortSignal): Promise<ProgramGoalControl> {
+  async pause(request: ProgramSessionAddress, signal: AbortSignal): Promise<ProgramGoalControl> {
     this.human();
     signal.throwIfAborted();
-    const handle = await this.options.application.open(request.sessionId, { contract: request.program }).catch(this.rethrow);
+    const handle = await this.options.application.open(request.sessionId, { contract: request.program }, request.accessId).catch(this.rethrow);
     try {
       signal.throwIfAborted();
       // 短命句柄持续持有到原生控制结算；transport 退出不能提前释放其回执 owner。
@@ -185,10 +203,10 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
 
   /** 取消原生处理；真实业务 owner 的 body 不随网络调用结束。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
-  async cancel(request: ProgramAddress, signal: AbortSignal): Promise<ProgramCancelResult> {
+  async cancel(request: ProgramSessionAddress, signal: AbortSignal): Promise<ProgramCancelResult> {
     this.human();
     signal.throwIfAborted();
-    const handle = await this.options.application.open(request.sessionId, { contract: request.program }).catch(this.rethrow);
+    const handle = await this.options.application.open(request.sessionId, { contract: request.program }, request.accessId).catch(this.rethrow);
     try { signal.throwIfAborted(); return await handle.cancel().catch(this.rethrow); }
     finally { handle.release(); }
   }
@@ -223,15 +241,16 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     const handle = await this.openSession(request);
     try {
       signal.throwIfAborted();
-      return await handle.requestStatus(request.requestId, { signal }).catch(this.rethrow);
+      return await this.read(handle, signal, signal => handle.requestStatus(request.requestId, { signal })).catch(this.rethrow);
     }
     finally { handle.release(); }
   }
 
   /** 一个 Session 连接承载当前状态与新事实；快照不伪造新的请求事件。 */
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
-  async *progress(request: ProgramAddress, signal: AbortSignal): AsyncIterable<ProgramProgressFrame> {
+  async *progress(request: ProgramSessionAddress, signal: AbortSignal): AsyncIterable<ProgramProgressFrame> {
     const handle = await this.openSession(request);
+    signal = this.reading(handle, signal);
     const inbox = new Inbox<ProgramProgressFrame>(1024 * 1024);
     const subscriptions: Subscription[] = [];
     const abort = (): void => inbox.fail(signal.reason);
@@ -251,19 +270,21 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
           activity = value;
           try { inbox.push({ type: 'activity', activity: z.json().parse(value) }); }
           catch (error) { inbox.fail(error); }
-        }, error: (error: unknown) => inbox.fail(error),
+        }, error: (error: unknown) => inbox.fail(signal.aborted ? signal.reason : error),
       }), handle.progressFrames$.subscribe({
         next: value => {
           try { inbox.push({ type: 'assistant', progress: z.json().parse(value) }); }
           catch (error) { inbox.fail(error); }
-        }, error: (error: unknown) => inbox.fail(error),
+        }, error: (error: unknown) => inbox.fail(signal.aborted ? signal.reason : error),
       }), handle.rawEvents$.subscribe({
         next: value => {
           try { inbox.push({ type: 'event', event: this.occurrence(value) }); }
           catch (error) { inbox.fail(error); }
-        }, error: (error: unknown) => inbox.fail(error), complete: () => inbox.end(),
+        }, error: (error: unknown) => inbox.fail(signal.aborted ? signal.reason : error),
+        complete: () => signal.aborted ? inbox.fail(signal.reason) : inbox.end(),
       }));
       yield* inbox;
+      signal.throwIfAborted();
     } catch (error) { this.rethrow(error); }
     finally {
       signal.removeEventListener('abort', abort); subscriptions.forEach(subscription => subscription.unsubscribe());
@@ -280,6 +301,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     let cut: number | undefined;
     let openingSession: Session | undefined;
     const append = (event: SessionEvent): void => {
+      if (signal.aborted) { inbox.fail(signal.reason); return; }
       try { inbox.push({ type: 'event', event: { ...event, data: z.json().parse(event.data) } }); }
       catch (error) { inbox.fail(error); }
     };
@@ -298,17 +320,23 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     try {
       signal.throwIfAborted();
       handle = await this.openSession(request, identity);
+      signal.removeEventListener('abort', abort);
+      signal = this.reading(handle, signal);
+      signal.addEventListener('abort', abort, { once: true });
+      signal.throwIfAborted();
       cut = handle.snapshot().sequence;
       // await opening 期间只保留原生 Session，不把已持久历史塞入有界 carrier 邮箱。
       if (openingSession) {
         for (const event of openingSession.snapshotEvents(SessionLogOffset(cut + 1))) append(event);
         openingSession = undefined;
       }
-      const { sessionId: _sessionId, program: _program, ...window } = request;
-      const page = await this.ctx.sessionController.page({ address: { kind: 'session', sessionId: id }, throughSeq: cut, ...window }, signal);
+      const { sessionId: _sessionId, program: _program, accessId: _accessId, ...window } = request;
+      const throughSeq = cut;
+      const page = await this.read(handle, signal, signal => this.ctx.sessionController.page({ address: { kind: 'session', sessionId: id }, throughSeq, ...window }, signal));
       signal.throwIfAborted();
       yield { type: 'opened', cursor: cut, page };
       for await (const entry of inbox) yield { type: 'entry', entry };
+      signal.throwIfAborted();
     } catch (error) { this.rethrow(error); }
     finally {
       signal.removeEventListener('abort', abort); stopEvent(); stopCreated(); inbox.end(); openingSession = undefined; handle?.release();
@@ -320,8 +348,8 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   async journalPage(request: ProgramJournalPageRequest, signal: AbortSignal): Promise<ProgramJournalPage> {
     const handle = await this.openSession(request);
     try {
-      const { sessionId, program: _program, ...page } = request;
-      return await this.ctx.sessionController.page({ address: { kind: 'session', sessionId: SessionId(sessionId) }, ...page }, signal);
+      const { sessionId, program: _program, accessId: _accessId, ...page } = request;
+      return await this.read(handle, signal, signal => this.ctx.sessionController.page({ address: { kind: 'session', sessionId: SessionId(sessionId) }, ...page }, signal)).catch(this.rethrow);
     } finally { handle.release(); }
   }
 
@@ -329,23 +357,17 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *view(request: ProgramViewRequest, signal: AbortSignal): AsyncIterable<ProgramViewFrame> {
     const handle = await this.openSession(request);
-    const inbox = new Inbox<ProgramViewFrame>(1024 * 1024);
     let first = true;
-    const subscription = handle.observeWireView(request.name).subscribe({
-      next: value => {
-        try {
-          const observation: WireObservation = value.status === 'error'
-            ? { status: 'error', generation: value.generation, error: this.failure(value.error) }
-            : value.status === 'ready' ? { ...value, value: z.json().parse(value.value) } : value;
-          inbox.push({ type: first ? 'baseline' : 'observation', observation }); first = false;
-        } catch (error) { inbox.fail(error); }
-      }, error: (error: unknown) => inbox.fail(error), complete: () => inbox.end(),
-    });
-    const abort = (): void => inbox.fail(signal.reason);
-    signal.addEventListener('abort', abort, { once: true });
-    try { signal.throwIfAborted(); yield* inbox; }
+    try {
+      yield* frames(handle.observeWireView(request.name), this.reading(handle, signal), value => {
+        const observation: WireObservation = value.status === 'error'
+          ? { status: 'error', generation: value.generation, error: this.failure(value.error) }
+          : value.status === 'ready' ? { ...value, value: z.json().parse(value.value) } : value;
+        const frame: ProgramViewFrame = { type: first ? 'baseline' : 'observation', observation }; first = false; return frame;
+      });
+    }
     catch (error) { this.rethrow(error); }
-    finally { signal.removeEventListener('abort', abort); subscription.unsubscribe(); inbox.end(); handle.release(); }
+    finally { handle.release(); }
   }
 
   /** 流拥有真实会话句柄；开场交付绑定，释放流才结束这次只读持有。 */
@@ -353,6 +375,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   async *resolveAction(request: ProgramActionBindingRequest, signal: AbortSignal): AsyncIterable<ProgramActionBinding> {
     signal.throwIfAborted();
     const handle = await this.openSession(request);
+    signal = this.reading(handle, signal);
     try {
       signal.throwIfAborted();
       const definition = surfaceSlotDefinition(handle.surface, 'actions', request.name);
@@ -361,8 +384,10 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
       const binding = handle.resolveAction(request.name, request.scope);
       yield { bindingId: binding.bindingId, contract: actionIdentity(definition), scope: z.json().parse(binding.scope) };
       if (!signal.aborted) await firstValueFrom(merge(
-        handle.activity$.pipe(ignoreElements(), endWith(undefined)), fromEvent(signal, 'abort'),
+        defer(() => { signal.throwIfAborted(); return fromEvent(signal, 'abort'); }),
+        handle.activity$.pipe(ignoreElements(), endWith(undefined)),
       ).pipe(take(1)));
+      signal.throwIfAborted();
     } catch (error) { return this.rethrow(error); }
     finally { handle.release(); }
   }
@@ -398,7 +423,10 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     signal.throwIfAborted();
     const handle = await this.openSession(request, identity);
     try {
+      signal = this.reading(handle, signal);
+      signal.throwIfAborted();
       const binding = handle.resolveOperation(request.name, this.callOptions(identity, signal));
+      signal.throwIfAborted();
       return { operation: { kind: binding.definition.kind, version: binding.definition.version }, command: z.json().parse(binding.command) };
     } catch (error) { return this.rethrow(error); }
     finally { handle.release(); }
@@ -420,8 +448,8 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     const handle = await this.openSession(request, identity);
     try {
       const definition = this.options.application.operationDefinition(request.operation.kind, request.operation.version);
-      const value = await handle.readOperationFeedback(definition, request.command,
-        request.participationId, this.callOptions(identity, signal)).catch(this.rethrow);
+      const value = await this.read(handle, signal, signal => handle.readOperationFeedback(definition, request.command,
+        request.participationId, this.callOptions(identity, signal))).catch(this.rethrow);
       if (value.status === 'unknown') return value;
       if (value.status === 'rejected') return { ...value, reason: z.json().parse(value.reason) };
       const reference = z.json().parse(value.reference);
@@ -438,7 +466,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     const handle = await this.openSession(request, identity);
     try {
       const definition = this.options.application.operationDefinition(request.operation.kind, request.operation.version);
-      const location = await handle.locateOperation(definition, request.command, this.callOptions(identity, signal)).catch(this.rethrow);
+      const location = await this.read(handle, signal, signal => handle.locateOperation(definition, request.command, this.callOptions(identity, signal))).catch(this.rethrow);
       return location.status === 'accepted' ? { status: 'accepted', reference: z.json().parse(location.reference),
         state: z.json().parse(z.encode(definition.state, location.state)) }
         : location.status === 'rejected' ? { status: 'rejected', reason: z.json().parse(location.reason) } : location;
@@ -450,9 +478,10 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   async *observeOperation(request: ProgramOperationRequest, signal: AbortSignal): AsyncIterable<ProgramViewFrame> {
     const identity = this.participant();
     const handle = await this.openSession(request, identity);
+    signal = this.reading(handle, signal);
     try {
       const definition = this.options.application.operationDefinition(request.operation.kind, request.operation.version);
-      const operation = await handle.attachOperation(definition, request.reference, this.callOptions(identity, signal));
+      const operation = await this.read(handle, signal, signal => handle.attachOperation(definition, request.reference, this.callOptions(identity, signal)));
       let first = true;
       yield* frames(operation.observations$, signal, observed => {
         const observation: WireObservation = observed.status === 'ready'
@@ -462,6 +491,22 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
       });
     } catch (error) { this.rethrow(error); }
     finally { handle.release(); }
+  }
+
+  /** 原调用已签发的实际Operation读侧；不重新open会话或按任意reference取得目标。 */
+  @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
+  async *observeInvocationOperation(request: ProgramInvocationOperationRequest, signal: AbortSignal): AsyncIterable<ProgramViewFrame> {
+    signal = AbortSignal.any([signal, this.actions.signal]);
+    const operation = await this.actions.operation(request, this.principal(), signal);
+    let first = true;
+    try {
+      yield* frames(operation.observations$, signal, observed => {
+        const observation: WireObservation = observed.status === 'ready'
+          ? { ...observed, value: z.json().parse(z.encode(operation.definition.state, observed.value)) }
+          : observed.status === 'error' ? { ...observed, error: this.failure(observed.error) } : observed;
+        const frame: ProgramViewFrame = { type: first ? 'baseline' : 'observation', observation }; first = false; return frame;
+      });
+    } catch (error) { this.rethrow(error); }
   }
 
   /** 宿主重新核验原 follow 与业务事实；不接受网络端自报 ready。 */
@@ -476,11 +521,11 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
 
   /** 同一原生问题投影与实际前台请求，不维护第二份问题注册。 */
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
-  async *questions(request: ProgramAddress, signal: AbortSignal): AsyncIterable<ProgramQuestionsFrame> {
+  async *questions(request: ProgramSessionAddress, signal: AbortSignal): AsyncIterable<ProgramQuestionsFrame> {
     const handle = await this.openSession(request);
     let first = true;
     try {
-      yield* frames(handle.human.values$, signal, ({ questions, foreground }) => {
+      yield* frames(handle.human.values$, this.reading(handle, signal), ({ questions, foreground }) => {
         const wireQuestion = <Q extends { readonly origin: HumanQuestionOrigin }>(question: Q) => ({
           ...question, origin: { ...question.origin, inputs: this.wireInputs(question.origin.inputs) },
         });
@@ -490,14 +535,15 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
         } };
         first = false; return frame;
       });
-    } finally { handle.release(); }
+    } catch (error) { this.rethrow(error); }
+    finally { handle.release(); }
   }
 
   /** bool 只说明前台受理或 continued 排队，不是答案落盘和工具结算。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async answerQuestion(request: ProgramAnswerRequest, signal: AbortSignal): Promise<boolean> {
     const { actorId } = this.human();
-    const handle = await this.options.application.open(request.sessionId, { contract: request.program }).catch(this.rethrow);
+    const handle = await this.options.application.open(request.sessionId, { contract: request.program }, request.accessId).catch(this.rethrow);
     try { return await handle.answerQuestion(request.callId, request.answer, { actorId, signal }).catch(this.rethrow); }
     finally { handle.release(); }
   }
@@ -506,8 +552,8 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *attachWait(request: ProgramQuestionRequest, signal: AbortSignal): AsyncIterable<ProgramWaitFrame> {
     const { actorId } = this.human();
-    const handle = await this.options.application.open(request.sessionId, { contract: request.program }).catch(this.rethrow);
-    try { yield* handle.attachWait(request.callId, { actorId, signal }); }
+    const handle = await this.options.application.open(request.sessionId, { contract: request.program }, request.accessId).catch(this.rethrow);
+    try { yield* handle.attachWait(request.callId, { actorId, signal: this.reading(handle, signal) }); }
     catch (error) { this.rethrow(error); }
     finally { handle.release(); }
   }
@@ -516,10 +562,21 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
 /** 仅连接物理流与已有 Observable；历史、重连与游标继续由 Gateway 拥有。 */
 async function* frames<T, F>(source: Observable<T>, signal: AbortSignal, project: (value: T) => F): AsyncIterable<F> {
   const inbox = new Inbox<F>(1024 * 1024);
-  const subscription = source.subscribe({ next: value => { try { inbox.push(project(value)); } catch (error) { inbox.fail(error); } },
-    error: (error: unknown) => inbox.fail(error), complete: () => inbox.end() });
   const abort = (): void => inbox.fail(signal.reason);
   signal.addEventListener('abort', abort, { once: true });
-  try { signal.throwIfAborted(); yield* inbox; }
-  finally { signal.removeEventListener('abort', abort); subscription.unsubscribe(); inbox.end(); }
+  let subscription: Subscription | undefined;
+  try {
+    signal.throwIfAborted();
+    subscription = source.subscribe({
+      next: value => {
+        try { signal.throwIfAborted(); inbox.push(project(value)); }
+        catch (error) { inbox.fail(error); }
+      },
+      error: (error: unknown) => inbox.fail(signal.aborted ? signal.reason : error),
+      complete: () => signal.aborted ? inbox.fail(signal.reason) : inbox.end(),
+    });
+    signal.throwIfAborted();
+    yield* inbox;
+    signal.throwIfAborted();
+  } finally { signal.removeEventListener('abort', abort); subscription?.unsubscribe(); inbox.end(); }
 }

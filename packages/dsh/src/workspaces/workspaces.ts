@@ -1,11 +1,12 @@
 import type { Context } from '@deepseek-ai/cordis';
-import type { Session, SessionHeader } from '@deepseek-ai/dsh-session';
+import { randomUUID } from 'node:crypto';
+import type { Session, SessionHeader, SessionId } from '@deepseek-ai/dsh-session';
 import type { SessionInspection } from '@deepseek-ai/dsh-session-persistence';
 import { appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-session';
-import { WorkspaceId, workspaceDomainSpec, type Workspace as NativeWorkspace } from '@deepseek-ai/dsh-workspace';
+import { WorkspaceId, workspaceDomainSpec, workspaceRecord, type Workspace as NativeWorkspace } from '@deepseek-ai/dsh-workspace';
 import type {} from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
-import { Scope, createWorkspace } from '@hanger-source/dsh-reactive/kernel';
+import { Scope, ConversationAccessRevokedError, createWorkspace } from '@hanger-source/dsh-reactive/kernel';
 import type { AnyEnvironment } from '@hanger-source/dsh-reactive/kernel';
 import type { Workspace, WorkspaceInfo, WorkspaceRegistration } from '@hanger-source/dsh-reactive/kernel';
 import { environmentPresetId } from '../programs/presets.ts';
@@ -25,11 +26,29 @@ export class Workspaces {
   #scope = new Scope();
   #failures = new Set<unknown>();
   #entries = new Map<string, ManagedWorkspace>();
+  #membershipObservers = new Set<(workspaceId: string, members: readonly SessionId[] | undefined) => void>();
+  // 仅登记本应用实际签过的资格；Session图收集不结束仍存在的持久成员关系。
+  #accesses = new Map<string, Map<SessionId, string>>();
   #environments: ReadonlyMap<string, AnyEnvironment>;
   constructor(private readonly ctx: Context, private readonly application: string, environments: readonly AnyEnvironment[]) {
     this.#environments = new Map(environments.map(environment => [environment.id, environment]));
     this.#scope.own(ctx.on('domain/changed', change => {
-      if (change.domain !== workspaceDomainSpec.name || change.table !== 'workspaces' || change.operation !== 'deleted') return;
+      if (change.domain !== workspaceDomainSpec.name || change.table !== 'workspaces') return;
+      // Entity在await table.update之后才交换record；这里用正式提交切面撤销资格，不重读旧实体缓存。
+      const members = change.operation === 'put' ? workspaceRecord.parse(change.value).sessionIds : undefined;
+      const issued = this.#accesses.get(change.key);
+      if (issued) {
+        for (const sessionId of issued.keys()) if (!members?.includes(sessionId)) issued.delete(sessionId);
+        if (!issued.size) this.#accesses.delete(change.key);
+      }
+      for (const observer of this.#membershipObservers) {
+        try { observer(change.key, members); }
+        catch (error) {
+          this.#failures.add(error);
+          console.error('reactive.workspace.membership.observer.failed', { workspaceId: change.key, error });
+        }
+      }
+      if (change.operation !== 'deleted') return;
       const workspace = this.#entries.get(change.key);
       if (!workspace) return;
       this.#entries.delete(change.key);
@@ -39,6 +58,27 @@ export class Workspaces {
         console.error('reactive.workspace.disposal.failed', { workspaceId: change.key, error });
       }
     }));
+  }
+  /** 正式成员提交先撤下相关Session图，再退出实体父Scope；不保留第二份成员状态。 */
+  onMembershipChange(observer: (workspaceId: string, members: readonly SessionId[] | undefined) => void): () => void {
+    this.#scope.assertActive();
+    this.#membershipObservers.add(observer);
+    return this.#scope.own(() => { this.#membershipObservers.delete(observer); });
+  }
+  /** 核验原资格必须早于Program装配；省略原id是显式新取得，而非复活旧token。 */
+  assertAccess(header: SessionHeader, workspace: ManagedWorkspace, environment: AnyEnvironment, accessId?: string): void {
+    if (accessId !== undefined && this.#accesses.get(workspace.native.id)?.get(header.id) !== accessId) {
+      throw new ConversationAccessRevokedError(header.id, workspace.native.id, 'access-expired');
+    }
+    this.assertMemberHeader(header, workspace, environment);
+  }
+  issueAccess(header: SessionHeader, workspace: ManagedWorkspace, environment: AnyEnvironment): string {
+    this.assertMemberHeader(header, workspace, environment);
+    let issued = this.#accesses.get(workspace.native.id);
+    if (!issued) { issued = new Map(); this.#accesses.set(workspace.native.id, issued); }
+    const previous = issued.get(header.id);
+    if (previous !== undefined) return previous;
+    const id = randomUUID(); issued.set(header.id, id); return id;
   }
   environments() { return [...this.#environments.values()]; }
   environment(environmentId: string) {
@@ -148,6 +188,15 @@ export class Workspaces {
   /** 已核验 own binding 的冷会话也能同步复核当前原生成员，不加载模型驱动。 */
   assertMemberHeader(header: SessionHeader, workspace: ManagedWorkspace, environment: AnyEnvironment) {
     this.verifyHeader(header, workspace, environment);
+    // 事件已发布而Entity尚未交换record时，资格仍须服从同一正式domain表的已提交切面。
+    // 这里只借用registry已打开的domain，不重新open、关闭或保存成员镜像。
+    const domain = this.ctx.storageDomain.get(workspaceDomainSpec.name);
+    if (!domain) throw new Error('REACTIVE_WORKSPACE_DOMAIN_REQUIRED');
+    const committed = domain.table('workspaces').get(workspace.native.id);
+    if (committed === undefined) throw new Error('REACTIVE_WORKSPACE_NOT_FOUND');
+    const record = workspaceRecord.parse(committed);
+    if (record.path !== workspace.native.path) throw new Error('REACTIVE_WORKSPACE_MISMATCH');
+    if (!record.sessionIds.includes(header.id)) throw new Error('REACTIVE_WORKSPACE_MEMBERSHIP_REQUIRED');
     if (!workspace.native.sessionIds.includes(header.id)) throw new Error('REACTIVE_WORKSPACE_MEMBERSHIP_REQUIRED');
   }
   private verifyHeader(header: SessionHeader, workspace: ManagedWorkspace, environment: AnyEnvironment) {
@@ -163,6 +212,7 @@ export class Workspaces {
   dispose() {
     try { this.#scope.dispose(); } catch (error) { this.#failures.add(error); }
     this.#entries.clear();
+    this.#accesses.clear();
     if (this.#failures.size) throw new AggregateError([...this.#failures], 'REACTIVE_WORKSPACES_DISPOSAL_FAILED');
   }
 }

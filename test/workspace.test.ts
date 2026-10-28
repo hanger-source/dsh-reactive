@@ -12,12 +12,14 @@ import * as persistence from '@deepseek-ai/dsh-session-persistence-jsonl';
 import Storage from '@deepseek-ai/dsh-storage';
 import * as storageJson from '@deepseek-ai/dsh-storage-json';
 import * as storageDomain from '@deepseek-ai/dsh-storage-domain';
-import WorkspaceRegistry, { WorkspaceId } from '@deepseek-ai/dsh-workspace';
+import WorkspaceRegistry, { WorkspaceId, workspaceDomainSpec, workspaceRecord } from '@deepseek-ai/dsh-workspace';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
+import type { Agent } from '@deepseek-ai/dsh-agent';
+import { expandAssistantStream } from '@deepseek-ai/dsh-llm/assistant-stream';
 import { Context, Expose, useAction, useResource } from '@hanger-source/dsh-reactive/program';
 import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, implementResource,
-  defineReaction, implementReaction, observeResource, programIdentity, ProgramContractMismatchError, resourceView, shareResource, Scope, z, type Observation, type ProgramProps, type ProgramWorkspace,
-  type LocalResourceOptions, type LocalReactionOptions } from '@hanger-source/dsh-reactive';
+  defineReaction, implementReaction, observeResource, programIdentity, ProgramContractMismatchError, ConversationAccessRevokedError, resourceView, shareResource, Scope, z, type Observation, type ResourceReadable, type ProgramProps, type ProgramWorkspace,
+  type LocalResourceOptions, type LocalReactionOptions, type AssistantProgressFrame } from '@hanger-source/dsh-reactive';
 import { CreationIncompleteError, mountApplication } from '@hanger-source/dsh-reactive-dsh';
 import { boot, text } from './native-support.ts';
 
@@ -512,8 +514,10 @@ test('活宿主撤销工作区成员或实体后保留的SDK动作拒绝新执�
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-workspace-authority-'));
   const entered = Promise.withResolvers<void>();
   const finish = Promise.withResolvers<void>();
+  const streamed = Promise.withResolvers<void>(), gap = Promise.withResolvers<void>();
+  const gapStreamed = Promise.withResolvers<void>(), finishStream = Promise.withResolvers<void>();
   const executions: { operationId: string; workspaceId: string; actorId: string }[] = [];
-  let completed = 0, modelCalls = 0;
+  let completed = 0, modelCalls = 0, mounted = 0;
   const commit = defineAction({ name: 'commit_workspace_work', description: '完成已受理的工作区业务',
     scope: z.object({ workspaceId: z.string() }), input: z.object({ operationId: z.string() }),
     output: z.object({ operationId: z.string(), workspaceId: z.string(), actorId: z.string() }) });
@@ -530,21 +534,56 @@ test('活宿主撤销工作区成员或实体后保留的SDK动作拒绝新执�
     completed++;
     return execution;
   } });
-  const surface = defineSurface({ views: {}, actions: { commit } });
+  const surface = defineSurface({ views: { fact: resourceView(z.number()) }, actions: { commit } });
   const definition = defineApplication({ name: 'workspace-authority', admit: async () => {}, environments: [defineEnvironment({
     id: 'work', instructions: '只显式执行业务',
     program: implementProgram(defineProgram({ input: z.null(), surface }), { Component({ workspace }) {
       const action = useAction(implementation, () => ({ workspaceId: workspace.id }), [workspace]);
-      return Expose({ surface, value: { actions: { commit: action } } });
+      useLayoutEffect(() => { mounted++; }, []);
+      return Expose({ surface, value: { views: { fact: of<Observation<number>>({ status: 'ready', generation: 1, value: 42, observedAt: Date.now() }) },
+        actions: { commit: action } } });
     } }),
   })] });
-  const app = await boot(join(root, 'home'), definition, async function* () { modelCalls++; yield* text('未请求模型工作'); });
+  const app = await boot(join(root, 'home'), definition, async function* () {
+    modelCalls++;
+    yield { type: 'block-start', index: 0, blockType: 'text' };
+    yield { type: 'text-delta', index: 0, text: 'before-' };
+    streamed.resolve(); await gap.promise;
+    yield { type: 'text-delta', index: 0, text: 'gap-' };
+    gapStreamed.resolve(); await finishStream.promise;
+    yield { type: 'text-delta', index: 0, text: 'after' };
+    yield { type: 'block-end', index: 0, block: { type: 'text', text: 'before-gap-after' } };
+    yield { type: 'finish', reason: { kind: 'stop' } };
+  });
+  const domain = app.native.storageDomain.get(workspaceDomainSpec.name)!;
+  const table = domain.table('workspaces'), update = table.update;
+  const published = Promise.withResolvers<void>(), releaseCommit = Promise.withResolvers<void>();
+  let delaying: string | undefined;
+  table.update = async function (key, change) {
+    const record = await update.call(this, key, change);
+    if (key === delaying) { published.resolve(); await releaseCommit.promise; }
+    return record;
+  };
+  const subscriptions: Subscription[] = [];
+  const resumeEntered = Promise.withResolvers<Agent>(), releaseResume = Promise.withResolvers<void>();
+  let removeResumeGate = () => {};
   try {
     const secondDirectory = join(root, 'deleted-workspace');
     await mkdir(secondDirectory);
     const secondWorkspace = await app.host.createWorkspace({ directory: secondDirectory });
     const detached = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
     const deleted = await app.host.create('work', { workspaceId: secondWorkspace.workspaceId });
+    const originalAgent = app.native.agents.get(SessionId(detached.id))!;
+    const originalAccessId = detached.accessId;
+    const readers: readonly ResourceReadable<unknown>[] = [detached.viewResource('fact'), detached.actionManifest, detached.progress, detached.request('held-request').state, detached.human];
+    const observations = readers.map((): Observation<unknown>[] => []);
+    readers.forEach((reader, index) => subscriptions.push(reader.observations$.subscribe(value => observations[index]!.push(value))));
+    assert.equal(await detached.readView('fact'), 42);
+    await Promise.all(readers.map(reader => reader.read()));
+    await detached.submit({ requestId: 'stream-across-access', content: '继续同一次真实回复', intent: 'question', delivery: 'followup', scope: null });
+    await streamed.promise;
+    const originalAttempt = (await detached.progress.read()).attempts[0]!;
+    assert.ok(originalAttempt);
     const detachedAction = detached.resolveAction('commit', { workspaceId: app.workspace.workspaceId });
     const deletedAction = deleted.resolveAction('commit', { workspaceId: secondWorkspace.workspaceId });
     const actor = { actorId: 'sdk-workspace-owner' };
@@ -552,8 +591,28 @@ test('活宿主撤销工作区成员或实体后保留的SDK动作拒绝新执�
     const second = deletedAction({ operationId: 'accepted-before-delete' }, actor);
     await entered.promise;
     const workspace = app.native.workspaceRegistry.get(WorkspaceId(app.workspace.workspaceId))!;
-    await workspace.detachSession(SessionId(detached.id));
+    await workspace.setTitle('保留原成员资格');
+    assert.equal(detached.signal.aborted, false, '标题的真实put不撤销仍在表内的成员');
+    delaying = workspace.id;
+    const detaching = workspace.detachSession(SessionId(detached.id));
+    await published.promise;
+    assert.ok(workspace.sessionIds.includes(SessionId(detached.id)), '延后官方update回执时Entity缓存尚未交换');
+    assert.equal(workspaceRecord.parse(table.get(workspace.id)).sessionIds.includes(SessionId(detached.id)), false, '正式表已提交成员撤销');
+    const reason: unknown = detached.signal.reason;
+    assert.ok(reason instanceof ConversationAccessRevokedError);
+    assert.equal(reason.reason, 'membership-removed'); assert.equal(reason.sessionId, detached.id);
+    for (const [index, reader] of readers.entries()) {
+      assert.throws(() => reader.peek(), error => error === reason);
+      assert.throws(() => reader.read(), error => error === reason);
+      const ended = observations[index]!.at(-1)!;
+      assert.equal(ended.status, 'error'); if (ended.status === 'error') assert.equal(ended.error, reason);
+    }
+    await assert.rejects(app.host.open(detached.id), /REACTIVE_WORKSPACE_MEMBERSHIP_REQUIRED/u,
+      '新取得不能从尚未交换的旧Entity缓存签出漏撤资格');
+    delaying = undefined; releaseCommit.resolve(); await detaching;
     assert.equal(await app.native.workspaceRegistry.delete(WorkspaceId(secondWorkspace.workspaceId)), true);
+    const deletion: unknown = deleted.signal.reason;
+    assert.ok(deletion instanceof ConversationAccessRevokedError); assert.equal(deletion.reason, 'workspace-deleted');
     await assert.rejects(async () => detachedAction({ operationId: 'rejected-after-detach' }, actor).result);
     await assert.rejects(async () => deletedAction({ operationId: 'rejected-after-delete' }, actor).result);
     const expected = [
@@ -565,8 +624,66 @@ test('活宿主撤销工作区成员或实体后保留的SDK动作拒绝新执�
     finish.resolve();
     assert.deepEqual(await Promise.all([first.result, second.result]), expected);
     assert.equal(completed, 2, '撤销后续准入不能取消已开始的业务');
-    assert.equal(modelCalls, 0);
+    assert.equal(app.native.agents.get(SessionId(detached.id)), originalAgent, '成员撤销没有dispose或cancel原Agent');
+    gap.resolve(); await gapStreamed.promise;
+    await workspace.attachSession(SessionId(detached.id));
+    await assert.rejects(app.host.open(detached.id, undefined, originalAccessId), error => error instanceof ConversationAccessRevokedError
+      && error.reason === 'access-expired', '旧资格不能在没有观察连接的detach/attach间隙复活');
+    assert.equal(mounted, 2, '过期请求在装配新Program图前拒绝');
+    const [fresh, peer] = await Promise.all([app.host.open(detached.id), app.host.open(detached.id)]);
+    assert.notEqual(fresh.accessId, originalAccessId); assert.equal(peer.accessId, fresh.accessId);
+    assert.equal(fresh.signal.aborted, false); assert.equal(detached.signal.reason, reason);
+    assert.equal(mounted, 3, '并发重新取得只装同一张新Program图');
+    assert.equal(app.native.agents.get(SessionId(detached.id)), originalAgent, '显式重新取得复用原native Agent和loop');
+    assert.equal(await fresh.readView('fact'), 42);
+    assert.throws(() => detached.viewResource('fact'), error => error === reason);
+    const currentAttempt = (await fresh.progress.read()).attempts[0]!;
+    assert.ok(currentAttempt); assert.equal(currentAttempt.attemptId, originalAttempt.attemptId);
+    assert.equal(currentAttempt.nextIndex, 3);
+    assert.equal(expandAssistantStream(currentAttempt.stream)
+      .flatMap(member => member.chunk.type === 'text-delta' ? [member.chunk.text] : []).join(''), 'before-gap-',
+    'fresh图使用原Agent在资格空窗中仍真实追加的完整前缀');
+    const tail: AssistantProgressFrame[] = [];
+    subscriptions.push(fresh.progressFrames$.subscribe(frame => tail.push(frame)));
+    finishStream.resolve(); await fresh.whenIdle();
+    assert.equal((await fresh.request('stream-across-access').state.read()).activity?.reply, 'before-gap-after');
+    assert.ok(tail.some(value => value.frame.type === 'chunk' && value.frame.index === currentAttempt.nextIndex
+      && value.frame.chunk.type === 'text-delta' && value.frame.chunk.text === 'after'));
+    assert.equal(tail.some(value => value.frame.type === 'start'), false, '重新取得不重放或重开原attempt');
+    const currentAccessId = fresh.accessId;
+    fresh.release(); peer.release();
+    await app.host.close(detached.id);
+    const cold = await app.host.open(detached.id);
+    assert.equal(cold.accessId, currentAccessId, '冷Program图收集和重新读取不重签仍存在的持久成员资格');
+    assert.equal(app.native.agents.get(SessionId(detached.id)), undefined);
+    removeResumeGate = app.native.on('agent/created', async ({ agent }) => {
+      if (agent.id !== cold.id) return;
+      resumeEntered.resolve(agent); await releaseResume.promise;
+    });
+    let resumeOutcome: unknown;
+    const resuming = app.host.resume(cold.id).then(handle => { resumeOutcome = handle; handle.release(); }, error => { resumeOutcome = error; });
+    const resumedAgent = await resumeEntered.promise;
+    assert.equal(app.native.agents.get(SessionId(cold.id)), resumedAgent, '门闩持有真实原生恢复回执，Agent已进入正式registry');
+    await workspace.detachSession(SessionId(cold.id));
+    const resumeReason: unknown = cold.signal.reason;
+    assert.ok(resumeReason instanceof ConversationAccessRevokedError && resumeReason.reason === 'membership-removed');
+    releaseResume.resolve(); await resuming;
+    assert.equal(resumeOutcome, resumeReason, '恢复后的取得仍按原Session资格结案，不偷换图或改写原原因');
+    assert.equal(app.native.agents.get(SessionId(cold.id)), resumedAgent, '读侧退出不能rollback已经恢复的真实Agent');
+    removeResumeGate();
+    await workspace.attachSession(SessionId(cold.id));
+    const reacquired = await app.host.open(cold.id);
+    assert.notEqual(reacquired.accessId, currentAccessId);
+    assert.equal(app.native.agents.get(SessionId(cold.id)), resumedAgent, '后续显式fresh取得接回同一Agent');
+    assert.equal(await reacquired.readView('fact'), 42);
+    reacquired.release();
+    cold.release();
+    assert.equal(modelCalls, 1);
     assert.deepEqual(app.errors, []);
     detached.release(); deleted.release();
-  } finally { finish.resolve(); await app.dispose(); }
+  } finally {
+    delaying = undefined; releaseCommit.resolve(); table.update = update;
+    finish.resolve(); gap.resolve(); finishStream.resolve(); releaseResume.resolve(); removeResumeGate();
+    subscriptions.forEach(subscription => subscription.unsubscribe()); await app.dispose();
+  }
 });
