@@ -2,6 +2,12 @@
 
 委托是一份普通 Action 合同和一个由宿主实现的原生子工作。业务模块绑定、公开和提供这份 Action；宿主 assembly 将它接到 dsh 的 spawn / fork、原生输入、资源树与持久会话。`NativeChildWork` 提供只读 Operation 合同，正式完成条件是子工作自己的 Goal 完成。
 
+## 原生发现
+
+原生子 Agent 发现独立于这份 Goal 合同。从 `@hanger-source/dsh-reactive-dsh/subagents` 创建 `createNativeSubagents({ service: 'provided' })`，通过 installNative 或已有宿主安装后，用 `forSession(source).catalog` 观察原会话的持久子目录，或用 `readDescendants({ signal })` 显式读取可达子树。普通函数、Promise、RxJS 和 hooks 消费同一 catalog；它保留 one-shot、continuable、external 模式，不据此推断业务完成。递归读取使用 rc.3 的正式查询，缺失或损坏分支保留原生诊断，不伪装为空子树。
+
+目录观察只随原父会话的目录事件及实际 Agent 代际失效，冷读取不恢复 Agent。SDK 或能力退出撤销读侧，不中断已有子执行。创建、投递和恢复执行仍需要各自的可信 Program 准入；此入口不提供绕过准入的 raw start/send，也不复制原生子树调度、持久化或执行引擎。
+
 ## 共享合同
 
 `contracts.ts` 只包含可共享合同。`nativeChildWorkAction` 贡献标准回执及 Operation 映射，应用继续定义业务名字、原始输入与目标：

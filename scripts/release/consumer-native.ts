@@ -9,11 +9,12 @@ import { createNativeFiles, type NativeSessionFiles, type NativeFileResource,
   type WorkspaceFileText } from '@hanger-source/dsh-reactive-dsh/files';
 import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-reactive-dsh/tools';
+import { createNativeSubagents, type NativeSessionSubagents } from '@hanger-source/dsh-reactive-dsh/subagents';
 import { combineResources } from '@hanger-source/dsh-reactive';
 
 // 这些是正式npm子入口；只加载与编译，不为包检查安装Runtime或执行原生副作用。
 export const entries = [createNativeJobs, createNativeMcp, createNativeApproval, createNativeClock,
-  createNativeSchedule, createNativeTeam, createNativeFiles, createNativeSkills, createNativeTools] as const;
+  createNativeSchedule, createNativeTeam, createNativeFiles, createNativeSkills, createNativeTools, createNativeSubagents] as const;
 export const task = (team: NativeSessionTeam, id: TeamTaskId): Promise<NativeTeamTask> => team.task(id);
 export const change = (task: NativeTeamTask, request: NativeTeamTaskUpdate) => task.update(request);
 export const filePage = (files: NativeSessionFiles, path: string): NativeFileResource<WorkspaceFileText> => files.text(path);
@@ -22,6 +23,9 @@ export const skillMaterial = (skills: NativeSessionSkills, files: NativeSessionF
     file: files.text(path).observations$ });
 export const nativeCatalogs = (tools: NativeSessionTools, skills: NativeSessionSkills) =>
   combineResources({ tools: tools.catalog.observations$, skills: skills.catalog.observations$ });
+export const nativeCollaboration = (subagents: NativeSessionSubagents, team: NativeSessionTeam) =>
+  combineResources({ children: subagents.catalog, team: team.state });
+export const nativeDescendants = (subagents: NativeSessionSubagents, signal: AbortSignal) => subagents.readDescendants({ signal });
 export const toolPolicy = (tools: NativeSessionTools, approval: NativeSessionApproval) =>
   combineResources({ tools: tools.catalog.observations$, policy: approval.policy.observations$ });
 export const declaredNativeTools = (jobs: NativeJobs, mcp: NativeMcp) =>

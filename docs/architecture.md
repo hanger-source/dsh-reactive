@@ -71,6 +71,8 @@ flowchart LR
 
 组件求值与声明构造保持纯投影。它们不注册工具、不连接查询、不执行 Action。查询连接由提交后的观察及出口 owner 持有；长期事件关系由 `useRelation` 的 effect 持有。明确的 Action 调用才开始业务执行。
 
+子 Agent 的发现与执行保留不同责任。Subagents 读侧直接消费原生父目录和递归查询，one-shot、continuable、external 及分支诊断使用原生类型；catalog 是现有 Scope 下的资源，冷读不加载 Agent。NativeChildWork 只表达带独立 Goal 的子程序委托，Team 继续拥有具名成员及任务板；三者不合并为泛化任务状态，也不因观察目录建立新的 Goal 或输入。
+
 ## 完整声明帧与稳定身份
 
 renderer 在 React commit 后收集整棵树的声明，经过私有运行时品牌校验及 collector 合并，再交给会话的 `ProgramInstance`。渲染或声明失败进入程序错误边界，不能发布一个空帧来掩盖失败。

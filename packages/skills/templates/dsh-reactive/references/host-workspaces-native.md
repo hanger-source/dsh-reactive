@@ -36,6 +36,10 @@ createWorkspace 注册原生 existing 目录，不隐式 mkdir。Environment 不
 
 ## 嵌入与可选能力
 
+原生子 Agent 发现从 `@hanger-source/dsh-reactive-dsh/subagents` 导入 `createNativeSubagents({ service: 'provided' })`。它使用宿主已有的底座 subagents 服务，不安装另一套 provider。安装后取得 `const children = capability.forSession(source)`：children.catalog 是同源 ResourceReader，children.catalog$ 是其值流，支持普通函数、Promise、RxJS 和 hooks；children.readDescendants({ signal }) 显式读取可达子树。保留 one-shot、continuable、external 原生身份及不可读分支诊断，不把目录模式当成业务阶段。其他父会话的目录事件不使此资源失效；关闭/恢复原 Agent 重新取得原父目录，冷读不恢复 Agent 或启动模型。
+
+Subagents 的 dispose 只撤销读侧，不停止已有 Activation。普通原生发现不要求 Goal；带独立 Goal 的子程序委托继续通过 assembly.implementDelegation 和 NativeChildWork 组合 Action、Operation 与反馈。此入口不包装缺少可信 Program 执行前准入的 raw start/send，也不把这个缺口扩大为整个子 Agent 域不可用。
+
 Schedule 管理读取、冷 Team 投影及 Files 的显式读取使用所属 SDK 与调用者的取消信号；等待立即结算，不被迟到的原生查询回执拖住。Files 仍独立跟踪真实 I/O，实例退出等待这些读取与 unwatch 完成。只读等待的取消不改变原生 CAS、任务、提醒投递或成员执行的 owner。
 
 能力实例的 `dispose()` 撤销观察并等待本次安装范围真正退出，即使外层 Context 已开始卸载或同步清理中再次调用退出。观察清理失败在实际原生资源静止后报告。实例自行安装的服务由原生 owner 执行 drain；选择 provided 的服务继续归外部宿主。`forSession(source)` 返回的会话 SDK 只释放自己的观察，不借此停止原生执行。

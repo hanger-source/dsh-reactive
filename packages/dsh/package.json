@@ -40,6 +40,10 @@
       "types": "./lib/team.d.ts",
       "import": "./lib/team.js"
     },
+    "./subagents": {
+      "types": "./lib/subagents.d.ts",
+      "import": "./lib/subagents.js"
+    },
     "./tools": {
       "types": "./lib/tools.d.ts",
       "import": "./lib/tools.js"
