@@ -4,6 +4,8 @@
 
 ## 选择对象与共享范围
 
+显式 owner 的 ResourceReader 不以来源正常完成结束有效性观察。有限来源按时释放，既有观察继续接受 owner 撤销，避免外部 hook 或 Context 永久保留旧 ready；values$ 同样不承诺在业务返回时结束。空完成或 pending 后完成交付 EmptyError，不挂起读取。未指定 owner 的 ResourceReader 和普通 Observable 保留来源自己的有限语义；业务完成使用明确的 result/settled 或按业务状态筛选，不用流 EOF 猜测。
+
 工作区共享使用已有 implementation：workspace.resource(implementation, params) 与 workspace.reaction(implementation, params) 直接返回正式 ResourceInstance、ReactionInstance。相同工作区、实现和已解析参数复用身份，跨 Environment 和 Session 共享，不同工作区隔离；构造不读，反应显式 start。组件从 props.workspace 取得对象，本地宿主从 runtime.application.workspace(id) 取得相同接点，无需捕获内核 Scope 或另建注册表。局部关系继续使用 createResource/createReaction 或局部 hooks；它们各自保留明确的 owner。
 
 工作区登记删除或宿主退出会结束该工作区的资源与持续关系。资源先交付 owner 失效，排队反应停止，已受理的业务函数仍沿原 owner 完成；新登记产生新身份，旧对象不复活。普通 workspace.share(source$) 保留有限流完成语义，失效需要参加业务组合时直接使用正式资源的 observations$。

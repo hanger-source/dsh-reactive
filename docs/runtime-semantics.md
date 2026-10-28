@@ -16,7 +16,7 @@
 
 ## 查询、共享与长期关系
 
-`ResourceInstance`、`ResourceValue`、`shareResource` 和显式指定 owner signal 的 `ResourceReader` 把 owner 撤销表达为资源失效。仍活跃的观察先收到原 `signal.reason` 的 error Observation，再正常完成；退出后订阅只取得新的撤销观察，不连接来源或回放旧业务值。`peek`、`read` 和回调式 `subscribe` 拒绝已经结束的 owner。`values$` 在自身 owner 退出时正常完成；owner 活跃时的查询错误仍是值流错误。普通 Observable 的有限完成不被推断为 owner 退出，已结束的有限订阅也不重新开启。
+`ResourceInstance`、`ResourceValue`、`shareResource` 和显式指定 owner signal 的 `ResourceReader` 把 owner 撤销表达为资源失效。仍活跃的观察先收到原 `signal.reason` 的 error Observation，再正常完成；退出后订阅只取得新的撤销观察，不连接来源或回放旧业务值。`peek`、`read` 和回调式 `subscribe` 拒绝已经结束的 owner。`values$` 在自身 owner 退出时正常完成；owner 活跃时的查询错误仍是值流错误。显式 owner 的资源在来源正常完成后继续观察有效性，来源 I/O 按其本来完成时点释放；owner 退出才结束这种观察。空完成或停在 pending 后完成交付 EmptyError。未指定 owner 的 ResourceReader 与普通 Observable 保留来源的有限语义。
 
 Scope 子树共享父撤销的原原因，父退出后即使尚在执行其他同步清理，子资源也已经不可使用。实际释放仍走原有 Scope 树，父汇总子清理错误；逻辑撤销不代替原生异步释放的完成回执。
 

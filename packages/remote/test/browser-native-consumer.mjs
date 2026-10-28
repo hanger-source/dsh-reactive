@@ -1,7 +1,7 @@
 import * as Cordis from '@deepseek-ai/cordis';
 import * as Store from '@deepseek-ai/dsh-client-store';
 import * as Zod from 'zod';
-import { lastValueFrom } from 'rxjs';
+import { filter, firstValueFrom, timeout } from 'rxjs';
 import commands from '@deepseek-ai/dsh-commands/remote';
 import controller from '@deepseek-ai/dsh-api-session-controller/remote';
 import uploads from '@deepseek-ai/dsh-client-file-upload/remote';
@@ -84,7 +84,7 @@ document.querySelector('button').addEventListener('click', async event => {
     const invocation = await action({ amount: '7' });
     const nativeActivity = second.session.invocation(invocation);
     await invocation.result;
-    check((await lastValueFrom(invocation.activity$)).state === 'returned', 'INVOCATION_ACTIVITY_FINITE_TERMINAL');
+    check((await firstValueFrom(invocation.activity$.pipe(filter(value => value.state === 'returned'), timeout(8000)))).state === 'returned', 'INVOCATION_ACTIVITY_TERMINAL_SNAPSHOT');
     check(nativeActivity.getSnapshot() === invocation.activity.peek(), 'NATIVE_INVOCATION_USES_THE_SAME_RESOURCE_FACT');
     check((await second.session.readView('current')).toISOString() === '2026-10-26T00:00:07.000Z', 'PEER_REMAINS_LIVE');
     check(notifications === frozen, 'RELEASED_UI_OBSERVER_STOPPED');

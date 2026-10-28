@@ -17,6 +17,7 @@ export interface ResourceReaderOptions {
 /**
  * 借用已有事实；options限定借用寿命，省略时沿用来源寿命，不缓存或重试。
  * owner撤销向仍在观察的消费者交付原reason的error观察后完成；迟到观察只交付该撤销。
+ * 来源正常完成不结束显式owner的有效性观察；无owner时保留来源自己的有限语义。
  * values$在自身owner退出时正常完成，普通查询错误仍沿值流报错。
  */
 export class ResourceReader<T> implements ResourceReadable<T> {
@@ -31,6 +32,7 @@ export class ResourceReader<T> implements ResourceReadable<T> {
     this.onObserverError = options?.onObserverError;
     this.observations$ = new Observable(subscriber => {
       let generation = 0, ended = false;
+      let status: Observation<T>['status'] | undefined;
       const close = () => {
         if (ended || subscriber.closed) return;
         ended = true;
@@ -44,10 +46,18 @@ export class ResourceReader<T> implements ResourceReadable<T> {
         next: observation => {
           if (signal?.aborted) { close(); return; }
           generation = observation.generation;
+          status = observation.status;
           subscriber.next(observation);
         },
         error: (error: unknown) => signal?.aborted ? close() : subscriber.error(error),
-        complete: () => signal?.aborted ? close() : subscriber.complete(),
+        complete: () => {
+          if (signal?.aborted) { close(); return; }
+          if (!signal) { subscriber.complete(); return; }
+          // 业务来源已静止，资源的读取资格仍由owner拥有；空完成必须结算当前等待。
+          if (status === undefined || status === 'pending') {
+            subscriber.next({ status: 'error', generation: ++generation, error: new EmptyError() });
+          }
+        },
       });
       subscriber.add(connection);
       source.observations$.subscribe(connection);

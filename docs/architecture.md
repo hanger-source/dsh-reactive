@@ -75,6 +75,8 @@ flowchart LR
 
 子 Agent 的发现与执行保留不同责任。Subagents 读侧直接消费原生父目录和递归查询，one-shot、continuable、external 及分支诊断使用原生类型；catalog 是现有 Scope 下的资源，冷读不加载 Agent。NativeChildWork 只表达带独立 Goal 的子程序委托，Team 继续拥有具名成员及任务板；三者不合并为泛化任务状态，也不因观察目录建立新的 Goal 或输入。
 
+显式 owner 的资源把“来源完成”与“有效性结束”分开：正常有限来源立即释放自己的连接，资源仍可观察 owner 的后续撤销，不让外部活跃消费者永久保留旧 ready。值流同样沿读取 owner 完成；业务结果使用 Invocation.result 或 Operation.settled，活动状态不借用 RxJS EOF 表示业务完成。无显式读取 owner 的不可变事实和普通 Observable 保留自己的有限完成语义。
+
 ## 完整声明帧与稳定身份
 
 renderer 在 React commit 后收集整棵树的声明，经过私有运行时品牌校验及 collector 合并，再交给会话的 `ProgramInstance`。渲染或声明失败进入程序错误边界，不能发布一个空帧来掩盖失败。

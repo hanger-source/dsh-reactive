@@ -5,6 +5,37 @@ import { combineResources, mapResource, shareResource, ResourceReader, Scope, cr
 
 const ready = <T>(value: T): Observation<T> => ({ status: 'ready', generation: 1, observedAt: Date.now(), value });
 
+test('有限来源释放真实连接后，显式owner的资源仍撤销外部缓存的旧ready，值流仅随owner完成', () => {
+  const owner = new AbortController(), consumer = new Scope(), reason = new Error('FINITE_OWNER_ENDED');
+  const frame = ready(42);
+  let opened = 0, released = 0, completed = false;
+  const resource = new ResourceReader({ peek: () => frame, observations$: new Observable<Observation<number>>(subscriber => {
+    opened++; subscriber.next(frame); subscriber.complete(); return () => { released++; };
+  }) }, { signal: owner.signal });
+  const stored = consumer.observe(resource.observations$);
+  resource.values$.subscribe({ complete: () => { completed = true; } });
+  assert.equal(released, opened, '有效性观察不延长已经完成的来源I/O');
+  assert.equal(completed, false);
+  owner.abort(reason);
+  const observed = stored.peek();
+  assert.equal(observed.status, 'ready');
+  if (observed.status === 'ready') {
+    assert.equal(observed.value.status, 'error');
+    if (observed.value.status === 'error') assert.equal(observed.value.error, reason);
+  }
+  assert.equal(completed, true);
+  assert.throws(() => resource.peek(), error => error === reason);
+  consumer.dispose();
+});
+
+test('显式owner的空完成和pending完成结算等待，来源不被重新执行或永久挂起', async () => {
+  for (const source of [EMPTY, of<Observation<number>>({ status: 'pending', generation: 1 })]) {
+    const owner = new AbortController();
+    const resource = new ResourceReader<number>({ observations$: source, peek: () => ({ status: 'pending', generation: 0 }) }, { signal: owner.signal });
+    try { await assert.rejects(resource.read(), EmptyError); } finally { owner.abort(); }
+  }
+});
+
 test('owner撤销以原原因替代共享资源的旧有效性，值流正常结束，迟到观察不回放也不重连', () => {
   const owner = new AbortController(), reason = new Error('RESOURCE_OWNER_ENDED');
   let connections = 0;

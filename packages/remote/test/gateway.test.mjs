@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Fragment, createElement as h, useLayoutEffect } from 'react';
-import { BehaviorSubject, Observable, Subject, filter, firstValueFrom, lastValueFrom, of, timeout } from 'rxjs';
+import { BehaviorSubject, Observable, Subject, filter, firstValueFrom, of, timeout } from 'rxjs';
 import WebSocket from 'ws';
 import { LlmAdapter, ToolCallId } from '@deepseek-ai/dsh-llm';
 import { expandAssistantStream } from '@deepseek-ai/dsh-llm/assistant-stream';
@@ -513,8 +513,13 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     console.info('gateway.human.reconnected', { sessionId });
     const original = await session.invocation('check', id);
     const receipt = await original.result;
-    assert.equal((await lastValueFrom(original.activity$)).state, 'returned');
+    assert.equal((await next(original.activity$, value => value.state === 'returned')).state, 'returned');
     assert.equal((await original.activity.read()).state, 'returned');
+    const completedActivity = [];
+    const completedObserver = original.activity.observations$.subscribe(frame => completedActivity.push(frame));
+    let completedValues = false;
+    const completedValueObserver = original.activity$.subscribe({ complete: () => { completedValues = true; } });
+    assert.equal(completedObserver.closed, false, '有限业务来源释放后，SDK仍拥有资源有效性观察');
     assert.equal(receipt.at.toISOString(), '2026-10-26T00:00:07.000Z');
     assert.equal((await session.readView('current')).toISOString(), receipt.at.toISOString());
     assert.equal(inputParses, 1); assert.equal(executions, 1);
@@ -722,6 +727,11 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     assert.throws(() => boundQuestion.state.read(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
     assert.throws(() => boundQuestion.answer({ answers: [{ id: 'allow', selected: ['是'] }] }), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
     await assert.rejects(boundQuestion.attachWait()[Symbol.asyncIterator]().next(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
+    await reconnected.dispose();
+    assert.equal(completedObserver.closed, true); assert.equal(completedValueObserver.closed, true); assert.equal(completedValues, true);
+    assert.equal(completedActivity.at(-1).status, 'error');
+    assert.match(String(completedActivity.at(-1).error), /REACTIVE_REMOTE_CLIENT_DISPOSED/u);
+    assert.equal(executions, 1, '已完成调用的读侧撤销不重新执行或改写业务结果');
     assert.deepEqual(runtimeErrors, []); assert.deepEqual(carrierErrors, []);
   } finally {
     finish.resolve(); editFinish.resolve(); await Promise.all(clients.map(client => client.dispose()));

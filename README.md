@@ -6,7 +6,7 @@
 
 API 与组件主链、SDK、原生接入按公共合同和版本记录演进；公开能力的限制以本文和分域文档为准，聚焦试验不代表完整框架已经验收。
 
-跨大版本升级时查看 [SDK 作用域迁移](docs/migration-sdk-scopes.md)与[资源有效性迁移](docs/migration-resource-ownership.md)，按实际安装版本调整异步装配及 owner 撤销的消费方式。
+跨大版本升级时查看 [SDK 作用域迁移](docs/migration-sdk-scopes.md)与[资源有效性迁移](docs/migration-resource-ownership.md)，以及[来源完成与有效性迁移](docs/migration-resource-completion.md)，按实际安装版本调整异步装配、owner 撤销及完成等待的消费方式。
 
 源码位于 [hanger-source/dsh-reactive](https://github.com/hanger-source/dsh-reactive)，由 hanger 维护。六个公共包统一使用 `@hanger-source/dsh-reactive*` 名称与同一版本；正式发行通过 GitHub Actions 的 Trusted Publishing 完成，源码版本和 GitHub 提交不表示包已在 npm 发布。版本管理、候选验收和发布方式见[发行说明](docs/releasing.md)。
 

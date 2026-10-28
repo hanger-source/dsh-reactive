@@ -168,7 +168,7 @@ export interface Invocation<Output, Observed extends Json = Json> {
   readonly result: Promise<Output>;
   /** 本次调用的同源当前事实；read 不等待业务完成，业务失败仍是 ready 的调用事实。 */
   readonly activity: ResourceReader<InvocationActivity<Observed>>;
-  /** 同一次执行的最近状态与更新；晚订阅仍能取得终态。 */
+  /** 同一次执行的最近状态与更新；晚订阅仍能取得终态，业务完成使用result。 */
   readonly activity$: Observable<InvocationActivity<Observed>>;
 }
 

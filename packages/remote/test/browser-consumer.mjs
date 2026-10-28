@@ -1,6 +1,6 @@
 import { createProgramClient } from '@hanger-source/dsh-reactive-client';
 import { program } from './browser-contracts.mjs';
-import { filter, firstValueFrom, lastValueFrom, timeout } from 'rxjs';
+import { filter, firstValueFrom, timeout } from 'rxjs';
 
 const output = document.querySelector('output');
 document.querySelector('button').addEventListener('click', async () => {
@@ -16,7 +16,7 @@ document.querySelector('button').addEventListener('click', async () => {
     const receipt = await invocation.result;
     const operation = await invocation.operation;
     const settled = await operation.settled(options);
-    if ((await lastValueFrom(invocation.activity$)).state !== 'returned'
+    if ((await firstValueFrom(invocation.activity$.pipe(filter(value => value.state === 'returned'), timeout(8000)))).state !== 'returned'
       || (await invocation.activity.read()).state !== 'returned') throw new Error('BROWSER_INVOCATION_ACTIVITY_LOST');
     const updated = await session.readView('current', options);
     const proof = await fetch('/proof').then(response => response.json());

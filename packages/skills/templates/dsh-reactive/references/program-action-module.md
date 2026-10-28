@@ -28,7 +28,7 @@ export const ItemProgram = defineProgram({ input: Target, surface: ItemSurface }
 
 Operation 代表业务 owner 持有的跨调用事实。局部 Action 若声明 operation，必须同时提供同一合同的 operationOwner；共享 Operation 的 kind、version 和恢复规则不能因使用局部语法而省略。共享 SDK 或原生 UI 需要独立导入的 Action 合同时，继续分开纯合同和业务实现。
 
-显式调用返回唯一 Invocation：`const invocation = save({ note }); await invocation.result`。activity、result 与可选 operation 指向同次调用；`invocation.activity.read()` 读取当前事实，`useResource(invocation.activity)` 让业务 hook 借入它，activity$ 是同一资源的 values$。read 不等待业务完成，业务 pending/running/failed 是可有效读取的事实；资源 error 表达观察失败。returned/failed 后流结束，晚读取保留终态，多订阅不重执行。纯本地事实由 Invocation 持有，不随组件或绑定退出撤销；远程读取随所属 SDK 退出。invocations$ 是该绑定新调用的热流，不 replay；activeInvocations$ 是当前在途集合，适合晚挂载关系。结束观察或卸载不解释为取消已执行的业务。
+显式调用返回唯一 Invocation：`const invocation = save({ note }); await invocation.result`。activity、result 与可选 operation 指向同次调用；`invocation.activity.read()` 读取当前事实，`useResource(invocation.activity)` 让业务 hook 借入它，activity$ 是同一资源的 values$。read 不等待业务完成，业务 pending/running/failed 是可有效读取的事实；资源 error 表达观察失败。返回活动达到 returned/failed 后，远程底层流释放，资源继续随 SDK owner 观察有效性；晚读取保留终态，多订阅不重执行。纯本地事实由 Invocation 持有，不随组件或绑定退出撤销；远程读取随所属 SDK 退出。invocations$ 是该绑定新调用的热流，不 replay；activeInvocations$ 是当前在途集合，适合晚挂载关系。结束观察或卸载不解释为取消已执行的业务。
 
 ## 组件只贡献当前声明
 

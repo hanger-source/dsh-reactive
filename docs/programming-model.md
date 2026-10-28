@@ -232,6 +232,8 @@ const application = defineApplication({
 
 ## 来源、关系与执行边界
 
+显式指定 owner 的 ResourceReader 在来源正常有限完成后仍保留有效性观察；来源连接已经释放，owner 撤销才使既有观察失效并完成。不要对远程 Invocation.activity$ 使用 lastValueFrom 等待业务完成：await invocation.result 取得业务结果，按活动 state 选择 returned/failed 则等待该观察达到终态。activity.read 继续只读取当前有效事实，不承诺与独立 result 回执同时到达。
+
 所有流仍是标准 Observable。使用 map、combineLatest、switchMap、concatMap、mergeMap、catchError 等表达业务关系，不需要框架自定义的流操作符。
 
 - `useShared(factory, dependencies)` memo 来源并使用 RxJS share/ReplaySubject 共享查询。最后一个查询观察退出时释放来源；已完成或失败的同一来源保留终态。
@@ -356,7 +358,7 @@ await conversation.submit({
 
 本地与远程 SDK 统一以 `CancellationOptions` 接收 `{ signal }`，例如 `readView(name, options)`、`resolveAction(name, scope, options)`、`submit(input, options)` 和 `prepare(input, options)`。共享消费者可以对两端统一使用 `await`。本地的可信参与入口还接受 `SubmitOptions.actorId`；远程身份由认证载体决定，调用选项不提供 actor。远程解析和受理等待的取消不会撤销已经受理的业务；直接调用中的信号交由执行 owner 处理，长期 Operation 的取消仍由业务合同决定。
 
-Invocation 的 activity 资源提供本次调用当前有效事实，read 不等待业务完成；可直接交给 useResource 或组合 observations$，activity$ 引用同一对象的 values$。本地 pending/running 是已经知道的调用状态；业务 failed 也是 ready 的调用事实，观察来源不可用才进入资源 error。returned/failed 后流结束，晚读取仍取得终态，不重新调用业务。纯本地事实由 Invocation 持有，组件和绑定退出不撤销它；远程读取和订阅受所属 SDK 的寿命限制，SDK 退出不取消 Host 业务。
+Invocation 的 activity 资源提供本次调用当前有效事实，read 不等待业务完成；可直接交给 useResource 或组合 observations$，activity$ 引用同一对象的 values$。本地 pending/running 是已经知道的调用状态；业务 failed 也是 ready 的调用事实，观察来源不可用才进入资源 error。纯本地不可变事实沿原来源有限结束，晚读取仍取得终态，组件和绑定退出不撤销它。远程来源在 returned/failed 后释放连接，资源的有效性观察仍由 SDK 持有；SDK 退出撤销资源，不重新调用或取消 Host 业务。
 
 Invocation 的 returned 是业务函数返回；原生工具后置策略的最终结果由原生事件表达。observe 是纯投影，原生最终展示可能再次对最终结果投影，不会重新解析或执行业务。
 
