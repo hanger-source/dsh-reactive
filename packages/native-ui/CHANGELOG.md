@@ -1,5 +1,19 @@
 # @hanger-source/dsh-reactive-native-ui
 
+## 1.0.0
+
+### Major Changes
+
+- bdd5279: SDK、Session及其远程资源统一由正式dsh Fiber/effect持有构造与异步释放，替换各域独立的退出和退休队列。bindProgramClient现在返回Promise并等待作用域安装，直接消费者需要await；ProgramJournal通过session.openEvents取得。取消立即撤销使用权，退出等待实际清理静止并汇总失败，已受理业务继续遵循原owner。迁移方式见docs/migration-sdk-scopes.md。
+
+### Patch Changes
+
+- Updated dependencies [dd50bb1]
+- Updated dependencies [bdd5279]
+- Updated dependencies [60f19d6]
+  - @hanger-source/dsh-reactive@1.0.0
+  - @hanger-source/dsh-reactive-client@1.0.0
+
 ## 0.20.2
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # @hanger-source/dsh-reactive
 
+## 1.0.0
+
+### Minor Changes
+
+- dd50bb1: 局部 Action 可在同一个 implementAction 选项对象中声明合同与实现，也可由 useAction 的 factory 同时构造实现和明确目标。沿用现有绑定、宿主准入、Invocation 与 Operation owner，不引入额外状态或执行生命周期；共享合同入口继续保持独立。
+- 60f19d6: 本地与远程 SDK 共用 core 的 ProgramSessionClient 和 SurfaceClient 消费合同，根会话与集合成员可直接供同一个模块使用。保留各端的调用时序、权限与资源 owner，不增加代理状态；远程会话公开同一纯 Surface，本地人工观察直接来自原 human 资源。
+
 ## 0.20.2
 
 ### Patch Changes

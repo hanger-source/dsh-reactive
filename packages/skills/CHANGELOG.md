@@ -1,5 +1,27 @@
 # @hanger-source/dsh-reactive-skills
 
+## 1.0.0
+
+### Major Changes
+
+- bdd5279: SDK、Session及其远程资源统一由正式dsh Fiber/effect持有构造与异步释放，替换各域独立的退出和退休队列。bindProgramClient现在返回Promise并等待作用域安装，直接消费者需要await；ProgramJournal通过session.openEvents取得。取消立即撤销使用权，退出等待实际清理静止并汇总失败，已受理业务继续遵循原owner。迁移方式见docs/migration-sdk-scopes.md。
+
+### Minor Changes
+
+- dd50bb1: 局部 Action 可在同一个 implementAction 选项对象中声明合同与实现，也可由 useAction 的 factory 同时构造实现和明确目标。沿用现有绑定、宿主准入、Invocation 与 Operation owner，不引入额外状态或执行生命周期；共享合同入口继续保持独立。
+- 60f19d6: 本地与远程 SDK 共用 core 的 ProgramSessionClient 和 SurfaceClient 消费合同，根会话与集合成员可直接供同一个模块使用。保留各端的调用时序、权限与资源 owner，不增加代理状态；远程会话公开同一纯 Surface，本地人工观察直接来自原 human 资源。
+
+### Patch Changes
+
+- Updated dependencies [dd50bb1]
+- Updated dependencies [bdd5279]
+- Updated dependencies [60f19d6]
+  - @hanger-source/dsh-reactive@1.0.0
+  - @hanger-source/dsh-reactive-client@1.0.0
+  - @hanger-source/dsh-reactive-native-ui@1.0.0
+  - @hanger-source/dsh-reactive-dsh@1.0.0
+  - @hanger-source/dsh-reactive-remote@1.0.0
+
 ## 0.20.2
 
 ### Patch Changes
