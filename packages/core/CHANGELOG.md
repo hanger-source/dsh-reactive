@@ -1,5 +1,26 @@
 # @hanger-source/dsh-reactive
 
+## 4.0.0
+
+### Major Changes
+
+- 2fd5838: ProgramSessionClient 表达人工和服务共同的会话读取、输入、Surface 与 Operation 能力，HumanProgramSessionClient 单独表达问答、前台认领及 Goal 控制。host.service(actorId) 返回绑定固定身份的应用视图，服务可创建、打开和恢复会话、编辑自己的输入及上传文件，逐调用不能改写 actor。
+
+  Gateway 通过必填 participant(principal) 签发角色及 actor，替换只返回字符串的 actor 配置；输入、Action、Operation 与上传使用同一受信端口，Invocation 关联同时核验角色与 actor，服务器拒绝服务执行人工控制。新增服务 SDK 工厂，与人工 SDK 复用同一套正式连接、资源与恢复机制。固定 rc.3 的 answer 传输不授予 human 权限，none 连接不伪装为具有完整恢复能力。角色错配错误保留宿主已确认的会话身份。开发指导及仓外消费者同步此合同，迁移见 docs/migration-participant-ports.md。
+- 6847a95: 根会话与集合成员通过 module(mount) 借出按局部 Surface 编程的 SDK，保留 source/selected 合同、原始资源对象、参数类型和本地/远程调用时序；模块不再要求消费函数知道根路径。挂载与父选择共同限制可见性，投射不创建缓存、业务 owner 或控制权限。
+
+  ProgramSessionClient 统一权威请求核对，HumanProgramSessionClient 提供暂停和取消；控制回执与请求状态类型归核心合同，client 重导出同一类型。调用级 signal 及句柄退出只结束本次等待，已经进入原生控制的工作继续完成。服务身份可读请求状态但不能取得人工控制。远程 journal 保留正式 carrier 的专有合同。
+
+  本地 cancel 现在返回 ProgramCancelResult，而非 Promise<void>；自定义 SurfaceClient 和 ProgramSessionClient 实现需提供同一模块与会话能力。迁移方式见 docs/migration-sdk-modules.md。同版本开发 Skill、本地与远程直接消费者、实际 Gateway 和三环境包消费入口同步此合同。
+
+  dsh 发行声明排除已标记 internal 的构造及装配入口，公开观察类型直接来自核心合同；本地 SDK 不再因内部宿主类型牵入持久投影 Registry 的实现声明。运行时装配继续使用同一实现，跨包内核合同保持独立出口。
+
+### Minor Changes
+
+- f8d99d1: ResourceSource 统一表达资源对象、业务 hook 返回的观察对象和原 Observation 流。资源算子、shareResource、useResource、资源视图及 Context 直接消费同一来源，不要求外围逐层拆开 observations$；普通值视图继续保持值流语义。
+
+  useObservable、useShared、useRelation 可直接接收已有 Observable，现场构造来源继续使用 factory 与显式依赖。useResource 按实际选中的来源决定处理，factory 选择已有资源对象仍借用其原观察流及 owner；自建流继续由程序持有查询与共享。公开视图按原观察流身份保留连接，资源对象与其流之间切换不重新查询。同步公共消费者与同版本开发指导，不增加业务状态、执行权或生命周期。
+
 ## 3.0.0
 
 ### Major Changes
