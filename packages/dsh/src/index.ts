@@ -8,7 +8,7 @@ export type { ResolvedAction, EnvironmentOperationReaders, ProgramOperationReade
 export { ChildCreationIncompleteError } from './delegations.ts';
 export type { ApplicationAssembly } from './applications/assembly.ts';
 export type { DelegationOptions, DelegationAdmission, DelegationRequester } from './delegations.ts';
-export type { ConversationActivity, RequestActivity, ToolActivity } from './conversations/records.ts';
+export type { ConversationActivity, RequestActivity, ToolActivity } from '@hanger-source/dsh-reactive';
 export { createRuntime } from './runtime.ts';
 export { InputFileNotStagedError } from './files/input-content.ts';
 export type { RuntimeOptions } from './runtime.ts';

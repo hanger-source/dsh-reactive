@@ -8,7 +8,9 @@
 
 可复用消费者通过 core 的 `ProgramSessionClient<P>` 描述所需会话能力，直接接收本地 `ConversationHandle<P>` 或远程 `RemoteProgramSession<P>`。视图、进展、原请求和人工问题继续返回各自原有的资源对象；同一模块可以用函数、Promise、RxJS 或 hooks 读取它们，框架不为跨宿主复用建立第二个会话。
 
-只需要公开模块出口时使用 `SurfaceClient<S>`，根会话与 `collection(name).instance(key)` 共用视图、动作、Operation 槽和嵌套集合合同。业务代码用 `await client.resolveAction(...)` 和 `await action(...)` 消费两种时序；具体本地类型仍保留同步解析和受理，具体远程类型仍返回 Promise。`ProgramSessionClient` 的 Async 参数只描述这部分 Surface 时序；读取或附着业务 Operation 不会变成一次 Action，原生暂停、取消和 journal 控制仍由具体 SDK 提供。
+只需要公开模块出口时使用 `SurfaceClient<S>`，根会话与 `collection(name).instance(key)` 共用视图、动作、Operation 槽和嵌套集合合同。业务代码用 `await client.resolveAction(...)` 和 `await action(...)` 消费两种时序；具体本地类型仍保留同步解析和受理，具体远程类型仍返回 Promise。`ProgramSessionClient` 的 Async 参数只描述这部分 Surface 时序；读取或附着业务 Operation 不会变成一次 Action。
+
+会话的 `pause({ signal })`、`cancel({ signal })` 与 `requestStatus(requestId, { signal })` 同样属于 `ProgramSessionClient`。共同回执类型从 core 导入：ProgramGoalControl 提供 Goal 的 id、revision、phase，本地 pause 仍可返回完整原生 GoalView；ProgramCancelResult 的 canceled:true 表示原生处理已 idle 并完成持久 flush，不表示外部业务 Operation 已取消。ProgramRequestStatus 核对原生日志和投影，冷读取不激活 Agent，不能拿客户端缓存中的缺项证明 absent。取消信号和句柄退出只结束本次回执等待，已取消的调用不启动控制，已经受理的控制继续由原生 owner 结算。服务参与者可读取请求状态，不能控制 Goal 或答复人工问题。带 carrier 重连、分页与游标的 openEvents 继续由远程 SDK 提供。
 
 `ProgramSession` 是后台组件收到的会话事实与输入接口，`ProgramSessionClient` 是外部消费者的能力接口。两者不互相伪造执行身份。消费者释放观察后，已受理的调用和业务 Operation 仍由原 owner 持有。
 
@@ -164,7 +166,11 @@ const review = composeSurface({
 
 模块内部只写局部 Context、Follow 名称，Offer 默认使用 Action 合同名。Module 按显式路径隔离原生名字，并将本地 Expose 映射到根出口。SDK 使用 `a.facts`、`a.prepare`、`b.facts` 等精确路径，不重复列根槽、传 names 或编写 Outlet。挂载点不是普通路径字符串；伪造、错误根合同和重复挂载均拒绝。
 
+外部业务模块用 `session.module(merchants.mounts.a)` 取得局部 SurfaceClient，随后直接 `readView('facts', { signal })`、`resolveAction('prepare', target)`，不接收根槽名或拼接路径。module 只重定位既有入口，视图资源仍是根会话中的同一个对象，调用选项、本地同步或远程异步时序及原 owner 都保留，不产生独立 release。集合成员和局部客户端也支持 module；嵌套挂载必须属于当前父模块的原合同。
+
 `selectSurface` 选择公开类别及槽，未列类别不公开。相同 MerchantWork 可以放到 review.mounts.a 下，只公开事实。公开选择不撤下模型工具，也不代替业务授权。
+
+挂载点的 surface 保留组件实现使用的原合同，selected 表达这次公开子集；`client.module(mount).surface` 是 selected。局部读取继续受父模块已经公开的子集约束，不能换一个更宽的子挂载恢复隐藏的视图、动作或 Operation；错误父合同和不可见槽都明确拒绝。
 
 `useResource` 直接读取已有资源 Observation，并返回同一条标准 observations$。`resourceView(Merchant)` 明确消费资源状态：pending 使当前读取失效，error 保留为读取失败，只有 ready 的领域值才编码。普通 `view(schema)` 消费值事件，不按业务字段猜状态。
 

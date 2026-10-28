@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { createElement as h, Fragment } from 'react';
-import { BehaviorSubject, firstValueFrom, of, switchMap } from 'rxjs';
+import { BehaviorSubject, Subject, filter, firstValueFrom, of, switchMap } from 'rxjs';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { ActionBindingUnavailableError, defineAction, implementAction } from '@hanger-source/dsh-reactive';
 import { defineApplication } from '@hanger-source/dsh-reactive';
@@ -14,7 +14,7 @@ import { Context, Expose, Offer } from '@hanger-source/dsh-reactive/program';
 import { defineProgram } from '@hanger-source/dsh-reactive';
 import { implementProgram } from '@hanger-source/dsh-reactive/program';
 import { useAction, useObservable, useResource } from '@hanger-source/dsh-reactive/program';
-import { composeSurface } from '@hanger-source/dsh-reactive';
+import { composeSurface, selectSurface, type SurfaceClient } from '@hanger-source/dsh-reactive';
 import { Module } from '@hanger-source/dsh-reactive/program';
 import { defineSurface, resourceView, view, type PartialSurfaceBindings } from '@hanger-source/dsh-reactive';
 import { observeResource } from '@hanger-source/dsh-reactive';
@@ -66,8 +66,10 @@ test('同合同模块自动隔离原生名称与公开槽，重排保留绑定�
   });
   try {
     const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
-    const originalA = session.resolveAction('a.merchant.save', 'merchant-a');
-    const originalB = session.resolveAction('b.merchant.save', 'merchant-b');
+    const moduleA = session.module(composed.mounts.a.merchant), moduleB = session.module(composed.mounts.b.merchant);
+    const originalA = moduleA.resolveAction('save', 'merchant-a');
+    const originalB = moduleB.resolveAction('save', 'merchant-b');
+    assert.equal(moduleA.viewResource('record'), session.viewResource('a.merchant.record'));
     assert.deepEqual(originalA.scope, { merchantId: 'merchant-a' });
     assert.deepEqual(await session.readView('b.merchant.record'), { merchantId: 'merchant-b', revision: 1 });
     layout.next(['b', 'a']);
@@ -90,7 +92,7 @@ test('同合同模块自动隔离原生名称与公开槽，重排保留绑定�
     finish.resolve();
     assert.deepEqual(await running.result, { merchantId: 'merchant-a' });
     layout.next(['a', 'b']);
-    const remounted = session.resolveAction('a.merchant.save', 'merchant-a');
+    const remounted = moduleA.resolveAction('save', 'merchant-a');
     assert.notEqual(remounted.bindingId, originalA.bindingId);
     assert.throws(() => originalA({ revision: 1 }), ActionBindingUnavailableError);
     assert.deepEqual(effects, [{ merchantId: 'merchant-b', source: 'tool' },
@@ -288,4 +290,77 @@ test('模块挂载在真实Program中拒绝其他root的token、伪token、重�
     }
     assert.equal(modelCalls, 0);
   } finally { await app.dispose(); }
+});
+
+test('静态模块SDK复用文件资源和局部消费函数，选择边界不恢复隐藏能力，观察变化不执行命令', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-module-client-'));
+  const file = join(root, 'record.json');
+  const facts = z.object({ revision: z.number().int(), value: z.string() });
+  await writeFile(file, JSON.stringify({ revision: 1, value: 'registered' }));
+  const changed = new Subject<void>();
+  let reads = 0, executions = 0, modelCalls = 0;
+  const observations$ = observeResource({ key$: of(file), async read(path) {
+    reads++; return facts.parse(JSON.parse(await readFile(path, 'utf8')));
+  }, invalidations: () => changed });
+  const save = defineAction({ name: 'save_record', description: '显式保存文件', scope: z.string(), input: facts, output: facts });
+  const implementation = implementAction(save, { async execute(input) {
+    executions++; await writeFile(file, JSON.stringify(input)); changed.next(); return input;
+  } });
+  const local = defineSurface({ views: { facts: resourceView(facts), secret: view(z.string()) }, actions: { save } });
+  const review = selectSurface(local, { views: ['facts'] });
+  const nested = composeSurface({ record: local });
+  const restricted = selectSurface(nested.surface, { views: ['record.facts'] });
+  const composed = composeSurface({ full: local, review, restricted });
+  const foreign = composeSurface({ full: local });
+  function Record() {
+    const action = useAction(implementation, () => 'record-a', []);
+    return h(Expose<typeof local, PartialSurfaceBindings<typeof local>>, { surface: local,
+      value: { views: { facts: observations$, secret: of('operator-only') }, actions: { save: action } } });
+  }
+  const program = defineProgram({ input: z.null(), surface: composed.surface });
+  const definition = defineApplication({ name: 'module-client-files', admit: async () => {}, environments: [defineEnvironment({
+    id: 'work', instructions: '文件查询与命令分别显式使用。', program: implementProgram(program, { Component: () => h(Fragment, null,
+      h(Module, { mount: composed.mounts.full }, h(Record)),
+      h(Module, { mount: composed.mounts.review }, h(Record)),
+      h(Module, { mount: composed.mounts.restricted }, h(Module, { mount: nested.mounts.record }, h(Record)))) }),
+  })] });
+  const app = await boot(join(root, 'home'), definition, async function* () {
+    modelCalls++; throw new Error('MODULE_CLIENT_FILE_QUERY_MUST_NOT_START_MODEL');
+  });
+  const consume = (client: SurfaceClient<typeof local>) => client.readView('facts');
+  try {
+    const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+    const original = session.viewResource('full.facts');
+    await original.read();
+    await session.readView('review.facts'); await session.readView('restricted.record.facts');
+    const beforeProjection = reads;
+    const module = session.module(composed.mounts.full), reviewed = session.module(composed.mounts.review);
+    assert.equal(reads, beforeProjection, '构造投射不重新打开业务读取');
+    assert.equal(module.viewResource('facts'), original);
+    assert.equal(reviewed.viewResource('facts'), session.viewResource('review.facts'));
+    assert.equal(composed.mounts.full.surface, local); assert.equal(composed.mounts.full.selected, local);
+    assert.equal(composed.mounts.review.surface, local); assert.equal(composed.mounts.review.selected, review.surface);
+    assert.equal(module.surface, local); assert.equal(reviewed.surface, review.surface);
+    assert.deepEqual(await consume(module), { revision: 1, value: 'registered' });
+    assert.equal(reads, beforeProjection);
+    assert.throws(() => session.module(foreign.mounts.full), /REACTIVE_MODULE_ROOT_MISMATCH/u);
+    assert.throws(() => session.module({ ...composed.mounts.full }), /REACTIVE_MODULE_MOUNT_INVALID/u);
+    const unsafe = reviewed as SurfaceClient<typeof local>;
+    assert.throws(() => unsafe.viewResource('secret'), /REACTIVE_VIEW_NOT_FOUND/u);
+    assert.throws(() => unsafe.resolveAction('save', 'record-a'), /REACTIVE_ACTION_SLOT_UNKNOWN/u);
+    assert.throws(() => session.module(composed.mounts.restricted).module(nested.mounts.record), /REACTIVE_MODULE_SLOT_NOT_VISIBLE/u);
+    const updated = firstValueFrom(module.observeView('facts').pipe(filter(value => value.status === 'ready' && value.value.revision === 2)));
+    await writeFile(file, JSON.stringify({ revision: 2, value: 'changed-externally' })); changed.next();
+    await updated;
+    assert.deepEqual(await consume(module), { revision: 2, value: 'changed-externally' });
+    assert.equal(executions, 0);
+    const command = module.resolveAction('save', 'record-a');
+    assert.deepEqual(await command({ revision: 3, value: 'explicit-command' }).result, { revision: 3, value: 'explicit-command' });
+    assert.equal(executions, 1);
+    await firstValueFrom(module.observeView('facts').pipe(filter(value => value.status === 'ready' && value.value.revision === 3)));
+    await consume(module); await reviewed.readView('facts');
+    assert.equal(executions, 1); assert.equal(modelCalls, 0);
+    assert.deepEqual(app.errors, []);
+    session.release();
+  } finally { changed.complete(); await app.dispose(); }
 });

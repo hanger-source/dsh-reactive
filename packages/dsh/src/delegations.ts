@@ -79,7 +79,7 @@ export class ChildCreationIncompleteError extends Error {
   }
 }
 
-/** 原始日志读取不合成 interrupted 终态，也不取得写 ownership 或启动 Agent。 */
+/** @internal 原始日志读取不合成 interrupted 终态，也不取得写 ownership 或启动 Agent。 */
 export async function readNativeInspection(ctx: Context, id: string, signal?: AbortSignal): Promise<SessionInspection> {
   const handle = await ctx.sessionPersistence.open(SessionId(id), 'read', { signal });
   try { return { meta: handle.header, inheritedEventCount: handle.inheritedEventCount, events: (await handle.read(0, undefined, { signal })).events }; }
@@ -99,7 +99,7 @@ function snapshot(session: Session): SessionInspection {
   return { meta: session.header, inheritedEventCount: session.inheritedEventCount, events: session.snapshotEvents() };
 }
 
-/** 每个 assembly 独有的接入 owner。原生 manager 拥有执行、容量、取消与资源树。 */
+/** @internal 每个 assembly 独有的接入 owner。原生 manager 拥有执行、容量、取消与资源树。 */
 export class NativeDelegations {
   readonly owner: OperationOwner<typeof NativeChildWork>;
   readonly updates$ = new Subject<{ parentSessionId: string; childSessionId: string }>();

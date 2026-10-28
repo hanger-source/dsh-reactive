@@ -1,5 +1,5 @@
 import type { Observable } from 'rxjs';
-import { composeSurface, selectSurface, defineSurface, resourceView, defineAction, defineOperation, defineProgram, z, type BoundAction, type CancellationOptions, type Observation } from '@hanger-source/dsh-reactive';
+import { composeSurface, selectSurface, defineSurface, resourceView, defineAction, defineOperation, defineProgram, z, type BoundAction, type CancellationOptions, type Observation, type SurfaceClient } from '@hanger-source/dsh-reactive';
 import { Module, Expose, Offer } from '@hanger-source/dsh-reactive/program';
 import type { ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
 
@@ -19,6 +19,20 @@ declare const session: ConversationHandle<typeof program>;
 declare const options: CancellationOptions;
 
 async function consume() {
+  const local = session.module(composed.mounts.a.preparation);
+  const localDate: Date = await consumeModule(local);
+  const localAction = local.resolveAction('prepare', 'merchant-a', options);
+  const localScope: string = localAction.scope.merchantId;
+  const localOperationId: string = (await localAction({ amount: '7' }).result).operationId;
+  const localOperation = local.operations.work(options);
+  const localCommand: string = localOperation.command.commandId;
+  void localDate; void localScope; void localOperationId; void localCommand;
+  // @ts-expect-error 局部SDK不接受根路径或任意字符串。
+  local.readView('a.preparation.loadedAt');
+  // @ts-expect-error scope保留原始string输入。
+  local.resolveAction('prepare', { merchantId: 'merchant-a' });
+  // @ts-expect-error 局部Action保持原始input。
+  localAction({ amount: 7 });
   const a: Date = await session.readView('a.preparation.loadedAt', options);
   const b: Date = await session.readView('b.preparation.loadedAt', options);
   const prepareA = await session.resolveAction('a.preparation.prepare', 'merchant-a', options);
@@ -43,12 +57,22 @@ async function consume() {
   void wire;
 }
 void consume;
+function consumeModule(client: SurfaceClient<typeof local>) { return client.readView('loadedAt'); }
 
 const review = selectSurface(local, { views: ['loadedAt'] });
 const reviewComposition = composeSurface({ review });
 const reviewProgram = defineProgram({ input: z.null(), surface: reviewComposition.surface });
 declare const reviewer: ConversationHandle<typeof reviewProgram>;
 async function consumeReview() {
+  const local = reviewer.module(reviewComposition.mounts.review);
+  const localDate: Date = await local.readView('loadedAt');
+  void localDate;
+  // @ts-expect-error 挂载selected合同不公开动作，不能恢复source的Action。
+  local.resolveAction('prepare', 'merchant-a');
+  // @ts-expect-error 挂载selected合同不公开Operation。
+  local.operations.work();
+  // @ts-expect-error 完整模块消费函数不能接受缺少业务能力的selected合同。
+  consumeModule(local);
   const date: Date = await reviewer.readView('review.loadedAt');
   void date;
   // @ts-expect-error 未选择的动作不会出现在只读组合合同中。

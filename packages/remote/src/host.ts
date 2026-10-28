@@ -148,7 +148,9 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
     try {
       signal.throwIfAborted();
-      const goal = await handle.pause().catch(this.rethrow); return { id: goal.id, revision: goal.revision, phase: goal.phase };
+      // 短命句柄持续持有到原生控制结算；transport 退出不能提前释放其回执 owner。
+      const goal = await handle.pause().catch(this.rethrow);
+      return { id: goal.id, revision: goal.revision, phase: goal.phase };
     }
     finally { handle.release(); }
   }
@@ -159,7 +161,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     this.principal();
     signal.throwIfAborted();
     const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
-    try { signal.throwIfAborted(); await handle.cancel().catch(this.rethrow); return { canceled: true }; }
+    try { signal.throwIfAborted(); return await handle.cancel().catch(this.rethrow); }
     finally { handle.release(); }
   }
 
@@ -194,7 +196,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
     try {
       signal.throwIfAborted();
-      return { requestId: request.requestId, state: handle.snapshot().requests[request.requestId]?.state ?? 'absent' };
+      return await handle.requestStatus(request.requestId, { signal }).catch(this.rethrow);
     }
     finally { handle.release(); }
   }

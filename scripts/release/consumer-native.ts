@@ -11,6 +11,11 @@ import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh
 import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-reactive-dsh/tools';
 import { createNativeSubagents, type NativeSessionSubagents } from '@hanger-source/dsh-reactive-dsh/subagents';
 import { combineResources } from '@hanger-source/dsh-reactive';
+import type { ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
+import { ConsumerModuleProgram, readSelectedRevision, sessionControls } from './consumer-session.js';
+
+export const nativeModuleRevision = (session: ConversationHandle<typeof ConsumerModuleProgram>, signal: AbortSignal) => readSelectedRevision(session, signal);
+export const nativeControls = (session: ConversationHandle<typeof ConsumerModuleProgram>, signal: AbortSignal) => sessionControls(session, signal);
 
 // 这些是正式npm子入口；只加载与编译，不为包检查安装Runtime或执行原生副作用。
 export const entries = [createNativeJobs, createNativeMcp, createNativeApproval, createNativeClock,

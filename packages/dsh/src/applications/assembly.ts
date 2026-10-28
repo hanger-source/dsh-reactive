@@ -15,6 +15,7 @@ export interface ApplicationAssembly {
   implementDelegation<D extends ActionContract, P extends ProgramContract>(action: D, options: DelegationOptions<NoInfer<D>, P>): ActionImplementation<D>;
 }
 
+/** @internal 仅由正式挂载取得本次装配及其封闭状态。 */
 export function createApplicationAssembly(ctx: Context) {
   const native = new NativeDelegations(ctx);
   const capabilities = new Set<NativeCapability>();

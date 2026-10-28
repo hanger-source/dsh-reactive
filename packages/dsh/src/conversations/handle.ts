@@ -1,6 +1,6 @@
 import { bytesToBase64 } from "@deepseek-ai/dsh-util-crypto";
 import { type z } from "zod";
-import { Observable, map, distinctUntilChanged } from "rxjs";
+import { Observable, map, distinctUntilChanged, firstValueFrom } from "rxjs";
 import { conversationBindings, type Submission, type CancellationOptions, type SubmitOptions, type ObservedViews } from "@hanger-source/dsh-reactive/kernel";
 import { type AnyEnvironment, type EnvironmentOperations } from "@hanger-source/dsh-reactive/kernel";
 import { type Scope } from "@hanger-source/dsh-reactive/kernel";
@@ -11,15 +11,16 @@ import { type ActionContract, type ActionInput, type ActionScope } from "@hanger
 import { type OperationContract, type OperationHandle, type OperationReference, type OperationCommand, type OperationLocation, type OperationState, type BoundOperation, type OperationFeedbackRead, type OperationFeedbackPayload } from "@hanger-source/dsh-reactive/kernel";
 import { type ActionInvocation } from "@hanger-source/dsh-reactive/kernel";
 import { type HumanAnswer, type HumanForegroundQuestion, type HumanInputState, type HumanWaitFrame } from "@hanger-source/dsh-reactive/kernel";
-import { type ConversationActivity } from "./records.ts";
+import { type ConversationActivity } from "@hanger-source/dsh-reactive/kernel";
 import { type FileUploadSource, type FileUploadValue, type EncodedFileUploadRequest, type UploadFileOptions, type Json } from "@hanger-source/dsh-reactive/kernel";
 import type { AssistantProgressFrame, ConversationEvent } from "@hanger-source/dsh-reactive/kernel";
 import { createRequestHandle, type ConversationProgressSnapshot, type RequestHandle } from "@hanger-source/dsh-reactive/kernel";
 import type { ProgramContract, ProgramInput, ProgramParsedInput } from "@hanger-source/dsh-reactive/kernel";
 import { surfaceSlotDefinition, type SurfaceViews } from "@hanger-source/dsh-reactive/kernel";
-import { createSurfaceCollectionClient, type SurfaceCollectionClient } from "@hanger-source/dsh-reactive/kernel";
+import { createSurfaceCollectionClient, createSurfaceModuleClient, type SurfaceCollectionClient } from "@hanger-source/dsh-reactive/kernel";
+import type { Surface, SurfaceMount } from '@hanger-source/dsh-reactive';
 import { actionManifestSlot, type ToolActionBinding } from "@hanger-source/dsh-reactive/kernel";
-import type { InputReceipt, CollectionResolvedAction, SurfaceClient, ProgramSessionClient, ViewValue } from "@hanger-source/dsh-reactive";
+import { abortable, type InputReceipt, type CollectionResolvedAction, type SurfaceClient, type ProgramSessionClient, type ViewValue, type ProgramCancelResult, type ProgramRequestStatus } from "@hanger-source/dsh-reactive";
 import { assertServiceInputOptions } from './inputs.ts';
 import type { ConversationSession } from './session.ts';
 import type { ConversationSessions } from './sessions.ts';
@@ -28,13 +29,14 @@ import type { ConversationObservations } from './observations.ts';
 import type { ActionAuthority } from '../execution/authority.ts';
 import type { OperationParticipation } from '../operations/participation.ts';
 import type { ConversationQuestions } from '../participation/questions.ts';
+import { nativeSessionAccess } from './session-access.ts';
 export type ResolvedAction<D extends ActionContract> = CollectionResolvedAction<D, SubmitOptions, false>;
 export type EnvironmentOperationReaders<E extends AnyEnvironment> = {
     readonly [K in keyof EnvironmentOperations<E>]: (options?: SubmitOptions) => BoundOperation<EnvironmentOperations<E>[K]>;
 };
 export type ProgramOperationReaders<P extends ProgramContract> = SurfaceClient<P['surface'], SubmitOptions, false>['operations'];
 type ProgramViews<P extends ProgramContract> = SurfaceViews<P['surface']>;
-export type ServiceConversation<P extends ProgramContract> = Pick<ConversationHandle<P>, 'id' | 'definition' | 'identity' | 'surface' | 'activity$' | 'progress' | 'progress$' | 'progressFrames$' | 'events$' | 'rawEvents$' | 'actionManifest' | 'actionManifest$' | 'views' | 'view' | 'viewResource' | 'observeView' | 'readView' | 'collection' | 'request' | 'resolveAction' | 'invokeAction' | 'operations' | 'resolveOperation' | 'attachOperation' | 'locateOperation' | 'readOperationFeedback' | 'snapshot' | 'progressSnapshot' | 'release'> & {
+export type ServiceConversation<P extends ProgramContract> = Pick<ConversationHandle<P>, 'id' | 'definition' | 'identity' | 'surface' | 'activity$' | 'progress' | 'progress$' | 'progressFrames$' | 'events$' | 'rawEvents$' | 'actionManifest' | 'actionManifest$' | 'views' | 'view' | 'viewResource' | 'observeView' | 'readView' | 'collection' | 'module' | 'request' | 'requestStatus' | 'resolveAction' | 'invokeAction' | 'operations' | 'resolveOperation' | 'attachOperation' | 'locateOperation' | 'readOperationFeedback' | 'snapshot' | 'progressSnapshot' | 'release'> & {
     submit(input: Submission<ProgramInput<P>>, options?: CancellationOptions): Promise<InputReceipt>;
     editQueuedInput(requestId: string, content: Submission['content'], options?: CancellationOptions): Promise<InputReceipt>;
 };
@@ -121,6 +123,15 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
         // factory 已由同一根 Surface 查得叶合同；此处恢复擦除后的统一传输签名。
         const untyped = this as ConversationHandle;
         return createSurfaceCollectionClient(this.surface, name, { asynchronous: false,
+            viewResource: address => this.resource(address),
+            resolveAction: (address, _definition, expectedScope, options) => untyped.resolveAction(address, expectedScope, options),
+            resolveOperation: (address, _definition, options) => untyped.resolveOperation(address, options),
+        });
+    }
+    module<Source extends Surface, Selected extends Surface>(mount: SurfaceMount<Source, Selected>): SurfaceClient<Selected, SubmitOptions, false> {
+        this.assertActive();
+        const untyped = this as ConversationHandle;
+        return createSurfaceModuleClient(this.surface, mount, { asynchronous: false,
             viewResource: address => this.resource(address),
             resolveAction: (address, _definition, expectedScope, options) => untyped.resolveAction(address, expectedScope, options),
             resolveOperation: (address, _definition, options) => untyped.resolveOperation(address, options),
@@ -266,15 +277,30 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
         const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
         yield* this.questions.attachWait(this.entry, callId, { ...options, signal });
     }
-    async pause() {
+    async pause(options: CancellationOptions = {}) {
         this.assertHuman();
-        return this.sessions.pauseGoal(this.sessions.live(this.entry).agent);
+        const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
+        return firstValueFrom(abortable(() => this.sessions.pauseGoal(this.sessions.live(this.entry).agent), signal));
     }
     /** 停止模型处理；是否取消外部业务操作仍由业务能力决定。 */
-    async cancel() {
+    async cancel(options: CancellationOptions = {}): Promise<ProgramCancelResult> {
         this.assertHuman();
-        const agent = this.sessions.live(this.entry).agent;
-        await this.sessions.cancelAgent(agent);
+        const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
+        return firstValueFrom(abortable(async (): Promise<ProgramCancelResult> => {
+            await this.sessions.cancelAgent(this.sessions.live(this.entry).agent);
+            return { canceled: true };
+        }, signal));
+    }
+    /** 权威请求切面来自原生日志与投影；冷读取不激活 Agent，也不改写观察缓存。 */
+    async requestStatus(requestId: string, options: CancellationOptions = {}): Promise<ProgramRequestStatus> {
+        this.assertActive();
+        const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
+        return firstValueFrom(abortable(async (readSignal): Promise<ProgramRequestStatus> => {
+            const inspection = await nativeSessionAccess(this).inspect(readSignal);
+            readSignal.throwIfAborted();
+            const current = this.facts.stateOf(inspection).state.activity;
+            return { requestId, state: current.requests[requestId]?.state ?? 'absent' };
+        }, signal));
     }
     /** 释放调用者的观察作用域；原生执行与已提交业务操作继续由各自 owner 管理。 */
     release() {

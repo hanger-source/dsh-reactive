@@ -74,6 +74,8 @@ return items.map(item =>
 
 静态模块使用 `composeSurface({ preparation: PreparationSurface, knowledge: KnowledgeSurface })` 及对应 mounts。内部模块可有自己的 composition，嵌套 Module 自动 rebase，不导根 composition、不逐槽手写 Outlet/names。局部 `Expose` 必须引用定义时同一 Surface 对象；框架不复制 Action 或重新解析 scope。
 
+外部消费者调用 `session.module(composition.mounts.preparation)` 取得局部 SurfaceClient，随后使用模块自己的视图、Action 和 Operation 名称；集合成员也支持相同 module 入口。挂载点 surface 是实现原合同，selected 是公开子集，返回客户端只消费 selected。资源与根地址是同一个对象，调用选项、同步或异步返回及 owner 沿用原 SDK；局部对象不增加 release。继续进入嵌套 module 时校验父原合同与父公开选择，隐藏槽不能由子挂载重新公开。
+
 Review 等选择性公开用 `selectSurface(source, { views: ['facts'], actions: ['save'] })` 后放进 composition；省略类别不公开。模块仍对自己的原 Surface Expose，框架完成选择映射。移除再加入是新绑定，旧捕获 Action 拒绝新调用；已开始执行沿原 owner 完成。
 
 最后 `implementProgram(Inventory, { Component })` 接宿主组件。业务输入解码结果 `ProgramParsedInput` 和提交的 `ProgramInput` 可以不同；不要把单向 transform 输出重新当 raw parse。远程 View/Action 输出需真实可逆 wire codec，不能承诺任意 Date transform 都可反向 encode。

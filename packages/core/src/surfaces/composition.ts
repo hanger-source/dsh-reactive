@@ -14,15 +14,19 @@ export interface SurfaceSelection<S extends Surface = Surface, Selected extends 
 export interface SurfaceTree {
   readonly [name: string]: Surface | SurfaceSelection | SurfaceCollectionDefinition | SurfaceTree;
 }
-export interface SurfaceCollectionMount<S extends Surface = Surface> {
+export interface SurfaceCollectionMount<S extends Surface = Surface, Selected extends Surface = S> {
+  /** 声明实现使用的原合同；消费端只取得selected。 */
   readonly surface: S;
+  readonly selected: Selected;
   readonly path: readonly string[];
-  instance(key: string): SurfaceMount<S>;
+  instance(key: string): SurfaceMount<S, Selected>;
 }
 /** 显式组合身份，不从 React key、当前目标或声明顺序推断。 */
-export interface SurfaceMount<S extends Surface = Surface> {
+export interface SurfaceMount<S extends Surface = Surface, Selected extends Surface = S> {
   readonly [mountBrand]: true;
+  /** 原模块保持本地声明合同，公开投射保持同一次选择的合同。 */
   readonly surface: S;
+  readonly selected: Selected;
   readonly path: readonly string[];
 }
 
@@ -46,8 +50,8 @@ type CollectionSlots<T, P extends string = ''> = T extends SurfaceCollectionDefi
 type Collections<T> = CollectionSlots<T> extends infer C extends Readonly<Record<string, SurfaceCollectionDefinition>> ? C : {};
 export type ComposedSurface<T extends SurfaceTree> = Surface<Views<T>, Actions<T>, Operations<T>, Collections<T>>;
 export type SurfaceMounts<T extends SurfaceTree> = { readonly [K in keyof T]:
-  T[K] extends SurfaceCollectionDefinition<infer S, Surface> ? SurfaceCollectionMount<S>
-    : T[K] extends SurfaceSelection<infer S, Surface> ? SurfaceMount<S>
+  T[K] extends SurfaceCollectionDefinition<infer S, infer Selected> ? SurfaceCollectionMount<S, Selected>
+    : T[K] extends SurfaceSelection<infer S, infer Selected> ? SurfaceMount<S, Selected>
     : T[K] extends Surface ? SurfaceMount<T[K]>
       : T[K] extends SurfaceTree ? SurfaceMounts<T[K]> : never;
 };
@@ -171,7 +175,7 @@ export function composeSurface<const T extends SurfaceTree>(tree: T): SurfaceCom
   for (const leaf of leaves) {
     const namespace = 'm_' + leaf.path.map(part => part.length + '_' + part).join('_') + '__';
     if (namespace.length >= 80) throw new Error('REACTIVE_MODULE_TOOL_NAME_INVALID');
-    const mount = Object.freeze({ [mountBrand]: true as const, surface: leaf.source, path: leaf.path });
+    const mount = Object.freeze({ [mountBrand]: true as const, surface: leaf.source, selected: leaf.selected, path: leaf.path });
     mounts.set(mount, { root: surface, source: leaf.source, selected: leaf.selected,
       prefix: leaf.path.join('.') + '.', namespace });
     leaf.target[leaf.key] = mount;
@@ -179,13 +183,13 @@ export function composeSurface<const T extends SurfaceTree>(tree: T): SurfaceCom
   let instanceSequence = 0;
   for (const leaf of collectionLeaves) {
     const instances = new Map<string, SurfaceMount>();
-    const collection = Object.freeze({ surface: leaf.definition.source, path: leaf.path,
+    const collection = Object.freeze({ surface: leaf.definition.source, selected: leaf.definition.surface, path: leaf.path,
       instance(key: string): SurfaceMount {
         if (typeof key !== 'string' || !key) throw new Error('REACTIVE_MODULE_INSTANCE_KEY_INVALID');
         let mount = instances.get(key);
         if (!mount) {
           const path = Object.freeze([...leaf.path, key]);
-          mount = Object.freeze({ [mountBrand]: true as const, surface: leaf.definition.source, path });
+          mount = Object.freeze({ [mountBrand]: true as const, surface: leaf.definition.source, selected: leaf.definition.surface, path });
           mounts.set(mount, { root: surface, source: leaf.definition.source, selected: leaf.definition.surface,
             prefix: '', namespace: 'm_i_' + (++instanceSequence).toString(36) + '__',
             collection: { name: leaf.path.join('.'), key } });
@@ -225,6 +229,12 @@ function mappedSlot(info: MountInfo, kind: SurfaceSlotKind, slot: string): strin
   if (info.mapSlot) return info.mapSlot(kind, slot);
   return info.collection ? surfaceInstanceSlot(info.collection.name, info.collection.key, slot) : prefixSurfaceSlot(info.prefix, slot);
 }
+/** @internal 消费投射复用声明的精确映射；隐藏槽没有可用地址。 */
+export function moduleClientSlot(mount: SurfaceMount, kind: SurfaceSlotKind, slot: string): string {
+  const name = mappedSlot(mountInfo(mount), kind, slot);
+  if (name === undefined) throw new Error('REACTIVE_MODULE_SLOT_NOT_VISIBLE');
+  return name;
+}
 /** @internal 长度前缀是无歧义编码；不通过替换、截断或 React key 猜名字。 */
 export function moduleName(mount: SurfaceMount, local: string, tool: boolean): string {
   const result = mountInfo(mount).namespace + local;
@@ -254,7 +264,7 @@ export function rebaseModuleMount(mount: SurfaceMount, parent: SurfaceMount | nu
     if (!parent) return mount;
     const outer = mountInfo(parent);
     if (child.root !== outer.source) throw new Error('REACTIVE_MODULE_PARENT_MISMATCH');
-    const rebased = Object.freeze({ [mountBrand]: true as const, surface: mount.surface,
+    const rebased = Object.freeze({ [mountBrand]: true as const, surface: mount.surface, selected: mount.selected,
       path: Object.freeze([...parent.path, ...mount.path]) });
     mounts.set(rebased, { ...child, root: outer.root, prefix: '', namespace: outer.namespace + child.namespace,
       collection: outer.collection ?? child.collection,

@@ -26,7 +26,7 @@ export class CreationIncompleteError extends Error {
         super('REACTIVE_WORKSPACE_CREATION_INCOMPLETE', { cause });
     }
 }
-/** 冷程序图和真实Agent挂载分别保留身份；只持有本应用实际取得的原生句柄。 */
+/** @internal 冷程序图和真实Agent挂载分别保留身份；只持有本应用实际取得的原生句柄。 */
 export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly AnyEnvironment[]> {
     #entries = new Map<Agent, LiveConversation>();
     #sessions = new Map<string, ConversationSession>();

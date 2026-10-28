@@ -11,7 +11,7 @@ import { z, assertProgramDefinition, surfaceSlotDefinition, createSurfaceCollect
 import { decodeProgramFailure } from './errors.ts';
 import './errors.ts';
 import contribution from '@hanger-source/dsh-reactive-client/remote';
-import type { ProgramActionStart, ProgramCreationReference, ProgramIdentity, ProgramInputReceipt, ProgramInvocationFrame, ProgramQuestions, ProgramOperationNotificationResult, ProgramRequestStatus, ProgramWorkspace, ProgramGoalControl, ProgramCancelResult, ProgramSubmission } from './types.ts';
+import type { ProgramActionStart, ProgramCreationReference, ProgramIdentity, ProgramInputReceipt, ProgramInvocationFrame, ProgramQuestions, ProgramOperationNotificationResult, ProgramWorkspace, ProgramSubmission } from './types.ts';
 import { createAuthenticatedTransport, type AuthenticatedTransportOptions } from './transport.ts';
 import { createOperationQueries, attachRemoteOperation, locateRemoteOperation, bindRemoteOperation, readRemoteOperationFeedback, type RemoteOperationQueries } from './operations.ts';
 import { ProgramJournal, type ProgramJournalOptions, type ProgramJournalRequest } from './journal.ts';
@@ -24,6 +24,7 @@ import { ResourceReader } from '@hanger-source/dsh-reactive';
 import { actionIdentity, assertActionIdentity } from '@hanger-source/dsh-reactive';
 import { createHumanQuestionResolver } from '@hanger-source/dsh-reactive';
 import type { CollectionResolvedAction, SurfaceClient, ProgramSessionClient } from '@hanger-source/dsh-reactive';
+import { createSurfaceModuleClient } from '@hanger-source/dsh-reactive';
 
 export { createAuthenticatedTransport } from './transport.ts';
 export type { AuthenticatedTransportOptions } from './transport.ts';
@@ -46,12 +47,6 @@ export interface RemoteProgramSession<P extends ProgramContract> extends Program
   readonly human$: Observable<Observation<ProgramQuestions>>;
   readonly human: ResourceReader<ProgramQuestions>;
   uploadFile(data: FileUploadSource, options?: RemoteUploadFileOptions): Promise<FileUploadValue>;
-  /** 等待归本句柄；退出结束等待，已进入原生暂停的控制仍由Host结算。 */
-  pause(): Promise<ProgramGoalControl>;
-  /** 取消原生处理；退出只结束回执等待，不回滚已经进入的控制。 */
-  cancel(): Promise<ProgramCancelResult>;
-  /** 只读原请求事实，句柄或SDK退出立即结束尚未返回的查询。 */
-  requestStatus(requestId: string): Promise<ProgramRequestStatus>;
   attachOperation<D extends OperationContract>(definition: D, reference: OperationReference<D>, options?: CancellationOptions): OperationHandle<D>;
   notifyOperation(followId: string, options?: CancellationOptions): Promise<ProgramOperationNotificationResult>;
   /** 原生可靠 journal；调用者消费完整 change，不另造事件 cursor 或重放引擎。 */
@@ -211,6 +206,15 @@ export async function bindProgramClient<const P extends ProgramContract>(program
               resolveOperation: (address, _definition, options) => resolveOperation(address, options),
             });
           },
+          module(mount) {
+            assertActive();
+            const untyped = handle as RemoteProgramSession<ProgramContract>;
+            return createSurfaceModuleClient(surface, mount, { asynchronous: true,
+              viewResource: address => viewSlot(address),
+              resolveAction: (address, _definition, scope, options) => untyped.resolveAction(address, scope, options),
+              resolveOperation: (address, _definition, options) => resolveOperation(address, options),
+            });
+          },
           async resolveAction<K extends keyof S['actions'] & string>(name: K, expectedScope: z.input<S['actions'][K]['scope']>,
             options: CancellationOptions = {}): Promise<RemoteResolvedAction<S['actions'][K]>> {
             assertActive();
@@ -305,15 +309,20 @@ export async function bindProgramClient<const P extends ProgramContract>(program
             signal.throwIfAborted();
             return result(uploaded);
           },
-          async requestStatus(requestId) {
+          async requestStatus(requestId, options = {}) {
             assertActive();
-            return result(await callRemote(signal => remote.requestStatus({ sessionId: identity.sessionId, requestId }, signal), scopeSignal));
+            const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
+            return result(await callRemote(current => remote.requestStatus({ sessionId: identity.sessionId, requestId }, current), signal));
           },
-          async pause() {
-            assertActive(); return result(await callRemote(signal => remote.pause({ sessionId: identity.sessionId }, signal), scopeSignal));
+          async pause(options = {}) {
+            assertActive();
+            const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
+            return result(await callRemote(current => remote.pause({ sessionId: identity.sessionId }, current), signal));
           },
-          async cancel() {
-            assertActive(); return result(await callRemote(signal => remote.cancel({ sessionId: identity.sessionId }, signal), scopeSignal));
+          async cancel(options = {}) {
+            assertActive();
+            const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
+            return result(await callRemote(current => remote.cancel({ sessionId: identity.sessionId }, current), signal));
           },
           async answerQuestion(callId, answer, options = {}) {
             assertActive();

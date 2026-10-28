@@ -9,7 +9,7 @@ import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-r
 import { createProgramClient, type RemoteProgramSession } from '@hanger-source/dsh-reactive-client';
 import { mountProgramGateway } from '@hanger-source/dsh-reactive-remote';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
-import { sessionResources, readSessionView } from './consumer-session.js';
+import { ConsumerModuleProgram, sessionResources, sessionControls, readSessionView, readSelectedRevision } from './consumer-session.js';
 import type { Workspace } from '@hanger-source/dsh-reactive/workspaces';
 
 const contract = defineProgram({ input: z.object({ subject: z.string() }).strict(), surface: defineSurface({ views: { revision: resourceView(z.number()) }, actions: {} }) });
@@ -21,6 +21,10 @@ export const backend = (options: RuntimeOptions) => createRuntime(() => applicat
 export const clientContract = () => contract;
 export const portableLocal = (session: ConversationHandle<typeof contract>) => sessionResources(session);
 export const portableRemote = (session: RemoteProgramSession<typeof contract>) => sessionResources(session);
+export const localControls = (session: ConversationHandle<typeof contract>, signal: AbortSignal) => sessionControls(session, signal);
+export const remoteControls = (session: RemoteProgramSession<typeof contract>, signal: AbortSignal) => sessionControls(session, signal);
+export const localModuleRevision = (session: ConversationHandle<typeof ConsumerModuleProgram>, signal: AbortSignal) => readSelectedRevision(session, signal);
+export const remoteModuleRevision = (session: RemoteProgramSession<typeof ConsumerModuleProgram>, signal: AbortSignal) => readSelectedRevision(session, signal);
 export const localRevision = (session: ConversationHandle<typeof contract>): Promise<number> => readSessionView(session, 'revision');
 export const remoteRevision = (session: RemoteProgramSession<typeof contract>): Promise<number> => readSessionView(session, 'revision');
 export const publicEntries = [createProgramClient, mountProgramGateway, getDeveloperSkill, createNativeSkills, createNativeTools] as const;

@@ -5,7 +5,8 @@ import type { BoundOperation, OperationContract } from '../operations/contract.t
 import type { CancellationOptions } from '../conversations/protocol.ts';
 import type { Observation } from '../resources/observation.ts';
 import type { ResourceReader } from '../resources/reader.ts';
-import { surfaceCollectionKeysSlot, surfaceInstanceSlot, surfaceSlotDefinition, type Surface, type SurfaceCollectionDefinition, type SurfaceViews, type ViewDefinition, type ViewValue } from './contract.ts';
+import { moduleClientSlot, moduleRootSurface, type SurfaceMount } from './composition.ts';
+import { surfaceCollectionKeysSlot, surfaceInstanceSlot, surfaceSlotDefinition, type Surface, type SurfaceCollectionDefinition, type SurfaceSlotKind, type SurfaceViews, type ViewDefinition, type ViewValue } from './contract.ts';
 
 export type CollectionResult<Async extends boolean, T> = Async extends true ? Promise<T> : T;
 export interface CollectionResolvedAction<D extends ActionContract, Options extends CancellationOptions, Async extends boolean> {
@@ -24,6 +25,8 @@ export interface SurfaceClient<S extends Surface, Options extends CancellationOp
   resolveAction<K extends keyof S['actions'] & string>(name: K, expectedScope: z.input<S['actions'][K]['scope']>, options?: Options):
     CollectionResult<Async, CollectionResolvedAction<S['actions'][K], Options, Async>>;
   readonly operations: { readonly [K in keyof S['operations']]: (options?: Options) => CollectionResult<Async, BoundOperation<S['operations'][K]>> };
+  /** 借用原挂载的局部公开合同，不取得新的执行身份或寿命。 */
+  module<Source extends Surface, Selected extends Surface>(mount: SurfaceMount<Source, Selected>): SurfaceClient<Selected, Options, Async>;
   collection<K extends keyof S['collections'] & string>(name: K): SurfaceCollectionClient<S['collections'][K], Options, Async>;
 }
 export interface SurfaceInstanceClient<S extends Surface, Options extends CancellationOptions = CancellationOptions, Async extends boolean = false>
@@ -44,6 +47,77 @@ export interface SurfaceCollectionTransport<Options extends CancellationOptions,
     CollectionResult<Async, CollectionResolvedAction<ActionContract, Options, Async>>;
   resolveOperation(name: string, definition: OperationContract, options?: Options): CollectionResult<Async, BoundOperation<OperationContract>>;
 }
+
+type SurfaceAddress = (kind: SurfaceSlotKind, slot: string) => string;
+
+/** 只变换地址；合同、选项、返回时序及实际资源对象继续由原入口决定。 */
+function readdress<Options extends CancellationOptions, Async extends boolean>(
+  transport: SurfaceCollectionTransport<Options, Async>, address: SurfaceAddress,
+): SurfaceCollectionTransport<Options, Async> {
+  return {
+    asynchronous: transport.asynchronous,
+    viewResource: (slot, definition) => transport.viewResource(address('views', slot), definition),
+    resolveAction: (slot, definition, scope, options) => transport.resolveAction(address('actions', slot), definition, scope, options),
+    resolveOperation: (slot, definition, options) => transport.resolveOperation(address('operations', slot), definition, options),
+  };
+}
+
+/** 静态与集合成员消费同一局部入口；source只用于精确身份核验，不增加可见能力。 */
+function createSurfaceClient<S extends Surface, Options extends CancellationOptions, Async extends boolean>(
+  source: Surface, surface: S, transport: SurfaceCollectionTransport<Options, Async>,
+): SurfaceClient<S, Options, Async> {
+  const viewResource = (slot: string): ResourceReader<unknown> => {
+    const definition = surfaceSlotDefinition(surface, 'views', slot);
+    if (!definition) throw new Error('REACTIVE_VIEW_NOT_FOUND');
+    return transport.viewResource(slot, definition);
+  };
+  const client = {
+    surface,
+    views: Object.freeze(Object.fromEntries(Object.keys(surface.views).map(slot => [slot, defer(() => viewResource(slot).values$)]))),
+    viewResource,
+    observeView: (slot: string) => viewResource(slot).observations$,
+    readView: (slot: string, options?: Options) => viewResource(slot).read(options?.signal),
+    resolveAction(slot: string, expectedScope: unknown, options?: Options) {
+      const definition = surfaceSlotDefinition(surface, 'actions', slot);
+      if (!definition) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
+      return transport.resolveAction(slot, definition, expectedScope, options);
+    },
+    operations: Object.freeze(Object.fromEntries(Object.entries(surface.operations).map(([slot, definition]) => [slot,
+      (options?: Options) => transport.resolveOperation(slot, definition, options)]))),
+    module<Source extends Surface, Selected extends Surface>(mount: SurfaceMount<Source, Selected>) {
+      return projectModule(source, surface, mount, transport);
+    },
+    collection: (name: keyof S['collections'] & string) => createSurfaceCollectionClient(surface, name, transport),
+  };
+  // 异构槽来自同一真实Surface；仅在此边界恢复每个槽的具体schema。
+  return Object.freeze(client) as SurfaceClient<S, Options, Async>;
+}
+
+function projectModule<Source extends Surface, Selected extends Surface, Options extends CancellationOptions, Async extends boolean>(
+  source: Surface, visible: Surface, mount: SurfaceMount<Source, Selected>, transport: SurfaceCollectionTransport<Options, Async>,
+): SurfaceClient<Selected, Options, Async> {
+  if (moduleRootSurface(mount) !== source) throw new Error('REACTIVE_MODULE_ROOT_MISMATCH');
+  const address: SurfaceAddress = (kind, slot) => {
+    const name = moduleClientSlot(mount, kind, slot);
+    const definition = surfaceSlotDefinition(mount.selected, kind, slot);
+    if (!definition || surfaceSlotDefinition(visible, kind, name) !== definition) throw new Error('REACTIVE_MODULE_SLOT_NOT_VISIBLE');
+    return name;
+  };
+  // 返回型承诺整个selected合同；外层选择更窄时拒绝整次投射，不恢复隐藏槽。
+  for (const kind of ['views', 'actions', 'operations'] as const) {
+    for (const slot of Object.keys(mount.selected[kind])) address(kind, slot);
+  }
+  for (const collection of Object.keys(mount.selected.collections)) address('views', surfaceCollectionKeysSlot(collection));
+  return createSurfaceClient(mount.surface, mount.selected, readdress(transport, address));
+}
+
+/** 根SDK按精确mount借出局部合同；不读取资源，也不创建缓存或owner。 */
+export function createSurfaceModuleClient<Root extends Surface, Source extends Surface, Selected extends Surface,
+  Options extends CancellationOptions, Async extends boolean>(surface: Root, mount: SurfaceMount<Source, Selected>,
+  transport: SurfaceCollectionTransport<Options, Async>): SurfaceClient<Selected, Options, Async> {
+  return projectModule(surface, surface, mount, transport);
+}
+
 /** 根合同决定 collection 与叶合同；业务 key 始终由框架编码，调用仍核原绑定。 */
 export function createSurfaceCollectionClient<S extends Surface, K extends keyof S['collections'] & string,
   Options extends CancellationOptions, Async extends boolean>(surface: S, name: K,
@@ -61,33 +135,9 @@ export function createSurfaceCollectionClient<S extends Surface, K extends keyof
       surfaceInstanceSlot(name, key, 'instance');
       let instance = instances.get(key);
       if (!instance) {
-        const local = definition.surface;
-        const address = (slot: string) => surfaceInstanceSlot(name, key, slot);
-        const viewDefinition = (slot: string): ViewDefinition => {
-          const found = surfaceSlotDefinition(local, 'views', slot);
-          if (!found) throw new Error('REACTIVE_VIEW_NOT_FOUND');
-          return found;
-        };
-        const viewResource = (slot: string): ResourceReader<unknown> => transport.viewResource(address(slot), viewDefinition(slot));
-        instance = Object.freeze({ key, surface: local,
-          views: Object.freeze(Object.fromEntries(Object.keys(local.views).map(slot => [slot, defer(() => viewResource(slot).values$)]))),
-          viewResource,
-          observeView: (slot: string) => viewResource(slot).observations$,
-          readView: (slot: string, options?: Options) => viewResource(slot).read(options?.signal),
-          resolveAction(slot: string, expectedScope: unknown, options?: Options) {
-            const action = surfaceSlotDefinition(local, 'actions', slot);
-            if (!action) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
-            return transport.resolveAction(address(slot), action, expectedScope, options);
-          },
-          operations: Object.freeze(Object.fromEntries(Object.entries(local.operations).map(([slot, operation]) => [slot,
-            (options?: Options) => transport.resolveOperation(address(slot), operation, options)]))),
-          collection: (name: string) => createSurfaceCollectionClient<Surface, string, Options, Async>(local, name, {
-            asynchronous: transport.asynchronous,
-            viewResource: (slot, definition) => transport.viewResource(address(slot), definition),
-            resolveAction: (slot, definition, scope, options) => transport.resolveAction(address(slot), definition, scope, options),
-            resolveOperation: (slot, definition, options) => transport.resolveOperation(address(slot), definition, options),
-          }),
-        });
+        const client = createSurfaceClient(definition.source, definition.surface,
+          readdress(transport, (_kind, slot) => surfaceInstanceSlot(name, key, slot)));
+        instance = Object.freeze({ key, ...client });
         instances.set(key, instance);
       }
       // 所有槽来自上面同一 selected Surface；transport 保留本地/远程原有返回时序。

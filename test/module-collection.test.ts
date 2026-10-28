@@ -17,7 +17,7 @@ import { useAction, useObservable, useResource } from '@hanger-source/dsh-reacti
 import { collectionSurface, composeSurface } from '@hanger-source/dsh-reactive';
 import { Module } from '@hanger-source/dsh-reactive/program';
 import { defineSurface, resourceView, type PartialSurfaceBindings } from '@hanger-source/dsh-reactive';
-import type { Observation } from '@hanger-source/dsh-reactive';
+import type { Observation, SurfaceClient } from '@hanger-source/dsh-reactive';
 import { boot, text, tool } from './native-support.ts';
 
 test('动态商家集合沿嵌套模块公开同一合同，新增与重排保身份，撤下拒旧调用且不取消已开始效果', async () => {
@@ -36,6 +36,7 @@ test('动态商家集合沿嵌套模块公开同一合同，新增与重排保�
   const context = defineSurface({ views: { facts: resourceView(factsSchema) }, actions: {} });
   const merchant = composeSurface({ knowledge: local, preparation: context, reviews: collectionSurface(context) });
   const composed = composeSurface({ merchants: collectionSurface(merchant.surface) });
+  const consume = (client: SurfaceClient<typeof local>) => client.readView('facts');
   const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
   const effects: { merchantId: string; source: string; note: string }[] = [];
   const requests: GenerateOptions[] = [];
@@ -87,7 +88,14 @@ test('动态商家集合沿嵌套模块公开同一合同，新增与重排保�
     const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
     const collection = session.collection('merchants');
     const instanceA = collection.instance(a), instanceB = collection.instance(b);
+    const knowledgeA = instanceA.module(merchant.mounts.knowledge), knowledgeB = instanceB.module(merchant.mounts.knowledge);
     assert.equal(session.surface, composed.surface);
+    assert.equal(composed.mounts.merchants.surface, merchant.surface);
+    assert.equal(composed.mounts.merchants.selected, merchant.surface);
+    assert.equal(knowledgeA.surface, local);
+    assert.equal(knowledgeA.viewResource('facts'), instanceA.viewResource('knowledge.facts'));
+    assert.equal(session.module(composed.mounts.merchants.instance(a)).module(merchant.mounts.knowledge).viewResource('facts'), knowledgeA.viewResource('facts'));
+    assert.deepEqual(await consume(knowledgeA), { merchantId: a, revision: 1 });
     assert.deepEqual(await collection.instances.read(), [a]);
     const reviews = instanceA.collection('reviews').instances;
     const reviewStates: Observation<readonly string[]>[] = [];
@@ -95,14 +103,14 @@ test('动态商家集合沿嵌套模块公开同一合同，新增与重排保�
     assert.deepEqual(await reviews.read(), ['current']);
     assert.deepEqual(await instanceA.collection('reviews').instance('current').readView('facts'), { merchantId: a, revision: 1 });
     await assert.rejects(instanceB.readView('knowledge.facts'), /REACTIVE_MODULE_INSTANCE_NOT_FOUND/u);
-    const originalA = instanceA.resolveAction('knowledge.record', a);
+    const originalA = knowledgeA.resolveAction('record', a);
     layout.next([a, b]);
     await firstValueFrom(collection.instances$.pipe(filter(keys => keys.includes(b))));
     assert.deepEqual(await instanceB.readView('preparation.facts'), { merchantId: b, revision: 1 });
-    const originalB = instanceB.resolveAction('knowledge.record', b);
+    const originalB = knowledgeB.resolveAction('record', b);
     layout.next([b, a]);
-    assert.equal(instanceA.resolveAction('knowledge.record', a).bindingId, originalA.bindingId);
-    assert.equal(instanceB.resolveAction('knowledge.record', b).bindingId, originalB.bindingId);
+    assert.equal(knowledgeA.resolveAction('record', a).bindingId, originalA.bindingId);
+    assert.equal(knowledgeB.resolveAction('record', b).bindingId, originalB.bindingId);
     const manifest = await session.actionManifest.read();
     const offeredB = manifest.find(item => item.modulePath.length === 3 && item.modulePath[0] === 'merchants'
       && item.modulePath[1] === b && item.modulePath[2] === 'knowledge');
@@ -130,8 +138,8 @@ test('动态商家集合沿嵌套模块公开同一合同，新增与重排保�
     await firstValueFrom(collection.instances$.pipe(filter(keys => keys.includes(a))));
     assert.deepEqual(await reviews.read(), ['current'], '原嵌套目录资源随父模块恢复，调用者不重建缓存或来源');
     assert.equal(reviewStates.at(-1)!.status, 'ready');
-    assert.deepEqual(await instanceA.readView('knowledge.facts'), { merchantId: a, revision: 2 });
-    assert.notEqual(instanceA.resolveAction('knowledge.record', a).bindingId, originalA.bindingId);
+    assert.deepEqual(await consume(knowledgeA), { merchantId: a, revision: 2 });
+    assert.notEqual(knowledgeA.resolveAction('record', a).bindingId, originalA.bindingId);
     assert.throws(() => originalA({ note: 'stale-a' }), ActionBindingUnavailableError);
     assert.equal(session.surface, composed.surface);
     assert.deepEqual(effects, [{ merchantId: b, source: 'tool', note: 'native-b' },

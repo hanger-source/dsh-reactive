@@ -21,7 +21,7 @@ export { createWorkspaceContext, type Workspace } from './workspaces/context.ts'
 export { type Observation } from './resources/observation.ts';
 export { type ResourceValue } from './resources/value.ts';
 export { ResourceReader } from './resources/reader.ts';
-export { createSurfaceCollectionClient, type SurfaceCollectionClient } from './surfaces/collection-client.ts';
+export { createSurfaceCollectionClient, createSurfaceModuleClient, type SurfaceCollectionClient } from './surfaces/collection-client.ts';
 export { surfaceSlotDefinition, type SurfaceViews } from './surfaces/contract.ts';
 export { actionManifestSlot, type ToolActionBinding } from './surfaces/presentation.ts';
 export type { InputParticipant } from './conversations/protocol.ts';

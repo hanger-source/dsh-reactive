@@ -1,6 +1,7 @@
 import type { ActionIdentity, ActionSource, Continuation, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue } from '@hanger-source/dsh-reactive';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { RemoteStreamFailure } from '@deepseek-ai/dsh-api-gateway/stream-protocol';
+export type { ProgramGoalControl, ProgramCancelResult, ProgramRequestStatus } from '@hanger-source/dsh-reactive';
 
 /** 官方 failure 的 wire 形态；details 按 Typert 边界限定为 JSON 对象或数组。 */
 export type ProgramFailure = Omit<RemoteStreamFailure, 'details'> & {
@@ -21,8 +22,6 @@ export type ProgramCreationReference = CreationReference;
 export interface ProgramAddress { readonly sessionId: string; }
 export interface ProgramIdentity { readonly sessionId: string; readonly environmentId: string; readonly workspaceId: string; readonly actorId: string; }
 export type ProgramWorkspace = WorkspaceInfo;
-export interface ProgramGoalControl { readonly id: string; readonly revision: number; readonly phase: 'active' | 'paused' | 'blocked' | 'complete'; }
-export interface ProgramCancelResult { readonly canceled: true; }
 /** 从核心合同派生结构，递归 JSON 只用 Typert 的公开 canonical JSON 符号。 */
 type WireSubmission<S> = S extends { readonly result: unknown } ? Omit<S, 'result'> & {
   readonly result: {
@@ -39,7 +38,6 @@ export interface ProgramUploadFileRequest extends ProgramAddress, EncodedFileUpl
 export type ProgramFileUploadValue = FileUploadValue;
 export interface ProgramInputReceipt { readonly sessionId: string; readonly requestId: string; readonly accepted: true; }
 export interface ProgramRequestAddress extends ProgramAddress { readonly requestId: string; }
-export interface ProgramRequestStatus { readonly requestId: string; readonly state: 'absent' | 'declared' | 'accepted' | 'consumed' | 'settled'; }
 /** Program journal 的纯 wire 合同；Host 的 Controller 页直接按此结构核验。 */
 export interface ProgramJournalEvent {
   readonly type: string;

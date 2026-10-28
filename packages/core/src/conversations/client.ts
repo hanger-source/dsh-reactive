@@ -13,6 +13,20 @@ import type { CancellationOptions, Submission, FileUploadSource, FileUploadValue
 import type { AssistantProgressFrame, ConversationEvent } from './events.ts';
 import type { ConversationProgressSnapshot, RequestHandle } from './request.ts';
 
+/** 原生 Goal 控制完成后的最小共同切面；本地实现可以提供完整原生 GoalView。 */
+export interface ProgramGoalControl {
+  readonly id: string;
+  readonly revision: number;
+  readonly phase: 'active' | 'paused' | 'blocked' | 'complete';
+}
+/** 原生处理已静止并完成持久 flush；不表示外部业务 Operation 已取消。 */
+export interface ProgramCancelResult { readonly canceled: true; }
+/** 在宿主核对原请求的权威事实；不使用客户端缓存缺项推断 absent。 */
+export interface ProgramRequestStatus {
+  readonly requestId: string;
+  readonly state: 'absent' | 'declared' | 'accepted' | 'consumed' | 'settled';
+}
+
 /**
  * 供业务模块借用的会话能力；实现保留自己的 owner、权限与同步/异步时序。
  * Async 仅限定 Surface 的解析与 Action 受理，不描述业务 Operation 的寿命。
@@ -31,6 +45,11 @@ export interface ProgramSessionClient<P extends ProgramContract,
   readonly progressFrames$: Observable<AssistantProgressFrame>;
   readonly events$: Observable<ConversationEvent<ProgramParsedInput<P>>>;
   request(requestId: string): RequestHandle<ProgramParsedInput<P>>;
+  /** 只读核对当前宿主事实；读取取消不会投递输入或激活 Agent。 */
+  requestStatus(requestId: string, options?: CancellationOptions): Promise<ProgramRequestStatus>;
+  /** 仅人工参与者可控制；取消只结束回执等待，已开始的原生控制仍继续结算。 */
+  pause(options?: CancellationOptions): Promise<ProgramGoalControl>;
+  cancel(options?: CancellationOptions): Promise<ProgramCancelResult>;
   readonly human: ResourceReader<HumanSnapshot>;
   readonly human$: Observable<Observation<HumanSnapshot>>;
   readonly questions$: Observable<HumanInputState>;

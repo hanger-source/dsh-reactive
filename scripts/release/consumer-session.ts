@@ -1,5 +1,24 @@
-import type { ActionInput, CancellationOptions, ProgramContract, ProgramSessionClient, Surface, SurfaceClient, ViewValue, z } from '@hanger-source/dsh-reactive';
-import { combineResources } from '@hanger-source/dsh-reactive';
+import type { ActionInput, CancellationOptions, ProgramContract, ProgramSessionClient, Surface, SurfaceClient, SurfaceMount, ViewValue } from '@hanger-source/dsh-reactive';
+import { combineResources, composeSurface, defineProgram, defineSurface, resourceView, selectSurface, z } from '@hanger-source/dsh-reactive';
+
+export function sessionControls<P extends ProgramContract>(session: ProgramSessionClient<P>, signal: AbortSignal) {
+  return { pause: () => session.pause({ signal }), cancel: () => session.cancel({ signal }),
+    status: (requestId: string) => session.requestStatus(requestId, { signal }) };
+}
+
+export async function readLocalModule<Root extends Surface, Source extends Surface, Selected extends Surface,
+  Options extends CancellationOptions, Async extends boolean, K extends keyof Selected['views'] & string>(
+  client: SurfaceClient<Root, Options, Async>, mount: SurfaceMount<Source, Selected>, name: K, options?: Options,
+): Promise<ViewValue<Selected['views'][K]>> {
+  const local: SurfaceClient<Selected, Options, Async> = client.module(mount);
+  return local.readView(name, options);
+}
+
+const localSurface = defineSurface({ views: { revision: resourceView(z.number()), internal: resourceView(z.string()) }, actions: {} });
+const modules = composeSurface({ record: selectSurface(localSurface, { views: ['revision'] }) });
+export const ConsumerModuleProgram = defineProgram({ input: z.null(), surface: modules.surface });
+export const readSelectedRevision = (client: SurfaceClient<typeof modules.surface>, signal: AbortSignal): Promise<number> =>
+  readLocalModule(client, modules.mounts.record, 'revision', { signal });
 
 export function observePublishedCapabilities<P extends ProgramContract, K extends keyof P['surface']['collections'] & string>(
   session: ProgramSessionClient<P>, collection: K,

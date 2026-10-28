@@ -3,13 +3,15 @@ import { bindProgramClient, type RemoteProgramSession } from '@hanger-source/dsh
 import { createNativeActionViews, defineNativeActionView, bindNativeSession, retainNativeSession,
   type NativeSession, type NativeActionViewProps } from '@hanger-source/dsh-reactive-native-ui';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
-import { sessionResources, readSessionView, callPublishedAction } from './consumer-session.js';
+import { ConsumerModuleProgram, sessionResources, sessionControls, readSessionView, readSelectedRevision, callPublishedAction } from './consumer-session.js';
 
 const action = defineAction({ name: 'release_consumer_read', description: '公开 UI 类型消费',
   scope: z.object({ subject: z.string() }).strict(), input: z.null(), output: z.object({ version: z.string() }).strict() });
 const program = defineProgram({ input: z.null(), surface: defineSurface({ views: { version: resourceView(z.string()) }, actions: { read: action } }) });
 export type Session = RemoteProgramSession<typeof program>;
 export const portableSession = (session: Session) => sessionResources(session);
+export const portableControls = (session: Session, signal: AbortSignal) => sessionControls(session, signal);
+export const portableModuleRevision = (session: RemoteProgramSession<typeof ConsumerModuleProgram>, signal: AbortSignal) => readSelectedRevision(session, signal);
 export const portableCall = (session: Session) => callPublishedAction(session, 'read', { subject: 'release' }, null);
 export const portableView = (session: Session): Promise<string> => readSessionView(session, 'version');
 export const nativeClient = (ctx: Parameters<typeof bindProgramClient>[1]) => bindProgramClient(program, ctx);

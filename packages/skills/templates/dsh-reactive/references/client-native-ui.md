@@ -6,7 +6,11 @@
 
 独立模块从 core 导入 `ProgramSessionClient<P>`，直接借用本地 `ConversationHandle<P>` 或远程 `RemoteProgramSession<P>`，共用原来的 View、progress、human 和 request 资源。只消费模块出口时使用 `SurfaceClient<S>`；根会话和集合成员使用同一合同。普通业务函数可以 `await` 两端的 Action 解析和调用，具体 SDK 类型仍保留各自同步/异步时序。不为复用创建 SDK 代理或第二套状态，不把组件内部的 `ProgramSession` 当成外部消费者权限。
 
-`session.requestStatus(requestId)`、`pause()`、`cancel()` 的回执等待归该 Session 句柄；release 或所属 SDK dispose 后立即拒绝尚未返回的等待，公共 Context 与其他 SDK 保持原寿命。Host 在取得句柄后、进入实际读取或控制前重新检查请求取消。取消客户端等待不等于撤销已经进入原生控制的工作，也不回滚已受理业务；用另一个有效句柄观察当前事实，不因回执未知自动重发控制。
+`session.module(mount)` 供业务消费者使用局部槽名；返回 SurfaceClient 的合同是 mount.selected，mount.surface 保留组件实现的原合同。资源对象、调用选项和同步/异步时序继续来自原客户端，不增加连接、owner 或 release。根会话、集合成员及局部模块均支持 module；继续选择嵌套模块时，须属于父原合同且保持父已公开的子集，不能用更宽的挂载恢复隐藏槽。
+
+`session.requestStatus(requestId, { signal })`、`pause({ signal })`、`cancel({ signal })` 是共同 ProgramSessionClient 方法，ProgramRequestStatus、ProgramGoalControl、ProgramCancelResult 从 core 导入。暂停回执提供原 Goal 的 id/revision/phase；canceled:true 表示原生处理已 idle 并完成持久 flush，不代表外部业务 Operation 已取消。requestStatus 核验原生日志、投影、成员及代际，不把客户端缺项或读取失败当 absent；冷查询不激活 Agent。服务参与者可以核对状态，不能控制 Goal 或答复人工问题。
+
+调用级 signal、release 或所属 SDK dispose 拒绝尚未返回的回执等待，公共 Context 与其他 SDK 保持原寿命。已取消的调用不启动控制，Host 在取得句柄后、进入实际读取或控制前重新检查请求取消。已受理控制继续结算，Host 等待真正完成后才释放自己的短命句柄；取消等待不回滚已受理业务，也不因回执未知自动重发控制。openEvents 继续使用远程 SDK 的官方 carrier、分页与重连合同，不要求本地接口伪造传输状态。
 
 远程 SDK 从 `@hanger-source/dsh-reactive-client` 导入，不是 Gateway 包的 `/client`；`@hanger-source/dsh-reactive-remote` 只装在认证 Gateway 宿主。纯 Program 文件不能导后台组件/宿主，从而让 CLI、浏览器、UI 共用定义。
 

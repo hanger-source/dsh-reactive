@@ -108,7 +108,9 @@ const receipt = await invocation.result;
 
 支持调用方取消的本地与远程 SDK 方法使用 `{ signal }` 选项，类型来自 core 的 `CancellationOptions`。远程身份始终来自认证载体，选项不携带 actor。`resolveAction` 的信号只取消尚未完成的解析等待，就绪连接随后由 Session 持有；远程 Action 调用的信号只取消开始回执的等待，已受理的业务和已取得 Invocation 的结果、观察继续归原 owner。受理尚未确认时仍按未知受理处理，不自动重发。已取消的调用在发送前明确拒绝。
 
-远程 `requestStatus`、`pause`、`cancel` 的等待属于调用它们的 Session 句柄。句柄 release 或 SDK dispose 会结束尚未返回的等待，即使公共 Context 仍存活或载体延迟返回回执；同一 Context 上其他 SDK 继续工作。Host 在异步取得真实句柄后、进入读取或原生控制前再次核验请求取消。已经进入暂停或取消的控制由原生 owner 结算，客户端退出不回滚控制，也不取消已受理业务；需要确认最终事实时，使用仍有效的句柄观察当前状态。
+本地与远程的 `requestStatus(requestId, { signal })`、`pause({ signal })`、`cancel({ signal })` 由共同的 ProgramSessionClient 提供，回执类型 ProgramRequestStatus、ProgramGoalControl 与 ProgramCancelResult 定义在 core。暂停返回原 Goal 的 id、revision、phase，本地具体句柄还保留完整原生 GoalView；canceled:true 只确认原生处理已 idle 并完成持久 flush，不代表外部业务已取消。服务参与者只能读取请求状态，不能调用人工控制。
+
+这些方法的等待属于调用它们的 Session 句柄。调用级 signal、句柄 release 或 SDK dispose 会结束尚未返回的等待，即使公共 Context 仍存活或载体延迟返回回执；同一 Context 上其他 SDK 继续工作。已取消调用不启动控制，Host 在异步取得真实句柄后、进入读取或原生控制前再次核验请求取消。已经进入暂停或取消的控制由原生 owner 结算，Host 持有其短命句柄直到结算，不因 transport 退出提前释放；客户端退出不回滚控制，也不取消已受理业务。需要确认最终事实时，使用仍有效的句柄观察当前状态。
 
 Node 使用同一入口，提供绝对 HTTP(S) baseUrl，并按应用认证方式提供 `fetch` 和 `createWebSocket`。浏览器默认使用同源 fetch/WebSocket；Cookie 或其他认证载体由应用配置，不能把只有 unary 的请求头认证误当成 socket 认证。
 
@@ -171,6 +173,8 @@ await session.submit({
 
 本地与远程 SDK 的 `viewResource(name)` 返回同一槽的稳定只读资源，提供 `peek()`、`read(signal?)`、`subscribe`、`observations$` 和 `values$`，可以直接交给 `useResource` 或原生 UI 的 `resource`。它借用已有 View 状态，读取和订阅随当前 SDK 句柄退出，不创建第二份缓存或来源连接。动态集合的 `instance(key).viewResource(name)` 使用相同入口：资源固定逻辑地址，模块撤下报告 error，同地址重新挂载继续观察新来源；它不具有 Action 的绑定身份。
 
+`session.module(mount)` 将同一 SurfaceClient 重定位到模块的局部槽名；本地、远程与集合成员使用同一入口，返回类型保留 mount.selected、调用选项及原同步/异步时序。mount.surface 仍是实现的原合同，mount.selected 是实际公开子集。局部 viewResource 与根地址取得同一资源对象，不复制缓存或取得新的 owner；继续 module 时核验父原合同及已经公开的子集，不能重新暴露父选择隐藏的槽。局部对象沿原 Session 释放，不单独建立连接或 release。
+
 远程会话的 View 与 human 查询在首个消费者读取或订阅时才连接 Gateway；open、构造资源、取得 views 值流和 peek 不发起这些查询。相同资源的多个消费者共用一次连接；最后消费者退出撤下当前快照并取消流，随后显式读取从新的原生 baseline 开始。会话 release 等待已退出的查询真正释放。View、人工观察与控制各自需要对应 endpoint 的权限，打开会话不隐式要求未消费的读侧权限；释放查询不停止 Program、Goal、Job 或已经受理的 Action。
 
 `views.slot`、`observeView(name)` 和 `readView(name, options?)` 消费同一个读侧对象。前者发出领域值，后两者保留 pending/ready/error 或等待当前可用值。`readView(name, { signal })` 和资源的 `read(signal)` 只取消本次读取。`view(schema)` 接收普通值流；`resourceView(schema)` 明确接收现有 Observation 流。pending 立即撤销旧 ready，error 不伪装成空业务值，同源后续状态可以恢复。Program 持有 source 连接，外部观察者退订不停止业务连接。
@@ -185,7 +189,7 @@ await session.submit({
 
 一个 Session 的这些入口共享一条进展连接，首次取得任一进展入口时建立，连接由会话句柄持有到 release。只消费视图或 Action 不额外连接进展，也不要求 progress grant。某一个观察者退出不重启连接或取消工作。
 
-请求状态的 read 只等当前有效事实，不等待业务或 Goal 结束；activity 为 null 表示当前快照没有该请求，不代替 requestStatus 的受理查询。Request 不取得 Goal 控制权。资源失效会撤下旧 ready，单次读取取消不关闭会话连接；释放句柄后，捕获的进展与请求资源随原 SDK 寿命退出。原生 UI 的 progress 和 request(id).state 借入这些来源，UI 释放只退出自身观察。
+请求状态的 read 只等当前有效事实，不等待业务或 Goal 结束；activity 为 null 表示当前快照没有该请求，不代替 requestStatus 的受理查询。requestStatus 沿 exact 会话访问取得原生 inspection：活跃会话先 flush，冷会话直接读持久日志，并在读取前后核验工作区成员和 Agent 代际，再读取同一原生投影。失败与取消直接拒绝，不解释为 absent，也不回写另一份观察缓存。Request 不取得 Goal 控制权。资源失效会撤下旧 ready，单次读取取消不关闭会话连接；释放句柄后，捕获的进展与请求资源随原 SDK 寿命退出。原生 UI 的 progress 和 request(id).state 借入这些来源，UI 释放只退出自身观察。
 
 开场与重连交付完整当前快照，之后仅传活动变更、原生流帧与新事件，不逐 token 重传累计前缀。客户端使用 core 的同一累积接点与官方 AssistantStreamAccumulator 物化本地快照；RemoteSnapshotStream 负责代次切换。开场不会伪造 start/chunk；断线期间已经结束的瞬态 attempt 不承诺补回，持久历史从 journal 读取。
 

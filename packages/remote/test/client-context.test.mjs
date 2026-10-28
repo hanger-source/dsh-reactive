@@ -175,27 +175,30 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
     } finally { delayed.release.resolve(); }
   });
   for (const [endpoint, invoke] of [
-    ['requestStatus', session => session.requestStatus('not-submitted')],
-    ['pause', session => session.pause()], ['cancel', session => session.cancel()],
-  ]) for (const owner of ['session', 'client']) await t.test(endpoint + '回执延迟时' + owner + '退出结束等待且公共Context保活', { timeout: 2_000 }, async subject => {
+    ['requestStatus', (session, options) => session.requestStatus('not-submitted', options)],
+    ['pause', (session, options) => session.pause(options)], ['cancel', (session, options) => session.cancel(options)],
+  ]) for (const owner of ['session', 'client', 'call']) await t.test(endpoint + '回执延迟时' + owner + '取消结束等待且公共Context保活', { timeout: 2_000 }, async subject => {
     const delayed = { endpoint, allowRemoteFailure: endpoint === 'pause',
       received: Promise.withResolvers(), release: Promise.withResolvers(), entered: false };
     subject.signal.addEventListener('abort', () => delayed.release.resolve(), { once: true });
     const ctx = await connect(a.gateway.url, delayed), pendingClient = await bindProgramClient(program, ctx);
     clients.push(pendingClient);
     const session = await pendingClient.open(sessionId);
-    const rejected = assert.rejects(invoke(session), error => {
-      assert.match(String(error), owner === 'session' ? /REACTIVE_CONVERSATION_HANDLE_RELEASED/u : /REACTIVE_REMOTE_CLIENT_DISPOSED/u);
+    const abort = new AbortController(), reason = new Error('REMOTE_CONTROL_RECEIPT_NOT_NEEDED');
+    const rejected = assert.rejects(invoke(session, { signal: abort.signal }), error => {
+      if (owner === 'call') assert.equal(error, reason);
+      else assert.match(String(error), owner === 'session' ? /REACTIVE_CONVERSATION_HANDLE_RELEASED/u : /REACTIVE_REMOTE_CLIENT_DISPOSED/u);
       return true;
     });
     try {
       await delayed.received.promise;
       assert.equal(delayed.reply.ok, endpoint !== 'pause');
       if (owner === 'session') await session.release();
-      else await pendingClient.dispose();
+      else if (owner === 'client') await pendingClient.dispose();
+      else abort.abort(reason);
       await rejected;
       const peer = await bindProgramClient(program, ctx); clients.push(peer);
-      const live = await peer.open(sessionId);
+      const live = owner === 'call' ? session : await peer.open(sessionId);
       assert.equal(await live.readView('owner'), 'a-after-context-exit');
       assert.deepEqual(await live.requestStatus('not-submitted'), { requestId: 'not-submitted', state: 'absent' });
     } finally { delayed.release.resolve(); }

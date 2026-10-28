@@ -10,7 +10,7 @@ export class InputFileNotStagedError extends Error {
   constructor() { super('REACTIVE_INPUT_FILE_NOT_STAGED'); this.name = 'InputFileNotStagedError'; }
 }
 
-/** receipt 只在原生 exact Session 中解析；文件绑定与投递事务由受理方持有。 */
+/** @internal receipt 只在原生 exact Session 中解析；文件绑定与投递事务由受理方持有。 */
 export async function admitInputContent(ctx: Context, agent: Agent | undefined,
   parts: readonly PromptContentPart[]): Promise<{
     readonly content: readonly AdmittedPromptContentPart[];

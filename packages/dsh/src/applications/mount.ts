@@ -9,6 +9,7 @@ import { ApplicationHost } from '../application.ts';
 import { requireActivePlugin } from '../native-installation.ts';
 import type { HostOptions } from './options.ts';
 export type ApplicationFactory<E extends readonly AnyEnvironment[] = readonly AnyEnvironment[]> = (assembly: ApplicationAssembly) => ApplicationDefinition<E>;
+/** @internal Runtime与嵌入宿主共用一次工厂求值和失败释放。 */
 export async function assembleApplication<E extends readonly AnyEnvironment[]>(ctx: Context, factory: ApplicationFactory<E>) {
     const state = createApplicationAssembly(ctx);
     let closing: Promise<void> | undefined;
@@ -39,6 +40,7 @@ export async function assembleApplication<E extends readonly AnyEnvironment[]>(c
 export async function mountApplication<E extends readonly AnyEnvironment[]>(ctx: Context, factory: ApplicationFactory<E>, options: HostOptions = {}): Promise<ApplicationHost<E>> {
     return mountAssembledApplication(ctx, await assembleApplication(ctx, factory), options);
 }
+/** @internal 只挂载已经封闭的同次装配，不向消费者暴露安装实例。 */
 export async function mountAssembledApplication<E extends readonly AnyEnvironment[]>(ctx: Context, assembled: Awaited<ReturnType<typeof assembleApplication<E>>>, options: HostOptions = {}): Promise<ApplicationHost<E>> {
     const { definition, native: delegations, capabilities } = assembled;
     let host: ApplicationHost<E> | undefined;

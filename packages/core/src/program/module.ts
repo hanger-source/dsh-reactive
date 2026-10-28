@@ -7,7 +7,7 @@ import type { Surface } from '../surfaces/contract.ts';
 export const moduleMountContext: ReactContext<SurfaceMount | null> = createContext<SurfaceMount | null>(null);
 export interface ModuleDeclaration { readonly kind: 'module'; readonly mount: SurfaceMount; }
 const moduleDeclarations = new WeakSet<object>();
-export interface ModuleProps<S extends Surface = Surface> { readonly mount: SurfaceMount<S>; readonly children?: ReactNode; }
+export interface ModuleProps<S extends Surface = Surface> { readonly mount: SurfaceMount<S, Surface>; readonly children?: ReactNode; }
 export function Module<S extends Surface>({ mount, children }: ModuleProps<S>): ReactElement {
   const parent = useContext(moduleMountContext);
   const effective = useMemo(() => rebaseModuleMount(mount, parent), [parent, mount]);

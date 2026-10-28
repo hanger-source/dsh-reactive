@@ -1,4 +1,4 @@
-import { collectionSurface, composeSurface, selectSurface, defineSurface, resourceView, defineAction, defineOperation, defineProgram, z, type CancellationOptions, type ResourceReadable } from '@hanger-source/dsh-reactive';
+import { collectionSurface, composeSurface, selectSurface, defineSurface, resourceView, defineAction, defineOperation, defineProgram, z, type CancellationOptions, type ResourceReadable, type SurfaceClient } from '@hanger-source/dsh-reactive';
 import { Module } from '@hanger-source/dsh-reactive/program';
 import type { ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
 
@@ -17,6 +17,17 @@ declare const options: CancellationOptions;
 async function consume(key: string) {
   const instances: ResourceReadable<readonly string[]> = session.collection('merchants').instances;
   const instance = session.collection('merchants').instance(key);
+  const knowledge = instance.module(merchant.mounts.knowledge);
+  const localDate: Date = await consumeModule(knowledge);
+  const rootedDate: Date = await consumeModule(session.module(composed.mounts.merchants.instance(key)).module(merchant.mounts.knowledge));
+  const localAction = knowledge.resolveAction('record', key, options);
+  const localResult: boolean = (await localAction({ count: '7' }, options).result).recorded;
+  const localCommand: string = knowledge.operations.work(options).command.merchantId;
+  void localDate; void rootedDate; void localResult; void localCommand;
+  // @ts-expect-error 嵌套module恢复局部槽名，不接受父级路径。
+  knowledge.readView('knowledge.loadedAt');
+  // @ts-expect-error 嵌套module保留输入transform之前的string。
+  localAction({ count: 7 });
   const nested: readonly string[] = await instance.collection('reviews').instances.read();
   const resource: ResourceReadable<Date> = instance.viewResource('knowledge.loadedAt');
   const loadedAt: Date = await instance.readView('knowledge.loadedAt', options);
@@ -42,10 +53,16 @@ async function consume(key: string) {
   session.resolveAction('merchants.any.knowledge.record', key);
 }
 void consume;
+function consumeModule(client: SurfaceClient<typeof local>) { return client.readView('loadedAt'); }
 const review = composeSurface({ merchants: collectionSurface(selectSurface(merchant.surface, { views: ['knowledge.loadedAt'] })) });
 const reviewProgram = defineProgram({ input: z.null(), surface: review.surface });
 declare const reviewer: ConversationHandle<typeof reviewProgram>;
 const reviewed = reviewer.collection('merchants').instance('merchant-a');
+const projectedReview = reviewer.module(review.mounts.merchants.instance('merchant-a'));
+// @ts-expect-error collection mount的第二型参保留实际selected，不能暴露source的Action。
+projectedReview.resolveAction('knowledge.record', 'merchant-a');
+// @ts-expect-error collection mount的selected不恢复Operation。
+projectedReview.operations['knowledge.work']();
 // @ts-expect-error selection未公开Action。
 reviewed.resolveAction('knowledge.record', 'merchant-a');
 // @ts-expect-error selection未公开Operation。

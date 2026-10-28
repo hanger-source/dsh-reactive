@@ -6,7 +6,7 @@
     "paths": {},
     "rootDir": "src",
     "outDir": "lib",
-    "stripInternal": false
+    "stripInternal": true
   },
   "references": [{ "path": "../core" }],
   "include": [

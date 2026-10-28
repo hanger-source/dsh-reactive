@@ -48,14 +48,15 @@ test('动态模块集合经真实Gateway保留Date、单向目标与独立Operat
     executed.push({ merchantId: call.scope.merchantId, amount: input.amount });
     return { merchantId: call.scope.merchantId, amount: input.amount, at: instants[call.scope.merchantId.slice(-1)] };
   } });
-  const child = defineSurface({ views: { at: resourceView(date) }, actions: { save }, operations: { work } });
-  const composed = composeSurface({ merchants: collectionSurface(child) });
+  const leaf = defineSurface({ views: { at: resourceView(date) }, actions: { save }, operations: { work } });
+  const child = composeSurface({ business: leaf });
+  const composed = composeSurface({ merchants: collectionSurface(child.surface) });
   const program = defineProgram({ input: z.null(), surface: composed.surface });
   function Merchant({ id }) {
     const action = useAction(implementation, () => 'merchant-' + id, [id]);
     const existing = useOperation(owner, () => ({ merchantId: 'merchant-' + id }), [id]);
-    return Expose({ surface: child, value: { views: { at: of({ status: 'ready', generation: 1,
-      observedAt: Date.now(), value: new Date(instants[id]) }) }, actions: { save: action }, operations: { work: existing } } });
+    return h(Module, { mount: child.mounts.business }, Expose({ surface: leaf, value: { views: { at: of({ status: 'ready', generation: 1,
+      observedAt: Date.now(), value: new Date(instants[id]) }) }, actions: { save: action }, operations: { work: existing } } }));
   }
   const definition = defineApplication({ name: 'remote-module-composition', admit: async () => {}, environments: [defineEnvironment({
     id: 'work', instructions: '读取组合模块的确切业务事实', program: implementProgram(program, { Component() {
@@ -94,7 +95,10 @@ test('动态模块集合经真实Gateway保留Date、单向目标与独立Operat
   const remote = await client.open(local.id);
   const localMerchants = local.collection('merchants'), remoteMerchants = remote.collection('merchants');
   assert.deepEqual(await next(remoteMerchants.instances$), ['a']);
-  const localB = localMerchants.instance('b'), remoteB = remoteMerchants.instance('b');
+  const localInstanceB = localMerchants.instance('b'), remoteInstanceB = remoteMerchants.instance('b');
+  const localB = localInstanceB.module(child.mounts.business), remoteB = remoteInstanceB.module(child.mounts.business);
+  assert.equal(localB.viewResource('at'), localInstanceB.viewResource('business.at'));
+  assert.equal(remoteB.viewResource('at'), remoteInstanceB.viewResource('business.at'));
   await assert.rejects(remoteB.readView('at'), error => error instanceof RemoteError);
   members.next(['a', 'b']);
   assert.deepEqual(await next(remoteMerchants.instances$, keys => keys.length === 2), ['a', 'b']);
@@ -102,7 +106,8 @@ test('动态模块集合经真实Gateway保留Date、单向目标与独立Operat
   await next(remoteB.observeView('at'), observed => observed.status === 'ready');
   const captured = new Map();
   for (const id of ['a', 'b']) {
-    const localInstance = localMerchants.instance(id), remoteInstance = remoteMerchants.instance(id);
+    const localInstance = localMerchants.instance(id).module(child.mounts.business);
+    const remoteInstance = remoteMerchants.instance(id).module(child.mounts.business);
     const localDate = await localInstance.readView('at'), remoteDate = await remoteInstance.readView('at');
     assert.ok(localDate instanceof Date); assert.ok(remoteDate instanceof Date);
     assert.equal(localDate.toISOString(), instants[id]); assert.equal(remoteDate.toISOString(), instants[id]);
@@ -115,7 +120,7 @@ test('动态模块集合经真实Gateway保留Date、单向目标与独立Operat
     assert.ok(value.at instanceof Date); assert.equal(value.at.toISOString(), instants[id]);
   }
   assert.deepEqual(executed, [{ merchantId: 'merchant-a', amount: 7 }, { merchantId: 'merchant-b', amount: 7 }]);
-  const remoteA = remoteMerchants.instance('a');
+  const remoteA = remoteMerchants.instance('a').module(child.mounts.business);
   await assert.rejects(remoteA.resolveAction('save', 'merchant-b'), error => error.code === 'reactive/action-target-mismatch');
   const a = await remoteA.operations.work(), b = await remoteB.operations.work();
   assert.deepEqual(a.command, { merchantId: 'merchant-a' }); assert.deepEqual(b.command, { merchantId: 'merchant-b' });
@@ -137,7 +142,7 @@ test('动态模块集合经真实Gateway保留Date、单向目标与独立Operat
   assert.equal((await b.locate()).state.phase, 'running');
   members.next(['b', 'a']);
   await next(remoteMerchants.instances$, keys => keys.length === 2);
-  await localMerchants.instance('a').readView('at');
+  await localMerchants.instance('a').module(child.mounts.business).readView('at');
   await next(remoteA.observeView('at'), observed => observed.status === 'ready');
   const remounted = await remoteA.resolveAction('save', 'merchant-a');
   assert.notEqual(remounted.bindingId, captured.get('a').bindingId);
