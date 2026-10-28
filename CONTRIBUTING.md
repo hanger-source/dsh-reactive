@@ -8,6 +8,7 @@ npm run build
 npm run typecheck:examples
 npm run check:boundaries
 npm run check:packages
+npm run test:release
 ```
 
 先阅读 [README](README.md) 和[架构与责任](docs/architecture.md)。源码和发行包按相同边界组织：

@@ -29,6 +29,8 @@ npm run changeset -- --minor @hanger-source/dsh-reactive --message "说明实际
 
 fixed 组会统一提升六包。修复使用 `--patch`，不兼容变化按正式 SemVer 选择相应变更类型，不手工编写版本递增算法；实际版本以 Changesets plan 和生成的 CHANGELOG 为准。
 
+`plan` 读取 Changesets 的完整 release plan，不按默认比较分支过滤已经提交的变更。prepare、tag 与 publish 共用这一来源：仍有待应用的版本计划时拒绝发行，先执行 version 并提交其产物。预发布已归档的 Changeset 由 Changesets 自身识别，不重复计为未生成版本；next 要求对应的预发布状态，stable 要求正式版本化已完成。各包 CHANGELOG 的首个版本必须与包版本一致。
+
 变更说明提交后，在干净源码 checkout 中应用版本：
 
 ```sh

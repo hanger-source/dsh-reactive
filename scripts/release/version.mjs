@@ -1,6 +1,7 @@
-import { readFile, mkdir } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { capture, changeset, channel, clean, configuration, json, packages, root, run } from './common.mjs';
+import { getReleasePlan } from '@changesets/get-release-plan';
+import { changeset, channel, clean, configuration, json, packages, root, run, save } from './common.mjs';
 
 export async function version(options) {
   const selected = channel(options), config = await configuration();
@@ -21,6 +22,7 @@ export async function version(options) {
 export async function plan(options) {
   const out = resolve(options.out ?? join(root, '.tmp/release-plan.json'));
   await mkdir(resolve(out, '..'), { recursive: true });
-  await changeset(['status', '--output', out]);
-  console.log(await readFile(out, 'utf8'));
+  const result = await getReleasePlan(root);
+  await save(out, result);
+  console.log(JSON.stringify(result, null, 2));
 }

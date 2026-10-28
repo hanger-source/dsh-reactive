@@ -34,6 +34,8 @@ jobs:
           npm run check:packages
       - name: 编译行为试验并统一模块身份
         run: npm run build:test
+      - name: Changesets版本生成与发行来源
+        run: npm run test:release
       - name: 核心、Gateway 网络与原生 Slot 行为
         run: |
           node --test --test-timeout=15000 .tmp/test/test/*.test.js

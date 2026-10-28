@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve, relative, isAbsolute, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import semver from 'semver';
+import { getReleasePlan } from '@changesets/get-release-plan';
 
 const execute = promisify(execFile);
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -100,6 +101,11 @@ export async function releaseSource(options, requireTag = false) {
   const data = await packages(config, selected);
   const tag = config.tagPrefix + data.version;
   if (options.tag !== tag) throw new Error('RELEASE_EXACT_TAG_REQUIRED: ' + tag);
+  const plan = await getReleasePlan(root);
+  const pending = plan.releases.filter(release => release.type !== 'none');
+  if (pending.length) throw new Error('RELEASE_VERSIONING_REQUIRED: ' + pending.map(release => release.name + '@' + release.newVersion).join(', '));
+  if (selected === 'next' ? plan.preState?.mode !== 'pre' || plan.preState.tag !== 'next' : plan.preState !== undefined)
+    throw new Error('RELEASE_VERSIONING_CHANNEL_MISMATCH');
   await tagCommit(tag, commit, requireTag);
   for (const item of data.entries) {
     const pkg = item.manifest;
@@ -110,7 +116,8 @@ export async function releaseSource(options, requireTag = false) {
     if (pkg.repository?.url !== config.repository || pkg.repository.directory !== item.directory) throw new Error('RELEASE_PACKAGE_REPOSITORY_MISMATCH: ' + item.name);
     if (!pkg.files?.includes('release.json')) throw new Error('RELEASE_RECEIPT_NOT_PACKAGED: ' + item.name);
     const changelog = await readFile(join(root, item.directory, 'CHANGELOG.md'), 'utf8');
-    if (!changelog.split('\n').includes('## ' + data.version)) throw new Error('RELEASE_CHANGELOG_VERSION_REQUIRED: ' + item.name);
+    if (changelog.split('\n').find(line => line.startsWith('## ')) !== '## ' + data.version)
+      throw new Error('RELEASE_CHANGELOG_VERSION_REQUIRED: ' + item.name);
   }
   return { config, ...data, channel: selected, registry, commit, tag, lockSha256: await digest(join(root, 'package-lock.json'), 'sha256') };
 }
