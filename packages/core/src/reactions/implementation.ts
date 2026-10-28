@@ -20,6 +20,11 @@ export interface ReactionImplementationOptions<D extends ReactionContract> {
 export interface ReactionImplementation<D extends ReactionContract = ReactionContract> { readonly definition: D; }
 const implementations = new WeakMap<object, unknown>();
 
+/** @internal 按实际实现身份区分正式绑定与局部选项，不猜结构或名字。 */
+export function isReactionImplementation(value: unknown): value is ReactionImplementation {
+  return typeof value === 'object' && value !== null && implementations.has(value);
+}
+
 export function implementReaction<D extends ReactionContract>(definition: D,
   options: ReactionImplementationOptions<D>): ReactionImplementation<D> {
   assertReactionDefinition(definition);

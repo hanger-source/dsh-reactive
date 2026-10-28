@@ -16,7 +16,8 @@ import WorkspaceRegistry, { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { Context, Expose, useAction, useResource } from '@hanger-source/dsh-reactive/program';
 import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, implementResource,
-  defineReaction, implementReaction, observeResource, resourceView, z, type ProgramProps, type ProgramWorkspace } from '@hanger-source/dsh-reactive';
+  defineReaction, implementReaction, observeResource, resourceView, z, type ProgramProps, type ProgramWorkspace,
+  type LocalResourceOptions, type LocalReactionOptions } from '@hanger-source/dsh-reactive';
 import { CreationIncompleteError, mountApplication } from '@hanger-source/dsh-reactive-dsh';
 import { boot, text } from './native-support.ts';
 
@@ -111,9 +112,9 @@ test('工作区删除已经持久后共享清理失败仍撤销owner，宿主退
   } finally { await app.dispose().catch(() => {}); }
 });
 
-test('正式资源和反应直接归工作区所有，跨环境复用且隔离，登记删除停止排队关系而不撤销已受理文件写入', async () => {
+test('正式与局部资源反应归真实工作区所有，跨环境共享返回对象，会话退出保活且登记删除停止排队而保留已受理文件写入', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-workspace-capabilities-'));
-  const quantity = join(root, 'quantity'), result = join(root, 'result');
+  const quantity = join(root, 'quantity'), result = join(root, 'result'), localResult = join(root, 'local-result');
   await writeFile(quantity, '42');
   const resource = defineResource({ name: 'workspace_quantity', params: z.null(), value: z.string().transform(Number) });
   let reads = 0, models = 0;
@@ -125,47 +126,96 @@ test('正式资源和反应直接归工作区所有，跨环境复用且隔离�
     started.push(value); accepted.resolve(); await release.promise;
     await writeFile(result, String(value)); committed.resolve(); return value;
   } });
-  const program = defineProgram({ input: z.null(), surface: defineSurface({ actions: {}, views: { quantity: resourceView(z.number()) } }) });
+  let localReads = 0;
+  const localAccepted = Promise.withResolvers<void>(), localCommitted = Promise.withResolvers<void>(), localStarted: number[] = [];
+  const localOptions: LocalResourceOptions<typeof resource.value> = { name: resource.name, value: resource.value,
+    read: async ({ signal }) => { localReads++; return readFile(quantity, { encoding: 'utf8', signal }); } };
+  const localWriter: LocalReactionOptions<typeof reaction.event, typeof reaction.result> = { name: reaction.name,
+    event: reaction.event, result: reaction.result, observe: () => commands, operator: concatMap, async execute(value) {
+      localStarted.push(value); localAccepted.resolve(); await release.promise;
+      await writeFile(localResult, String(value)); localCommitted.resolve(); return value;
+    } };
+  const business = (workspace: ProgramWorkspace, resourceOptions = localOptions, reactionOptions = localWriter) => ({
+    resource: workspace.resource(resourceOptions), reaction: workspace.reaction(reactionOptions),
+  });
+  let local: ReturnType<typeof business>;
+  const program = defineProgram({ input: z.null(), surface: defineSurface({ actions: {}, views: {
+    quantity: resourceView(z.number()), local: resourceView(z.number()),
+  } }) });
   const implementation = implementProgram(program, { Component({ workspace }) {
-    const observed = useResource(workspace.resource(facts, null));
-    return Expose({ surface: program.surface, value: { views: { quantity: observed.observations$ }, actions: {} } });
+    const observed = useResource(workspace.resource(facts, null)), borrowed = useResource(local.resource);
+    return Expose({ surface: program.surface, value: { views: { quantity: observed, local: borrowed }, actions: {} } });
   } });
   const definition = defineApplication({ name: 'workspace-capabilities', admit: async () => {}, environments: [
     defineEnvironment({ id: 'one', instructions: '共用工作区业务资源', program: implementation }),
     defineEnvironment({ id: 'two', instructions: '共用工作区业务资源', program: implementation }),
   ] });
-  const app = await boot(root, definition, async function* () { models++; yield* text('没有模型任务'); });
+  const app = await boot(root, definition, async function* () { models++; throw new Error('WORKSPACE_CAPABILITIES_MUST_NOT_START_MODEL'); });
+  t.after(async () => { release.resolve(); commands.complete(); await app.dispose(); });
   const workspace = app.host.workspace(app.workspace.workspaceId);
   const current = workspace.resource(facts, null), running = workspace.reaction(writer, null);
+  local = business(workspace);
+  const peer = business(workspace), sameName = business(workspace, { ...localOptions }, { ...localWriter });
+  assert.equal(localReads, 0); assert.equal(reads, 0); assert.equal(commands.observed, false, '局部构造与正式绑定都不读取或start');
+  assert.notEqual(local.resource, peer.resource); assert.notEqual(local.resource, sameName.resource);
+  assert.notEqual(local.reaction, peer.reaction); assert.notEqual(local.resource, current);
   const watch = current.observations$.subscribe();
+  const localWatch = local.resource.observations$.subscribe();
   const run = running.start();
+  const localRun = local.reaction.start(), peerRun = peer.reaction.start();
+  peerRun.stop();
   try {
     assert.equal(await current.read(), 42, '没有Session时也能定义并读取工作区资源');
+    const readBusiness = (capability: ReturnType<typeof business>): Promise<number> => capability.resource.read();
+    assert.equal(await readBusiness(local), 42);
+    assert.equal(await firstValueFrom(local.resource.values$), 42);
+    assert.equal(localReads, 1, '普通函数、Promise与RxJS借同一实例读取一次真实文件');
+    assert.equal(await readBusiness(peer), 42);
+    assert.equal(await readBusiness(sameName), 42);
+    assert.equal(localReads, 3, '相同name及同一个options对象不会把局部构造偷偷合并');
     const one = await app.host.create('one', { workspaceId: workspace.id });
     const two = await app.host.create('two', { workspaceId: workspace.id });
     try {
       assert.equal(await one.readView('quantity'), 42); assert.equal(await two.readView('quantity'), 42);
+      assert.equal(await one.readView('local'), 42); assert.equal(await two.readView('local'), 42);
+      assert.equal(localReads, 3, '两个Environment的Program借入原局部实例，不重新构造或读取');
       assert.equal(reads, 1, '两个环境与普通函数共用同一正式资源读取');
       const directory = join(root, 'isolated'); await mkdir(directory);
       const registration = await app.host.createWorkspace({ directory });
       const isolated = app.host.workspace(registration.workspaceId).resource(facts, null);
+      const isolatedLocal = business(app.host.workspace(registration.workspaceId));
       const isolatedWatch = isolated.observations$.subscribe();
+      const isolatedLocalWatch = isolatedLocal.resource.observations$.subscribe();
       try {
         assert.equal(await isolated.read(), 42); assert.equal(reads, 2, '相同实现和目标在不同工作区隔离');
-        commands.next(1); commands.next(2); await accepted.promise;
+        assert.equal(await readBusiness(isolatedLocal), 42);
+        await app.host.close(one.id); await app.host.close(two.id);
+        await writeFile(quantity, '43'); local.resource.invalidate();
+        assert.equal(await readBusiness(local), 43, '所有Session退出后，工作区局部实例仍能读取和失效');
+        assert.equal(await readBusiness(isolatedLocal), 42, '其他工作区的局部读取不被本实例失效重定向');
+        commands.next(1); commands.next(2); await Promise.all([accepted.promise, localAccepted.promise]);
         await app.native.workspaceRegistry.delete(WorkspaceId(workspace.id));
         assert.equal((await run.settled).status, 'stopped');
+        assert.equal((await localRun.settled).status, 'stopped');
         assert.deepEqual(started, [1]);
+        assert.deepEqual(localStarted, [1], '停止另一局部实例和Session退出均未停止本实例的显式运行');
         assert.throws(() => current.peek(), /REACTIVE_SCOPE_DISPOSED/);
+        assert.throws(() => local.resource.peek(), /REACTIVE_SCOPE_DISPOSED/);
+        assert.throws(() => local.reaction.start(), /REACTIVE_SCOPE_DISPOSED/);
+        assert.throws(() => workspace.resource(localOptions), /REACTIVE_SCOPE_DISPOSED/);
+        assert.throws(() => workspace.reaction(localWriter), /REACTIVE_SCOPE_DISPOSED/);
         assert.throws(() => workspace.resource(facts, null), /REACTIVE_SCOPE_DISPOSED/);
         assert.equal(await isolated.read(), 42);
-        release.resolve(); await committed.promise;
+        assert.equal(await readBusiness(isolatedLocal), 42);
+        release.resolve(); await Promise.all([committed.promise, localCommitted.promise]);
         assert.equal(await readFile(result, 'utf8'), '1', '已经受理的业务写入仍由原函数完成');
+        assert.equal(await readFile(localResult, 'utf8'), '1', '已开始的局部业务写入同样在工作区退出后完成');
         assert.deepEqual(started, [1], '排队的第二项没有越过已结束的反应关系');
-      } finally { isolatedWatch.unsubscribe(); }
+        assert.deepEqual(localStarted, [1]);
+      } finally { isolatedWatch.unsubscribe(); isolatedLocalWatch.unsubscribe(); }
     } finally { one.release(); two.release(); }
     assert.equal(models, 0); assert.deepEqual(app.errors, []);
-  } finally { release.resolve(); watch.unsubscribe(); commands.complete(); await app.dispose(); }
+  } finally { release.resolve(); watch.unsubscribe(); localWatch.unsubscribe(); }
 });
 
 test('真实存储拒写后沿原创建引用完成登记，原生工作区移除成员后重启与创建恢复均不能重新授予身份', async () => {

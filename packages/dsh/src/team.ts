@@ -162,13 +162,13 @@ class SessionTeam implements NativeSessionTeam {
     return task;
   }
   async createTask(request: CreateTeamTaskRequest, options: CancellationOptions = {}): Promise<TeamTaskView> {
-    this.signal(options);
+    const signal = this.signal(options);
     // 原生事务受理后由 Team journal 结算；取消观察不能回滚已追加的 task。
-    return ownNativeValue(await this.service().createTask(this.agent(), structuredClone(request)));
+    return firstValueFrom(abortable(async () => ownNativeValue(await this.service().createTask(this.agent(), structuredClone(request))), signal));
   }
   async updateTask(request: UpdateTeamTaskRequest, options: CancellationOptions = {}): Promise<TeamTaskView> {
-    this.signal(options);
-    return ownNativeValue(await this.service().updateTask(this.agent(), structuredClone(request)));
+    const signal = this.signal(options);
+    return firstValueFrom(abortable(async () => ownNativeValue(await this.service().updateTask(this.agent(), structuredClone(request))), signal));
   }
   async waitForChange(timeoutMs: number, options: CancellationOptions = {}): Promise<TeamWaitResult> {
     const signal = this.signal(options);

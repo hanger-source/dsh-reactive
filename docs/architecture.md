@@ -40,7 +40,7 @@ Workspace 由原生 registry 持有目录、稳定身份与成员。`createWorks
 
 打开冷会话先核对预期 Program 合同，再构造程序图。恢复的并发调用等待同一次原生取得和子程序恢复；取得失败只归还本次实际获得的 AgentHandle。已有冷句柄及其他会话继续有效，清理失败交回会话域汇总，不由原生日志代替失败回执。
 
-Workspace 是独立的本地编程 owner。应用通过 application.workspace(id)、组件通过 props.workspace 取得同一对象，以 workspace.resource(implementation, params) 和 workspace.reaction(implementation, params) 复用现有绑定身份；跨 Environment 和 Session 共享，同一实现与目标在不同工作区隔离。构造不读取、不执行，反应显式 start。原生登记成功删除或宿主退出时结束该 owner，撤销资源有效性及持续关系，不取消已受理业务。core/workspaces 拥有该编程合同与内核装配，原生登记、成员和持久化继续归 dsh。
+Workspace 是独立的本地编程 owner。应用通过 application.workspace(id)、组件通过 props.workspace 取得同一对象，以 workspace.resource(implementation, params) 和 workspace.reaction(implementation, params) 复用现有绑定身份；局部选项则每次构造独立实例，返回对象可以显式组合和共享。两种入口都由实际工作区 Scope 持有，跨 Environment 和 Session 使用，同一实现与目标在不同工作区隔离。构造不读取、不执行，反应显式 start。原生登记成功删除或宿主退出时结束该 owner，撤销资源有效性及持续关系，不取消已受理业务。core/workspaces 拥有该编程合同与内核装配，原生登记、成员和持久化继续归 dsh。
 
 业务自定义 hook 可以直接返回资源、Action 和标准 Observable，供下一层业务 hook 继续派生。`invocations$` 表达新发生的调用，`activeInvocations$` 表达本绑定当前在途调用集合；单次 `Invocation.activity$`、`result` 和独立 `operation` 不合并为一个 loading 或完成标记。晚观察者读取当前集合不会重发命令，内存集合也不承担跨重启任务恢复。
 

@@ -1,7 +1,7 @@
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction, combineResources, mapResource, switchResource, abortable,
   resourceView, shareResource, type Scope, type ResourceSource, type OperationContract, type OperationHandle,
   type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, z } from '@hanger-source/dsh-reactive';
-import { concatMap, firstValueFrom, type Observable } from 'rxjs';
+import { concatMap, firstValueFrom, map, type Observable } from 'rxjs';
 import { Context, Expose, implementProgram, useAction, useResource, useResourceInstance, useReaction, useBeforeStep,
   useObservable, useShared, useRelation } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, mountApplication, type ApplicationAssembly, type ConversationHandle, type ServiceConversation, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
@@ -43,6 +43,24 @@ const backendFacts = defineSurface({ views: { current: resourceView(z.string()) 
 export const workspaceBindings = (workspace: Workspace, resource: ResourceImplementation<typeof current>, reaction: ReactionImplementation<typeof changes>) =>
   ({ resource: workspace.resource(resource, null), reaction: workspace.reaction(reaction, null) });
 export const localWorkspace = (runtime: Awaited<ReturnType<typeof backend>>, id: string): Workspace => runtime.application.workspace(id);
+export function localCapabilityOptions(read: (signal: AbortSignal) => Promise<string>, changes$: Observable<string>, write: (value: number) => Promise<string>) {
+  return { resource: { value: z.string().transform(Number), read: ({ signal }: { readonly signal: AbortSignal }) => read(signal) },
+    reaction: { event: z.string().transform(Number), result: z.string().transform(Number),
+      observe: () => changes$, operator: concatMap, execute: write } };
+}
+export function localWorkspaceCapabilities(workspace: Workspace, options: ReturnType<typeof localCapabilityOptions>) {
+  const resource = workspace.resource(options.resource), reaction = workspace.reaction(options.reaction);
+  const values: Observable<number> = resource.values$;
+  return { resource, reaction, values, read: (): Promise<number> => resource.read(), start() {
+    const run = reaction.start(), results: Observable<number> = run.events$.pipe(map(event => event.result));
+    return { run, results };
+  } };
+}
+export function useLocalCapabilities(options: ReturnType<typeof localCapabilityOptions>) {
+  const resource = useResourceInstance(() => options.resource, [options.resource]);
+  const reaction = useReaction(() => options.reaction, [options.reaction]);
+  return { resource, reaction, observed: useResource(resource) };
+}
 export function useBackendBindings(resource: ResourceImplementation<typeof current>, reaction: ReactionImplementation<typeof changes>) {
   const instance = useResourceInstance(resource, null);
   const composed = useShared(() => combineResources({ current: instance, same: instance.observations$ }).pipe(

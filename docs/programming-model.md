@@ -260,6 +260,7 @@ const application = defineApplication({
 - `useBeforeStep(check, dependencies)` 登记幂等检查，原生步骤实际等待它的返回值。每次登记有独立身份，相同函数被多个组件使用也各自拥有退出寿命。依赖替换或组件退出会中止旧检查收到的 signal 并结束等待；准备过程重新核对当前检查集合，旧 Promise 迟到完成或失败不再作为当前准备结果。原生步骤取消或 Program 失败同样结束等待，仍有效的检查失败则继续传播。检查应使用信号读取真实依赖并等待其工作完成，不在检查中执行业务命令。
 - `workspace.share(source$)` 把明确共享的连接交给工作区；应在订阅阶段连接，而非组件纯求值中启动来源。同一工作区与来源复用一个连接，会话或最后一个消费者退出不停止它；有限来源的终态只在工作区 owner 活跃时保留。owner 退出结束已有观察，之前捕获的流在迟到订阅时直接完成，不重放旧值或旧错误，也不重新连接来源。
 - `workspace.resource(implementation, params)` 与 `workspace.reaction(implementation, params)` 把正式资源、反应绑定到工作区，跨该工作区的多个 Environment 和 Session 复用同一实例；参数仍按原合同解析，不另传名字或 Scope。资源首次观察才读取，反应显式 start。应用通过 application.workspace(id) 在没有 Session 时也能取得这个编程接点；组件 props.workspace 是同一对象。
+- 局部业务直接调用 `workspace.resource({ value, read, invalidations? })` 或 observe 分支，以及 `workspace.reaction({ event, result, observe, operator, execute })`。选项与 Program 局部入口相同，实例统一归实际 Workspace Scope；每次调用构造独立实例，相同 name 或同一选项引用也不合并。保留返回对象即可组合为普通函数、Promise、Observable 和 hooks 共用的业务能力；在组件纯求值中借用已构造的对象，避免每次渲染重新构造。Session 退出不结束这些实例，Workspace owner 退出撤销读取、持续感知及未受理队列，已受理业务仍由原 owner 结算。
 
 factory 纯构造来源或目标，依赖数组决定其身份。重复求值不应发起业务操作。普通 React state 和 Transition 仍遵循 React 调度；它们不自动获得模型准入或权限事实的同步保证。
 

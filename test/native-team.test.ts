@@ -91,6 +91,85 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
     const task = await team.task(original.id), dependent = await team.task(waiting.id);
     assert.equal(await team.task(original.id), task);
     assert.equal((await dependent.state.read())?.ready, false);
+
+    const mutationHandle = await runtime.application.open(session.id, program);
+    const writer = capability.forSession(mutationHandle);
+    const lead = runtime.native.agents.get(SessionId(session.id))!;
+    const sessions = Reflect.get(runtime.native.sessions, symbols.original) as typeof runtime.native.sessions;
+    const flush = sessions.flush;
+    const createdAtFlush = Promise.withResolvers<TeamTaskView['id']>(), updatedAtFlush = Promise.withResolvers<void>();
+    const releaseCreate = Promise.withResolvers<void>(), releaseUpdate = Promise.withResolvers<void>();
+    const createFlushed = Promise.withResolvers<void>(), updateFlushed = Promise.withResolvers<void>();
+    let holding: 'create' | 'update' | undefined = 'create';
+    let createOutcome: unknown, updateOutcome: unknown;
+    let creating: Promise<void> | undefined, updating: Promise<void> | undefined;
+    // Team仍执行真实append/CAS/flush；只延后同一个公开flush的回执，不替换事务或持久事实。
+    sessions.flush = async function (...args) {
+      const result = await flush.apply(this, args);
+      if (args[0] !== lead.session) return result;
+      const event = lead.session.snapshotEvents().findLast(event => event.type === 'team/task');
+      if (holding === 'create' && event?.data.task.subject === '取消等待的正式创建') {
+        holding = undefined; createdAtFlush.resolve(event.data.task.id);
+        await releaseCreate.promise; createFlushed.resolve();
+      } else if (holding === 'update' && event?.data.task.subject === '退出等待的正式修订') {
+        holding = undefined; updatedAtFlush.resolve();
+        await releaseUpdate.promise; updateFlushed.resolve();
+      }
+      return result;
+    };
+    try {
+      const controller = new AbortController(), reason = new Error('CANCEL_TEAM_CREATE_RECEIPT');
+      creating = writer.createTask({ subject: '取消等待的正式创建', description: '回执取消不重建原生事务' }, { signal: controller.signal })
+        .then(value => { createOutcome = value; }, error => { createOutcome = error; });
+      const createdId = await Promise.race([createdAtFlush.promise, creating.then(() => { throw new Error('TEAM_CREATE_DID_NOT_REACH_FLUSH'); })]);
+      controller.abort(reason); await immediate();
+      assert.equal(createOutcome, reason, '真实flush仍未归还时，调用取消已经结束本次创建回执等待');
+      releaseCreate.resolve(); await createFlushed.promise;
+      const committedCreate = team.getTask(createdId);
+      assert.equal(committedCreate.revision, 1);
+      const createdTask = await writer.task(createdId);
+      const preCancelled = new AbortController(), preCancelledReason = new Error('TEAM_MUTATION_CANCELLED_BEFORE_ADMISSION');
+      preCancelled.abort(preCancelledReason);
+      const before = lead.session.snapshotEvents().filter(event => event.type === 'team/task').length;
+      await assert.rejects(writer.createTask({ subject: '不得追加的创建', description: '预取消不进入原生队列' }, { signal: preCancelled.signal }),
+        error => error === preCancelledReason);
+      await assert.rejects(createdTask.update({ expectedRevision: committedCreate.revision, action: 'edit', subject: '不得追加的修订' },
+        { signal: preCancelled.signal }), error => error === preCancelledReason);
+      assert.equal(lead.session.snapshotEvents().filter(event => event.type === 'team/task').length, before);
+
+      holding = 'update';
+      updating = createdTask.update({ expectedRevision: committedCreate.revision, action: 'edit', subject: '退出等待的正式修订' })
+        .then(value => { updateOutcome = value; }, error => { updateOutcome = error; });
+      await Promise.race([updatedAtFlush.promise, updating.then(() => { throw new Error('TEAM_UPDATE_DID_NOT_REACH_FLUSH'); })]);
+      writer.dispose(); await immediate();
+      assert.ok(updateOutcome instanceof Error);
+      assert.match(updateOutcome.message, /REACTIVE_SCOPE_DISPOSED/u,
+        '任务对象复用同一更新入口，SDK退出不等待原生flush回执');
+      releaseUpdate.resolve(); await updateFlushed.promise;
+      const committedUpdate = team.getTask(createdId);
+      assert.equal(committedUpdate.subject, '退出等待的正式修订');
+      assert.equal(committedUpdate.revision, committedCreate.revision + 1);
+      await assert.rejects(team.updateTask({ taskId: createdId, expectedRevision: committedCreate.revision, action: 'edit', subject: '过时重试' }),
+        error => error instanceof TeamError && error.code === 'TEAM_TASK_STALE_REVISION');
+      assert.deepEqual(team.getTask(createdId), committedUpdate);
+      await runtime.native.sessionPersistence.flush();
+      const stored = await runtime.native.sessionPersistence.open(lead.id, 'read');
+      try {
+        const durable = await stored.read();
+        const mutations = durable.events.flatMap(event => event.type === 'team/task' && event.data.task.id === createdId
+          ? [{ revision: event.data.task.revision, subject: event.data.task.subject }] : []);
+        assert.deepEqual(mutations, [
+          { revision: 1, subject: '取消等待的正式创建' },
+          { revision: 2, subject: '退出等待的正式修订' },
+        ], '取消、SDK退出和旧CAS重试都不丢失或重复正式持久修订');
+      } finally { await stored.close(); }
+    } finally {
+      releaseCreate.resolve(); releaseUpdate.resolve();
+      sessions.flush = flush;
+      await Promise.allSettled([creating, updating]);
+      writer.dispose(); mutationHandle.release();
+    }
+
     const failure = new Error('TEAM_PROJECTION_READ_FAILED');
     team.readProjection = async options => { await inspect(options); throw failure; };
     const failed = firstValueFrom(team.state.observations$.pipe(filter(value => value.status === 'error'), timeout(5_000)));

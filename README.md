@@ -32,7 +32,7 @@ Jobs 与 MCP 的 `toolNames`、MCP 的 `resourceToolNames` 是实际注册工具
 
 ## 编程模型
 
-本地应用用 `runtime.application.workspace(id)`、组件用 `props.workspace` 取得同一工作区编程对象。`workspace.resource(implementation, params)` 与 `workspace.reaction(implementation, params)` 复用正式资源和反应的身份，跨 Environment、Session 共享，不同工作区隔离；构造不读取，反应显式启动。登记删除或宿主退出结束工作区 owner，撤销观察及排队关系，已受理业务继续由原 owner 完成。
+本地应用用 `runtime.application.workspace(id)`、组件用 `props.workspace` 取得同一工作区编程对象。`workspace.resource(implementation, params)` 与 `workspace.reaction(implementation, params)` 按正式实现与参数复用实例；局部业务直接使用 `workspace.resource({ value, read })`、`workspace.reaction({ event, result, observe, operator, execute })`，每次构造独立实例，显式保留返回对象即可跨 Environment、Session 共享。构造不读取，反应显式启动。不同工作区隔离；登记删除或宿主退出结束工作区 owner，撤销观察及排队关系，已受理业务继续由原 owner 完成。
 
 - `defineResource`、`implementResource`、`bindResource` 定义事实来源并按参数取得稳定实例；普通函数、业务 hook 与公开视图消费同一观察。多个消费者共享来源，失效取消旧读取，最后观察者退出后撤掉旧的有效现场。
 - `defineReaction`、`implementReaction`、`bindReaction` 定义持续感知与动作之间的关系。实例显式 `start()`，`state$`、`events$` 与 `settled` 观察同一次运行；条件、去重和并发直接使用 RxJS。停止反应释放关系，已受理的业务仍由原 owner 结算。
