@@ -61,3 +61,14 @@ implementAction(revise, {
 });
 // @ts-expect-error 业务实现不能替换纯合同所拥有的展示投影。
 implementAction(revise, { execute: () => '2026-10-26T00:00:00.000Z', observe: () => ({ wrong: true }) });
+
+implementAction({ name: 'local_parse', description: '局部实现不能反向改变schema的输入方向',
+  scope: z.null(), input: z.string().transform(Number), output: z.string(),
+  // @ts-expect-error 同对象的handler必须消费已解析number，不能反向扩大input合同。
+  execute: (value: string) => value,
+});
+implementAction({ name: 'local_result', description: '局部实现返回输出schema的原始方向',
+  scope: z.null(), input: z.null(), output: revise.output,
+  // @ts-expect-error Date是schema output，handler必须返回codec的原始string。
+  execute: () => new Date(),
+});

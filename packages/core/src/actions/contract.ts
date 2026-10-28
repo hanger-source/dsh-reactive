@@ -119,6 +119,11 @@ export type ActionImplementationOptions<D extends ActionContract> = {
 } & ([ActionOperation<D>] extends [never] ? { readonly operationOwner?: never }
   : { readonly operationOwner: OperationOwner<ActionOperation<D>> });
 
+/** 局部实现把合同与 handler 写在一起；需要跨边界共享时继续独立声明纯合同。 */
+export type LocalActionOptions<I extends z.ZodType, O extends z.ZodType, S extends z.ZodType<Json>, Observed extends Json = never,
+  P extends OperationContract = never> = ActionOptions<I, O, S, Observed, P>
+  & NoInfer<ActionImplementationOptions<ActionDefinition<I, O, S, Observed, P>>>;
+
 /** 实现只公开其原合同身份；实际 handler 由本模块私有身份持有。 */
 export interface ActionImplementation<D extends ActionContract = ActionContract> {
   readonly definition: D;
@@ -570,8 +575,23 @@ export function implementAction<I extends z.ZodType, O extends z.ZodType, S exte
   P extends OperationContract = never>(
   definition: ActionDefinition<I, O, S, Observed, P>,
   options: NoInfer<ActionImplementationOptions<ActionDefinition<I, O, S, Observed, P>>>,
+): ActionImplementation<ActionDefinition<I, O, S, Observed, P>>;
+export function implementAction<I extends z.ZodType, O extends z.ZodType, S extends z.ZodType<Json>, Observed extends Json = never,
+  P extends OperationContract = never>(
+  options: LocalActionOptions<I, O, S, Observed, P>,
+): ActionImplementation<ActionDefinition<I, O, S, Observed, P>>;
+export function implementAction<I extends z.ZodType, O extends z.ZodType, S extends z.ZodType<Json>, Observed extends Json = never,
+  P extends OperationContract = never>(
+  source: ActionDefinition<I, O, S, Observed, P> | LocalActionOptions<I, O, S, Observed, P>,
+  options?: ActionImplementationOptions<ActionDefinition<I, O, S, Observed, P>>,
 ): ActionImplementation<ActionDefinition<I, O, S, Observed, P>> {
+  if (options === undefined) {
+    const local = source as LocalActionOptions<I, O, S, Observed, P>;
+    return implementAction(defineAction(local), local);
+  }
+  const definition = source as ActionDefinition<I, O, S, Observed, P>;
   if (!actionDefinitions.has(definition)) throw new Error('REACTIVE_ACTION_DEFINITION_INVALID');
+  if (typeof options.execute !== 'function') throw new Error('REACTIVE_ACTION_IMPLEMENTATION_INVALID');
   const implementation = Object.freeze({ definition });
   const execute = options.execute;
   const owner = options.operationOwner;

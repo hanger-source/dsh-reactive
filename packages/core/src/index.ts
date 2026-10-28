@@ -15,6 +15,7 @@ export type { ApplicationDefinition } from './applications/definition.ts';
 export { defineAction, implementAction, bindAction, ActionBindingUnavailableError, ActionTargetMismatchError } from './actions/contract.ts';
 export { actionIdentity, actionIdentityKey, assertActionIdentity, ActionContractMismatchError } from './actions/identity.ts';
 export type { ActionIdentity } from './actions/contract.ts';
+export type { LocalActionOptions } from './actions/contract.ts';
 export { InputEditRejectedError } from './conversations/input-edit.ts';
 export type { ActionContract, ActionDefinition, ActionOptions, ActionImplementation, ActionImplementationOptions, ActionInput, ActionParsedInput, ActionOutput, ActionScope, ActionObserved, ActionTarget, ActionSource, ActionExecutionContext, ActionCallContext, ActionBindingOptions, ActionReference, ActionCommandOrigin, ActionOperationContract, ActionOperation, ActionInvocation, BoundAction, Invocation, InvocationActivity, InvocationPhase } from './actions/contract.ts';
 export { defineOperation, implementOperation, bindOperation, attachOperation, locateOperation, operationFollowLinkSchema, encodeOperationFeedback, decodeOperationFeedback } from './operations/contract.ts';

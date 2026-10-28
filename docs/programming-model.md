@@ -94,7 +94,11 @@ const prepareMerchant = implementAction(PrepareMerchant, {
 });
 ```
 
-defineAction 和 implementAction 都不执行业务；useAction(prepareMerchant, targetFactory, dependencies) 只绑定不可变目标。显式调用时，input 在唯一入口解析，execute 取得 schema output，返回值经过 output schema 解析。模型参数描述转换前输入，结果描述转换后输出；无法投影的 schema 明确拒绝装配。
+defineAction 和 implementAction 都不执行业务；useAction(prepareMerchant, targetFactory, dependencies) 只绑定不可变目标。局部实现可直接写 `implementAction({ name, description, scope, input, output, execute })`，需要共享的纯合同继续单独定义。显式调用时，input 在唯一入口解析，execute 取得 schema output，返回值经过 output schema 解析。模型参数描述转换前输入，结果描述转换后输出；无法投影的 schema 明确拒绝装配。
+
+组件内部可以用 `useAction(() => ({ name, description, scope, target, input, output, execute }), dependencies)` 同时描述局部实现与目标。factory 只构造选项，Program 负责正式绑定和来源接入；同一 owner 和 dependencies 保留同一绑定，目标变化取得新绑定，旧调用保留原目标。Action 名称是明确的能力身份，写在该处一次；框架不根据组件位置生成业务名称。普通函数可以调用返回的同一个 Action，并消费其 Promise、Invocation 资源和 Observable。
+
+局部 Action 的准入与退出沿用正式 Action 机制：组件撤下后不再接受新调用，已受理业务仍归原 owner。Resource 的失效、Reaction 的显式运行与 Action 的副作用各有独立语义，构造和渲染不启动它们。声明 Operation 时，局部选项也必须提供与合同完全匹配的 operationOwner；kind、version、命令与持久恢复责任仍由业务明确声明。
 
 本例要求业务服务真正支持按 commandId 定位受理事实，且同一命令永远指向同一操作。invocationId 提供关联身份，本身不保证业务去重。registerPreparationFollow 必须在业务的可靠设施中保存关联并安排独立通知；普通 Observable 订阅不满足这项合同。
 

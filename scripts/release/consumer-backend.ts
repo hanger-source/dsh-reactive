@@ -1,8 +1,8 @@
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction,
   resourceView, shareResource, type Scope, type Observation, type OperationContract, type OperationHandle,
-  type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, type Invocation, type Json, z } from '@hanger-source/dsh-reactive';
+  type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, z } from '@hanger-source/dsh-reactive';
 import { concatMap, type Observable } from 'rxjs';
-import { implementProgram, useResource, useResourceInstance, useReaction, useBeforeStep } from '@hanger-source/dsh-reactive/program';
+import { implementProgram, useAction, useResource, useResourceInstance, useReaction, useBeforeStep } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, type ConversationHandle, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-reactive-dsh/tools';
@@ -33,12 +33,32 @@ export function useBackendBindings(resource: ResourceImplementation<typeof curre
   const instance = useResourceInstance(resource, null);
   return { resource: instance, observed: useResource(instance), reaction: useReaction(reaction, null) };
 }
-export function useLocalBackend(target: string, changes$: Observable<number>) {
+export function useLocalBackend(target: string, changes$: Observable<number>, save: (target: string, value: number) => Promise<number>) {
   const resource = useResourceInstance(() => ({ value: z.string(), read: () => target }), [target]);
+  const action = useAction(() => ({ name: 'local_save', description: '保存明确目标',
+    scope: z.object({ target: z.string() }), target: { target }, input: z.string().transform(Number), output: z.number(),
+    execute: (value, call) => save(call.scope.target, value),
+  }), [target, save]);
   useBeforeStep(async signal => { await resource.read(signal); }, [resource]);
   const reaction = useReaction(() => ({ event: z.number(), result: z.string(),
     observe: () => changes$, operator: concatMap, execute: revision => target + ':' + (revision + 1) }), [target, changes$]);
-  return { resource, reaction, observed: useResource(resource) };
+  return { resource, action, reaction, observed: useResource(resource) };
+}
+export const localImplementation = (save: (target: string, value: number) => Promise<number>) => implementAction({
+  name: 'local_service_save', description: '直接提供局部实现', scope: z.object({ target: z.string() }),
+  input: z.number(), output: z.number(), execute: (value, call) => save(call.scope.target, value),
+});
+
+const preparation = defineOperation({ kind: 'consumer.preparation', version: 1,
+  command: z.object({ target: z.string(), commandId: z.string() }), reference: z.object({ id: z.string() }),
+  state: z.enum(['running', 'complete']), settled: state => state === 'complete' ? state : undefined });
+export function useLocalPreparation(owner: OperationOwner<typeof preparation>, target: string,
+  submit: (command: { target: string; commandId: string }) => Promise<{ id: string }>) {
+  return useAction(() => ({ name: 'local_prepare', description: '委托真实业务操作',
+    scope: z.object({ target: z.string() }), target: { target }, input: z.null(), output: preparation.reference,
+    operation: { definition: preparation, command: (_input, scope, origin) => ({ target: scope.target, commandId: origin.invocationId }), reference: output => output },
+    operationOwner: owner, execute: (_input, call) => submit({ target: call.scope.target, commandId: call.invocationId }),
+  }), [owner, target, submit]);
 }
 export function usePublicView(session: ConversationHandle<typeof contract> | RemoteProgramSession<typeof contract>) {
   const resource: ResourceReadable<number> = session.viewResource('revision');

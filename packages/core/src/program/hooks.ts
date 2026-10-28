@@ -1,7 +1,7 @@
 import { createContext, createElement, useContext, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type DependencyList, type ReactNode } from 'react';
 import { EmptyError, ReplaySubject, Subscriber, defer, fromEvent, isObservable, of, share, takeUntil, type Observable } from 'rxjs';
 import type { z } from 'zod';
-import { bindAction, type ActionCallContext, type ActionDefinition, type ActionExecutionContext, type ActionImplementation, type ActionOperationEvent, type ActionReference, type BoundAction } from '../actions/contract.ts';
+import { bindAction, implementAction, type LocalActionOptions, type ActionCallContext, type ActionDefinition, type ActionExecutionContext, type ActionImplementation, type ActionOperationEvent, type ActionReference, type BoundAction } from '../actions/contract.ts';
 import type { Json } from '../conversations/protocol.ts';
 import { bindOperation, type BoundOperation, type OperationAccessContext, type OperationBindingReference, type OperationCommand, type OperationContract, type OperationFeedbackPayload, type OperationFeedbackRead, type OperationOwner, type OperationReference } from '../operations/contract.ts';
 import { Scope } from '../reactivity/scope.ts';
@@ -52,23 +52,39 @@ function useOwner(): ProgramHookOwner {
 /**
  * target 只纯构造目标；deps 与 React useMemo 一样列出该构造依赖。
  * 相同 owner、implementation 与 deps 保留绑定；改变目标必须改变 deps。
+ * 局部 factory 同时返回实现选项与 target，沿用同一绑定和可信来源，不隐式执行。
  * 普通调用由宿主逐次建立来源，原生调用仍显式传入其真实执行关联。
  */
 export function useAction<I extends z.ZodType, O extends z.ZodType, S extends z.ZodType<Json>, Observed extends Json = never,
   P extends OperationContract = never>(
   implementation: ActionImplementation<ActionDefinition<I, O, S, Observed, P>>, target: () => z.input<NoInfer<S>>, dependencies: DependencyList,
+): BoundAction<ActionDefinition<I, O, S, Observed, P>, true>;
+export function useAction<I extends z.ZodType, O extends z.ZodType, S extends z.ZodType<Json>, Observed extends Json = never,
+  P extends OperationContract = never>(
+  factory: () => LocalActionOptions<I, O, S, Observed, P> & { readonly target: z.input<NoInfer<S>> }, dependencies: DependencyList,
+): BoundAction<ActionDefinition<I, O, S, Observed, P>, true>;
+export function useAction<I extends z.ZodType, O extends z.ZodType, S extends z.ZodType<Json>, Observed extends Json = never,
+  P extends OperationContract = never>(
+  source: ActionImplementation<ActionDefinition<I, O, S, Observed, P>>
+    | (() => LocalActionOptions<I, O, S, Observed, P> & { readonly target: z.input<NoInfer<S>> }),
+  targetOrDependencies: (() => z.input<S>) | DependencyList, dependencies?: DependencyList,
 ): BoundAction<ActionDefinition<I, O, S, Observed, P>, true> {
   const owner = useOwner();
+  const local = typeof source === 'function';
+  const currentDependencies = local ? targetOrDependencies as DependencyList : dependencies!;
   const binding = useMemo(() => {
+    const localOptions = typeof source === 'function' ? source() : undefined;
+    const implementation = typeof source === 'function' ? implementAction(localOptions!) : source;
+    const target = localOptions === undefined ? (targetOrDependencies as () => z.input<S>)() : localOptions.target;
     const state = { active: false, owned: false };
-    const action: BoundAction<ActionDefinition<I, O, S, Observed, P>, true> = bindAction(implementation, target(), {
+    const action: BoundAction<ActionDefinition<I, O, S, Observed, P>, true> = bindAction(implementation, target, {
       active: () => state.active,
       execution: reference => owner.execution(reference),
       admit: (input, call, execution) => owner.admit(action, input, call, execution),
       operation: (event, execution) => owner.operation?.(action, event, execution),
     });
     return { action, state };
-  }, [owner, implementation, ...dependencies]);
+  }, [owner, local ? true : source, ...currentDependencies]);
   useLayoutEffect(() => {
     if (!binding.state.owned) {
       owner.scope.own(() => binding.action.release());

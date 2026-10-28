@@ -24,6 +24,10 @@ export const ItemProgram = defineProgram({ input: Target, surface: ItemSurface }
 
 在模块中用 `useAction(saveImplementation, () => target, [target.sku])` 取得绑定。target factory 只构造数据，deps 表达身份；未列依赖会错误保留旧目标，不能把每次 render 当新绑定修补它。
 
+局部实现可以用 `implementAction({ name, description, scope, input, output, execute })`，或在组件中用 `useAction(() => ({ name, description, scope, target, input, output, execute }), dependencies)` 取得同一个正式 Action。factory 不执行或注册副作用，Program 持有绑定并逐调用提供可信来源；同依赖保留身份，目标切换不重定向旧调用。名称在能力定义处明确写一次，不从 React key 或诊断标签推导。组件撤下拒绝新调用，已受理业务按原 owner 完成；Resource 查询、Reaction 运行和 Action 执行继续各守自己的生命周期。
+
+Operation 代表业务 owner 持有的跨调用事实。局部 Action 若声明 operation，必须同时提供同一合同的 operationOwner；共享 Operation 的 kind、version 和恢复规则不能因使用局部语法而省略。共享 SDK 或原生 UI 需要独立导入的 Action 合同时，继续分开纯合同和业务实现。
+
 显式调用返回唯一 Invocation：`const invocation = save({ note }); await invocation.result`。activity、result 与可选 operation 指向同次调用；`invocation.activity.read()` 读取当前事实，`useResource(invocation.activity)` 让业务 hook 借入它，activity$ 是同一资源的 values$。read 不等待业务完成，业务 pending/running/failed 是可有效读取的事实；资源 error 表达观察失败。returned/failed 后流结束，晚读取保留终态，多订阅不重执行。纯本地事实由 Invocation 持有，不随组件或绑定退出撤销；远程读取随所属 SDK 退出。invocations$ 是该绑定新调用的热流，不 replay；activeInvocations$ 是当前在途集合，适合晚挂载关系。结束观察或卸载不解释为取消已执行的业务。
 
 ## 组件只贡献当前声明
