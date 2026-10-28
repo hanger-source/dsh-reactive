@@ -153,14 +153,19 @@ export class ProgramSkills {
 
   /** 外部显式释放与 Agent scope 卸载共享同一批原生资源；清理失败仍由此接口传播。 */
   dispose(): Promise<void> {
-    return this.#closing ??= (async () => {
+    if (this.#closing) return this.#closing;
+    const completion = Promise.withResolvers<void>();
+    this.#closing = completion.promise;
+    void (async () => {
       this.#disposed = true;
       this.#lifetime.abort(new Error('REACTIVE_SKILLS_DISPOSED'));
       const failures: unknown[] = [];
       try { await this.#owner.dispose(); } catch (error) { failures.push(error); }
+      try { await this.#owner.await(); } catch (error) { failures.push(error); }
       try { await this.closeBindings(); } catch (error) { failures.push(error); }
       if (failures.length) throw new AggregateError(failures, 'REACTIVE_SKILLS_DISPOSAL_FAILED');
-    })();
+    })().then(completion.resolve, completion.reject);
+    return this.#closing;
   }
 
   private assertActive() { if (this.#disposed) throw new Error('REACTIVE_SKILLS_DISPOSED'); }
@@ -168,14 +173,17 @@ export class ProgramSkills {
     for (const attempt of this.#preparing) attempt.abort(new Error('REACTIVE_SKILL_PREPARATION_CHANGED'));
   }
   private retire(fiber: Fiber) {
-    const retirement = Promise.resolve(fiber.dispose()).then(() => { this.#retiring.delete(retirement); }, error => {
+    const retirement = (async () => { await fiber.dispose(); await fiber.await(); })().then(() => { this.#retiring.delete(retirement); }, error => {
       this.#retiring.delete(retirement);
       this.#failures.push(error);
     });
     this.#retiring.add(retirement);
   }
   private closeBindings(): Promise<void> {
-    return this.#bindingsClosing ??= (async () => {
+    if (this.#bindingsClosing) return this.#bindingsClosing;
+    const completion = Promise.withResolvers<void>();
+    this.#bindingsClosing = completion.promise;
+    void (async () => {
       this.#disposed = true;
       this.#lifetime.abort(new Error('REACTIVE_SKILLS_DISPOSED'));
       const failures: unknown[] = [];
@@ -188,6 +196,7 @@ export class ProgramSkills {
       await Promise.all([...this.#retiring]);
       failures.push(...this.#failures);
       if (failures.length) throw new AggregateError(failures, 'REACTIVE_SKILL_BINDINGS_DISPOSAL_FAILED');
-    })();
+    })().then(completion.resolve, completion.reject);
+    return this.#bindingsClosing;
   }
 }

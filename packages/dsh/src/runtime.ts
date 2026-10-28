@@ -138,11 +138,15 @@ export async function createRuntime<E extends readonly AnyEnvironment[]>(factory
   let closing: Promise<void> | undefined;
   return { application, home, native: ctx,
     dispose() {
-      return closing ??= (async () => {
+      if (closing) return closing;
+      const completion = Promise.withResolvers<void>();
+      closing = completion.promise;
+      void (async () => {
         try { await application.dispose(); } finally {
           try { await ctx.fiber.dispose(); } finally { openHomes.delete(home); }
         }
-      })();
+      })().then(completion.resolve, completion.reject);
+      return closing;
     },
   };
 }

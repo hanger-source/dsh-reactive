@@ -50,7 +50,10 @@ export class EnvironmentPresets {
 
   /** 调用者先释放 owned Agent handles；unregister 只退休原生声明，不接管其代际寿命。 */
   dispose() {
-    return this.#closing ??= (async () => {
+    if (this.#closing) return this.#closing;
+    const completion = Promise.withResolvers<void>();
+    this.#closing = completion.promise;
+    void (async () => {
       const failures: unknown[] = [];
       for (const registration of this.#registrations.reverse()) {
         try { await registration.retire?.(); } catch (error) { failures.push(error); }
@@ -59,6 +62,7 @@ export class EnvironmentPresets {
       }
       this.#registrations = [];
       if (failures.length) throw new AggregateError(failures, 'REACTIVE_PRESETS_DISPOSAL_FAILED');
-    })();
+    })().then(completion.resolve, completion.reject);
+    return this.#closing;
   }
 }

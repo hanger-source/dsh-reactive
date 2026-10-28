@@ -6,6 +6,7 @@ import { type AnyEnvironment } from "@hanger-source/dsh-reactive/kernel";
 import { Workspaces } from "../workspaces/workspaces.ts";
 import { createApplicationAssembly, type ApplicationAssembly } from "../delegations.ts";
 import { ApplicationHost } from '../application.ts';
+import { requireActivePlugin } from '../native-installation.ts';
 import type { HostOptions } from './options.ts';
 export type ApplicationFactory<E extends readonly AnyEnvironment[] = readonly AnyEnvironment[]> = (assembly: ApplicationAssembly) => ApplicationDefinition<E>;
 export function assembleApplication<E extends readonly AnyEnvironment[]>(ctx: Context, factory: ApplicationFactory<E>) {
@@ -54,18 +55,7 @@ export async function mountAssembledApplication<E extends readonly AnyEnvironmen
             throw error;
         }
     });
-    try {
-        await owner;
-    }
-    catch (error) {
-        try {
-            await owner.dispose();
-        }
-        catch (cleanup) {
-            throw new AggregateError([error, cleanup], 'REACTIVE_APPLICATION_STARTUP_FAILED');
-        }
-        throw error;
-    }
+    await requireActivePlugin(owner);
     if (!host) {
         await owner.dispose();
         throw new Error('REACTIVE_DSH_SERVICES_REQUIRED');

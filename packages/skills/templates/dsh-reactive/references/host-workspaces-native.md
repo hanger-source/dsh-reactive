@@ -36,6 +36,8 @@ createWorkspace 注册原生 existing 目录，不隐式 mkdir。Environment 不
 
 ## 嵌入与可选能力
 
+能力实例的 `dispose()` 撤销观察并等待本次安装范围真正退出，即使外层 Context 已开始卸载或同步清理中再次调用退出。观察清理失败在实际原生资源静止后报告。实例自行安装的服务由原生 owner 执行 drain；选择 provided 的服务继续归外部宿主。`forSession(source)` 返回的会话 SDK 只释放自己的观察，不借此停止原生执行。
+
 各子入口的原生依赖是版本固定为 `0.2.1-rc.3` 的 optional peers。应用选择某个域时，显式安装该行依赖；import 不等于安装原生服务，服务装配仍经 installNative 或已有宿主完成。默认后台和原生 UI 消费不因这些入口自动装入所有原生集成。
 
 | 子入口 | 需安装的 `@deepseek-ai/` 包 |

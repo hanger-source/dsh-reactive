@@ -9,6 +9,7 @@ import type { NativeSessionAccess } from './conversations/session-access.ts';
 /** 宿主选择的能力实例；正式插件与执行资源仍由原生 Fiber 持有。 */
 export interface NativeCapability {
   readonly install: NativeInstallation;
+  /** 撤销本实例观察并等待其安装范围真正退出；借入服务仍由外部宿主持有。 */
   dispose(): Promise<void>;
 }
 
@@ -31,26 +32,25 @@ export class NativeCapabilityOwner {
   readonly scope = new Scope();
   readonly install: NativeInstallation;
   #installation?: Fiber & PromiseLike<Fiber>;
-  #ready?: Promise<Fiber>;
   #fiber?: Fiber;
   #context?: Context;
   #disposing?: Promise<void>;
+  #failures = new Set<unknown>();
 
   constructor(name: string, setup: (ctx: Context) => void | PromiseLike<void>) {
     this.install = async parent => {
       this.scope.assertActive();
       if (this.#installation) throw new Error('REACTIVE_NATIVE_CAPABILITY_ALREADY_INSTALLED');
-      const scope = this.scope;
+      const stop = () => this.stopObservations();
       const installation = parent.plugin({ name, async apply(ctx: Context) {
         // 启动失败也结束观察；成功时另登记在子插件之后，退出先撤观察再等原生释放。
-        ctx.effect(() => () => scope.dispose());
+        ctx.effect(() => stop);
         await setup(ctx);
-        ctx.effect(() => () => scope.dispose());
+        ctx.effect(() => stop);
       } });
       this.#installation = installation;
       this.#context = installation.ctx;
-      this.#ready = requireActivePlugin(installation);
-      this.#fiber = await this.#ready;
+      this.#fiber = await requireActivePlugin(installation);
       this.scope.assertActive();
     };
   }
@@ -74,14 +74,26 @@ export class NativeCapabilityOwner {
     return context;
   }
 
+  private stopObservations(): void {
+    try { this.scope.dispose(); }
+    catch (error) { this.#failures.add(error); throw error; }
+  }
+
   dispose(): Promise<void> {
-    return this.#disposing ??= (async () => {
-      const failures: unknown[] = [];
-      try { this.scope.dispose(); } catch (error) { failures.push(error); }
-      try { if (this.#installation) await this.#installation.dispose(); } catch (error) { failures.push(error); }
-      if (failures.length === 1) throw failures[0];
-      if (failures.length) throw new AggregateError(failures, 'REACTIVE_NATIVE_CAPABILITY_DISPOSAL_FAILED');
-    })();
+    if (this.#disposing) return this.#disposing;
+    const completion = Promise.withResolvers<void>();
+    this.#disposing = completion.promise;
+    void (async () => {
+      try { this.stopObservations(); } catch { /* 该owner已保存失败，仍须等待原生资源。 */ }
+      if (this.#installation) {
+        try { await this.#installation.dispose(); } catch (error) { this.#failures.add(error); }
+        // 原生公开disposer是single-shot；外层已经开始卸载时仍加入原Fiber。
+        try { await this.#installation; } catch (error) { this.#failures.add(error); }
+      }
+      if (this.#failures.size === 1) throw [...this.#failures][0];
+      if (this.#failures.size) throw new AggregateError([...this.#failures], 'REACTIVE_NATIVE_CAPABILITY_DISPOSAL_FAILED');
+    })().then(completion.resolve, completion.reject);
+    return this.#disposing;
   }
 }
 

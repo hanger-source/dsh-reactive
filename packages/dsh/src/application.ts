@@ -110,7 +110,10 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
     notifyOperation(sessionId: string, followId: string, options: SubmitOptions = {}): Promise<OperationNotificationResult> { return this.operations.notifyOperation(sessionId, followId, options); }
     close(sessionId: string): Promise<void> { return this.sessions.close(sessionId); }
     dispose(): Promise<void> {
-        return this.#closing ??= (async () => {
+        if (this.#closing) return this.#closing;
+        const completion = Promise.withResolvers<void>();
+        this.#closing = completion.promise;
+        void (async () => {
             this.stopDelegationUpdates();
             this.#lifetime.abort(new Error('REACTIVE_HOST_DISPOSED'));
             const failures = await this.sessions.shutdownNative();
@@ -130,6 +133,7 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
             }
             if (failures.length)
                 throw new AggregateError(failures, 'REACTIVE_HOST_SHUTDOWN_FAILED');
-        })();
+        })().then(completion.resolve, completion.reject);
+        return this.#closing;
     }
 }

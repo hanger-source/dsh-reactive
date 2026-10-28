@@ -15,8 +15,10 @@ export async function requireActivePlugin(installation: Fiber & PromiseLike<Fibe
     return owner;
   } catch (error) {
     // 嵌入宿主也不能留下后来自动激活的半次安装；只释放这次exact fiber。
-    try { await installation.dispose(); }
-    catch (cleanup) { throw new AggregateError([error, cleanup], 'REACTIVE_NATIVE_PLUGIN_STARTUP_FAILED'); }
+    const failures = new Set<unknown>([error]);
+    try { await installation.dispose(); } catch (cleanup) { failures.add(cleanup); }
+    try { await installation; } catch (cleanup) { failures.add(cleanup); }
+    if (failures.size > 1) throw new AggregateError([...failures], 'REACTIVE_NATIVE_PLUGIN_STARTUP_FAILED');
     throw error;
   }
 }

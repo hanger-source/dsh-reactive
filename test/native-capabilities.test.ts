@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { Fragment, createElement as h, useLayoutEffect } from 'react';
 import { BehaviorSubject, Observable, Subject, filter, firstValueFrom, tap } from 'rxjs';
 import { LlmAdapter, type GenerateOptions } from '@deepseek-ai/dsh-llm';
-import type { Context } from '@deepseek-ai/cordis';
+import { Context } from '@deepseek-ai/cordis';
 import LocalJobs from '@deepseek-ai/dsh-jobs-local';
 import * as jobTools from '@deepseek-ai/dsh-tool-jobs';
 import type { JobOutcome } from '@deepseek-ai/dsh-jobs';
@@ -20,13 +20,47 @@ import type { ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
 import { createRuntime, nativeModel, requireActivePlugin } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeJobs, type NativeSessionJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
 import { createNativeApproval } from '@hanger-source/dsh-reactive-dsh/approval';
-import { nativeObservation } from '../packages/dsh/src/native-capability.ts';
+import { NativeCapabilityOwner, nativeObservation } from '../packages/dsh/src/native-capability.ts';
 
 declare module '@deepseek-ai/dsh-jobs/view' {
   interface JobKindMap { nativeLifecycle: 'native-lifecycle'; }
 }
 
 const nativeArguments = z.object({ marker: z.string().regex(/^[a-z-]+$/u) }).strict();
+
+test('外层原生卸载与能力退出加入同一清理，观察释放失败也要等原生资源静止', async () => {
+  const parent = new Context();
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const owner = new NativeCapabilityOwner('native-owner-cleanup', ctx => {
+    ctx.effect(() => async () => { entered.resolve(); await release.promise; });
+  });
+  const failure = new Error('OBSERVATION_RELEASE_FAILED');
+  let reentrant: Promise<void> | undefined;
+  owner.scope.own(() => {
+    reentrant = owner.dispose();
+    void reentrant.catch(() => {});
+    throw failure;
+  });
+  await owner.install(parent, '/tmp');
+  const external = parent.fiber.dispose();
+  try {
+    await entered.promise;
+    const closing = owner.dispose();
+    assert.equal(closing, reentrant, '同步释放中的重入取得原退出回执');
+    let settled = false;
+    const result = closing.then(() => { settled = true; }, error => { settled = true; return error; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(settled, false, 'Scope错误不能使尚未静止的原生清理提前结束');
+    release.resolve();
+    const error = await result;
+    assert.ok(error instanceof AggregateError);
+    assert.deepEqual(error.errors, [failure]);
+  } finally {
+    release.resolve();
+    await external;
+    await owner.dispose().catch(() => {});
+  }
+});
 
 test('原生读侧构造不连接，首次订阅后共享同一来源，owner退出不向迟到观察者回放旧快照', () => {
   const scope = new Scope(), changes = new Subject<number>();
