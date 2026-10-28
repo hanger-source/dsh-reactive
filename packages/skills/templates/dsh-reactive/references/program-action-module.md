@@ -58,7 +58,7 @@ return <>
 
 Context 默认 required=true：pending/error 阻止模型取得不完整现场。required=false 是显式非必需现场：pending/error 时撤掉该 Context，其他模块可以继续；公开资源仍保真实状态。不要丢弃错误后保留旧 ready。Offer 需按同一真实事实关闭相关行为。
 
-已有普通流直接交给 `useShared(standardObservable)`、`useObservable(standardObservable)` 或 `useRelation(standardObservable)`，构造管道时才使用 factory 与 deps。useRelation 在提交后持有关系，未处理的 RxJS error 使程序失败；它保留原元素，不把资源 error Observation 自动变成异常。需要显式执行/停止/观察的持续工作用 Reaction。`useBeforeStep` 用于原生步骤前必须完成的检查。渲染函数和数据投影不发命令。
+已有普通流直接交给 `useShared(standardObservable)`、`useObservable(standardObservable)` 或 `useRelation(standardObservable)`，构造管道时才使用 factory 与 deps。useRelation 在提交后持有关系，未处理的 RxJS error 使程序失败；它保留原元素，不把资源 error Observation 自动变成异常。需要显式执行/停止/观察的持续工作用 Reaction。`useBeforeStep` 用于原生步骤前必须完成的检查；同次准备并列连接当前检查，pending 不遮住兄弟模块错误，任一当前失败释放其余本次等待，登记集合变化重新核对当前集合。组件顺序不表达检查先后，检查须幂等并使用传入 signal。渲染函数和数据投影不发命令。
 
 `useBeforeStep(check, dependencies)` 的每次登记有独立身份，即使多个组件使用同一 check 函数，退出一个组件也不撤销其他登记。依赖替换或组件退出会中止旧检查收到的 signal 并结束本次等待，准备过程重新核对当前集合；不配合取消的 Promise 迟到完成或失败都不代表当前检查结果。原生步骤取消、Program 失败或退出同样结束等待，当前有效检查的错误仍传播。检查必须幂等，应使用传入 signal 等待真实依赖，例如 `await resource.read(signal)`；业务动作仍从 Action 或其他显式执行入口发起。
 

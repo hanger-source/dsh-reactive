@@ -71,7 +71,7 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
   const ctx = new Context(); contexts.push(ctx);
   await ctx.plugin(Registry);
   const headers = { authorization: 'Bearer contract-test' };
-  installConnection(ctx, { interactions: 'answer', transport: createAuthenticatedTransport({ baseUrl: gateway.url,
+  const transport = createAuthenticatedTransport({ baseUrl: gateway.url,
     async fetch(url, init) {
       const response = await fetch(url, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), ...headers } });
       if (corruptNextAck && new URL(url).pathname.endsWith('/reactivePrograms/startAction')) {
@@ -85,7 +85,9 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
       return response;
     },
     createWebSocket: url => new WebSocket(url, { headers }),
-  }) });
+  });
+  ctx.effect(() => () => transport.dispose(), 'authenticated transport');
+  installConnection(ctx, { interactions: 'answer', transport });
   await ctx.plugin(Gateway); await ctx.remote.$mount(contribution);
   const open = async contract => {
     const selected = defineProgram({ name: 'action_contract_test', input: z.null(), surface: defineSurface({ views: {}, actions: { save: contract } }) });

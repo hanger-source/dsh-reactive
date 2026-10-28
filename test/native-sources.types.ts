@@ -8,15 +8,19 @@ import type { NativeFiles, NativeSessionFiles, WorkspaceFileText } from '@hanger
 import type { ResourceReadable } from '@hanger-source/dsh-reactive';
 import type { NativeApproval } from '@hanger-source/dsh-reactive-dsh/approval';
 import type { NativeClock } from '@hanger-source/dsh-reactive-dsh/time';
+import type { NativeSkills } from '@hanger-source/dsh-reactive-dsh/skills';
+import type { NativeSubagents, NativeSessionSubagents, SubagentDescendantListEntry } from '@hanger-source/dsh-reactive-dsh/subagents';
 
 function programCapabilities<P extends ProgramContract>(conversation: ProgramSession<P>, capabilities: {
   jobs: NativeJobs; schedule: NativeSchedule; team: NativeTeam; files: NativeFiles; approval: NativeApproval; clock: NativeClock;
+  skills: NativeSkills; subagents: NativeSubagents;
 }) {
   const source: NativeSessionSource = conversation;
   return {
     jobs: capabilities.jobs.forSession(source), schedule: capabilities.schedule.forSession(source),
     team: capabilities.team.forSession(source), files: capabilities.files.forSession(source),
     approval: capabilities.approval.forSession(source), clock: capabilities.clock.forSession(source),
+    skills: capabilities.skills.forSession(source), subagents: capabilities.subagents.forSession(source),
   };
 }
 void programCapabilities;
@@ -68,3 +72,12 @@ function fileConsumer(files: NativeSessionFiles) {
   return { page, directory: files.directory('.'), metadata: files.metadata('report.txt') };
 }
 void fileConsumer;
+
+function subagentConsumer(subagents: NativeSessionSubagents, target: SubagentDescendantListEntry['id'], signal: AbortSignal) {
+  const descendants: ResourceReadable<readonly SubagentDescendantListEntry[]> = subagents.descendants;
+  const reading: Promise<readonly SubagentDescendantListEntry[]> = subagents.descendants.read(signal);
+  const queried: Promise<readonly SubagentDescendantListEntry[]> = subagents.readDescendants({ signal });
+  const interrupted: void = subagents.interrupt(target, { signal });
+  return { descendants, reading, queried, interrupted, stream: subagents.descendants$ };
+}
+void subagentConsumer;

@@ -1,4 +1,5 @@
 import type { SubagentRuntime, SubagentCatalogEntry, SubagentDescendantListEntry } from '@deepseek-ai/dsh-subagent';
+import type { SessionId } from '@deepseek-ai/dsh-session';
 import { Observable, firstValueFrom, merge } from 'rxjs';
 import { abortable, observeResource, type CancellationOptions, type ResourceReader } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
@@ -7,6 +8,7 @@ import { NativeCapabilityOwner, nativeObservationScope, nativeResource, ownNativ
 import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
 
 export type { SubagentCatalogEntry, SubagentDescendantListEntry } from '@deepseek-ai/dsh-subagent';
+export { SubagentError } from '@deepseek-ai/dsh-subagent';
 
 export interface NativeSubagentsOptions { readonly service: 'provided'; }
 
@@ -14,8 +16,13 @@ export interface NativeSubagentsOptions { readonly service: 'provided'; }
 export interface NativeSessionSubagents {
   readonly catalog: ResourceReader<readonly SubagentCatalogEntry[]>;
   readonly catalog$: Observable<readonly SubagentCatalogEntry[]>;
+  /** 正式递归切面；activity保留原生Session驻留语义，不表示当前turn或业务Goal阶段。 */
+  readonly descendants: ResourceReader<readonly SubagentDescendantListEntry[]>;
+  readonly descendants$: Observable<readonly SubagentDescendantListEntry[]>;
   /** 正式递归查询保留每一分支的诊断；读取不加载或恢复Agent。 */
   readDescendants(options?: CancellationOptions): Promise<readonly SubagentDescendantListEntry[]>;
+  /** exact live祖先只中断选定分支的当前执行；不清待处理inbox，返回不保证已静止。 */
+  interrupt(targetSessionId: SessionId, options?: CancellationOptions): void;
   /** 只释放这次读侧，不中断子Agent或其原生Activation。 */
   dispose(): void;
 }
@@ -23,6 +30,8 @@ export interface NativeSessionSubagents {
 class SessionSubagents implements NativeSessionSubagents {
   readonly catalog: ResourceReader<readonly SubagentCatalogEntry[]>;
   readonly catalog$: Observable<readonly SubagentCatalogEntry[]>;
+  readonly descendants: ResourceReader<readonly SubagentDescendantListEntry[]>;
+  readonly descendants$: Observable<readonly SubagentDescendantListEntry[]>;
   #scope: Scope;
   get disposed(): boolean { return this.#scope.disposed; }
 
@@ -34,15 +43,41 @@ class SessionSubagents implements NativeSessionSubagents {
     this.catalog = nativeResource(this.#scope, () => observeResource({ key$: merge(changes, access.liveAgent$),
       read: (_agent, signal) => this.read(signal, (service, reading) => service.listChildren(access.sessionId, reading)) }));
     this.catalog$ = this.catalog.values$;
+    const descendantChanges = new Observable<void>(subscriber => {
+      const ctx = this.context();
+      const notify = (id: SessionId) => {
+        if (subscriber.closed) return;
+        try {
+          const current = this.descendants.peek();
+          // pending/error尚无完整可达切面，不能漏掉读取期间的分支变化；ready只借正式结果判关联。
+          if (id === access.sessionId || current.status !== 'ready'
+            || current.value.some(row => row.id === id || row.parentId === id)) subscriber.next();
+        } catch (error) { subscriber.error(error); }
+      };
+      const releases = [
+        ctx.on('session/event', (session, event) => { if (event.type === 'subagent/catalog') notify(session.id); }),
+        ctx.on('session/created', session => notify(session.id)),
+        ctx.on('session/disposed', session => notify(session.id)),
+      ];
+      return () => { for (const release of releases) release(); };
+    });
+    this.descendants = nativeResource(this.#scope, () => observeResource({ key$: merge(descendantChanges, access.liveAgent$),
+      read: (_agent, signal) => this.readDescendants({ signal }) }));
+    this.descendants$ = this.descendants.values$;
   }
 
   private context() { this.#scope.assertActive(); return this.owner.session(this.access, 'subagents'); }
 
+  private service(): SubagentRuntime {
+    const service: SubagentRuntime | undefined = this.context().get('subagents');
+    if (!service) throw new Error('REACTIVE_NATIVE_SUBAGENTS_REQUIRED');
+    return service;
+  }
+
   private async read<T>(signal: AbortSignal | undefined, query: (service: SubagentRuntime, signal: AbortSignal) => Promise<T>): Promise<T> {
     const reading = signal ? AbortSignal.any([this.#scope.signal, signal]) : this.#scope.signal;
     reading.throwIfAborted();
-    const service: SubagentRuntime | undefined = this.context().get('subagents');
-    if (!service) throw new Error('REACTIVE_NATIVE_SUBAGENTS_REQUIRED');
+    const service = this.service();
     const result = await firstValueFrom(abortable(current => query(service, current), reading));
     reading.throwIfAborted(); this.context();
     return ownNativeValue(result);
@@ -50,6 +85,15 @@ class SessionSubagents implements NativeSessionSubagents {
 
   readDescendants(options: CancellationOptions = {}): Promise<readonly SubagentDescendantListEntry[]> {
     return this.read(options.signal, (service, signal) => service.listDescendants(this.access.sessionId, signal));
+  }
+
+  interrupt(targetSessionId: SessionId, options: CancellationOptions = {}): void {
+    const service = this.service();
+    options.signal?.throwIfAborted();
+    const agent = this.access.liveAgent();
+    if (!agent || agent.id !== this.access.sessionId) throw new Error('REACTIVE_NATIVE_SUBAGENTS_LIVE_ANCESTOR_REQUIRED');
+    // 真实服务核exact Agent与祖先关系；信号仅约束进入控制前，不接管既有Activation。
+    service.interrupt(targetSessionId, { kind: 'ancestor', agent });
   }
 
   dispose(): void { this.#scope.dispose(); }

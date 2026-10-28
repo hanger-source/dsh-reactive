@@ -50,9 +50,9 @@ createWorkspace 注册原生 existing 目录，不隐式 mkdir。Environment 不
 
 ## 嵌入与可选能力
 
-原生子 Agent 发现从 `@hanger-source/dsh-reactive-dsh/subagents` 导入 `createNativeSubagents({ service: 'provided' })`。它使用宿主已有的底座 subagents 服务，不安装另一套 provider。安装后取得 `const children = capability.forSession(source)`：children.catalog 是同源 ResourceReader，children.catalog$ 是其值流，支持普通函数、Promise、RxJS 和 hooks；children.readDescendants({ signal }) 显式读取可达子树。保留 one-shot、continuable、external 原生身份及不可读分支诊断，不把目录模式当成业务阶段。其他父会话的目录事件不使此资源失效；关闭/恢复原 Agent 重新取得原父目录，冷读不恢复 Agent 或启动模型。
+原生子 Agent 发现从 `@hanger-source/dsh-reactive-dsh/subagents` 导入 `createNativeSubagents({ service: 'provided' })`。它使用宿主已有的底座 subagents 服务，不安装另一套 provider。安装后取得 `const children = capability.forSession(source)`：children.catalog 是直接目录资源，children.descendants 是正式递归查询的资源，相应 catalog$、descendants$ 是原资源的值流，支持普通函数、Promise、RxJS 和 hooks；children.readDescendants({ signal }) 显式取得独立查询结果。保留 one-shot、continuable、external 原生身份及不可读分支诊断，不把目录模式当成业务阶段。后代 activity 沿用原生 resident 判断，不表示模型本轮是否结束。冷读不恢复 Agent 或启动模型。
 
-Subagents 的 dispose 只撤销读侧，不停止已有 Activation。普通原生发现不要求 Goal；带独立 Goal 的子程序委托继续通过 assembly.implementDelegation 和 NativeChildWork 组合 Action、Operation 与反馈。此入口不包装缺少可信 Program 执行前准入的 raw start/send，也不把这个缺口扩大为整个子 Agent 域不可用。
+`children.interrupt(targetId, { signal })` 在调用前核验来源与取消，再以该来源真实 Agent 的 ancestor 权限调用原生中断；冷来源无法控制，其他分支与父 Agent 不因本次选择被中断。未驻留目标沿用原生无操作语义，权限失败保留原生 SubagentError，返回不表示执行已经完成。Subagents 的 dispose 只撤销读侧，不停止已有 Activation。普通原生发现不要求 Goal；带独立 Goal 的子程序委托继续通过 assembly.implementDelegation 和 NativeChildWork 组合 Action、Operation 与反馈。此入口不包装缺少可信 Program 执行前准入的 raw start/send，也不把这个缺口扩大为整个子 Agent 域不可用。
 
 Schedule 管理读取、冷 Team 投影及 Files 的显式读取使用所属 SDK 与调用者的取消信号；等待立即结算，不被迟到的原生查询回执拖住。Files 仍独立跟踪真实 I/O，实例退出等待这些读取与 unwatch 完成。只读等待的取消不改变原生任务、提醒投递或成员执行的 owner。
 
@@ -112,7 +112,7 @@ Schedule 创建与 Team spawn/send 尚无 Program 来源准入接点。它们与
 
 运行时业务 Skill 使用 `@hanger-source/dsh-reactive-dsh/skills` 的 `createNativeSkills({ service: 'provided' })`，由 installNative 或 nativeCapabilities 安装读取接点；宿主必须已有正式 skills Registry。`const skills = capability.forSession(source)` 后，`skills.catalog` 是目录资源，`skills.definition(name)` 是固定名称的正文资源，同一来源和名称复用对象。read(signal)、peek、values$、observations$、invalidate 与 useResource 消费同一正式 Resource，构造不读取；最后消费者退出撤销读取与原生监听。需要重试不完整发现或主动重取正文时显式 invalidate，不轮询或无条件 retry。
 
-目录保留原生 `complete`、modelInvocable、userInvocable 与资源基址，不提供 provider locator；发现和读取不授予调用权限。未找到正文返回 ready(undefined)，真正读取失败保留 error，之后 skills/change 可恢复。Agent 关闭时资源保持 pending，显式恢复后按真实新 Agent 层级和该会话工作目录重读；读取不恢复 Agent、不启动模型。SDK dispose 只释放观察，provider 与 Skill 声明仍归原生注册者或 Program。这与独立 `@hanger-source/dsh-reactive-skills` 的开发指导产品分开。
+目录保留原生 `complete`、modelInvocable、userInvocable 与资源基址，不提供 provider locator；发现和读取不授予调用权限。目录和正文以正式 workingDirectory.get(agent.session) 返回的当前目录解析，同会话 working-directory/change 与 skills/change 使旧结果失效，旧目录的迟到查询不能写回。读取不调用 ensure，不初始化或持久化目录，也不改变文件资源的权限根。未找到正文返回 ready(undefined)，真正读取失败保留 error，后续原生变化可恢复。Agent 关闭时资源保持 pending，显式恢复后按真实新 Agent 层级和当前目录重读；读取不恢复 Agent、不启动模型。SDK dispose 只释放观察，provider 与 Skill 声明仍归原生注册者或 Program。这与独立 `@hanger-source/dsh-reactive-skills` 的开发指导产品分开。
 
 原生工具目录使用 `@hanger-source/dsh-reactive-dsh/tools` 的 `createNativeTools({ service: 'provided' })`，沿相同安装与 exact source 规则取得 `tools.forSession(source).catalog`。它是可 read、peek、invalidate、订阅和交给 useResource 的正式资源，也可以与 Skill 目录、正文和业务资源一起 combineResources。首次观察连接 tools/change；真实注册、撤销、restriction 和 Agent 代际变化先撤下旧 ready。冷会话保持 pending，读取不恢复 Agent、不启动模型；最后消费者或 SDK 退出只释放观察，不撤工具或 restriction。
 

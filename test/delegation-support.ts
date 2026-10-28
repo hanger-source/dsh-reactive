@@ -32,7 +32,7 @@ export interface DelegationFixtureOptions {
   readonly subagents?: RuntimeOptions['subagents'];
   readonly declaration$?: Observable<boolean>;
   respond(request: GenerateOptions): AsyncIterable<StreamChunk>;
-  installNative?(native: NativeContext): void | Promise<void>;
+  installNative?(native: NativeContext, home: string): void | PromiseLike<void>;
   authorize?(admission: DelegationAdmission<typeof DelegateWork>): void | PromiseLike<void>;
   onInvocation?(invocation: ActionInvocation<typeof DelegateWork>): void;
   onChildComplete?(call: ActionCallContext<null>): void;
@@ -89,7 +89,7 @@ export async function bootDelegationFixture(mode: 'spawn' | 'fork', options: Del
     })] });
   }, { home: join(root, 'home'), actorId: 'original-human', serviceActorId: 'publisher', tools: 'native', goalRounds: 4, subagents: options.subagents,
     onError: event => { errors.push(event.error); },
-    model: { ...baseModel, async install(native, home) { await baseModel.install(native, home); await options.installNative?.(native); } },
+    model: { ...baseModel, async install(native, home) { await baseModel.install(native, home); await options.installNative?.(native, home); } },
   });
   const workspace = await runtime.application.createWorkspace({ directory });
   const parent = options.parentSessionId ? await runtime.application.open(options.parentSessionId, ParentProgram)

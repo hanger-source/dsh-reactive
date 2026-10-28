@@ -12,7 +12,7 @@ import { decodeProgramFailure, ActionAdmissionUnknownError, CreationUnknownError
   ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError } from './contracts/errors.ts';
 import contribution from '@hanger-source/dsh-reactive-client/remote';
 import type { ProgramActionStart, ProgramCreationReference, ProgramIdentity, ProgramInputReceipt, ProgramInvocationFrame, ProgramQuestions, ProgramOperationNotificationResult, ProgramWorkspace, ProgramSubmission } from './contracts/types.ts';
-import { createAuthenticatedTransport, type AuthenticatedTransportOptions } from './transport.ts';
+import { createAuthenticatedTransport, type AuthenticatedTransport, type AuthenticatedTransportOptions } from './transport.ts';
 import { createOperationQueries, createInvocationOperationQueries, attachRemoteOperation, attachInvocationRemoteOperation, locateRemoteOperation, bindRemoteOperation, readRemoteOperationFeedback, type RemoteOperationObservation } from './operations.ts';
 import { ProgramJournal, type ProgramJournalOptions, type ProgramJournalRequest } from './journal.ts';
 import { connectProgress, type RemoteProgress } from './progress.ts';
@@ -27,7 +27,7 @@ import type { CollectionResolvedAction, SurfaceClient, ProgramSessionClient, Hum
 import { createSurfaceModuleClient } from '@hanger-source/dsh-reactive';
 
 export { createAuthenticatedTransport } from './transport.ts';
-export type { AuthenticatedTransportOptions } from './transport.ts';
+export type { AuthenticatedTransport, AuthenticatedTransportOptions } from './transport.ts';
 export { Inbox } from './contracts/inbox.ts';
 export { decodeProgramFailure, ActionAdmissionUnknownError, CreationUnknownError, CreationIncompleteError,
   ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError, ConversationAccessRevokedError } from './contracts/errors.ts';
@@ -124,14 +124,38 @@ async function createParticipantProgramClient<const P extends SharedProgramContr
 ): Promise<ParticipantClient<P, Participant>> {
   assertSharedProgramDefinition(program);
   const ctx = new Context();
+  let transport: AuthenticatedTransport | undefined;
   try {
     await ctx.plugin(Registry);
-    installConnection(ctx, { interactions: 'answer', transport: createAuthenticatedTransport(options), recovery: options.recovery });
+    const physical = transport = createAuthenticatedTransport(options);
+    ctx.effect(() => () => physical.dispose(), 'reactive authenticated transport');
+    installConnection(ctx, { interactions: 'answer', transport, recovery: options.recovery });
     await ctx.plugin(Gateway);
     await ctx.remote.$mount(contribution);
     const client = await bindParticipantProgramClient(program, ctx, participant);
-    return { ...client, async dispose() { try { await client.dispose(); } finally { await ctx.fiber.dispose(); } } };
-  } catch (error) { await ctx.fiber.dispose(); throw error; }
+    let closing: Promise<void> | undefined;
+    return { ...client, dispose() {
+      if (closing) return closing;
+      const completion = Promise.withResolvers<void>();
+      closing = completion.promise;
+      void (async () => {
+        const failures = new Set<unknown>();
+        try { await client.dispose(); } catch (error) { failures.add(error); }
+        try { await ctx.fiber.dispose(); } catch (error) { failures.add(error); }
+        // Cordis自动卸载会记录并吸收effect失败；创建者仍join同一物理清理回执。
+        try { await physical.dispose(); } catch (error) { failures.add(error); }
+        if (failures.size === 1) throw [...failures][0];
+        if (failures.size) throw new AggregateError([...failures], 'REACTIVE_PROGRAM_CLIENT_DISPOSAL_FAILED');
+      })().then(completion.resolve, completion.reject);
+      return closing;
+    } };
+  } catch (error) {
+    const failures = new Set<unknown>([error]);
+    try { await ctx.fiber.dispose(); } catch (cleanup) { failures.add(cleanup); }
+    try { await transport?.dispose(); } catch (cleanup) { failures.add(cleanup); }
+    if (failures.size === 1) throw error;
+    throw new AggregateError([...failures], 'REACTIVE_PROGRAM_CLIENT_CONSTRUCTION_FAILED');
+  }
 }
 
 /** 借用已安装Connection、Gateway和Program远程合同的客户端上下文；只释放本SDK的使用。 */

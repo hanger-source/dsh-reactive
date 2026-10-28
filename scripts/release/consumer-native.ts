@@ -11,8 +11,9 @@ import { createNativeFiles, type NativeSessionFiles, type NativeFileResource,
   type WorkspaceFileText } from '@hanger-source/dsh-reactive-dsh/files';
 import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-reactive-dsh/tools';
-import { createNativeSubagents, type NativeSessionSubagents } from '@hanger-source/dsh-reactive-dsh/subagents';
-import { combineResources, mapResource } from '@hanger-source/dsh-reactive';
+import { createNativeSubagents, SubagentError, type NativeSessionSubagents,
+  type SubagentDescendantListEntry } from '@hanger-source/dsh-reactive-dsh/subagents';
+import { combineResources, mapResource, shareResource } from '@hanger-source/dsh-reactive';
 import { useResource } from '@hanger-source/dsh-reactive/program';
 import type { ConversationHandle, NativeInvocation } from '@hanger-source/dsh-reactive-dsh';
 import { ConsumerModuleProgram, readSelectedRevision, sessionControls } from './consumer-session.js';
@@ -44,13 +45,24 @@ export const skillMaterial = (skills: NativeSessionSkills, files: NativeSessionF
 export const nativeCatalogs = (tools: NativeSessionTools, skills: NativeSessionSkills) =>
   combineResources({ tools: tools.catalog, skills: skills.catalog });
 export const nativeCollaboration = (subagents: NativeSessionSubagents, team: NativeSessionTeam) =>
-  combineResources({ children: subagents.catalog, team: team.state, roster: team.roster });
+  combineResources({ children: subagents.catalog, descendants: subagents.descendants, team: team.state, roster: team.roster });
+export const nativeWorkspace = (subagents: NativeSessionSubagents, tools: NativeSessionTools,
+  skills: NativeSessionSkills, team: NativeSessionTeam, signal: AbortSignal) => shareResource(combineResources({
+    descendants: subagents.descendants, tools: tools.catalog, skills: skills.catalog, roster: team.roster,
+  }), { signal });
+export const readNativeWorkspace = (workspace: ReturnType<typeof nativeWorkspace>, signal: AbortSignal) => workspace.read(signal);
+export const observeNativeWorkspace = (workspace: ReturnType<typeof nativeWorkspace>) =>
+  workspace.observations$.pipe(mapResource(value => value.descendants));
+export const useNativeWorkspace = (workspace: ReturnType<typeof nativeWorkspace>) => useResource(workspace);
 export const readTeamRoster = (team: NativeSessionTeam, signal: AbortSignal): Promise<readonly TeamMemberView[]> => team.roster.read(signal);
 export const runningTeamMembers = (team: NativeSessionTeam) =>
   team.roster.observations$.pipe(mapResource(members => members.filter(member => member.status === 'running')));
 export const useNativeCollaboration = (subagents: NativeSessionSubagents, team: NativeSessionTeam) =>
   useResource(() => nativeCollaboration(subagents, team), [subagents, team]);
 export const nativeDescendants = (subagents: NativeSessionSubagents, signal: AbortSignal) => subagents.readDescendants({ signal });
+export const interruptNativeBranch = (subagents: NativeSessionSubagents, target: SubagentDescendantListEntry['id'], signal: AbortSignal): void =>
+  subagents.interrupt(target, { signal });
+export const nativeSubagentFailure = (error: unknown) => error instanceof SubagentError ? error.code : undefined;
 export const toolPolicy = (tools: NativeSessionTools, approval: NativeSessionApproval) =>
   combineResources({ tools: tools.catalog, policy: approval.policy });
 export const declaredNativeTools = (jobs: NativeJobs, mcp: NativeMcp) =>

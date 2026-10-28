@@ -12,9 +12,17 @@ export interface AuthenticatedTransportOptions {
   readonly createWebSocket?: ConnectionWebSocketFactory;
   readonly inboxBytes?: number;
 }
+/**
+ * 本实例拥有所创建的 socket/uplink；退出禁止新 HTTP/流，等待已启动物理流的实际清理。
+ * 已分派 HTTP 仍由原请求 signal 和消费者拥有；dispose 不取消它，也不接管其响应体。
+ * 活跃请求的业务错误归该流；实际退出中的迭代、发送与释放失败保留至 dispose。
+ */
+export interface AuthenticatedTransport extends ClientTransportHooks, AsyncDisposable {
+  dispose(): Promise<void>;
+}
 
 /** 将应用已认证 HTTP 与 socket 接到 Connection 的正式 transport hooks。 */
-export function createAuthenticatedTransport(options: AuthenticatedTransportOptions): ClientTransportHooks {
+export function createAuthenticatedTransport(options: AuthenticatedTransportOptions): AuthenticatedTransport {
   const base = new URL(options.baseUrl);
   if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) throw new Error('REACTIVE_REMOTE_URL_INVALID');
   base.pathname = base.pathname.replace(/\/?$/u, '/');
@@ -24,32 +32,75 @@ export function createAuthenticatedTransport(options: AuthenticatedTransportOpti
   const openSocket: ConnectionWebSocketFactory = options.createWebSocket ?? (url => new WebSocket(url));
   const inboxBytes = options.inboxBytes ?? 1024 * 1024;
   if (!Number.isSafeInteger(inboxBytes) || inboxBytes < 1) throw new Error('REACTIVE_REMOTE_INBOX_LIMIT_INVALID');
+  const lifetime = new AbortController();
+  const pending = new Set<{ readonly closed: Promise<void>; stop(): Promise<unknown> }>();
+  const failures = new Set<unknown>();
+  let closing: Promise<void> | undefined;
+  const dispose = (): Promise<void> => {
+    if (closing) return closing;
+    const completion = Promise.withResolvers<void>();
+    closing = completion.promise;
+    lifetime.abort(new Error('REACTIVE_AUTHENTICATED_TRANSPORT_DISPOSED'));
+    void (async () => {
+      const active = [...pending];
+      // return与pending next并列推进；真正的工作失败由每条closed统一保存，不能由官方吞错丢失。
+      await Promise.allSettled(active.map(stream => stream.stop()));
+      await Promise.allSettled(active.map(stream => stream.closed));
+      if (failures.size === 1) throw [...failures][0];
+      if (failures.size) throw new AggregateError([...failures], 'REACTIVE_AUTHENTICATED_TRANSPORT_DISPOSAL_FAILED');
+    })().then(completion.resolve, completion.reject);
+    return closing;
+  };
   return {
-    fetch: (input, init) => request(new URL(new URL(input, 'http://logical.invalid').pathname.slice(1), base), init),
-    openStream: (endpoint, payload, signal, uplink) => socketStream(openSocket, socketUrl.href, endpoint, payload, signal, inboxBytes, uplink),
+    fetch: (input, init) => {
+      lifetime.signal.throwIfAborted();
+      return request(new URL(new URL(input, 'http://logical.invalid').pathname.slice(1), base), init);
+    },
+    openStream: (endpoint, payload, signal, uplink) => {
+      lifetime.signal.throwIfAborted();
+      const current = AbortSignal.any([lifetime.signal, signal]);
+      const stream = socketStream(openSocket, socketUrl.href, endpoint, payload, current, inboxBytes, uplink, closed => {
+        const entry = { closed, stop: () => stream.return(undefined) };
+        pending.add(entry);
+        void closed.then(() => pending.delete(entry), error => { failures.add(error); pending.delete(entry); });
+      });
+      return stream;
+    },
+    dispose, [Symbol.asyncDispose]: dispose,
   };
 }
 
 async function* socketStream(openSocket: ConnectionWebSocketFactory, url: string, endpoint: string, payload: unknown,
-  signal: AbortSignal, inboxBytes: number, uplink?: AsyncIterable<unknown>): AsyncGenerator<unknown> {
+  signal: AbortSignal, inboxBytes: number, uplink: AsyncIterable<unknown> | undefined,
+  started: (closed: Promise<void>) => void): AsyncGenerator<unknown> {
   signal.throwIfAborted();
-  const socket = openSocket(url);
+  const completion = Promise.withResolvers<void>();
+  started(completion.promise);
+  let socket: ReturnType<ConnectionWebSocketFactory> | undefined;
   const inbox = new Inbox<unknown>(inboxBytes);
   const opened = Promise.withResolvers<void>();
+  void opened.promise.catch(() => {});
+  const closed = Promise.withResolvers<void>();
+  const failures = new Set<unknown>();
   const streamId = '1';
-  let terminal = false, stopped = false;
-  const send = (message: RemoteStreamClientMessage): void => { socket.send(JSON.stringify(message)); };
-  const abort = (): void => { stopped = true; opened.reject(signal.reason); inbox.fail(signal.reason); socket.close(); };
+  let terminal = false, stopped = false, retiring = false;
+  let escaped: { readonly error: unknown } | undefined;
+  const record = (error: unknown): void => { if (!signal.aborted || error !== signal.reason) failures.add(error); };
+  const send = (message: RemoteStreamClientMessage): void => { socket!.send(JSON.stringify(message)); };
+  const abort = (): void => {
+    stopped = true; opened.reject(signal.reason); inbox.fail(signal.reason);
+    try { socket?.close(); } catch (error) { record(error); }
+  };
   const onOpen = (): void => opened.resolve();
-  const detach = (): void => { socket.removeEventListener('close', onClose); socket.removeEventListener('error', onError); };
+  const detach = (): void => { socket?.removeEventListener('close', onClose); socket?.removeEventListener('error', onError); };
   const disconnected = (): void => {
     stopped = true;
-    if (!terminal && !signal.aborted) {
+    if (!terminal && !signal.aborted && !retiring) {
       const error = new RemoteStreamCarrierError('Remote physical stream disconnected');
       opened.reject(error); inbox.fail(error);
     }
   };
-  const onClose = (): void => { disconnected(); detach(); };
+  const onClose = (): void => { disconnected(); closed.resolve(); detach(); };
   const onError = (): void => disconnected();
   const onMessage = (event: { readonly data: unknown }): void => {
     try {
@@ -65,36 +116,61 @@ async function* socketStream(openSocket: ConnectionWebSocketFactory, url: string
       }
     } catch (error) { stopped = true; terminal = true; inbox.fail(error); }
   };
-  socket.addEventListener('open', onOpen);
-  socket.addEventListener('close', onClose);
-  socket.addEventListener('error', onError);
-  socket.addEventListener('message', onMessage);
-  signal.addEventListener('abort', abort, { once: true });
-  const iterator = uplink?.[Symbol.asyncIterator]();
+  let iterator: AsyncIterator<unknown> | undefined;
   let pumping: Promise<void> | undefined;
   try {
+    socket = openSocket(url);
+    socket.addEventListener('open', onOpen);
+    socket.addEventListener('close', onClose);
+    socket.addEventListener('error', onError);
+    socket.addEventListener('message', onMessage);
+    signal.addEventListener('abort', abort, { once: true });
+    if (socket.readyState === 3) onClose();
+    if (signal.aborted) abort();
+    signal.throwIfAborted();
+    iterator = uplink?.[Symbol.asyncIterator]();
     signal.throwIfAborted(); await opened.promise; signal.throwIfAborted();
     send({ type: 'open', streamId, endpoint, payload });
+    signal.throwIfAborted();
     pumping = (async (): Promise<void> => {
       try {
-        if (iterator) for (;;) {
+        if (iterator) while (!stopped) {
           const item = await iterator.next();
           if (stopped || item.done) break;
           send({ type: 'item', streamId, value: item.value });
         }
         if (!stopped) send({ type: 'end', streamId });
-      } catch (error) { if (!stopped) inbox.fail(error); }
+      } catch (error) {
+        // 活跃来源失败交本条流；退出以后才迟到的迭代/发送失败属于实际清理。
+        if (!stopped) inbox.fail(error); else record(error);
+      }
     })();
     yield* inbox;
+  } catch (error) { escaped = { error }; throw error;
   } finally {
-    stopped = true;
-    if (!terminal && socket.readyState === 1) send({ type: 'cancel', streamId });
-    if (iterator?.return) void iterator.return().catch(() => {});
-    void pumping?.catch(() => {});
+    stopped = true; retiring = true;
+    const cleanup: PromiseLike<unknown>[] = [];
+    // 先要求来源退出，再等待pump，return可以唤醒其已有next；不能反过来等待。
+    try { if (iterator?.return) cleanup.push(Promise.resolve(iterator.return())); } catch (error) { record(error); }
+    if (pumping) cleanup.push(pumping);
+    try { if (!terminal && socket?.readyState === 1) send({ type: 'cancel', streamId }); } catch (error) { record(error); }
     signal.removeEventListener('abort', abort);
-    socket.removeEventListener('open', onOpen); socket.removeEventListener('message', onMessage);
+    socket?.removeEventListener('open', onOpen); socket?.removeEventListener('message', onMessage);
     inbox.end();
-    // ws 在 CONNECTING 关闭时异步发出 error；一直持有错误监听到真实 close。
-    if (socket.readyState === 3) detach(); else socket.close();
+    if (socket) {
+      let requested = false;
+      try { if (socket.readyState !== 3) socket.close(); requested = true; } catch (error) { record(error); }
+      // 正式close事件确认物理退出；CONNECTING取消产生的error监听一直保留到该事件。
+      if (socket.readyState === 3) { closed.resolve(); detach(); }
+      else if (requested || socket.readyState === 2) cleanup.push(closed.promise);
+    }
+    for (const result of await Promise.allSettled(cleanup)) if (result.status === 'rejected') record(result.reason);
+    if (!failures.size) completion.resolve();
+    else {
+      const failure = failures.size === 1 ? [...failures][0] : new AggregateError([...failures], 'REACTIVE_REMOTE_STREAM_CLEANUP_FAILED');
+      completion.reject(failure);
+      if (escaped && !failures.has(escaped.error)) throw new AggregateError([escaped.error, failure], 'REACTIVE_REMOTE_STREAM_FAILED');
+      throw failure;
+    }
   }
 }

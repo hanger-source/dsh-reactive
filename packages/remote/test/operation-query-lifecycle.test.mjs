@@ -315,6 +315,7 @@ test('Operation查询按消费者共享连接，Session退出等待本次流退�
     const transport = createAuthenticatedTransport({ baseUrl: gateway.url,
       createWebSocket: url => new WebSocket(url, { headers: { authorization: 'Bearer ' + actor } }),
     });
+    t.after(() => transport.dispose());
     const args = descriptor.input({ strict: true }).create().parse({ request });
     const stream = transport.openStream(descriptor.namespace + '/' + descriptor.method, { args }, t.signal);
     const iterator = stream[Symbol.asyncIterator]();

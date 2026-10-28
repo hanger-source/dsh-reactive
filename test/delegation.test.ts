@@ -4,8 +4,9 @@ import { setImmediate } from 'node:timers/promises';
 import { BehaviorSubject, filter, firstValueFrom, from, timeout } from 'rxjs';
 import { SessionId, pluginRecordOf } from '@deepseek-ai/dsh-session';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
-import { ActionBindingUnavailableError, defineProgram, programIdentity, ProgramContractMismatchError, z } from '@hanger-source/dsh-reactive';
-import type { ApplicationService } from '@hanger-source/dsh-reactive-dsh';
+import { abortable, ActionBindingUnavailableError, defineProgram, programIdentity, ProgramContractMismatchError, z } from '@hanger-source/dsh-reactive';
+import type { ApplicationService, ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
+import { createNativeSubagents, SubagentError } from '@hanger-source/dsh-reactive-dsh/subagents';
 import { delegationRecordSchema } from '../packages/dsh/src/delegations.ts';
 import { bootDelegationFixture, delegationDate, delegationScope, inspectDelegationSession } from './delegation-support.ts';
 import { text, tool } from './native-support.ts';
@@ -15,6 +16,83 @@ const content = (messages: GenerateOptions['messages']) => messages.flatMap(mess
 // 原生 RuntimeContextProjection 创建的来源；当前 package exports 未公开该类型增强文件。
 const runtimeContextSource = z.object({ kind: z.literal('runtime-context'), form: z.literal('snapshot'),
   sections: z.object({ name: z.string(), text: z.string() }).array() });
+
+for (const mode of ['spawn', 'fork'] as const) test(`${mode} 后代资源沿真实委托更新，exact祖先只中断选定执行并保FIFO和兄弟分支`, { timeout: 20_000 }, async () => {
+  const capability = createNativeSubagents({ service: 'provided' });
+  const gates = new Map(['branch-a', 'branch-b'].map(job => [job, {
+    entered: Promise.withResolvers<AbortSignal>(), release: Promise.withResolvers<void>(),
+  }]));
+  const calls = new Map<string, number>();
+  const fixture = await bootDelegationFixture(mode, {
+    installNative: (native, home) => capability.install(native, home),
+    async *respond(request) {
+      assert.ok(request.tools?.some(tool => tool.name === 'child_complete'), '本试验只执行正式子Program');
+      const job = [...content(request.messages).matchAll(/完成独立任务 (branch-[ab])/g)].at(-1)?.[1];
+      assert.ok(job === 'branch-a' || job === 'branch-b', '沿正式委托objective识别本次子工作');
+      const count = (calls.get(job) ?? 0) + 1; calls.set(job, count);
+      assert.ok(count <= 3, '被中断分支不能自动重发原委托');
+      if (count === 1) {
+        assert.ok(request.signal);
+        const gate = gates.get(job)!;
+        gate.entered.resolve(request.signal);
+        await firstValueFrom(abortable(() => gate.release.promise, request.signal));
+        yield* tool('child_complete', mode + '-' + job + '-complete', {});
+      } else yield* text('所选子工作完成');
+    },
+  });
+  const { parent, runtime } = fixture;
+  const children = capability.forSession(parent);
+  const observed = children.descendants$.subscribe();
+  let first: ConversationHandle<typeof fixture.childProgram> | undefined;
+  let second: typeof first;
+  try {
+    assert.deepEqual(await children.descendants.read(), []);
+    const accepted = async (job: string) => parent.resolveAction('delegate', delegationScope)(
+      { at: delegationDate, job }, { actorId: 'sdk-human' }).result;
+    const a = await accepted('branch-a'), b = await accepted('branch-b');
+    const signalA = await gates.get('branch-a')!.entered.promise, signalB = await gates.get('branch-b')!.entered.promise;
+    const descendants = await firstValueFrom(children.descendants$.pipe(filter(rows => rows.some(row => row.id === a.childSessionId)
+      && rows.some(row => row.id === b.childSessionId)), timeout(3_000)));
+    assert.deepEqual(descendants, await children.readDescendants());
+    first = await runtime.application.open(a.childSessionId, fixture.childProgram);
+    second = await runtime.application.open(b.childSessionId, fixture.childProgram);
+    const agentA = runtime.native.agents.get(SessionId(first.id))!, agentB = runtime.native.agents.get(SessionId(second.id))!;
+    const parentAgent = runtime.native.agents.get(SessionId(parent.id))!;
+    await first.submit({ requestId: 'preserved-child-facts', intent: 'question', delivery: 'inject', content: '中断后仍待消费的资料',
+      scope: { taskId: 'branch-a', issuedAt: delegationDate } });
+    const queued = agentA.inbox.nextStep.find(message => message.source.kind === 'user'
+      && 'rpcId' in message.source && message.source.rpcId === 'preserved-child-facts');
+    assert.ok(queued);
+
+    const cancellation = new AbortController(), reason = new Error('SUBAGENT_INTERRUPT_NOT_ENTERED');
+    cancellation.abort(reason);
+    assert.throws(() => children.interrupt(agentB.id, { signal: cancellation.signal }), error => error === reason);
+    assert.equal(signalB.aborted, false);
+    assert.throws(() => capability.forSession(first!).interrupt(agentB.id), error => error instanceof SubagentError && error.code === 'UNAUTHORIZED');
+    assert.equal(signalA.aborted, false); assert.equal(signalB.aborted, false);
+
+    assert.equal(children.interrupt(agentA.id), undefined, '正式同步控制不伪称静止回执');
+    assert.equal(signalA.aborted, true);
+    assert.equal(signalB.aborted, false, '选定子分支中断不连带兄弟执行');
+    await firstValueFrom(from(agentA.whenIdle()).pipe(timeout(3_000)));
+    assert.ok(agentA.inbox.nextStep.some(message => message.id === queued.id), '保留真实已受理但尚未claim的FIFO输入');
+    assert.equal(runtime.native.agents.get(agentA.id), agentA, '中断不撤销原生子Agent与Activation');
+    assert.equal(runtime.native.agents.get(parentAgent.id), parentAgent);
+    assert.equal(calls.get('branch-a'), 1, '中断不自动重传或重启委托');
+
+    children.dispose(); await capability.dispose();
+    assert.equal(signalB.aborted, false, 'SDK读侧退出不冒充原生执行取消');
+    assert.equal(runtime.native.agents.get(agentB.id), agentB);
+    gates.get('branch-b')!.release.resolve();
+    await second.whenIdle();
+    assert.equal(second.snapshot().goal?.phase, 'complete');
+    assert.deepEqual(fixture.errors, []);
+  } finally {
+    for (const gate of gates.values()) gate.release.resolve();
+    observed.unsubscribe(); first?.release(); second?.release(); parent.release();
+    await capability.dispose(); await fixture.dispose();
+  }
+});
 
 for (const mode of ['spawn', 'fork'] as const) test(`${mode} 子程序隔离当前声明，以独立Goal完成反馈续接原父工作，SDK调用保留独立身份`, async () => {
   const releaseChild = Promise.withResolvers<void>();

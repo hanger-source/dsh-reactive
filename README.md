@@ -30,13 +30,13 @@ Program 派生资源、活动读侧及局部 Surface 调用查回见[Program 资
 
 `@hanger-source/dsh-reactive-skills` 提供同版本的应用开发 Skill 与按需 references。安装后运行 `dsh-reactive-skill` 取得该版本入口的绝对路径，编码 Agent 按需读取；它不安装运行时业务 Skill，也不修改全局 Agent 配置。
 
-运行时业务 Skill 从 `@hanger-source/dsh-reactive-dsh/skills` 的 `createNativeSkills({ service: 'provided' })` 接入宿主原生 Registry。安装后用 `forSession(source).catalog` 和 `definition(name)` 取得同源资源，可 read、peek、invalidate、组合 observations$ 或交给 useResource；目录保留原生 complete 与 invocation policy，正文不存在为 undefined。原生变更或 Agent 代际变化撤下旧事实，冷会话保持 pending，读取不启动模型；provider、Skill 声明与执行准入继续由原 owner 管理。
+运行时业务 Skill 从 `@hanger-source/dsh-reactive-dsh/skills` 的 `createNativeSkills({ service: 'provided' })` 接入宿主原生 Registry 与工作目录服务。安装后用 `forSession(source).catalog` 和 `definition(name)` 取得同源资源，可 read、peek、invalidate、组合 observations$ 或交给 useResource；目录保留原生 complete 与 invocation policy，正文不存在为 undefined。目录和正文按该会话真实当前工作目录解析；原生变更、同会话目录变化或 Agent 代际变化撤下旧事实。冷会话保持 pending，读取不初始化目录或启动模型；provider、Skill 声明与执行准入继续由原 owner 管理。
 
 `@hanger-source/dsh-reactive-dsh/tools` 的 `createNativeTools({ service: 'provided' })` 提供同样可组合的 `forSession(source).catalog`，读取真实 Agent 作用域下的原生 Tool schema。注册、撤销与 restriction 变化使资源失效；快照不含执行或展示函数。目录可以与 Skill、Files 和业务资源直接组合；具体调用仍由 NativeTools 声明、原生 guard 与执行边界决定，PTC 模式的完整可见目录和模型直调入口保持各自语义。
 
 Approval 的 `forSession(source).policy` 是同源政策资源，可与工具、业务资源及 hooks 组合；policy$ 是它的值流，审计继续使用原生有序事件和 readAudit。读取和冷会话恢复观察不产生批准请求或 grant，政策变更继续显式调用 setPolicy 并由原生服务持久化。
 
-`@hanger-source/dsh-reactive-dsh/subagents` 的 `createNativeSubagents({ service: 'provided' })` 接入原生子 Agent 发现。`forSession(source).catalog` 是可组合资源，保留 one-shot、continuable、external 目录身份；`readDescendants({ signal })` 使用正式递归查询并保留分支诊断。冷读不加载 Agent、不创建 Goal，也不投递消息。带独立 Goal 的子程序执行继续使用 `assembly.implementDelegation` 与 `NativeChildWork`，不把普通目录项转换为业务 Operation。
+`@hanger-source/dsh-reactive-dsh/subagents` 的 `createNativeSubagents({ service: 'provided' })` 接入原生子 Agent 发现。`forSession(source).catalog` 与 `descendants` 是可组合资源，保留 one-shot、continuable、external 目录身份和正式递归查询的分支诊断；`readDescendants({ signal })` 显式取得独立查询结果。冷读不加载 Agent、不创建 Goal，也不投递消息。`interrupt(targetId, { signal })` 使用原来源真实 Agent 的 ancestor 权限中断选定后代，冷来源拒绝控制；未驻留目标沿用原生无操作语义，返回不表示执行结算。带独立 Goal 的子程序执行继续使用 `assembly.implementDelegation` 与 `NativeChildWork`，不把普通目录项转换为业务 Operation。
 
 Jobs 与 MCP 的 `toolNames`、MCP 的 `resourceToolNames` 是实际注册工具名的 ResourceReader，可 read、peek、组合 observations$ 或交给 useResource；对应 `$` 属性直接使用同一资源的 values$。查询按原生 tools/change 更新，未选择的工具为空集合；`NativeTools({ names: [] })` 贡献零个声明，可表达准备中或工具全部撤下。退出观察不停止 Job 或断开 MCP。能力 dispose 才释放其安装范围，旧资源不再提供可用快照。工具名表达注册事实，调用仍经过 NativeTools 和原生 guard。
 

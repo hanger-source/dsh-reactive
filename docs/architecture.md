@@ -81,7 +81,9 @@ flowchart LR
 
 组件求值与声明构造保持纯投影。它们不注册工具、不连接查询、不执行 Action。查询连接由提交后的观察及出口 owner 持有；长期事件关系由 `useRelation` 的 effect 持有。明确的 Action 调用才开始业务执行。
 
-子 Agent 的发现与执行保留不同责任。Subagents 读侧直接消费原生父目录和递归查询，one-shot、continuable、external 及分支诊断使用原生类型；catalog 是现有 Scope 下的资源，冷读不加载 Agent。NativeChildWork 只表达带独立 Goal 的子程序委托，Team 继续拥有具名成员及任务板；三者不合并为泛化任务状态，也不因观察目录建立新的 Goal 或输入。
+子 Agent 的发现与执行保留不同责任。Subagents 的 catalog 与 descendants 是现有读取 Scope 下的资源，分别直接消费原生父目录与 listDescendants，one-shot、continuable、external、驻留 activity 及分支诊断使用原生类型，冷读不加载 Agent。interrupt 只把来源的 exact live Agent 交给正式 ancestor 权限核验，显式中断选定分支；撤销观察不取得执行销毁权。NativeChildWork 只表达带独立 Goal 的子程序委托，Team 继续拥有具名成员及任务板；三者不合并为泛化任务状态，也不因观察目录建立新的 Goal 或输入。
+
+运行时 Skill 的目录和正文与 Program 方法准备使用同一正式当前工作目录。读取接点依赖 skills 与 workingDirectory，目录变更撤掉旧读取；发现不调用目录 ensure，不改会话初始工作区或文件权限根。provider、声明安装与执行准入保留原 owner，资源只负责可组合读取及失效。
 
 Jobs 的 `job(id)`、Schedule 与 Team 的 `task(id)` 同步构造原来源下的固定目标，复用同一个目标对象及资源。构造不读注册表、投影或 catalog，也不证明目标存在或授予控制权；读取、历史及原生修改各自在实际边界核验归属与权限。三类对象的资源可以直接组合，首次观察才建立查询。Schedule 与 Team 的缺席目标在资源或 read 中为 undefined；Job 未知或外来目标由其原生读取与控制边界拒绝。Team 与 Schedule 的写入同步返回 NativeInvocation，result 保存同一次原生结算的自有快照，activity 是有限调用事实，wait 单独控制消费者等待。预取消不开始调用，已开始的 CAS 和持久投递仍归原生 owner，不能把等待取消当作回滚或自动重试依据。
 

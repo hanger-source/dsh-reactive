@@ -80,7 +80,7 @@ test('Program fatal 在同次广播中停止其他关系与查询，已受理的
     assert.equal(reactionEvents.observed, false, '取得反应实例不开始感知');
     const resource = attached.at(-1)!.record, reaction = attached.at(-1)!.process;
     directObservation = resource.values$.subscribe(value => queryValues.push(value));
-    const directWaiting = assert.rejects(resource.read(), /REACTIVE_SCOPE_DISPOSED/);
+    const directWaiting = assert.rejects(resource.read(), error => error === failure);
     const run = reaction.start();
     reactionEvents.next(1); reactionEvents.next(2);
     assert.deepEqual(startedReactions, [1]);
@@ -96,8 +96,8 @@ test('Program fatal 在同次广播中停止其他关系与查询，已受理的
     assert.equal(directObservation.closed, true);
     await directWaiting;
     assert.deepEqual(run.snapshot(), { status: 'draining', reason: 'stopped', pending: 1, emitted: 0 });
-    assert.throws(() => reaction.start(), /REACTIVE_SCOPE_DISPOSED/);
-    assert.throws(() => resource.read(), /REACTIVE_SCOPE_DISPOSED/);
+    assert.throws(() => reaction.start(), error => error === failure);
+    assert.throws(() => resource.read(), error => error === failure);
     assert.equal(sessionScope.disposed, false);
     assert.equal(executingSignal.aborted, false, '程序失败不能冒充已受理业务的取消');
     finish.resolve('saved');

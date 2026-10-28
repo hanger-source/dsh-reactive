@@ -71,7 +71,7 @@ document.querySelector('button').addEventListener('click', async event => {
   try {
     check(React.version === '18.3.1' && ReactDOM.version.startsWith('18.3.1'), 'NATIVE_REACT_18_PLATFORM_REQUIRED');
     await ctx.plugin(Registry);
-    installConnection(ctx, { interactions: 'answer', transport: createAuthenticatedTransport({ baseUrl: location.origin,
+    const transport = createAuthenticatedTransport({ baseUrl: location.origin,
       createWebSocket(url) {
         const socket = new WebSocket(url), send = socket.send;
         socket.send = function (data) {
@@ -91,7 +91,9 @@ document.querySelector('button').addEventListener('click', async event => {
         }
         return response;
       },
-    }) });
+    });
+    ctx.effect(() => () => transport.dispose(), 'authenticated transport');
+    installConnection(ctx, { interactions: 'answer', transport });
     await ctx.plugin(Gateway);
     for (const contribution of [commands, controller, uploads, subagents, remotes]) await ctx.remote.$mount(contribution);
     await ctx.plugin(FileUpload); await ctx.plugin(ClientSessions);

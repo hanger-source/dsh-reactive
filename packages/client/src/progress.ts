@@ -22,6 +22,7 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
   const events = new Subject<ConversationEvent<ProgramParsedInput<P>>>();
   const progressFrames = new Subject<AssistantProgressFrame>();
   const requests = new Map<string, RequestHandle<ProgramParsedInput<P>>>();
+  let terminated = false;
   // 累计 prefix 只在真正的 progress/state 消费者读取时物化，helper 缓存该 revision。
   let cached: { source: Observation<ConversationActivity>; snapshot: Observation<ConversationProgressSnapshot> } | undefined;
   const snapshot = (): Observation<ConversationProgressSnapshot> => {
@@ -34,7 +35,7 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
   };
   const progress = new ResourceReader({ observations$: current.pipe(map(snapshot)), peek: snapshot }, { signal: lifetime });
   const invalidate = (): void => {
-    if (lifetime.aborted) return;
+    if (lifetime.aborted || terminated) return;
     assistant.replace([]);
     current.next({ status: 'pending', generation: current.value.generation + 1 });
   };
@@ -82,14 +83,16 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
         }
       },
       failed: error => {
-        if (lifetime.aborted) return;
+        if (lifetime.aborted || terminated) return;
         error = revokeConversationAccess(owner, error);
         if (lifetime.aborted) return;
+        // 官方snapshot consumer已经终止；先固定事实，通知中的重入reset也不能假装重新观察。
+        terminated = true;
         assistant.replace([]); current.next({ status: 'error', generation: current.value.generation + 1, error });
         events.error(error); progressFrames.error(error);
       },
     });
-    const reset = ctx.on('connection/reset', () => { invalidate(); stream.restart(); });
+    const reset = ctx.on('connection/reset', () => { if (!terminated) { invalidate(); stream.restart(); } });
     return { stream, reset };
   }, async ({ stream, reset }) => {
     reset();

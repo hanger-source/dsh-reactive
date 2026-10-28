@@ -6,11 +6,16 @@ import { join } from 'node:path';
 import { createElement as h } from 'react';
 import { BehaviorSubject, filter, firstValueFrom, timeout } from 'rxjs';
 import WebSocket from 'ws';
+import { Context } from '@deepseek-ai/cordis';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
+import * as Registry from '@deepseek-ai/dsh-typert-registry/client';
+import * as Gateway from '@deepseek-ai/dsh-api-gateway/client';
+import { installConnection } from '@deepseek-ai/dsh-client-connection/client';
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, resourceView, z } from '@hanger-source/dsh-reactive';
 import { Expose, implementProgram } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
-import { createProgramClient } from '@hanger-source/dsh-reactive-client';
+import { bindProgramClient, createAuthenticatedTransport } from '@hanger-source/dsh-reactive-client';
+import contribution from '@hanger-source/dsh-reactive-client/remote';
 import { mountProgramGateway, RemoteAuthenticationError } from '@hanger-source/dsh-reactive-remote';
 
 const next = (source, predicate) => firstValueFrom(source.pipe(filter(predicate), timeout(3_000)));
@@ -26,7 +31,7 @@ test('View与人工查询按消费者连接，独立endpoint授权与真实Gatew
       surface, value: { views: { current, unused }, actions: {} },
     }) }),
   })] });
-  const errors = [], clients = [], subscriptions = [];
+  const errors = [], clients = [], contexts = [], subscriptions = [];
   const calls = new Map(['views-only', 'human-only'].map(kind => [kind, { view: 0, questions: 0 }]));
   // 官方准入合同区分实际调用args和权限快照；统计真实请求，不解析传输内部帧。
   const called = (kind, request) => {
@@ -44,6 +49,7 @@ test('View与人工查询按消费者连接，独立endpoint授权与真实Gatew
   t.after(async () => {
     subscriptions.forEach(subscription => subscription.unsubscribe());
     await Promise.all(clients.map(client => client.dispose()));
+    await Promise.all(contexts.map(ctx => ctx.fiber.dispose()));
     local?.release(); await gateway?.close(); await runtime.dispose();
     current.complete(); unused.complete();
   });
@@ -78,12 +84,23 @@ test('View与人工查询按消费者连接，独立endpoint授权与真实Gatew
     } },
   });
   const connect = async kind => {
+    const ctx = new Context(); contexts.push(ctx);
+    await ctx.plugin(Registry);
     const headers = { authorization: 'Bearer ' + kind };
-    const client = await createProgramClient(program, { baseUrl: gateway.url,
+    const transport = createAuthenticatedTransport({ baseUrl: gateway.url,
       fetch(url, init) {
         return fetch(url, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), ...headers } });
       }, createWebSocket: url => new WebSocket(url, { headers }),
-    }); clients.push(client);
+    });
+    ctx.effect(() => () => transport.dispose(), 'authenticated transport');
+    installConnection(ctx, { interactions: 'answer', transport });
+    await ctx.plugin(Gateway); await ctx.remote.$mount(contribution);
+    // 官方首次connected也发布reset；先等真实首代，再单独观察消费者共享与释放。
+    const generation = ctx.get('connection').generation, ready = Promise.withResolvers();
+    const remove = generation.subscribe(() => { if (generation.getSnapshot() !== undefined) ready.resolve(); });
+    try { if (generation.getSnapshot() === undefined) await ready.promise; }
+    finally { remove(); }
+    const client = await bindProgramClient(program, ctx); clients.push(client);
     return { session: await client.open(local.id), calls: calls.get(kind) };
   };
   const views = await connect('views-only'), resource = views.session.viewResource('current');

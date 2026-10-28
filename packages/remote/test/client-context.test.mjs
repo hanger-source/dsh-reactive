@@ -77,7 +77,7 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
         return { kind: 'context-user', id: 'context-operator' };
       } },
     }); gateways.push(gateway);
-    return { gateway, current, workspace, runtime, visible };
+    return { gateway, current, workspace, runtime, visible, role };
   };
   const transport = baseUrl => ({ baseUrl,
     fetch: (url, init) => fetch(url, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), authorization: 'Bearer context-test' } }),
@@ -133,7 +133,9 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
         return socket;
       };
     }
-    installConnection(ctx, { interactions: 'answer', transport: createAuthenticatedTransport(selected) });
+    const physical = createAuthenticatedTransport(selected);
+    ctx.effect(() => () => physical.dispose(), 'authenticated transport');
+    installConnection(ctx, { interactions: 'answer', transport: physical });
     await ctx.plugin(Gateway);
     await ctx.remote.$mount(contribution);
     return ctx;
@@ -181,6 +183,65 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
   assert.throws(() => assertProgramSessionConnection(ownedSession, anotherA.get('connection')), /REACTIVE_REMOTE_SESSION_CONNECTION_MISMATCH/u);
   await owned.dispose();
   assert.equal(await duplicate.readView('owner'), 'a-after-context-exit');
+
+  await t.test('progress致命拒绝后reset保留原error，新open取得新的真实观察', async () => {
+    const ctx = await connect(a.gateway.url), sdk = await bindProgramClient(program, ctx); clients.push(sdk);
+    const session = await sdk.open(sessionId), progress = session.progress, request = session.request('not-submitted');
+    let failure;
+    await assert.rejects(progress.read(t.signal), error => { failure = error; return error.code === 'remote-access/denied'; });
+    await assert.rejects(firstValueFrom(session.events$), error => error === failure);
+    await assert.rejects(firstValueFrom(request.events$), error => error === failure);
+    await assert.rejects(request.state.read(t.signal), error => error === failure);
+    const states = [], subscription = progress.observations$.subscribe(observation => states.push(observation.status));
+    const reset = Promise.withResolvers(), remove = ctx.on('connection/reset', () => reset.resolve());
+    try {
+      a.role.actions.push('reactivePrograms/progress');
+      ctx.get('connection').reconnect(); await reset.promise;
+      assert.equal(progress.peek().status, 'error'); assert.equal(progress.peek().error, failure);
+      await assert.rejects(progress.read(t.signal), error => error === failure);
+      await assert.rejects(firstValueFrom(session.events$), error => error === failure);
+      await assert.rejects(request.state.read(t.signal), error => error === failure);
+      assert.deepEqual(states, ['error'], '已经结束的consumer不能在reset时伪造pending');
+      const fresh = await sdk.open(sessionId);
+      assert.equal((await fresh.progress.read(t.signal)).activity.sessionId, sessionId);
+      await fresh.release();
+    } finally { remove(); subscription.unsubscribe(); }
+  });
+
+  await t.test('自建SDK等真实socket退出并交付物理清理失败，重入加入同一回执', async () => {
+    const cleanupFailure = new Error('REAL_SOCKET_CLOSE_FAILED'), entered = Promise.withResolvers();
+    const closes = [];
+    let armed = false, firstFailure = true, finished = false;
+    const sdk = await createProgramClient(program, { ...transport(a.gateway.url), createWebSocket(url) {
+      const socket = new WebSocket(url, { headers: { authorization: 'Bearer context-test' } }), close = socket.close.bind(socket), send = socket.send.bind(socket);
+      socket.send = (data, ...args) => {
+        if (armed && JSON.parse(data).type === 'cancel') throw cleanupFailure;
+        return send(data, ...args);
+      };
+      socket.close = (...args) => {
+        if (!armed || socket.readyState !== WebSocket.OPEN) return close(...args);
+        closes.push(() => close(...args)); entered.resolve();
+        if (firstFailure) { firstFailure = false; throw cleanupFailure; }
+      };
+      return socket;
+    } });
+    t.after(async () => { armed = false; closes.forEach(close => close()); if (!finished) await sdk.dispose(); });
+    const session = await sdk.open(sessionId), resource = session.viewResource('owner');
+    let reentered;
+    const observing = resource.observations$.subscribe({ complete() { reentered = sdk.dispose(); } });
+    assert.equal(await resource.read(t.signal), 'a-after-context-exit');
+    armed = true;
+    const closing = sdk.dispose();
+    assert.equal(reentered, closing);
+    let settled = false;
+    void closing.then(() => { settled = true; }, () => { settled = true; });
+    await entered.promise; await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false, 'SDK必须等物理close，不能把Fiber吞错当作完成');
+    armed = false; closes.forEach(close => close());
+    await assert.rejects(closing, error => error === cleanupFailure); finished = true;
+    observing.unsubscribe();
+    assert.equal(await duplicate.readView('owner'), 'a-after-context-exit', '物理客户端退出不停止真实Host');
+  });
   const registration = join(root, 'registered-with-delayed-ack'); await mkdir(registration);
   const reference = { environmentId: 'work', workspaceId: a.workspace.workspaceId, sessionId: crypto.randomUUID() };
   a.visible.add(reference.sessionId);

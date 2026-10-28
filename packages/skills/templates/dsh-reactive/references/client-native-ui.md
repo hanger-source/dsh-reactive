@@ -69,6 +69,8 @@ readView 返回当前有效业务值，observeView 保完整 Observation；这�
 
 Program 的 conversation.progress 与 conversation.request(id).state、SDK 和原生 UI 的对应入口都借入原进展 owner。首次显式取得 SDK 进展入口才建立远程连接；UI 绑定本身不要求 progress grant。原生 UI 的 native.progress 与 native.request(id).state 保留 pending/error，native.request(id).events$ 保留原事件与当前 UI 的观察寿命，不另存模型输出或按消息正文猜请求。
 
+进展流的物理 carrier 中断沿官方恢复继续；真正的终止错误结束该句柄的 progress、request 和 events 观察。Connection reset 不会让已经结束的消费者重新变为 pending，也不清除原 error；需要新观察时显式 `client.open(sessionId)` 取得新 Session。资源 baseline 中的业务 error 仍由原来源决定后续事实。
+
 ## 输入保 intent 与 delivery 独立
 
 ```ts
@@ -118,6 +120,10 @@ const native = bindNativeSession(InventoryProgram, exactSessionBinding, sdk);
 ```
 
 SDK 与 Session 句柄各有独立原生 Fiber。构造物理查询前登记 effect，已经开始的清理继续归同一 owner；退出要等待全部实际清理，再汇总失败。`ProgramJournal` 通过 `session.openEvents` 取得，不直接构造；手动 dispose 也不会脱离 Session 的退出等待。core Scope 仍管理同步响应图。
+
+`createAuthenticatedTransport(options)` 拥有自己建立的 socket 和 uplink。自建 Context 时，把 `transport.dispose()` 登记到该 Context 的 effect，再将同一 transport 交给 `installConnection`；Context 装配 owner 可显式等待同一个 dispose 回执取得物理清理错误。独立 createProgramClient/createServiceProgramClient 已登记并等待此回执。bindProgramClient/bindServiceProgramClient 借用已有 Connection，SDK 退出等待自己子流的实际清理；固定 rc.3 会吸收底层 iterator.return 的拒绝，外部 transport 的失败须由原装配 owner 等待 transport.dispose 取得，不能由借用 SDK 保证交付。
+
+transport.dispose 先停止物理流并要求 uplink.return，与已有 pending next 并列等待真正结算；不合作的来源必须自行完成取消。退出后 fetch/openStream 都拒绝新调用。已分派 HTTP 仍由原请求 signal 与响应消费者拥有，transport.dispose 不另行取消、等待或改写它的回执。
 
 Action 受理 ACK 已确认后，即使 SDK 在构造观察时退出，仍保留原 Invocation id。观察及 result 等待按取消结算，可以在另一有效 SDK 用 `session.invocation(name, id)` 恢复原结果；不要重发 Action，也不要把观察退出解释为取消业务或 Operation。
 

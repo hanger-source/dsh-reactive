@@ -21,7 +21,7 @@ test('Skill资源读取真实工作区和Agent层级，原生文件变化失效�
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-native-skills-'));
   const workspaces = [join(root, 'one'), join(root, 'two')];
   const file = (directory: string) => join(directory, '.dsh/skills/workspace-method/SKILL.md');
-  const content = (body: string) => '---\nname: workspace-method\ndescription: 真实工作区方法\n---\n' + body;
+  const content = (body: string) => '---\nname: workspace-method\ndescription: 真实工作区方法 ' + body + '\n---\n' + body;
   for (const [index, directory] of workspaces.entries()) {
     await mkdir(join(directory, '.dsh/skills/workspace-method'), { recursive: true });
     await writeFile(file(directory), content('workspace-' + index));
@@ -73,12 +73,24 @@ test('Skill资源读取真实工作区和Agent层级，原生文件变化失效�
     assert.deepEqual(catalog.skills.find(skill => skill.name === 'human-method')?.invocation,
       { modelInvocable: false, userInvocable: true });
     const agent = nativeSessionAccess(one).liveAgent()!;
+    const initialProject = agent.session.header.cwd, permissionRoot = nativeSessionAccess(one).workspaceRoot();
     const unregisterPrivate = agent.ctx.get('skills')!.register({ name: 'private-method', source: 'runtime',
       description: '只属于第一个Agent', content: 'private' });
     assert.equal((await first.definition('private-method').read())?.content, 'private');
     assert.equal(await second.definition('private-method').read(), undefined);
     unregisterPrivate(); unregisterGlobal();
     assert.equal(await first.definition('private-method').read(), undefined);
+
+    const movedBody = firstValueFrom(values.pipe(filter(value => value?.content.trim() === 'workspace-1'), timeout(5_000)));
+    const movedCatalog = firstValueFrom(catalogs.pipe(filter(value => value.skills.some(skill =>
+      skill.name === 'workspace-method' && skill.description.endsWith('workspace-1'))), timeout(5_000)));
+    await agent.ctx.get('workingDirectory')!.set(agent, workspaces[1]!);
+    await Promise.all([movedBody, movedCatalog]);
+    assert.equal(agent.session.header.cwd, initialProject, '当前目录变更不改初始项目目录');
+    assert.equal(nativeSessionAccess(one).workspaceRoot(), permissionRoot, 'Skill发现不改变文件权限root');
+    const returnedBody = firstValueFrom(values.pipe(filter(value => value?.content.trim() === 'workspace-0'), timeout(5_000)));
+    await agent.ctx.get('workingDirectory')!.set(agent, workspaces[0]!);
+    await returnedBody;
 
     await writeFile(file(workspaces[0]!), content('changed-on-disk'));
     await firstValueFrom(values.pipe(filter(value => value?.content.trim() === 'changed-on-disk'), timeout(8_000)));
@@ -123,7 +135,8 @@ test('正式Skill provider的不完整发现、失败恢复和跨代际迟到读
   const capability = createNativeSkills({ service: 'provided' });
   let control!: SkillProviderControl, complete = false, failure = false;
   const entered = Promise.withResolvers<AbortSignal>(), release = Promise.withResolvers<void>();
-  let delay = false;
+  const directoryEntered = Promise.withResolvers<AbortSignal>(), directoryRelease = Promise.withResolvers<void>();
+  let delay: 'directory' | 'generation' | undefined;
   const summary = { name: 'remote-method', description: '来自正式provider的业务方法', source: 'custom',
     provider: 'remote-business', invocation: { modelInvocable: true, userInvocable: false } };
   const unregister = app.native.get('skills')!.registerProvider(current => {
@@ -132,10 +145,11 @@ test('正式Skill provider的不完整发现、失败恢复和跨代际迟到读
       async list() { return { complete, candidates: [{ ...summary, rank: 100, locator: 'remote-row' }] }; },
       async get(_candidate, options) {
         if (delay) {
-          delay = false;
-          assert.ok(options.signal); entered.resolve(options.signal);
+          const current = delay; delay = undefined;
+          const gate = current === 'directory' ? { entered: directoryEntered, release: directoryRelease } : { entered, release };
+          assert.ok(options.signal); gate.entered.resolve(options.signal);
           // 第三方provider忽略取消，仍由原生Registry和资源代际隔离迟到正文。
-          await release.promise;
+          await gate.release.promise;
           return { ...summary, content: 'obsolete' };
         }
         if (failure) throw new Error('REMOTE_SKILL_OFFLINE');
@@ -144,6 +158,7 @@ test('正式Skill provider的不完整发现、失败恢复和跨代际迟到读
     };
   });
   let session: ConversationHandle<typeof program> | undefined, resumed: ConversationHandle<typeof program> | undefined;
+  let peer: ConversationHandle<typeof program> | undefined;
   let subscription: Subscription | undefined;
   try {
     await capability.install(app.native, root);
@@ -163,7 +178,20 @@ test('正式Skill provider的不完整发现、失败恢复和跨代际迟到读
     assert.equal(body.peek().status, 'error');
     failure = false; control.invalidate();
     assert.equal((await body.read())?.content, 'current');
-    delay = true; control.invalidate();
+    peer = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+    delay = 'directory'; control.invalidate();
+    const directorySignal = await directoryEntered.promise;
+    const peerAgent = nativeSessionAccess(peer).liveAgent()!;
+    await peerAgent.ctx.get('workingDirectory')!.set(peerAgent, root);
+    assert.equal(directorySignal.aborted, false, '另一Session的目录事件不撤销这次正式provider读取');
+    const agent = nativeSessionAccess(session).liveAgent()!;
+    await agent.ctx.get('workingDirectory')!.set(agent, root);
+    assert.equal(directorySignal.aborted, true, '同一Session已提交的目录变化撤销旧目录读取');
+    assert.equal((await body.read())?.content, 'current');
+    directoryRelease.resolve(); await immediate();
+    assert.equal(values.includes('obsolete'), false, '不合作provider迟到正文不覆盖当前目录资源');
+
+    delay = 'generation'; control.invalidate();
     const oldSignal = await entered.promise;
     await app.host.close(session.id);
     assert.equal(oldSignal.aborted, true);
@@ -178,7 +206,7 @@ test('正式Skill provider的不完整发现、失败恢复和跨代际迟到读
     assert.equal(models, 0);
     assert.deepEqual(errors, []); assert.deepEqual(app.errors, []);
   } finally {
-    release.resolve(); subscription?.unsubscribe(); unregister();
-    resumed?.release(); session?.release(); await capability.dispose(); await app.dispose();
+    release.resolve(); directoryRelease.resolve(); subscription?.unsubscribe(); unregister();
+    resumed?.release(); session?.release(); peer?.release(); await capability.dispose(); await app.dispose();
   }
 });

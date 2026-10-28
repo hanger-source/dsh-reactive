@@ -133,7 +133,9 @@ test('服务SDK贯通真实认证Gateway；身份来自宿主、人工控制隔�
   const connect = async principal => {
     const ctx = new Context(), selected = transport(principal); contexts.push(ctx);
     await ctx.plugin(Registry);
-    installConnection(ctx, { interactions: 'answer', transport: createAuthenticatedTransport(selected.options) });
+    const physical = createAuthenticatedTransport(selected.options);
+    ctx.effect(() => () => physical.dispose(), 'authenticated transport');
+    installConnection(ctx, { interactions: 'answer', transport: physical });
     await ctx.plugin(Gateway); await ctx.remote.$mount(contribution);
     return { ctx, ...selected };
   };

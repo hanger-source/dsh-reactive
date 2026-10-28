@@ -1,4 +1,5 @@
 import type { Agent } from '@deepseek-ai/dsh-agent';
+import type {} from '@deepseek-ai/dsh-working-directory';
 import { isSkillName, type SkillRegistry, type SkillCatalogSnapshot, type SkillDefinition } from '@deepseek-ai/dsh-skill';
 import { Observable } from 'rxjs';
 import type { ResourceReadable } from '@hanger-source/dsh-reactive';
@@ -39,18 +40,28 @@ class SessionSkills implements NativeSessionSkills {
 
   constructor(private readonly owner: NativeCapabilityOwner, private readonly access: NativeSessionAccess) {
     this.scope = nativeObservationScope(owner, access);
-    this.catalog = this.resource((registry, agent, signal) => registry.snapshot({ scope: agent,
-      cwd: access.workspaceRoot(), signal }));
+    this.catalog = this.resource((registry, agent, cwd, signal) => registry.snapshot({ scope: agent, cwd, signal }));
     this.scope.own(() => this.#definitions.clear());
   }
 
-  private resource<T>(read: (registry: SkillRegistry, agent: Agent, signal: AbortSignal) => Promise<T>): NativeSkillResource<T> {
+  private resource<T>(read: (registry: SkillRegistry, agent: Agent, cwd: string, signal: AbortSignal) => Promise<T>): NativeSkillResource<T> {
     return nativeAgentResource(this.owner, this.access, this.scope, { service: 'skills',
-      changes: agent => new Observable<void>(subscriber => agent.ctx.on('skills/change', () => subscriber.next())),
+      changes: agent => new Observable<void>(subscriber => {
+        const releases = [
+          agent.ctx.on('skills/change', () => subscriber.next()),
+          agent.ctx.on('session/event', (session, event) => {
+            if (session === agent.session && event.type === 'working-directory/change') subscriber.next();
+          }),
+        ];
+        return () => { for (const release of releases) release(); };
+      }),
       read: (agent, signal) => {
         const registry: SkillRegistry | undefined = agent.ctx.get('skills');
         if (!registry) throw new Error('REACTIVE_NATIVE_SKILLS_REQUIRED');
-        return read(registry, agent, signal);
+        const directory = this.owner.session(this.access, 'workingDirectory').get('workingDirectory');
+        if (!directory) throw new Error('REACTIVE_NATIVE_WORKING_DIRECTORY_REQUIRED');
+        // 观察只读取正式已提交的目录，不ensure、恢复目录或改变文件权限root。
+        return read(registry, agent, directory.get(agent.session), signal);
       },
     });
   }
@@ -61,8 +72,7 @@ class SessionSkills implements NativeSessionSkills {
     if (!isSkillName(name)) throw new Error('REACTIVE_SKILL_NAME_INVALID: ' + name);
     let resource = this.#definitions.get(name);
     if (!resource) {
-      resource = this.resource((registry, agent, signal) => registry.get(name, { scope: agent,
-        cwd: this.access.workspaceRoot(), signal }));
+      resource = this.resource((registry, agent, cwd, signal) => registry.get(name, { scope: agent, cwd, signal }));
       this.#definitions.set(name, resource);
     }
     return resource;
@@ -77,8 +87,9 @@ export interface NativeSkills extends NativeCapability {
 /** 只读业务 Skill 接点，与独立发行的开发指导 Skill 无关，不安装另一套 Registry。 */
 export function createNativeSkills(options: NativeSkillsOptions): NativeSkills {
   if (options.service !== 'provided') throw new Error('REACTIVE_NATIVE_SKILLS_SERVICE_SELECTION_INVALID');
-  const owner = new NativeCapabilityOwner('reactive-native-skills', ['skills'], function* (ctx) {
+  const owner = new NativeCapabilityOwner('reactive-native-skills', ['skills', 'workingDirectory'], function* (ctx) {
     if (!ctx.get('skills')) throw new Error('REACTIVE_NATIVE_SKILLS_REQUIRED');
+    if (!ctx.get('workingDirectory')) throw new Error('REACTIVE_NATIVE_WORKING_DIRECTORY_REQUIRED');
   });
   const sessions = new WeakMap<object, SessionSkills>();
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),

@@ -1,5 +1,5 @@
 import { createElement, type ReactElement } from 'react';
-import { defer, firstValueFrom, fromEvent, mergeMap, raceWith, throwError } from 'rxjs';
+import { catchError, firstValueFrom, forkJoin, of, throwError } from 'rxjs';
 import { invokeBoundAction, type ActionCallContext, type ActionExecutionContext, type ActionReference, type ActionOperationEvent, type Invocation } from '../actions/contract.ts';
 import type { Json } from '../conversations/protocol.ts';
 import type { OperationAccessContext, OperationBindingReference, OperationContract, OperationFeedbackRead, OperationFeedbackPayload, OperationReference, OperationFollowMode } from '../operations/contract.ts';
@@ -213,23 +213,26 @@ export class ProgramInstance<P extends ProgramContract> implements ProgramHookOw
     for (;;) {
       signal.throwIfAborted(); this.flush();
       const boundaries = [...this.#boundaries];
+      if (!boundaries.length) return;
       const same = () => boundaries.length === this.#boundaries.size && boundaries.every(boundary => this.#boundaries.has(boundary));
-      for (const boundary of boundaries) {
-        const checking = AbortSignal.any([signal, this.signal, boundary.signal]);
-        try {
-          checking.throwIfAborted();
-          // 先连接取消再执行用户检查；旧Promise即使不配合取消，也不再阻塞当前准备。
-          await firstValueFrom(fromEvent(checking, 'abort').pipe(
-            mergeMap(() => throwError(() => checking.reason)),
-            raceWith(defer(() => { checking.throwIfAborted(); return Promise.resolve(boundary.check(checking)); })),
-          ));
-        } catch (error) {
-          signal.throwIfAborted(); this.assertActive();
-          if (this.#boundaries.has(boundary)) throw error;
-        }
-        signal.throwIfAborted(); this.flush();
-        if (!same()) break;
-      }
+      const changed = new AbortController();
+      const stop = this.scope.effect(() => {
+        this.revision.get();
+        if (!same()) changed.abort();
+      });
+      try {
+        // 同次检查并列连接；任一失败由forkJoin立即撤其余本次等待，不撤销登记身份。
+        await firstValueFrom(forkJoin(boundaries.map(boundary => {
+          const checking = AbortSignal.any([signal, this.signal, boundary.signal, changed.signal]);
+          return abortable(current => boundary.check(AbortSignal.any([checking, current])), checking).pipe(catchError((error: unknown) => {
+            signal.throwIfAborted(); this.assertActive();
+            return this.#boundaries.has(boundary) ? throwError(() => error) : of(undefined);
+          }));
+        })));
+      } catch (error) {
+        signal.throwIfAborted(); this.assertActive();
+        if (!changed.signal.aborted || error !== changed.signal.reason) throw error;
+      } finally { stop(); }
       signal.throwIfAborted(); this.flush();
       if (same()) return;
     }
