@@ -8,12 +8,12 @@ import { Fragment, createElement as h, type ComponentType } from 'react';
 import { BehaviorSubject, firstValueFrom, from, timeout } from 'rxjs';
 import { defineProgram, defineSurface, z, type ProgramProps, type WorkspaceContext } from '@hanger-source/dsh-reactive';
 import { implementProgram, useBeforeStep, useObservable } from '@hanger-source/dsh-reactive/program';
-import { Conversation, ProgramInstance, Scope, connect } from '@hanger-source/dsh-reactive/kernel';
+import { Conversation, ProgramInstance, Scope, createWorkspaceContext } from '@hanger-source/dsh-reactive/kernel';
 
 const contract = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
 function programFor(Component: ComponentType<ProgramProps<typeof contract>>, directory: string) {
   const scope = new Scope();
-  const workspace: WorkspaceContext = { id: 'preparation', directory, scope, share: source => connect(scope, source) };
+  const workspace: WorkspaceContext = createWorkspaceContext(scope, { id: 'preparation', directory });
   const sessionId = crypto.randomUUID();
   const conversation = new Conversation({ sessionId, workspaceId: workspace.id, environmentId: 'work', directory, parentSessionId: null },
     workspace, contract, { sessionId, sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });

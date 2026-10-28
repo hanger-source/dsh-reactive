@@ -7,13 +7,13 @@ import { Fragment, StrictMode, createElement, useLayoutEffect } from 'react';
 import { BehaviorSubject, Observable, Subject, concatMap } from 'rxjs';
 import { defineProgram, defineSurface, z, type ActionDefinition, type BoundAction, type LocalResource, type LocalReaction, type WorkspaceContext } from '@hanger-source/dsh-reactive';
 import { implementProgram, useAction, useObservable, useResource, useResourceInstance, useReaction } from '@hanger-source/dsh-reactive/program';
-import { Conversation, ProgramInstance, Scope } from '@hanger-source/dsh-reactive/kernel';
+import { Conversation, ProgramInstance, Scope, createWorkspaceContext } from '@hanger-source/dsh-reactive/kernel';
 
 test('局部复合hook用同一Resource、Action和Reaction跨函数消费；组件身份、目标切换及Program失败各守原owner', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-local-hooks-'));
   await writeFile(join(root, 'a'), '11'); await writeFile(join(root, 'b'), '22');
   const scope = new Scope();
-  const workspace: WorkspaceContext = { id: 'local-hooks', directory: root, scope, share: source => source };
+  const workspace: WorkspaceContext = createWorkspaceContext(scope, { id: 'local-hooks', directory: root });
   const selected = new BehaviorSubject({ target: 'a', visible: true, tick: 0 }), changes = new Subject<number>();
   const value = z.string().transform(Number), event = z.number(), result = z.string();
   let inputParses = 0, outputParses = 0, actionBodies = 0;

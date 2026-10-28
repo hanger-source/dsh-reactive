@@ -1,11 +1,11 @@
 import { implementProgram } from '@hanger-source/dsh-reactive/program';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdir, mkdtemp, rename, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createElement as h, Fragment, useLayoutEffect } from 'react';
-import { Observable, defer, finalize, firstValueFrom, of, Subject } from 'rxjs';
+import { Observable, concatMap, defer, finalize, firstValueFrom, of, Subject } from 'rxjs';
 import { Context as NativeContext } from '@deepseek-ai/cordis';
 import SessionStore, { SessionId, pluginRecordOf } from '@deepseek-ai/dsh-session';
 import * as persistence from '@deepseek-ai/dsh-session-persistence-jsonl';
@@ -15,7 +15,8 @@ import * as storageDomain from '@deepseek-ai/dsh-storage-domain';
 import WorkspaceRegistry, { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { Context, Expose, useAction, useResource } from '@hanger-source/dsh-reactive/program';
-import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, observeResource, resourceView, z, type ProgramProps, type ProgramWorkspace } from '@hanger-source/dsh-reactive';
+import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, implementResource,
+  defineReaction, implementReaction, observeResource, resourceView, z, type ProgramProps, type ProgramWorkspace } from '@hanger-source/dsh-reactive';
 import { CreationIncompleteError, mountApplication } from '@hanger-source/dsh-reactive-dsh';
 import { boot, text } from './native-support.ts';
 
@@ -45,6 +46,7 @@ test('工作区共享流跨会话保活，宿主退出后活动与有限来源�
     const otherWorkspace = await app.host.createWorkspace({ directory });
     const other = await app.host.create('work', { workspaceId: otherWorkspace.workspaceId }); sessions.push(other);
     const first = captured.get(one.id)!, sibling = captured.get(two.id)!, isolated = captured.get(other.id)!;
+    assert.equal(app.host.workspace(app.workspace.workspaceId), first, '组件与宿主借用同一工作区编程对象');
     assert.equal(first, sibling); assert.notEqual(first, isolated);
     const shared = first.share(source), foreign = isolated.share(source);
     assert.equal(sibling.share(source), shared); assert.equal(starts, 2);
@@ -60,8 +62,17 @@ test('工作区共享流跨会话保活，宿主退出后活动与有限来源�
     const final = first.share(of('settled-workspace-fact'));
     assert.equal(await firstValueFrom(final), 'settled-workspace-fact');
     assert.equal(await firstValueFrom(final), 'settled-workspace-fact', '有限来源的终态在owner活跃时仍可读取');
-    let completed = false;
-    shared.subscribe({ complete: () => { completed = true; } });
+    let completed = false, reentrant: unknown;
+    shared.subscribe({ complete: () => {
+      completed = true;
+      try { app.host.workspace(app.workspace.workspaceId); } catch (error) { reentrant = error; }
+    } });
+    await app.native.workspaceRegistry.delete(WorkspaceId(app.workspace.workspaceId));
+    assert.equal(stops, 1); assert.equal(completed, true, '登记删除撤销工作区共享来源，不等待整个宿主退出');
+    assert.ok(reentrant instanceof Error && reentrant.message === 'REACTIVE_WORKSPACE_NOT_FOUND', '清理重入不能从原生尚未撤下的实体缓存复活owner');
+    assert.equal(await firstValueFrom(foreign), 2, '另一工作区的来源仍活跃');
+    assert.throws(() => first.share(source), /REACTIVE_SCOPE_DISPOSED/);
+    assert.throws(() => app.host.workspace(app.workspace.workspaceId), /REACTIVE_WORKSPACE_NOT_FOUND/);
     await app.dispose();
     assert.equal(stops, 2); assert.equal(completed, true);
     const late: Array<number | string> = [];
@@ -73,6 +84,88 @@ test('工作区共享流跨会话保活，宿主退出后活动与有限来源�
     assert.throws(() => first.share(source), /REACTIVE_SCOPE_DISPOSED/);
     assert.equal(models, 0); assert.deepEqual(app.errors, []);
   } finally { changes.complete(); for (const session of sessions) session.release(); await app.dispose(); }
+});
+
+test('工作区删除已经持久后共享清理失败仍撤销owner，宿主退出保留失败原因并释放其他工作区', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-workspace-failed-cleanup-'));
+  const program = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+  const definition = defineApplication({ name: 'workspace-cleanup', admit: async () => {}, environments: [defineEnvironment({
+    id: 'work', instructions: '没有执行任务', program: implementProgram(program, { Component: () => null }),
+  })] });
+  const app = await boot(root, definition, async function* () { throw new Error('WORKSPACE_CLEANUP_MUST_NOT_START_MODEL'); });
+  const failure = new Error('WORKSPACE_SOURCE_RELEASE_FAILED');
+  const workspace = app.host.workspace(app.workspace.workspaceId);
+  workspace.share(new Observable<never>(() => () => { throw failure; }));
+  const directory = join(root, 'other'); await mkdir(directory);
+  const other = app.host.workspace((await app.host.createWorkspace({ directory })).workspaceId);
+  let stopped = false;
+  other.share(new Observable<never>(() => () => { stopped = true; }));
+  const hasCause = (error: unknown): boolean => error === failure || error !== null && typeof error === 'object'
+    && 'errors' in error && Array.isArray(error.errors) && error.errors.some(hasCause);
+  try {
+    assert.equal(await app.native.workspaceRegistry.delete(WorkspaceId(workspace.id)), true);
+    assert.equal(app.native.workspaceRegistry.get(WorkspaceId(workspace.id)), undefined, '观察清理失败不伪造已提交登记仍存在');
+    assert.throws(() => workspace.share(of(1)), /REACTIVE_SCOPE_DISPOSED/);
+    await assert.rejects(app.dispose(), hasCause);
+    assert.equal(stopped, true, '一个工作区清理失败仍释放其他工作区');
+  } finally { await app.dispose().catch(() => {}); }
+});
+
+test('正式资源和反应直接归工作区所有，跨环境复用且隔离，登记删除停止排队关系而不撤销已受理文件写入', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-workspace-capabilities-'));
+  const quantity = join(root, 'quantity'), result = join(root, 'result');
+  await writeFile(quantity, '42');
+  const resource = defineResource({ name: 'workspace_quantity', params: z.null(), value: z.string().transform(Number) });
+  let reads = 0, models = 0;
+  const facts = implementResource(resource, { read: async (_params, { signal }) => { reads++; return readFile(quantity, { encoding: 'utf8', signal }); } });
+  const commands = new Subject<number>(), accepted = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), committed = Promise.withResolvers<void>();
+  const started: number[] = [];
+  const reaction = defineReaction({ name: 'workspace_writer', params: z.null(), event: z.number(), result: z.number() });
+  const writer = implementReaction(reaction, { observe: () => commands, operator: concatMap, async execute(value) {
+    started.push(value); accepted.resolve(); await release.promise;
+    await writeFile(result, String(value)); committed.resolve(); return value;
+  } });
+  const program = defineProgram({ input: z.null(), surface: defineSurface({ actions: {}, views: { quantity: resourceView(z.number()) } }) });
+  const implementation = implementProgram(program, { Component({ workspace }) {
+    const observed = useResource(workspace.resource(facts, null));
+    return Expose({ surface: program.surface, value: { views: { quantity: observed.observations$ }, actions: {} } });
+  } });
+  const definition = defineApplication({ name: 'workspace-capabilities', admit: async () => {}, environments: [
+    defineEnvironment({ id: 'one', instructions: '共用工作区业务资源', program: implementation }),
+    defineEnvironment({ id: 'two', instructions: '共用工作区业务资源', program: implementation }),
+  ] });
+  const app = await boot(root, definition, async function* () { models++; yield* text('没有模型任务'); });
+  const workspace = app.host.workspace(app.workspace.workspaceId);
+  const current = workspace.resource(facts, null), running = workspace.reaction(writer, null);
+  const watch = current.observations$.subscribe();
+  const run = running.start();
+  try {
+    assert.equal(await current.read(), 42, '没有Session时也能定义并读取工作区资源');
+    const one = await app.host.create('one', { workspaceId: workspace.id });
+    const two = await app.host.create('two', { workspaceId: workspace.id });
+    try {
+      assert.equal(await one.readView('quantity'), 42); assert.equal(await two.readView('quantity'), 42);
+      assert.equal(reads, 1, '两个环境与普通函数共用同一正式资源读取');
+      const directory = join(root, 'isolated'); await mkdir(directory);
+      const registration = await app.host.createWorkspace({ directory });
+      const isolated = app.host.workspace(registration.workspaceId).resource(facts, null);
+      const isolatedWatch = isolated.observations$.subscribe();
+      try {
+        assert.equal(await isolated.read(), 42); assert.equal(reads, 2, '相同实现和目标在不同工作区隔离');
+        commands.next(1); commands.next(2); await accepted.promise;
+        await app.native.workspaceRegistry.delete(WorkspaceId(workspace.id));
+        assert.equal((await run.settled).status, 'stopped');
+        assert.deepEqual(started, [1]);
+        assert.throws(() => current.peek(), /REACTIVE_SCOPE_DISPOSED/);
+        assert.throws(() => workspace.resource(facts, null), /REACTIVE_SCOPE_DISPOSED/);
+        assert.equal(await isolated.read(), 42);
+        release.resolve(); await committed.promise;
+        assert.equal(await readFile(result, 'utf8'), '1', '已经受理的业务写入仍由原函数完成');
+        assert.deepEqual(started, [1], '排队的第二项没有越过已结束的反应关系');
+      } finally { isolatedWatch.unsubscribe(); }
+    } finally { one.release(); two.release(); }
+    assert.equal(models, 0); assert.deepEqual(app.errors, []);
+  } finally { release.resolve(); watch.unsubscribe(); commands.complete(); await app.dispose(); }
 });
 
 test('真实存储拒写后沿原创建引用完成登记，原生工作区移除成员后重启与创建恢复均不能重新授予身份', async () => {

@@ -2,11 +2,10 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Session, SessionHeader } from '@deepseek-ai/dsh-session';
 import type { SessionInspection } from '@deepseek-ai/dsh-session-persistence';
 import { appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-session';
-import { WorkspaceId, type Workspace } from '@deepseek-ai/dsh-workspace';
+import { WorkspaceId, workspaceDomainSpec, type Workspace } from '@deepseek-ai/dsh-workspace';
+import type {} from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
-import type { Observable } from 'rxjs';
-import { Scope } from '@hanger-source/dsh-reactive/kernel';
-import { connect } from '@hanger-source/dsh-reactive/kernel';
+import { Scope, createWorkspaceContext } from '@hanger-source/dsh-reactive/kernel';
 import type { AnyEnvironment } from '@hanger-source/dsh-reactive/kernel';
 import type { WorkspaceContext, WorkspaceInfo, WorkspaceRegistration } from '@hanger-source/dsh-reactive/kernel';
 import { environmentPresetId } from '../programs/presets.ts';
@@ -23,10 +22,23 @@ export interface ManagedWorkspace { native: Workspace; context: WorkspaceContext
 
 /** 原生 registry 拥有身份和会话成员；框架只拥有工作环境关联与共享资源作用域。 */
 export class Workspaces {
+  #scope = new Scope();
+  #failures = new Set<unknown>();
   #entries = new Map<string, ManagedWorkspace>();
   #environments: ReadonlyMap<string, AnyEnvironment>;
   constructor(private readonly ctx: Context, private readonly application: string, environments: readonly AnyEnvironment[]) {
     this.#environments = new Map(environments.map(environment => [environment.id, environment]));
+    this.#scope.own(ctx.on('domain/changed', change => {
+      if (change.domain !== workspaceDomainSpec.name || change.table !== 'workspaces' || change.operation !== 'deleted') return;
+      const workspace = this.#entries.get(change.key);
+      if (!workspace) return;
+      this.#entries.delete(change.key);
+      try { workspace.context.scope.dispose(); }
+      catch (error) {
+        this.#failures.add(error);
+        console.error('reactive.workspace.disposal.failed', { workspaceId: change.key, error });
+      }
+    }));
   }
   environments() { return [...this.#environments.values()]; }
   environment(environmentId: string) {
@@ -36,16 +48,18 @@ export class Workspaces {
   }
   presetId(environment: AnyEnvironment) { return environmentPresetId(this.application, environment.id); }
   get(workspaceId: string): ManagedWorkspace {
+    this.#scope.assertActive();
     const native = this.ctx.workspaceRegistry.get(WorkspaceId(workspaceId));
-    if (!native) throw new Error('REACTIVE_WORKSPACE_NOT_FOUND');
+    // 原生delete先提交顺序，再删除表项；回调中不能从尚未撤下的实体缓存重建owner。
+    if (!native || !this.ctx.workspaceRegistry.list().includes(native)) throw new Error('REACTIVE_WORKSPACE_NOT_FOUND');
     const existing = this.#entries.get(workspaceId);
     if (existing) {
       if (existing.native !== native) throw new Error('REACTIVE_WORKSPACE_IDENTITY_CHANGED');
+      existing.context.scope.assertActive();
       return existing;
     }
-    const scope = new Scope();
-    const workspace = { native, context: { id: native.id, directory: native.path, scope,
-      share: <T>(source$: Observable<T>) => connect(scope, source$) } };
+    const scope = this.#scope.child();
+    const workspace = { native, context: createWorkspaceContext(scope, { id: native.id, directory: native.path }) };
     this.#entries.set(workspaceId, workspace);
     return workspace;
   }
@@ -147,11 +161,8 @@ export class Workspaces {
     await workspace.native.attachSession(session.id);
   }
   dispose() {
-    const failures: unknown[] = [];
-    for (const workspace of this.#entries.values()) {
-      try { workspace.context.scope.dispose(); } catch (error) { failures.push(error); }
-    }
+    try { this.#scope.dispose(); } catch (error) { this.#failures.add(error); }
     this.#entries.clear();
-    if (failures.length) throw new AggregateError(failures, 'REACTIVE_WORKSPACES_DISPOSAL_FAILED');
+    if (this.#failures.size) throw new AggregateError([...this.#failures], 'REACTIVE_WORKSPACES_DISPOSAL_FAILED');
   }
 }

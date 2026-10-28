@@ -10,6 +10,7 @@ import { createProgramClient, type RemoteProgramSession } from '@hanger-source/d
 import { mountProgramGateway } from '@hanger-source/dsh-reactive-remote';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
 import { sessionResources, readSessionView } from './consumer-session.js';
+import type { Workspace } from '@hanger-source/dsh-reactive/workspaces';
 
 const contract = defineProgram({ input: z.object({ subject: z.string() }).strict(), surface: defineSurface({ views: { revision: resourceView(z.number()) }, actions: {} }) });
 const program = implementProgram(contract, { Component: () => null });
@@ -31,6 +32,9 @@ export const readWithCancellation = <T>(read: (signal: AbortSignal) => T | Promi
 
 const current = defineResource({ name: 'consumer-current', params: z.null(), value: z.object({ revision: z.number() }) });
 const changes = defineReaction({ name: 'consumer-changes', params: z.null(), event: z.number(), result: z.string() });
+export const workspaceBindings = (workspace: Workspace, resource: ResourceImplementation<typeof current>, reaction: ReactionImplementation<typeof changes>) =>
+  ({ resource: workspace.resource(resource, null), reaction: workspace.reaction(reaction, null) });
+export const localWorkspace = (runtime: Awaited<ReturnType<typeof backend>>, id: string): Workspace => runtime.application.workspace(id);
 export function useBackendBindings(resource: ResourceImplementation<typeof current>, reaction: ReactionImplementation<typeof changes>) {
   const instance = useResourceInstance(resource, null);
   const composed = combineResources({ current: instance, same: instance.observations$ }).pipe(

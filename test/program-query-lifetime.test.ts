@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { useLayoutEffect } from 'react';
 import { EmptyError, Observable, Subject, defer, filter, firstValueFrom, from, lastValueFrom, map, timeout } from 'rxjs';
 import { Scope, createResource, defineProgram, defineSurface, z, type Observation, type WorkspaceContext } from '@hanger-source/dsh-reactive';
-import { Conversation, ProgramInstance, connect } from '@hanger-source/dsh-reactive/kernel';
+import { Conversation, ProgramInstance, createWorkspaceContext } from '@hanger-source/dsh-reactive/kernel';
 import { implementProgram, useResource, useShared } from '@hanger-source/dsh-reactive/program';
 
 test('复合hook的自建查询共享连接和终止缓存，Program退出不重放或重新读取，借用资源保留原owner', async t => {
@@ -22,7 +22,7 @@ test('复合hook的自建查询共享连接和终止缓存，Program退出不重
       status: 'ready' as const, generation: 1, observedAt: Date.now(), value,
     })));
     const scope = new Scope();
-    const workspace: WorkspaceContext = { id: end, directory: root, scope, share: source => connect(scope, source) };
+    const workspace: WorkspaceContext = createWorkspaceContext(scope, { id: end, directory: root });
     const borrowed = createResource(scope, { value: z.string(), read: () => { reads.borrowed++; return readFile(paths.borrowed, 'utf8'); } });
     const events = new Subject<number>();
     let starts = 0, stops = 0;

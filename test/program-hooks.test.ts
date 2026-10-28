@@ -14,7 +14,7 @@ import { useAction, useObservable, useOperation, useRelation, useResource } from
 import { implementProgram } from '@hanger-source/dsh-reactive/program';
 import { ProgramInstance } from '@hanger-source/dsh-reactive/kernel';
 import { defineSurface, resourceView } from '@hanger-source/dsh-reactive';
-import { Scope } from '@hanger-source/dsh-reactive/kernel';
+import { Scope, createWorkspaceContext } from '@hanger-source/dsh-reactive/kernel';
 import { observeResource } from '@hanger-source/dsh-reactive';
 import { type Observation } from '@hanger-source/dsh-reactive';
 import { defineResource, implementResource, defineReaction, implementReaction, type ResourceInstance, type ReactionInstance } from '@hanger-source/dsh-reactive';
@@ -22,7 +22,7 @@ import { useResourceInstance, useReaction } from '@hanger-source/dsh-reactive/pr
 
 test('Program fatal 在同次广播中停止其他关系与查询，已受理的 Action 仍按原执行寿命结算', async () => {
   const scope = new Scope();
-  const workspace: WorkspaceContext = { id: 'workspace', directory: '/workspace', scope, share: source => source };
+  const workspace: WorkspaceContext = createWorkspaceContext(scope, { id: 'workspace', directory: '/workspace' });
   const identity = { sessionId: 'fatal-program', workspaceId: workspace.id, environmentId: 'work',
     directory: workspace.directory, parentSessionId: null };
   const trigger = new BehaviorSubject(false), events = new Subject<number>();
@@ -109,7 +109,7 @@ test('Program fatal 在同次广播中停止其他关系与查询，已受理的
 
 test('程序 hooks 跨组件共享资源和反应，跨会话隔离，目标切换不改写已取得实例', async () => {
   const scope = new Scope();
-  const workspace: WorkspaceContext = { id: 'workspace', directory: '/workspace', scope, share: source => source };
+  const workspace: WorkspaceContext = createWorkspaceContext(scope, { id: 'workspace', directory: '/workspace' });
   const selected = new BehaviorSubject('a'), changes = new Subject<number>();
   const reads: string[] = [];
   let observing = 0, rendering = false;
@@ -179,7 +179,7 @@ test('程序 hooks 跨组件共享资源和反应，跨会话隔离，目标切�
 
 test('nullable Operation 只撤下当前绑定，恢复和换目标不重定向旧 command 或中止已有读取', async () => {
   const scope = new Scope();
-  const workspace: WorkspaceContext = { id: 'workspace', directory: '/workspace', scope, share: source => source };
+  const workspace: WorkspaceContext = createWorkspaceContext(scope, { id: 'workspace', directory: '/workspace' });
   const identity = { sessionId: 'nullable-program', workspaceId: workspace.id, environmentId: 'work',
     directory: workspace.directory, parentSessionId: null };
   const selected = new BehaviorSubject<string | null>(null);

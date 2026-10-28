@@ -1,4 +1,4 @@
-import { Observable, Subject, ReplaySubject, Subscription, connectable, takeUntil, defer, from, tap, distinctUntilChanged, EmptyError, filter, isObservable, map, materialize, scan, startWith, share, observeOn, queueScheduler, switchMap, EMPTY, type OperatorFunction } from 'rxjs';
+import { Observable, ReplaySubject, Subscription, connectable, takeUntil, defer, from, tap, distinctUntilChanged, EmptyError, filter, isObservable, map, materialize, scan, startWith, share, observeOn, queueScheduler, switchMap, EMPTY, type OperatorFunction } from 'rxjs';
 import type { Observation } from '../resources/observation.ts';
 import type { Scope } from './scope.ts';
 
@@ -11,10 +11,10 @@ export function connect<T>(scope: Scope, source$: Observable<T>): Observable<T> 
   if (!owned) { owned = new WeakMap(); connections.set(scope, owned); }
   const previous = owned.get(source$);
   if (previous) return previous as Observable<T>;
-  const ended$ = new Subject<void>();
+  let replay: ReplaySubject<T> | undefined = new ReplaySubject<T>(1);
   const connection = new Subscription();
-  const shared$ = connectable(source$.pipe(takeUntil(ended$)), {
-    connector: () => new ReplaySubject<T>(1), resetOnDisconnect: false,
+  const shared$ = connectable(source$, {
+    connector: () => replay!, resetOnDisconnect: false,
   });
   let current: Observable<T> | undefined = shared$;
   const observed$ = new Observable<T>(subscriber => {
@@ -26,8 +26,11 @@ export function connect<T>(scope: Scope, source$: Observable<T>): Observable<T> 
   scope.own(() => {
     // 先撤掉可重放对象；complete/teardown中的重入也不能重新取得已退出owner的事实。
     current = undefined;
-    try { ended$.next(); ended$.complete(); }
-    finally { connection.unsubscribe(); }
+    const subject = replay!;
+    replay = undefined;
+    // 由owner直接释放来源，清理错误必须回到Scope；先complete会让RxJS丢掉退出异常。
+    try { connection.unsubscribe(); }
+    finally { subject.complete(); }
   });
   connection.add(shared$.connect());
   return observed$;

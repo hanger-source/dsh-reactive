@@ -4,6 +4,10 @@
 
 ## 选择对象与共享范围
 
+工作区共享使用已有 implementation：workspace.resource(implementation, params) 与 workspace.reaction(implementation, params) 直接返回正式 ResourceInstance、ReactionInstance。相同工作区、实现和已解析参数复用身份，跨 Environment 和 Session 共享，不同工作区隔离；构造不读，反应显式 start。组件从 props.workspace 取得对象，本地宿主从 runtime.application.workspace(id) 取得相同接点，无需捕获内核 Scope 或另建注册表。局部关系继续使用 createResource/createReaction 或局部 hooks；它们各自保留明确的 owner。
+
+工作区登记删除或宿主退出会结束该工作区的资源与持续关系。资源先交付 owner 失效，排队反应停止，已受理的业务函数仍沿原 owner 完成；新登记产生新身份，旧对象不复活。普通 workspace.share(source$) 保留有限流完成语义，失效需要参加业务组合时直接使用正式资源的 observations$。
+
 - 可复用合同：`defineResource({ name, params, value })` → `implementResource(definition, implementation)` → `bindResource(implementation, { scope }).instance(params)`。
 - 局部事实：`createResource(scope, { value, read, invalidations? })`，或互斥的 `{ observe }` 分支。它返回相同 `ResourceInstance`，不是另一套状态。可选 name 是诊断标签，不决定共享身份，也不需要注册名称。
 - 已有事实读侧：`new ResourceReader({ observations$, peek })` 沿用来源寿命，不另建 Scope、缓存或查询；提供第二参数 `{ signal }` 时限定本次借用寿命。调用活动等内存事实可以直接供 read、Observable 和 hooks 共用，执行取消信号不应被误用为已完成事实的读取寿命。问答、请求和 SDK 等有独立 owner 的工厂仍要求明确的所属作用域。

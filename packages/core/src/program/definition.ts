@@ -1,5 +1,6 @@
 import type { z } from 'zod';
-import type { Conversation, WorkspaceContext } from '../conversations/conversation.ts';
+import type { Conversation } from '../conversations/conversation.ts';
+import type { Workspace } from '../workspaces/context.ts';
 import { assertSurfaceBindings, type Surface } from '../surfaces/contract.ts';
 
 /** 组件得到对话事实与显式输入，不持有原生 Agent 或声明注册器。 */
@@ -7,7 +8,7 @@ export type ProgramSession<P extends ProgramContract> = Pick<Conversation<Progra
   'identity' | 'inputs$' | 'activity$' | 'goal$' | 'waits$' | 'events$' | 'progress' | 'progress$' | 'progressFrames$' | 'request'
   | 'human' | 'questions$' | 'foregroundQuestions$' | 'submit'>;
 
-export type ProgramWorkspace = Pick<WorkspaceContext, 'id' | 'directory' | 'share'>;
+export type ProgramWorkspace = Workspace;
 export interface ProgramProps<P extends ProgramContract> {
   readonly conversation: ProgramSession<P>;
   readonly workspace: ProgramWorkspace;

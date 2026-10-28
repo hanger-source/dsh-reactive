@@ -247,6 +247,7 @@ const application = defineApplication({
 - `useRelation(factory, dependencies)` 提交后建立长期关系，流内未恢复的错误进入程序失败边界。异步组合返回 Promise 或 Observable 进入高阶操作符，不依赖 tap(async ...) 等待。
 - `useBeforeStep(check, dependencies)` 登记幂等检查，原生步骤实际等待它的返回值。每次登记有独立身份，相同函数被多个组件使用也各自拥有退出寿命。依赖替换或组件退出会中止旧检查收到的 signal 并结束等待；准备过程重新核对当前检查集合，旧 Promise 迟到完成或失败不再作为当前准备结果。原生步骤取消或 Program 失败同样结束等待，仍有效的检查失败则继续传播。检查应使用信号读取真实依赖并等待其工作完成，不在检查中执行业务命令。
 - `workspace.share(source$)` 把明确共享的连接交给工作区；应在订阅阶段连接，而非组件纯求值中启动来源。同一工作区与来源复用一个连接，会话或最后一个消费者退出不停止它；有限来源的终态只在工作区 owner 活跃时保留。owner 退出结束已有观察，之前捕获的流在迟到订阅时直接完成，不重放旧值或旧错误，也不重新连接来源。
+- `workspace.resource(implementation, params)` 与 `workspace.reaction(implementation, params)` 把正式资源、反应绑定到工作区，跨该工作区的多个 Environment 和 Session 复用同一实例；参数仍按原合同解析，不另传名字或 Scope。资源首次观察才读取，反应显式 start。应用通过 application.workspace(id) 在没有 Session 时也能取得这个编程接点；组件 props.workspace 是同一对象。
 
 factory 纯构造来源或目标，依赖数组决定其身份。重复求值不应发起业务操作。普通 React state 和 Transition 仍遵循 React 调度；它们不自动获得模型准入或权限事实的同步保证。
 
@@ -324,6 +325,8 @@ const receipt = await invocation.result;
 ```
 
 工作区目录须由应用明确准备，`createWorkspace` 沿原生 registry 注册已存在的绝对目录，按 canonical path 复用身份。Environment 不绑定目录；同一个 delivery 场景可以用于其他工作区，同一工作区也可以运行应用声明的其他场景。`await runtime.application.describe()` 发现原生工作区及其中通过本应用身份核验的成员。创建恢复引用同时携带 environmentId、workspaceId 与 sessionId，恢复不会重新选目录或补授被移除的成员关系。
+
+本地 `runtime.application.workspace(workspaceId)` 返回 `Workspace` 编程对象，类型也可从 `@hanger-source/dsh-reactive/workspaces` 导入。它与 createWorkspace 返回的可序列化登记信息分别承担作用域与描述责任，不把 Scope 传到远程客户端。原生工作区登记删除后，已有资源和反应撤销，旧对象不能重开来源；其他工作区继续运行。目录及 Session 历史仍由原生删除登记的语义保留。共享来源清理失败在删除已经提交后报告，宿主退出汇总失败并继续释放其余工作区。
 
 `Submission.content` 接受字符串或有序 `PromptContentPart[]`。字符串只归一为一个 text part，保留原文；空白判定不会 trim 正文。普通输入必须显式选择 delivery：followup 在下一轮处理并唤醒，steer 在最近后续步骤处理并唤醒，inject 在最近后续步骤补充上下文，本次投递不请求唤醒。冷会话提交需要加载原生实例，已受理子工作仍可沿原授权恢复并产生模型活动；inject 不暂停或撤销既有 Goal 和业务工作。业务 intent 与投递方式分别保存，goal 输入还须有真实的非空文本目标。
 

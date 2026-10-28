@@ -12,17 +12,11 @@ import { shareResource } from '../resources/sharing.ts';
 import { ResourceReader } from '../resources/reader.ts';
 import { createAssistantProgress, createRequestHandle, type ConversationProgressSnapshot, type RequestHandle } from './request.ts';
 import type { Observation } from '../resources/observation.ts';
+import type { WorkspaceContext } from '../workspaces/context.ts';
+export type { WorkspaceContext } from '../workspaces/context.ts';
 
 export { z };
 export type { Json, InputReference, GoalReference, Continuation, WaitReference, Submission, NormalizedSubmission, AdmittedSubmission, InputDelivery, PromptContentPart, AdmittedPromptContentPart, FileUploadValue, FileUploadReceiptId, EncodedFileUploadRequest, FileUploadSource, UploadFileOptions, Admission, CancellationOptions, SubmitOptions, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions } from './protocol.ts';
-export interface WorkspaceContext {
-  readonly id: string;
-  readonly directory: string;
-  /** @internal 工作区持有共享来源，独立于会话观察者。 */
-  readonly scope: Scope;
-  /** 立即复用本工作区的来源连接；owner退出后旧流只完成，不再重放旧快照。 */
-  share<T>(source$: Observable<T>): Observable<T>;
-}
 export interface ConversationIdentity {
   readonly sessionId: string;
   readonly workspaceId: string;

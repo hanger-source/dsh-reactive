@@ -1,5 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis";
-import { type SubmitOptions, type WorkspaceInfo, type WorkspaceRegistration, type ConversationCreateOptions } from "@hanger-source/dsh-reactive/kernel";
+import { type SubmitOptions, type Workspace, type WorkspaceInfo, type WorkspaceRegistration, type ConversationCreateOptions } from "@hanger-source/dsh-reactive/kernel";
 import { type ApplicationDefinition } from "@hanger-source/dsh-reactive/kernel";
 import { type AnyEnvironment, type EnvironmentAt } from "@hanger-source/dsh-reactive/kernel";
 import { type OperationContract, type OperationHandle, type OperationReference, type OperationCommand, type OperationLocation, type OperationState, type OperationNotificationResult, type OperationFeedbackRead, type OperationFeedbackPayload } from "@hanger-source/dsh-reactive/kernel";
@@ -64,6 +64,8 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
         return this.handle<EnvironmentAt<E[number], Id>['program']['definition']>(await this.sessions.create(environmentId, options));
     }
     createWorkspace(input: WorkspaceRegistration): Promise<WorkspaceInfo> { return this.sessions.createWorkspace(input); }
+    /** 取得已有本地工作区的编程接点，不创建或恢复Session。 */
+    workspace(workspaceId: string): Workspace { this.#lifetime.signal.throwIfAborted(); return this.workspaces.get(workspaceId).context; }
     describe(): Promise<readonly WorkspaceInfo[]> { return this.sessions.describe(); }
     open(sessionId: string): Promise<ConversationHandle>;
     open<P extends ProgramContract>(sessionId: string, expected: P): Promise<ConversationHandle<P>>;

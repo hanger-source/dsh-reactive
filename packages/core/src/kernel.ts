@@ -17,6 +17,7 @@ export { type ProgramContract, type ProgramImplementation, type ProgramInput, ty
 export { ProgramInstance, type BoundFollow, type BoundOffer } from './program/instance.ts';
 export { connect } from './reactivity/observable.ts';
 export { Scope, batch, type Cell, type Value } from './reactivity/scope.ts';
+export { createWorkspaceContext, type Workspace } from './workspaces/context.ts';
 export { type Observation } from './resources/observation.ts';
 export { type ResourceValue } from './resources/value.ts';
 export { ResourceReader } from './resources/reader.ts';

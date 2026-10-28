@@ -43,6 +43,10 @@
       "types": "./lib/environments/index.d.ts",
       "import": "./lib/environments/index.js"
     },
+    "./workspaces": {
+      "types": "./lib/workspaces/index.d.ts",
+      "import": "./lib/workspaces/index.js"
+    },
     "./files": {
       "types": "./lib/files/index.d.ts",
       "import": "./lib/files/index.js"

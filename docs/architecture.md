@@ -36,6 +36,8 @@ Workspace 由原生 registry 持有目录、稳定身份与成员。`createWorks
 
 内部 scope、cell 和资源快照用于持有连接、等待就绪及核验装配。业务组合继续使用 React 和 RxJS；模型与工具继续进入 dsh 的执行管线。
 
+Workspace 是独立的本地编程 owner。应用通过 application.workspace(id)、组件通过 props.workspace 取得同一对象，以 workspace.resource(implementation, params) 和 workspace.reaction(implementation, params) 复用现有绑定身份；跨 Environment 和 Session 共享，同一实现与目标在不同工作区隔离。构造不读取、不执行，反应显式 start。原生登记成功删除或宿主退出时结束该 owner，撤销资源有效性及持续关系，不取消已受理业务。core/workspaces 拥有该编程合同与内核装配，原生登记、成员和持久化继续归 dsh。
+
 业务自定义 hook 可以直接返回资源、Action 和标准 Observable，供下一层业务 hook 继续派生。`invocations$` 表达新发生的调用，`activeInvocations$` 表达本绑定当前在途调用集合；单次 `Invocation.activity$`、`result` 和独立 `operation` 不合并为一个 loading 或完成标记。晚观察者读取当前集合不会重发命令，内存集合也不承担跨重启任务恢复。
 
 hook 自建查询的共享连接和终止缓存受 Program 寿命约束。`useShared` 与 factory 形式的 `useResource` 复用 RxJS 的同一重放值，不另存一份业务状态；Program 失败或退出后，之前捕获的流直接完成，不重放旧事实或重新打开查询。借入的资源实例仍由原 owner 持有，hooks 不改变其身份或销毁共享事实。
