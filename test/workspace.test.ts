@@ -16,7 +16,7 @@ import WorkspaceRegistry, { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { Context, Expose, useAction, useResource } from '@hanger-source/dsh-reactive/program';
 import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, implementResource,
-  defineReaction, implementReaction, observeResource, resourceView, z, type ProgramProps, type ProgramWorkspace,
+  defineReaction, implementReaction, observeResource, programIdentity, ProgramContractMismatchError, resourceView, z, type ProgramProps, type ProgramWorkspace,
   type LocalResourceOptions, type LocalReactionOptions } from '@hanger-source/dsh-reactive';
 import { CreationIncompleteError, mountApplication } from '@hanger-source/dsh-reactive-dsh';
 import { boot, text } from './native-support.ts';
@@ -222,9 +222,11 @@ test('真实存储拒写后沿原创建引用完成登记，原生工作区移�
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-workspace-'));
   const home = join(root, 'home');
   const medium = join(home, 'state');
+  const program = defineProgram({ name: 'workspace_creation_owner', input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+  let renders = 0;
   const definition = defineApplication({ name: 'workspace-owner', admit: async () => {}, environments: [defineEnvironment({
     id: 'delivery', instructions: '交付',
-    program: implementProgram(defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) }), { Component: () => null }),
+    program: implementProgram(program, { Component() { renders++; return null; } }),
   })] });
   let modelCalls = 0;
   const respond = async function* () { modelCalls++; yield* text('observed'); };
@@ -250,9 +252,23 @@ test('真实存储拒写后沿原创建引用完成登记，原生工作区移�
     }
     assert.ok(reference);
     await assert.rejects(app.host.completeCreation({ ...reference, workspaceId: other.workspaceId }));
-    const restored = await app.host.completeCreation(reference!);
+    const before = renders;
+    const wrong = { contract: { name: program.name, version: program.version + 1 } };
+    for (const port of [app.host, app.host.service()]) {
+      await assert.rejects(port.completeCreation(reference!, wrong), ProgramContractMismatchError);
+      assert.equal(app.native.agents.get(SessionId(reference!.sessionId)), undefined);
+    }
+    assert.equal(renders, before, '错误合同不得在补齐创建前求值Program或恢复Agent');
+    const expected = { contract: programIdentity(program) };
+    const mutable = { contract: { ...programIdentity(program) } };
+    const completing = app.host.completeCreation(reference!, mutable);
+    mutable.contract.version++;
+    const restored = await completing;
     assert.equal(restored.id, reference!.sessionId);
     restored.release();
+    await assert.rejects(app.host.completeCreation(reference!, wrong), ProgramContractMismatchError);
+    const accepted = await app.host.service().completeCreation(reference!, expected);
+    assert.equal(accepted.definition, program); accepted.release();
     assert.ok((await app.host.describe()).find(workspace => workspace.workspaceId === workspaceId)!.sessionIds.includes(restored.id));
     assert.equal(modelCalls, 0);
     await app.dispose();

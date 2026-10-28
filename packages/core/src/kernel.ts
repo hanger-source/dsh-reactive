@@ -16,7 +16,8 @@ export { humanAnswerSchema, type HumanAnswer, type HumanAskOptions, type HumanAs
 export { createHumanQuestionResolver, type HumanQuestionHandle, type HumanQuestionResolver } from './participation/questions.ts';
 export type { HumanSnapshot } from './participation/contract.ts';
 export { type HumanInputDeclaration, type SkillDeclaration } from './program/declarations.ts';
-export { type ProgramContract, type ProgramImplementation, type ProgramInput, type ProgramParsedInput } from './program/definition.ts';
+export { assertExpectedProgram, captureProgramExpectation, assertSharedProgramDefinition, type ProgramContract, type SharedProgramContract, type ProgramExpectation, type ProgramImplementation, type ProgramInput, type ProgramParsedInput } from './program/definition.ts';
+export { programIdentity, assertProgramIdentity, ProgramContractMismatchError, SharedProgramRequiredError, type ProgramContractIdentity } from './program/identity.ts';
 export { ProgramInstance, type BoundFollow, type BoundOffer } from './program/instance.ts';
 export { connect } from './reactivity/observable.ts';
 export { Scope, batch, type Cell, type Value } from './reactivity/scope.ts';

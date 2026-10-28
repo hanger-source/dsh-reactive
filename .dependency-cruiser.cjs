@@ -26,8 +26,8 @@ module.exports = {
     },
     {
       name: 'pure-core-does-not-load-renderer', severity: 'error',
-      from: { path: '^packages/core/src/', pathNot: '^packages/core/src/(program/|kernel\\.ts$)' },
-      to: { path: '^packages/core/src/program/(?!(definition|decode)\\.ts$)|node_modules/(react|react-reconciler)(/|$)',
+      from: { path: '^packages/core/src/', pathNot: '^packages/core/src/(program/(?!(definition|decode|identity)\\.ts$)|kernel\\.ts$)' },
+      to: { path: '^packages/core/src/program/(?!(definition|decode|identity)\\.ts$)|node_modules/(react|react-reconciler)(/|$)',
         dependencyTypesNot: ['type-only'] },
     },
     {

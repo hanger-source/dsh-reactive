@@ -29,7 +29,7 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
     output: z.object({ stored: z.number() }),
   });
   const surface = defineSurface({ views: {}, actions: { save } });
-  const program = defineProgram({ input: z.null(), surface });
+  const program = defineProgram({ name: 'action_contract_test', input: z.null(), surface });
   const implementation = implementAction(save, { async execute(input, call) {
     assert.equal(call.source.actorId, 'contract-user');
     assert.deepEqual(call.scope, { directory: root });
@@ -88,7 +88,7 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
   }) });
   await ctx.plugin(Gateway); await ctx.remote.$mount(contribution);
   const open = async contract => {
-    const selected = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: { save: contract } }) });
+    const selected = defineProgram({ name: 'action_contract_test', input: z.null(), surface: defineSurface({ views: {}, actions: { save: contract } }) });
     const client = await bindProgramClient(selected, ctx); clients.push(client);
     return await client.open(local.id);
   };
@@ -108,7 +108,7 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
   const invoke = await correct.resolveAction('save', root);
   const beforeStart = { inputs, defaults, bodies };
   for (const contract of [actionIdentity(wrongName), actionIdentity(wrongVersion), undefined]) {
-    const reply = await ctx.remote.reactivePrograms.startAction({ sessionId: local.id, name: 'save',
+    const reply = await ctx.remote.reactivePrograms.startAction({ sessionId: local.id, program: { name: program.name, version: program.version }, name: 'save',
       bindingId: invoke.bindingId, contract, input: { value: '9' } }, t.signal);
     assert.equal(reply.ok, false, '服务器独立拒绝错误或缺失合同，不能只信SDK检查');
     if (contract) assert.equal(reply.error.code, 'reactive/action-contract-mismatch');
@@ -117,6 +117,17 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
   const invocation = await invoke({ value: '7' });
   assert.deepEqual(await invocation.result, { stored: 7 });
   assert.equal(await readFile(file, 'utf8'), '7'); assert.equal(bodies, 1); assert.equal(inputs, 1);
+  const wrongProgram = { sessionId: local.id, program: { name: 'another_action_program', version: 1 }, invocationId: invocation.id };
+  for (const query of ['actionInvocation', 'actionResult']) {
+    const reply = await ctx.remote.reactivePrograms[query](wrongProgram, t.signal);
+    assert.equal(reply.ok, false); assert.equal(reply.error.code, 'reactive/program-contract-mismatch');
+  }
+  const wrongObservation = ctx.remote.reactivePrograms.observeAction(wrongProgram, t.signal);
+  try {
+    await assert.rejects(wrongObservation[Symbol.asyncIterator]().next(), error => error.code === 'reactive/program-contract-mismatch');
+  } finally { await wrongObservation.dispose(); }
+  assert.deepEqual(await invocation.result, { stored: 7 }, '错Program查询不抹掉原Entry及真实业务结果');
+  assert.equal(bodies, 1, '查询不会重新执行原Action');
   await assert.rejects(newer.invocation('save', invocation.id), error => error instanceof ActionContractMismatchError
     && error.expected.version === 2 && error.actual.version === 1);
   await assert.rejects(renamed.invocation('save', invocation.id), ActionContractMismatchError);

@@ -2,7 +2,7 @@ import { RemoteSnapshotStream, type ClientRemote } from '@deepseek-ai/dsh-api-ga
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { z, actionIdentity, assertActionIdentity, type ActionIdentity, type CancellationOptions } from '@hanger-source/dsh-reactive';
-import type { ProgramActionBinding } from './types.ts';
+import type { ProgramAddress, ProgramActionBinding } from './types.ts';
 import './errors.ts';
 import type { ClientScope, ClientLease } from './scope.ts';
 
@@ -35,8 +35,9 @@ function freezeJson(value: JsonValue): void {
 }
 
 /** Gateway 的真实流持有远端 Handle；首帧以后只核身份，不自动改指另一个绑定。 */
-function connectBinding(remote: ClientRemote, sessionId: string, name: string, contract: ActionIdentity, scope: JsonValue,
+function connectBinding(remote: ClientRemote, address: ProgramAddress, name: string, contract: ActionIdentity, scope: JsonValue,
   lifetime: AbortSignal): BindingConnection {
+  const { sessionId } = address;
   const first = Promise.withResolvers<ProgramActionBinding>();
   void first.promise.catch(() => {});
   const controller = new AbortController();
@@ -46,7 +47,7 @@ function connectBinding(remote: ClientRemote, sessionId: string, name: string, c
   let closing: Promise<void> | undefined;
   const stream = new RemoteSnapshotStream<ProgramActionBinding, never>(remote.$stream<ProgramActionBinding>({
     name: 'program-action-binding:' + sessionId + ':' + name,
-    open: physical => remote.reactivePrograms.resolveAction({ sessionId, name, contract, scope },
+    open: physical => remote.reactivePrograms.resolveAction({ ...address, name, contract, scope },
       AbortSignal.any([lifetime, controller.signal, physical])),
     ended: () => unavailable(name, 'connection-lost'),
     carrierFailed: error => {
@@ -88,9 +89,9 @@ function connectBinding(remote: ClientRemote, sessionId: string, name: string, c
 }
 
 /** 一次客户端 Session 只为每个槽保留一个已就绪连接；在途解析各自拥有自己的取消。 */
-export function createActionBindings(owner: ClientScope, sessionId: string): RemoteActionBindings {
+export function createActionBindings(owner: ClientScope, address: ProgramAddress): RemoteActionBindings {
   const current = new Map<string, ClientLease<BindingConnection>>();
-  owner.acquire(() => current, current => { current.clear(); }, 'program-action-bindings:' + sessionId);
+  owner.acquire(() => current, current => { current.clear(); }, 'program-action-bindings:' + address.sessionId);
   const assertActive = () => owner.assertActive();
   const dispose = (connection: ClientLease<BindingConnection>, reason: unknown): Promise<void> => {
     // 先撤准入；实际清理始终由原生effect持有，手动退休也能被Session退出加入。
@@ -102,7 +103,7 @@ export function createActionBindings(owner: ClientScope, sessionId: string): Rem
       const signal = options.signal;
       assertActive(); signal?.throwIfAborted();
       // 取得自己的 raw JSON，避免调用方在官方物理重连前改写这次解析请求。
-      const connection = owner.acquire(() => connectBinding(owner.context.remote, sessionId, name, actionIdentity(contract), z.json().parse(scope), owner.signal),
+      const connection = owner.acquire(() => connectBinding(owner.context.remote, address, name, actionIdentity(contract), z.json().parse(scope), owner.signal),
         connection => connection.close(owner.signal.aborted ? owner.signal.reason : new Error('REACTIVE_REMOTE_ACTION_BINDINGS_CLOSED')),
         'program-action-binding:' + name);
       const aborted = () => { void dispose(connection, signal?.reason); };

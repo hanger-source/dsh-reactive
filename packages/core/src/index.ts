@@ -25,8 +25,10 @@ export { defineOperation, implementOperation, bindOperation, attachOperation, lo
 export type { OperationContract, OperationDefinition, OperationOptions, OperationCommand, OperationReference, OperationParsedCommand, OperationParsedReference, OperationState, OperationSettled, OperationAccessContext, OperationLocation, OperationNotificationResult, OperationFollowLink, OperationFollowMode, OperationOwnerReference, OperationOwner, OperationOwnerOptions, OperationHandle, OperationFeedbackNode, OperationFeedbackRead, OperationFeedbackPayload, OperationBindingReference, OperationBindingOptions, OperationParticipation, BoundOperation } from './operations/contract.ts';
 export { NativeChildWork, nativeChildWorkAction, nativeChildReceiptSchema, nativeChildReferenceSchema } from './collaboration/child.ts';
 export type { NativeChildCommand, NativeChildReference, NativeChildReceipt, NativeChildState, NativeChildFeedback } from './collaboration/child.ts';
-export { defineProgram, assertProgramDefinition } from './program/definition.ts';
-export type { ProgramContract, ProgramDefinition, ProgramInput, ProgramParsedInput, ProgramSurface, ProgramSession, ProgramWorkspace, ProgramProps } from './program/definition.ts';
+export { defineProgram, assertProgramDefinition, assertSharedProgramDefinition } from './program/definition.ts';
+export type { ProgramContract, SharedProgramContract, ProgramExpectation, ProgramDefinition, SharedProgramDefinition, ProgramInput, ProgramParsedInput, ProgramSurface, ProgramSession, ProgramWorkspace, ProgramProps } from './program/definition.ts';
+export { programIdentity, assertProgramIdentity, ProgramContractMismatchError, SharedProgramRequiredError } from './program/identity.ts';
+export type { ProgramContractIdentity } from './program/identity.ts';
 
 export type { ProgramImplementation } from './program/definition.ts';
 export { decodeProgramInputs, decodeProgramEvent } from './program/decode.ts';

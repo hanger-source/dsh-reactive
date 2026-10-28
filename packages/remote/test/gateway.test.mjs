@@ -51,7 +51,7 @@ test('动态模块集合经真实Gateway保留Date、单向目标与独立Operat
   const leaf = defineSurface({ views: { at: resourceView(date) }, actions: { save }, operations: { work } });
   const child = composeSurface({ business: leaf });
   const composed = composeSurface({ merchants: collectionSurface(child.surface) });
-  const program = defineProgram({ input: z.null(), surface: composed.surface });
+  const program = defineProgram({ name: 'gateway_test', input: z.null(), surface: composed.surface });
   function Merchant({ id }) {
     const action = useAction(implementation, () => 'merchant-' + id, [id]);
     const existing = useOperation(owner, () => ({ merchantId: 'merchant-' + id }), [id]);
@@ -239,7 +239,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     const edit = useAction(editImplementation, () => target.merchantId, [target.merchantId, target.generation]);
     return Expose({ surface, value: { actions: { editMerchant: edit } } });
   }
-  const program = defineProgram({ input: z.object({ merchantId: z.string() }).strict()
+  const program = defineProgram({ name: 'gateway_test', input: z.object({ merchantId: z.string() }).strict()
     .transform(input => ({ merchant: input.merchantId })).nullable(), surface });
   const definition = defineApplication({ name: 'remote-test', admit: async (_input, _identity, access) => {
     assert.equal(access.actorId, 'alice');
@@ -823,7 +823,7 @@ test('获授权远程 notify 读取 SQLite 可靠 follow 与业务终态，沿�
   } });
   const finishImplementation = implementAction(finish, { execute(_input, call) { call.completeGoal(); return true; } });
   const surface = defineSurface({ views: {}, actions: { prepare } });
-  const program = defineProgram({ input: prepare.scope, surface });
+  const program = defineProgram({ name: 'gateway_test', input: prepare.scope, surface });
   const definition = defineApplication({ name: 'remote-reliable-follow', async admit(input, _identity, admission) {
     assert.deepEqual(input.scope, { orderId: 'order-a' });
     assert.ok(['wire-operator', 'wire-notifier', 'operation-publisher'].includes(admission.actorId));
@@ -999,7 +999,7 @@ test('远程只读 Operation 槽捕获原命令，F1 后新 Follow 等 F2，Date
   } });
   const completion = implementAction(finish, { execute(_input, call) { call.completeGoal(); return true; } });
   const surface = defineSurface({ views: {}, actions: { prepare }, operations: { preparation: operation } });
-  const program = defineProgram({ input: z.object({ orderId: z.string() }).strict(), surface });
+  const program = defineProgram({ name: 'gateway_test', input: z.object({ orderId: z.string() }).strict(), surface });
   function OperationPanel({ commandId }) {
     const binding = useOperation(owner, () => ({ orderId: 'order-a', commandId }), [commandId]);
     useLayoutEffect(() => { commits.next(commandId); return () => commits.next(null); }, [commandId]);
@@ -1107,7 +1107,7 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；请
   const maintenanceGate = Promise.withResolvers();
   const errors = [], carrierErrors = [], clients = [], sockets = [], wire = [];
   const surface = defineSurface({ views: {}, actions: {} });
-  const program = defineProgram({ input: z.object({ at: z.iso.datetime().transform(value => new Date(value)) }).strict(), surface });
+  const program = defineProgram({ name: 'gateway_test', input: z.object({ at: z.iso.datetime().transform(value => new Date(value)) }).strict(), surface });
   const scopes = { 'request-a': { at: '2026-10-27T00:00:07.000Z' }, 'request-b': { at: '2026-10-27T00:00:08.000Z' } };
   const definition = defineApplication({ name: 'request-progress', admit: async (input, _identity, access) => {
     assert.equal(access.actorId, 'request-observer');

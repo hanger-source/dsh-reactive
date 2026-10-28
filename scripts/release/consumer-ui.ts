@@ -9,7 +9,7 @@ import { ConsumerModuleProgram, sessionResources, sharedSessionFacts, sessionCon
 
 const action = defineAction({ name: 'release_consumer_read', description: '公开 UI 类型消费',
   scope: z.object({ subject: z.string() }).strict(), input: z.null(), output: z.object({ version: z.string() }).strict() });
-const program = defineProgram({ input: z.null(), surface: defineSurface({ views: { version: resourceView(z.string()) }, actions: { read: action } }) });
+const program = defineProgram({ name: 'release_ui', input: z.null(), surface: defineSurface({ views: { version: resourceView(z.string()) }, actions: { read: action } }) });
 export type Session = RemoteProgramSession<typeof program>;
 export const portableSession = (session: Session) => sessionResources(session);
 export const portableControls = (session: Session, signal: AbortSignal) => sessionControls(session, signal);
@@ -23,6 +23,11 @@ export const nativeUpload = (native: NativeSession<typeof program>, bytes: Uint8
 };
 export const nativeClient = (ctx: Parameters<typeof bindProgramClient>[1]) => bindProgramClient(program, ctx);
 export const nativeReference = (ctx: Parameters<typeof retainNativeSession>[1], sessionId: string) => retainNativeSession(program, ctx, sessionId);
+export function rejectLocalReference(ctx: Parameters<typeof retainNativeSession>[1], sessionId: string) {
+  const local = defineProgram({ input: z.null(), surface: program.surface });
+  // @ts-expect-error 自行创建远程 SDK 的取得入口要求发布者声明的共享 Program。
+  return retainNativeSession(local, ctx, sessionId);
+}
 export function rejectServiceSession(native: Parameters<typeof bindNativeSession>[1], service: RemoteServiceProgramSession<typeof program>) {
   // @ts-expect-error 服务端口没有人工参与能力，不能作为原生人工会话绑定。
   return bindNativeSession(program, native, service);

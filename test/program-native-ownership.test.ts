@@ -7,7 +7,8 @@ import { createElement as h, Fragment } from 'react';
 import { scopeOf } from '@deepseek-ai/dsh-scope';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { BehaviorSubject, Observable, filter, firstValueFrom, of, timeout } from 'rxjs';
-import { defineAction, defineApplication, defineEnvironment, defineProgram, defineSurface, implementAction, view, z } from '@hanger-source/dsh-reactive';
+import { defineAction, defineApplication, defineEnvironment, defineProgram, defineSurface, implementAction, programIdentity,
+  ProgramContractMismatchError, SharedProgramRequiredError, view, z } from '@hanger-source/dsh-reactive';
 import { Context, Expose, Offer, Skill, implementProgram, useAction, useObservable } from '@hanger-source/dsh-reactive/program';
 import { boot } from './native-support.ts';
 
@@ -128,6 +129,73 @@ test('首次React求值失败保留Program原错，待安装声明退出且其�
     assert.equal(app.native.sessions.get(SessionId(id)), undefined);
     const healthy = await app.host.create('healthy', { workspaceId: app.workspace.workspaceId });
     healthy.release();
+    assert.equal(models, 0); assert.deepEqual(app.errors, []);
+  } finally { await app.dispose(); }
+});
+
+test('取得共享Program前核合同且本地仍保原定义身份，冷选择不随调用者后续变更漂移', { timeout: 15_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-program-contract-owner-'));
+  const surface = defineSurface({ views: {}, actions: {} });
+  const program = defineProgram({ name: 'native_owner_program', input: z.null(), surface });
+  const sameIdentity = defineProgram({ name: program.name, version: program.version, input: program.input, surface });
+  const local = defineProgram({ input: z.null(), surface });
+  let renders = 0, models = 0;
+  const definition = defineApplication({ name: 'program-contract-owner', admit: async () => {}, environments: [
+    defineEnvironment({ id: 'shared', instructions: '仅显式取得合同，不启动模型。',
+      program: implementProgram(program, { Component() { renders++; return null; } }) }),
+    defineEnvironment({ id: 'local', instructions: '局部程序不要求共享名称。',
+      program: implementProgram(local, { Component: () => null }) }),
+  ] });
+  const app = await boot(join(directory, 'home'), definition, async function* () {
+    models++; throw new Error('PROGRAM_CONTRACT_CHECK_MUST_NOT_CALL_MODEL');
+  });
+  const selection = { contract: programIdentity(program) };
+  const wrong = { contract: { name: program.name, version: program.version + 1 } };
+  const service = app.host.service();
+  try {
+    for (const port of [app.host, service]) {
+      const deniedId = port === app.host ? 'contract-denied-human' : 'contract-denied-service';
+      await assert.rejects(port.create('shared', { workspaceId: app.workspace.workspaceId, sessionId: deniedId }, wrong), ProgramContractMismatchError);
+      assert.equal(app.native.agents.get(SessionId(deniedId)), undefined);
+      assert.equal(app.native.sessions.get(SessionId(deniedId)), undefined, '错误合同在原生创建之前拒绝');
+    }
+    assert.equal(renders, 0);
+    const deniedLocal = 'unnamed-program-not-published';
+    await assert.rejects(app.host.create('local', { workspaceId: app.workspace.workspaceId, sessionId: deniedLocal }, selection), SharedProgramRequiredError);
+    assert.equal(app.native.sessions.get(SessionId(deniedLocal)), undefined);
+    const localSession = await app.host.create('local', { workspaceId: app.workspace.workspaceId }, local);
+    localSession.release();
+
+    const session = await app.host.create('shared', { workspaceId: app.workspace.workspaceId }, selection);
+    const sessionId = session.id;
+    assert.equal(session.definition, program);
+    await assert.rejects(app.host.open(sessionId, sameIdentity), /REACTIVE_PROGRAM_CONTRACT_MISMATCH/);
+    await assert.rejects(service.open(sessionId, sameIdentity), /REACTIVE_PROGRAM_CONTRACT_MISMATCH/);
+    await assert.rejects(app.host.open(sessionId, { ...program }), /REACTIVE_PROGRAM_DEFINITION_INVALID/);
+    await assert.rejects(service.open(sessionId, { ...program, contract: programIdentity(program) }), /REACTIVE_PROGRAM_EXPECTATION_INVALID/);
+    session.release(); await app.host.close(sessionId);
+    const before = renders;
+    for (const port of [app.host, service]) {
+      await assert.rejects(port.open(sessionId, wrong), ProgramContractMismatchError);
+      await assert.rejects(port.resume(sessionId, wrong), ProgramContractMismatchError);
+    }
+    assert.equal(app.native.agents.get(SessionId(sessionId)), undefined);
+    assert.equal(renders, before, '冷合同拒绝发生在组件求值与Agent恢复之前');
+
+    const mutable = { contract: { name: program.name, version: program.version } };
+    const opening = app.host.open(sessionId, mutable);
+    mutable.contract.version++;
+    const observer = await opening;
+    assert.equal(observer.definition, program);
+    observer.release();
+    const serviceObserver = await service.open(sessionId, selection);
+    assert.equal(serviceObserver.definition, program); serviceObserver.release();
+    const mutableResume = { contract: { name: program.name, version: program.version } };
+    const resuming = service.resume(sessionId, mutableResume);
+    mutableResume.contract.version++;
+    const restored = await resuming;
+    assert.equal(restored.definition, program);
+    assert.ok(app.native.agents.get(SessionId(sessionId))); restored.release();
     assert.equal(models, 0); assert.deepEqual(app.errors, []);
   } finally { await app.dispose(); }
 });

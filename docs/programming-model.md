@@ -204,11 +204,14 @@ Context 默认是本步必需现场，pending 会等待，error 会使准备失�
 
 ## 定义程序与工作环境
 
+只在本地使用的 Program 可以保持无名。用于 createProgramClient、bindProgramClient、对应服务工厂或 retainNativeSession 的根 Program 应在纯合同文件中定义 name/version，供宿主和消费者共同导入；下面的定义是共享合同：
+
 ```tsx
 import { defineApplication, defineEnvironment, defineProgram, z } from '@hanger-source/dsh-reactive';
 import { implementProgram, useObservable } from '@hanger-source/dsh-reactive/program';
 
 const program = defineProgram({
+  name: 'merchant_delivery', version: 1,
   input: z.object({ merchantId: z.string() }).strict(),
   surface,
 });

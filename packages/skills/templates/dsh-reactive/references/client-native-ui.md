@@ -20,11 +20,16 @@ uploadFile 在本地、远程与原生 UI 都同步返回 FileUploadInvocation�
 
 远程 SDK 从 `@hanger-source/dsh-reactive-client` 导入，不是 Gateway 包的 `/client`；`@hanger-source/dsh-reactive-remote` 只装在认证 Gateway 宿主。纯 Program 文件不能导后台组件/宿主，从而让 CLI、浏览器、UI 共用定义。
 
+createProgramClient、bindProgramClient、createServiceProgramClient、bindServiceProgramClient 与 retainNativeSession 要求真实 SharedProgramContract：在纯合同文件使用 `defineProgram({ name: 'inventory', version: 1, input, surface })`，与宿主共享同一发布者合同。name/version 随 Program 请求发送；Gateway 核目标环境或会话，create、completeCreation 和 resume 在实际副作用前拒绝错合同，SDK 核建立句柄的返回身份。工作区登记与 describe 不绑定 Program。
+
+合同不匹配使用 ProgramContractMismatchError 或宿主 reactive/program-contract-mismatch，并保留 expected/actual；无名目标不能远程消费，使用 SharedProgramRequiredError 或 reactive/shared-program-required。version 默认 1，独立于 npm 版本，不推断 schema/codec 等价、不授予权限。纯本地 Program 可继续无名；已有 ProgramSessionClient<P>、RemoteProgramSession<P> 与 NativeSession<P> 的通用消费者仍保留 P extends ProgramContract，无需自己创建 SDK。
+
 ```ts
 import { createProgramClient } from '@hanger-source/dsh-reactive-client';
 import type { CancellationOptions } from '@hanger-source/dsh-reactive';
 
-// InventoryProgram 来自应用的纯合同文件；认证 transport 由应用提供。
+// InventoryProgram 是纯合同文件中 defineProgram 签发的具名共享定义。
+// 认证 transport 由应用提供。
 const client = await createProgramClient(InventoryProgram, authenticatedTransport);
 const session = await client.open(sessionId);
 const options: CancellationOptions = { signal };
@@ -112,7 +117,7 @@ Action 受理 ACK 已确认后，即使 SDK 在构造观察时退出，仍保留
 
 该 Context 必须允许 `interactions:'answer'`。多个 SDK 可以借用同一装配；SDK dispose 只退出自己的会话和观察，Context 退出关闭全部借用 SDK。独立 createProgramClient 拥有另一份 Connection，适用于独立客户端；原生 UI 按实际连接归属绑定，不能用相同 URL、sessionId 或复制出来的同形句柄代替。
 
-需要整体取得并拥有引用时，使用 `const reference = await retainNativeSession(Program, clientContext, sessionId, { signal })`，消费 `reference.session`，退出时 `await reference.release()`，也支持 await using。Context 由客户端根或应用插件拥有，须已有官方 Client Sessions 与上述 Program 远程贡献；不要用目标 Agent generation 的 Context 保留其自身寿命。框架通过官方目录刷新、精确代际 retain 和 SDK open 完成装配，权限仍由原生目录及 Program 读取入口分别核验。取得失败或取消释放部分成果，成功后的 signal 不释放已返回引用；显式 release 或所属 Context 退出释放本次 UI、SDK 和原生引用，不影响其他引用或 Host 工作。已有 binding 和 SDK 时用 bindNativeSession，原对象仍由调用者释放。
+需要整体取得并拥有引用时，使用 `const reference = await retainNativeSession(Program, clientContext, sessionId, { signal })`；该入口自行创建 SDK，Program 必须是 SharedProgramContract，并在取得引用前核验。消费 `reference.session`，退出时 `await reference.release()`，也支持 await using。Context 由客户端根或应用插件拥有，须已有官方 Client Sessions 与上述 Program 远程贡献；不要用目标 Agent generation 的 Context 保留其自身寿命。框架通过官方目录刷新、精确代际 retain 和 SDK open 完成装配，权限仍由原生目录及 Program 读取入口分别核验。取得失败或取消释放部分成果，成功后的 signal 不释放已返回引用；显式 release 或所属 Context 退出释放本次 UI、SDK 和原生引用，不影响其他引用或 Host 工作。已有 binding 和 SDK 时用 bindNativeSession，原对象仍由调用者释放。
 
 - `nativeSource` 直接接已有 peek/subscribe；`observeNativeResource` 保 pending/error；NativeSession.resource/operation/invocation/view 将同一个对象交给原生观察。
 - Invocation 的 activity 资源可直接 read、peek 或交给业务 hook；activity$ 是其 values$。native.invocation(invocation) 保留调用的 source 类型，直接读取同一个 Observation，不在 UI 重新物化活动。Action 的远程资源在 returned/failed 后继续保留 SDK 的有效性观察，result 独立等待业务完成。按 state 等待终态，不用 lastValueFrom 推断业务完成。业务 failed 是 ready.value 的调用事实，SDK 失效或观察错误不会伪装成业务失败。

@@ -22,8 +22,8 @@ const CompleteChild = defineAction({ name: 'child_complete', description: '完�
 const ParentOnly = defineAction({ name: 'parent_only_tool', description: '只属于父现场', scope: z.null(), input: z.null(), output: z.boolean() });
 const CompleteParent = defineAction({ name: 'parent_complete', description: '完成原父 Goal', scope: z.null(), input: z.object({}).strict(), output: z.boolean() });
 const childInput = z.object({ taskId: z.string(), issuedAt: z.string().transform(value => new Date(value)) }).strict();
-export const ChildProgram = defineProgram({ input: childInput, surface: defineSurface({ views: {}, actions: {} }) });
-export const ParentProgram = defineProgram({ input: z.object({ parentId: z.string() }),
+export const ChildProgram = defineProgram({ name: 'delegation_child', input: childInput, surface: defineSurface({ views: {}, actions: {} }) });
+export const ParentProgram = defineProgram({ name: 'delegation_parent', input: z.object({ parentId: z.string() }),
   surface: defineSurface({ views: {}, actions: { delegate: DelegateWork } }) });
 
 export interface DelegationFixtureOptions {

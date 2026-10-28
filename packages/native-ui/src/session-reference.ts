@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { SessionReference } from '@deepseek-ai/dsh-api-session-controller/client';
 import { SessionId } from '@deepseek-ai/dsh-session/types';
-import type { CancellationOptions, ProgramContract } from '@hanger-source/dsh-reactive';
+import { assertSharedProgramDefinition, type CancellationOptions, type ProgramContract, type SharedProgramContract } from '@hanger-source/dsh-reactive';
 import { bindProgramClient } from '@hanger-source/dsh-reactive-client';
 import { defer, firstValueFrom, fromEvent, mergeMap, raceWith, throwError } from 'rxjs';
 import { bindNativeSession, type NativeSession } from './session.ts';
@@ -17,9 +17,10 @@ export interface NativeSessionReference<P extends ProgramContract> extends Async
 }
 
 /** 刷新原生目录并在已有客户端装配中取得明确会话；signal 只取消本次取得。 */
-export async function retainNativeSession<P extends ProgramContract>(
+export async function retainNativeSession<P extends SharedProgramContract>(
   program: P, ctx: Context, sessionId: string, options: CancellationOptions = {},
 ): Promise<NativeSessionReference<P>> {
+  assertSharedProgramDefinition(program);
   options.signal?.throwIfAborted();
   const sessions = ctx.get('sessions');
   if (!sessions) throw new Error('REACTIVE_NATIVE_SESSIONS_REQUIRED');

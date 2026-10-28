@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
 import { filter, firstValueFrom } from 'rxjs';
-import { pluginRecordOf } from '@deepseek-ai/dsh-session';
+import { SessionId, pluginRecordOf } from '@deepseek-ai/dsh-session';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
-import { z } from '@hanger-source/dsh-reactive';
+import { defineProgram, programIdentity, ProgramContractMismatchError, z } from '@hanger-source/dsh-reactive';
+import type { ApplicationService } from '@hanger-source/dsh-reactive-dsh';
 import { delegationRecordSchema } from '../packages/dsh/src/delegations.ts';
 import { bootDelegationFixture, delegationDate, delegationScope, inspectDelegationSession } from './delegation-support.ts';
 import { text, tool } from './native-support.ts';
@@ -139,5 +140,28 @@ for (const mode of ['spawn', 'fork'] as const) test(`${mode} 子程序隔离当�
     assert.equal(parent.snapshot().goal?.phase, 'complete');
     assert.deepEqual(fixture.errors, []);
     parent.release();
+    await runtime.application.close(parent.id);
+    const callsBeforeRead = totalCalls;
+    const rootSelection = { contract: programIdentity(fixture.parentProgram) };
+    const childSelection = { contract: programIdentity(fixture.childProgram) };
+    const childReference = { sessionId: sdkReceipt.childSessionId, workspaceId: fixture.workspace.workspaceId,
+      environmentId: parent.identity.environmentId };
+    const sameChildIdentity = defineProgram({ ...programIdentity(fixture.childProgram),
+      input: fixture.childProgram.input, surface: fixture.childProgram.surface });
+    const ports: readonly Pick<ApplicationService, 'open' | 'resume' | 'completeCreation'>[] =
+      [runtime.application, runtime.application.service()];
+    for (const port of ports) {
+      await assert.rejects(port.open(sdkReceipt.childSessionId, rootSelection), ProgramContractMismatchError);
+      await assert.rejects(port.resume(sdkReceipt.childSessionId, rootSelection), ProgramContractMismatchError);
+      await assert.rejects(port.completeCreation(childReference, rootSelection), ProgramContractMismatchError);
+      await assert.rejects(port.open(sdkReceipt.childSessionId, sameChildIdentity), /REACTIVE_PROGRAM_CONTRACT_MISMATCH/);
+      const child = await port.open(sdkReceipt.childSessionId, childSelection);
+      try { assert.equal(child.definition, fixture.childProgram); }
+      finally { child.release(); }
+      assert.equal(runtime.native.agents.get(SessionId(parent.id)), undefined, '拒绝root合同与读取child均不能恢复父Agent');
+      assert.equal(runtime.native.agents.get(SessionId(sdkReceipt.childSessionId)), undefined, '正确child合同只打开冷程序图');
+    }
+    assert.equal(totalCalls, callsBeforeRead, '冷合同核验和只读打开不启动父或子模型');
+    assert.deepEqual(fixture.errors, []);
   } finally { releaseChild.resolve(); if (fixture) await fixture.dispose(); }
 });

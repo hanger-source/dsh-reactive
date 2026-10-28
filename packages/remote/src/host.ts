@@ -7,9 +7,9 @@ import { type ApplicationHost, type ConversationHandle, type ServiceConversation
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import { decodeProgramFailure } from '@hanger-source/dsh-reactive-client/errors';
 import { createProgramFailureMapper } from './host-errors.ts';
-import { z, actionIdentity, assertActionIdentity, surfaceSlotDefinition, encodeOperationFeedback, type AnyEnvironment, type InputReference, type ConversationEvent, type HumanQuestionOrigin } from '@hanger-source/dsh-reactive';
+import { z, actionIdentity, assertActionIdentity, programIdentity, assertSharedProgramDefinition, surfaceSlotDefinition, encodeOperationFeedback, type AnyEnvironment, type InputReference, type ConversationEvent, type HumanQuestionOrigin } from '@hanger-source/dsh-reactive';
 import { endWith, firstValueFrom, fromEvent, ignoreElements, merge, take, type Observable, type Subscription } from 'rxjs';
-import type { ProgramActionRequest, ProgramActionStart, ProgramAddress, ProgramCreateRequest, ProgramCreationReference, ProgramIdentity, ProgramInputReceipt, ProgramInvocationAddress, ProgramInvocationFrame, ProgramSubmitRequest, ProgramWorkspaceRegistration, ProgramViewFrame, ProgramViewRequest, WireObservation, ProgramFailure, ProgramActionBindingRequest, ProgramActionBinding, ProgramUploadFileRequest, ProgramFileUploadValue, ProgramInputEditRequest } from '@hanger-source/dsh-reactive-client/types';
+import type { ProgramActionRequest, ProgramActionStart, ProgramAddress, ProgramCreateRequest, ProgramCompleteCreationRequest, ProgramIdentity, ProgramInputReceipt, ProgramInvocationAddress, ProgramInvocationFrame, ProgramSubmitRequest, ProgramWorkspaceRegistration, ProgramViewFrame, ProgramViewRequest, WireObservation, ProgramFailure, ProgramActionBindingRequest, ProgramActionBinding, ProgramUploadFileRequest, ProgramFileUploadValue, ProgramInputEditRequest } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramOperationRequest, ProgramOperationLocateRequest, ProgramOperationLocation, ProgramOperationNotification, ProgramOperationNotificationResult, ProgramAnswerRequest, ProgramQuestionRequest, ProgramQuestionsFrame, ProgramWaitFrame, ProgramOperationBindingRequest, ProgramOperationBinding, ProgramOperationFeedbackRequest, ProgramOperationFeedbackRead } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramRequestAddress, ProgramRequestStatus, ProgramWorkspace, ProgramGoalControl, ProgramCancelResult, ProgramJournalOpenRequest, ProgramJournalPageRequest, ProgramJournalFrame } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramProgressFrame, ProgramConversationEvent } from '@hanger-source/dsh-reactive-client/types';
@@ -62,8 +62,15 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   private port(identity: ProgramParticipant) {
     return identity.participant === 'service' ? this.options.application.service(identity.actorId) : this.options.application;
   }
-  private openSession(sessionId: string, identity = this.participant()) {
-    return this.port(identity).open(sessionId).catch(this.rethrow);
+  private openSession(request: ProgramAddress, identity = this.participant()) {
+    return this.port(identity).open(request.sessionId, { contract: request.program }).catch(this.rethrow);
+  }
+  private sessionIdentity(handle: ConversationHandle | ServiceConversation, identity: ProgramParticipant): ProgramIdentity {
+    const definition = handle.definition;
+    try { assertSharedProgramDefinition(definition); }
+    catch (error) { return this.rethrow(error); }
+    return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId,
+      program: programIdentity(definition), ...identity };
   }
   private callOptions(identity: ProgramParticipant, signal: AbortSignal) {
     return identity.participant === 'human' ? { actorId: identity.actorId, signal } : { signal };
@@ -114,19 +121,20 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   async create(request: ProgramCreateRequest, signal: AbortSignal): Promise<ProgramIdentity> {
     const identity = this.participant();
     signal.throwIfAborted();
-    const { environmentId, ...options } = request;
-    const handle = await this.port(identity).create(environmentId, options).catch(this.rethrow);
-    try { return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, ...identity }; }
+    const { environmentId, program, ...options } = request;
+    const handle = await this.port(identity).create(environmentId, options, { contract: program }).catch(this.rethrow);
+    try { return this.sessionIdentity(handle, identity); }
     finally { handle.release(); }
   }
 
   /** 凭明确引用补齐框架已持久化但尚未完成的创建。 */
   @Remote({ resources: { session: _request => undefined, workspace: request => WorkspaceId(request.workspaceId) } })
-  async completeCreation(request: ProgramCreationReference, signal: AbortSignal): Promise<ProgramIdentity> {
+  async completeCreation(request: ProgramCompleteCreationRequest, signal: AbortSignal): Promise<ProgramIdentity> {
     const identity = this.participant();
     signal.throwIfAborted();
-    const handle = await this.port(identity).completeCreation(request).catch(this.rethrow);
-    try { return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, ...identity }; }
+    const { program, ...reference } = request;
+    const handle = await this.port(identity).completeCreation(reference, { contract: program }).catch(this.rethrow);
+    try { return this.sessionIdentity(handle, identity); }
     finally { handle.release(); }
   }
 
@@ -135,8 +143,8 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   async open(request: ProgramAddress, signal: AbortSignal): Promise<ProgramIdentity> {
     const identity = this.participant();
     signal.throwIfAborted();
-    const handle = await this.openSession(request.sessionId, identity);
-    try { return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, ...identity }; }
+    const handle = await this.openSession(request, identity);
+    try { return this.sessionIdentity(handle, identity); }
     finally { handle.release(); }
   }
 
@@ -145,8 +153,8 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   async resume(request: ProgramAddress, signal: AbortSignal): Promise<ProgramIdentity> {
     const identity = this.participant();
     signal.throwIfAborted();
-    const handle = await this.port(identity).resume(request.sessionId).catch(this.rethrow);
-    try { return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, ...identity }; }
+    const handle = await this.port(identity).resume(request.sessionId, { contract: request.program }).catch(this.rethrow);
+    try { return this.sessionIdentity(handle, identity); }
     finally { handle.release(); }
   }
 
@@ -165,7 +173,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   async pause(request: ProgramAddress, signal: AbortSignal): Promise<ProgramGoalControl> {
     this.human();
     signal.throwIfAborted();
-    const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
+    const handle = await this.options.application.open(request.sessionId, { contract: request.program }).catch(this.rethrow);
     try {
       signal.throwIfAborted();
       // 短命句柄持续持有到原生控制结算；transport 退出不能提前释放其回执 owner。
@@ -180,7 +188,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   async cancel(request: ProgramAddress, signal: AbortSignal): Promise<ProgramCancelResult> {
     this.human();
     signal.throwIfAborted();
-    const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
+    const handle = await this.options.application.open(request.sessionId, { contract: request.program }).catch(this.rethrow);
     try { signal.throwIfAborted(); return await handle.cancel().catch(this.rethrow); }
     finally { handle.release(); }
   }
@@ -190,7 +198,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   async submit(request: ProgramSubmitRequest, signal: AbortSignal): Promise<ProgramInputReceipt> {
     const identity = this.participant();
     signal.throwIfAborted();
-    const handle = await this.openSession(request.sessionId, identity);
+    const handle = await this.openSession(request, identity);
     // wire 只证明 JSON；动态环境的 scope 合同继续由 Host 唯一 parse，不在 remote 重复转换。
     try { return await handle.submit(request.submission, this.callOptions(identity, signal)).catch(this.rethrow); }
     finally { handle.release(); }
@@ -201,7 +209,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   async uploadFile(request: ProgramUploadFileRequest, signal: AbortSignal): Promise<ProgramFileUploadValue> {
     const identity = this.participant();
     signal.throwIfAborted();
-    const handle = await this.openSession(request.sessionId, identity);
+    const handle = await this.openSession(request, identity);
     try {
       return await handle.uploadEncodedFile({ data: request.data, ...(request.name === undefined ? {} : { name: request.name }) },
         this.callOptions(identity, signal)).result.catch(this.rethrow);
@@ -212,7 +220,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async requestStatus(request: ProgramRequestAddress, signal: AbortSignal): Promise<ProgramRequestStatus> {
     signal.throwIfAborted();
-    const handle = await this.openSession(request.sessionId);
+    const handle = await this.openSession(request);
     try {
       signal.throwIfAborted();
       return await handle.requestStatus(request.requestId, { signal }).catch(this.rethrow);
@@ -223,7 +231,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 一个 Session 连接承载当前状态与新事实；快照不伪造新的请求事件。 */
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *progress(request: ProgramAddress, signal: AbortSignal): AsyncIterable<ProgramProgressFrame> {
-    const handle = await this.openSession(request.sessionId);
+    const handle = await this.openSession(request);
     const inbox = new Inbox<ProgramProgressFrame>(1024 * 1024);
     const subscriptions: Subscription[] = [];
     const abort = (): void => inbox.fail(signal.reason);
@@ -289,14 +297,14 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     let handle: ConversationHandle | ServiceConversation | undefined;
     try {
       signal.throwIfAborted();
-      handle = await this.openSession(request.sessionId, identity);
+      handle = await this.openSession(request, identity);
       cut = handle.snapshot().sequence;
       // await opening 期间只保留原生 Session，不把已持久历史塞入有界 carrier 邮箱。
       if (openingSession) {
         for (const event of openingSession.snapshotEvents(SessionLogOffset(cut + 1))) append(event);
         openingSession = undefined;
       }
-      const { sessionId: _sessionId, ...window } = request;
+      const { sessionId: _sessionId, program: _program, ...window } = request;
       const page = await this.ctx.sessionController.page({ address: { kind: 'session', sessionId: id }, throughSeq: cut, ...window }, signal);
       signal.throwIfAborted();
       yield { type: 'opened', cursor: cut, page };
@@ -310,9 +318,9 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 同一 Program 权限边界内的原生冷安全分页，不唤醒 Agent。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async journalPage(request: ProgramJournalPageRequest, signal: AbortSignal): Promise<ProgramJournalPage> {
-    const handle = await this.openSession(request.sessionId);
+    const handle = await this.openSession(request);
     try {
-      const { sessionId, ...page } = request;
+      const { sessionId, program: _program, ...page } = request;
       return await this.ctx.sessionController.page({ address: { kind: 'session', sessionId: SessionId(sessionId) }, ...page }, signal);
     } finally { handle.release(); }
   }
@@ -320,7 +328,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 订阅已编码的当前视图；业务 source 连接仍归 Program owner。 */
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *view(request: ProgramViewRequest, signal: AbortSignal): AsyncIterable<ProgramViewFrame> {
-    const handle = await this.openSession(request.sessionId);
+    const handle = await this.openSession(request);
     const inbox = new Inbox<ProgramViewFrame>(1024 * 1024);
     let first = true;
     const subscription = handle.observeWireView(request.name).subscribe({
@@ -344,7 +352,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *resolveAction(request: ProgramActionBindingRequest, signal: AbortSignal): AsyncIterable<ProgramActionBinding> {
     signal.throwIfAborted();
-    const handle = await this.openSession(request.sessionId);
+    const handle = await this.openSession(request);
     try {
       signal.throwIfAborted();
       const definition = surfaceSlotDefinition(handle.surface, 'actions', request.name);
@@ -388,7 +396,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   async resolveOperation(request: ProgramOperationBindingRequest, signal: AbortSignal): Promise<ProgramOperationBinding> {
     const identity = this.participant();
     signal.throwIfAborted();
-    const handle = await this.openSession(request.sessionId, identity);
+    const handle = await this.openSession(request, identity);
     try {
       const binding = handle.resolveOperation(request.name, this.callOptions(identity, signal));
       return { operation: { kind: binding.definition.kind, version: binding.definition.version }, command: z.json().parse(binding.command) };
@@ -400,7 +408,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   async editQueuedInput(request: ProgramInputEditRequest, signal: AbortSignal): Promise<ProgramInputReceipt> {
     const identity = this.participant();
     signal.throwIfAborted();
-    const handle = await this.openSession(request.sessionId, identity);
+    const handle = await this.openSession(request, identity);
     try { return await handle.editQueuedInput(request.requestId, request.content, this.callOptions(identity, signal)).catch(this.rethrow); }
     finally { handle.release(); }
   }
@@ -408,10 +416,10 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 只读原 command 的已登记参与；Host 取精确持久 link，不激活 Agent 或 register。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async readOperationFeedback(request: ProgramOperationFeedbackRequest, signal: AbortSignal): Promise<ProgramOperationFeedbackRead> {
-    const definition = this.options.application.operationDefinition(request.operation.kind, request.operation.version);
     const identity = this.participant();
-    const handle = await this.openSession(request.sessionId, identity);
+    const handle = await this.openSession(request, identity);
     try {
+      const definition = this.options.application.operationDefinition(request.operation.kind, request.operation.version);
       const value = await handle.readOperationFeedback(definition, request.command,
         request.participationId, this.callOptions(identity, signal)).catch(this.rethrow);
       if (value.status === 'unknown') return value;
@@ -426,10 +434,10 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 只按既有业务 command 查受理事实；unknown 不重发 Action。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async locateOperation(request: ProgramOperationLocateRequest, signal: AbortSignal): Promise<ProgramOperationLocation> {
-    const definition = this.options.application.operationDefinition(request.operation.kind, request.operation.version);
     const identity = this.participant();
-    const handle = await this.openSession(request.sessionId, identity);
+    const handle = await this.openSession(request, identity);
     try {
+      const definition = this.options.application.operationDefinition(request.operation.kind, request.operation.version);
       const location = await handle.locateOperation(definition, request.command, this.callOptions(identity, signal)).catch(this.rethrow);
       return location.status === 'accepted' ? { status: 'accepted', reference: z.json().parse(location.reference),
         state: z.json().parse(z.encode(definition.state, location.state)) }
@@ -440,10 +448,10 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 连接实际 owner 的当前事实，只有 ready 才编码同一 Operation state schema。 */
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *observeOperation(request: ProgramOperationRequest, signal: AbortSignal): AsyncIterable<ProgramViewFrame> {
-    const definition = this.options.application.operationDefinition(request.operation.kind, request.operation.version);
     const identity = this.participant();
-    const handle = await this.openSession(request.sessionId, identity);
+    const handle = await this.openSession(request, identity);
     try {
+      const definition = this.options.application.operationDefinition(request.operation.kind, request.operation.version);
       const operation = await handle.attachOperation(definition, request.reference, this.callOptions(identity, signal));
       let first = true;
       yield* frames(operation.observations$, signal, observed => {
@@ -461,7 +469,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   async notifyOperation(request: ProgramOperationNotification, signal: AbortSignal): Promise<ProgramOperationNotificationResult> {
     const identity = this.participant();
     signal.throwIfAborted();
-    const handle = await this.openSession(request.sessionId, identity);
+    const handle = await this.openSession(request, identity);
     try { return await handle.notifyOperation(request.followId, this.callOptions(identity, signal)).catch(this.rethrow); }
     finally { handle.release(); }
   }
@@ -469,7 +477,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 同一原生问题投影与实际前台请求，不维护第二份问题注册。 */
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *questions(request: ProgramAddress, signal: AbortSignal): AsyncIterable<ProgramQuestionsFrame> {
-    const handle = await this.openSession(request.sessionId);
+    const handle = await this.openSession(request);
     let first = true;
     try {
       yield* frames(handle.human.values$, signal, ({ questions, foreground }) => {
@@ -489,7 +497,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async answerQuestion(request: ProgramAnswerRequest, signal: AbortSignal): Promise<boolean> {
     const { actorId } = this.human();
-    const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
+    const handle = await this.options.application.open(request.sessionId, { contract: request.program }).catch(this.rethrow);
     try { return await handle.answerQuestion(request.callId, request.answer, { actorId, signal }).catch(this.rethrow); }
     finally { handle.release(); }
   }
@@ -498,7 +506,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *attachWait(request: ProgramQuestionRequest, signal: AbortSignal): AsyncIterable<ProgramWaitFrame> {
     const { actorId } = this.human();
-    const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
+    const handle = await this.options.application.open(request.sessionId, { contract: request.program }).catch(this.rethrow);
     try { yield* handle.attachWait(request.callId, { actorId, signal }); }
     catch (error) { this.rethrow(error); }
     finally { handle.release(); }

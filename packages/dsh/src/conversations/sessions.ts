@@ -12,7 +12,7 @@ import { EnvironmentPresets } from "../programs/presets.ts";
 import { canonical } from "./records.ts";
 import { type Workspaces, type ManagedWorkspace } from "../workspaces/workspaces.ts";
 import { conversationCreateOptionsSchema, creationReferenceSchema, workspaceRegistrationSchema, type CreationReference } from "@hanger-source/dsh-reactive/kernel";
-import type { ProgramContract } from "@hanger-source/dsh-reactive/kernel";
+import { assertExpectedProgram, type ProgramExpectation } from "@hanger-source/dsh-reactive/kernel";
 import type { ProgramImplementation } from "@hanger-source/dsh-reactive/kernel";
 import { type NativeDelegations, type DelegationRecord } from "../delegations.ts";
 import type { HostOptions } from '../applications/options.ts';
@@ -414,10 +414,11 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             this.#starting.delete(sessionId);
         }
     }
-    async create<Id extends E[number]['id']>(environmentId: Id, raw: ConversationCreateOptions): Promise<ConversationSession> {
+    async create<Id extends E[number]['id']>(environmentId: Id, raw: ConversationCreateOptions, expected?: ProgramExpectation): Promise<ConversationSession> {
         this.assertActive();
         const options = conversationCreateOptionsSchema.parse(raw), sessionId = options.sessionId ?? randomUUID();
         const environment = this.workspaces.environment(environmentId), workspace = this.workspaces.get(options.workspaceId);
+        assertExpectedProgram(environment.program.definition, expected);
         const presetId = this.workspaces.presetId(environment);
         await this.createRegistered(workspace, environment, sessionId, () => this.ctx.agents.create({ sessionId: SessionId(sessionId),
             meta: { cwd: workspace.native.path, agentPreset: presetId }, agentOptions: this.options.model,
@@ -427,7 +428,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             } }));
         return this.#sessions.get(sessionId)!;
     }
-    async readSession(sessionId: string, expected?: ProgramContract) {
+    async readSession(sessionId: string, expected?: ProgramExpectation) {
         this.assertActive();
         const live = this.#sessions.get(sessionId);
         if (live) this.expectProgram(live, expected);
@@ -445,10 +446,10 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         const child = inspection.meta.parentSession ? await this.delegations.describeChild(inspection) : undefined;
         this.assertActive();
         const implementation = child?.implementation ?? environment.program;
-        if (expected && implementation.definition !== expected) throw new Error('REACTIVE_PROGRAM_CONTRACT_MISMATCH');
+        assertExpectedProgram(implementation.definition, expected);
         return this.compose(inspection, workspace, environment, implementation, child?.record);
     }
-    async completeCreation(raw: CreationReference): Promise<ConversationSession> {
+    async completeCreation(raw: CreationReference, expected?: ProgramExpectation): Promise<ConversationSession> {
         this.assertActive();
         const reference = creationReferenceSchema.parse(raw);
         const workspace = this.workspaces.get(reference.workspaceId), environment = this.workspaces.environment(reference.environmentId);
@@ -457,9 +458,10 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         if (this.workspaces.completed(inspection, workspace, environment)) {
             if (!workspace.native.sessionIds.includes(SessionId(reference.sessionId)))
                 throw new Error('REACTIVE_WORKSPACE_MEMBERSHIP_REQUIRED');
-            return this.readSession(reference.sessionId);
+            return this.readSession(reference.sessionId, expected);
         }
         this.workspaces.assertCreation(inspection, workspace, environment);
+        assertExpectedProgram(environment.program.definition, expected);
         await this.createRegistered(workspace, environment, reference.sessionId, () => this.ctx.agents.resume({ resumeSessionId: SessionId(reference.sessionId),
             agentOptions: this.options.model, setup: async (native, agent) => {
                 this.workspaces.assertCreation({ meta: agent.session.header, events: agent.session.snapshotEvents(),
@@ -534,9 +536,8 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         if (failures.length === 1) throw failures[0];
         if (failures.length) throw new AggregateError(failures, 'REACTIVE_CONVERSATION_ACTIVATION_ROLLBACK_FAILED');
     }
-    expectProgram(session: ConversationSession, expected?: ProgramContract) {
-        if (expected && session.implementation.definition !== expected)
-            throw new Error('REACTIVE_PROGRAM_CONTRACT_MISMATCH');
+    expectProgram(session: ConversationSession, expected?: ProgramExpectation) {
+        assertExpectedProgram(session.implementation.definition, expected);
     }
     checkpoint(agent: Agent) { return this.facts.flush(agent); }
     async pauseGoal(agent: Agent) {

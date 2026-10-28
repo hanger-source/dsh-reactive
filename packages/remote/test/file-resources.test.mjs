@@ -25,7 +25,7 @@ test('真实文件资源共享watch并先监听后读，失效取消旧页，冷
   await writeFile(join(root, 'outside.txt'), '不属于工作区');
   const capability = createNativeFiles({ service: 'provided' });
   const surface = defineSurface({ actions: {}, views: { artifact: resourceView(z.object({ text: z.string(), version: z.string() })) } });
-  const program = defineProgram({ input: z.null(), surface });
+  const program = defineProgram({ name: 'file_resources_test', input: z.null(), surface });
   const definition = defineApplication({ name: 'file-resources', admit: async () => {}, environments: [defineEnvironment({
     id: 'work', instructions: '文件观察不启动模型', program: implementProgram(program, { Component({ conversation }) {
       const page = capability.forSession(conversation).text('artifact.txt');

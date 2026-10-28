@@ -1,13 +1,14 @@
 import type { CancellationOptions, HumanWaitFrame, ResourceReader } from '@hanger-source/dsh-reactive';
 import { remoteResource } from './resource.ts';
 import type { ClientScope } from './scope.ts';
-import type { ProgramQuestions, ProgramQuestionsFrame } from './types.ts';
+import type { ProgramAddress, ProgramQuestions, ProgramQuestionsFrame } from './types.ts';
 
 /** 只投影原生问答快照；回答和前台claim仍从会话控制端口重新准入。 */
-export function remoteHuman(owner: ClientScope, sessionId: string): ResourceReader<ProgramQuestions> {
+export function remoteHuman(owner: ClientScope, address: ProgramAddress): ResourceReader<ProgramQuestions> {
+  const { sessionId } = address;
   return remoteResource<ProgramQuestions, Extract<ProgramQuestionsFrame, { type: 'baseline' }>, Exclude<ProgramQuestionsFrame, { type: 'baseline' }>>(owner, {
     name: 'program-questions:' + sessionId,
-    open: signal => owner.context.remote.reactivePrograms.questions({ sessionId }, signal),
+    open: signal => owner.context.remote.reactivePrograms.questions(address, signal),
     ended: () => new Error('REACTIVE_REMOTE_QUESTIONS_ENDED'),
     isSnapshot: (frame): frame is Extract<ProgramQuestionsFrame, { type: 'baseline' }> => frame.type === 'baseline',
     observation: (frame, generation) => ({ status: 'ready', generation, observedAt: Date.now(), value: frame.value }),
@@ -15,7 +16,7 @@ export function remoteHuman(owner: ClientScope, sessionId: string): ResourceRead
 }
 
 /** 前台claim只持有一次原生物理流，不自动重连或重领，也不维护另一份问题状态。 */
-export function createHumanWaits(owner: ClientScope, sessionId: string) {
+export function createHumanWaits(owner: ClientScope, address: ProgramAddress) {
   const remote = owner.context.remote;
   return {
     async *attach(callId: string, options: CancellationOptions = {}): AsyncIterable<HumanWaitFrame> {
@@ -23,7 +24,7 @@ export function createHumanWaits(owner: ClientScope, sessionId: string) {
       const signal = options.signal ? AbortSignal.any([owner.signal, options.signal]) : owner.signal;
       signal.throwIfAborted();
       const lease = owner.acquire(() => {
-        const stream = remote.reactivePrograms.attachWait({ sessionId, callId }, signal);
+        const stream = remote.reactivePrograms.attachWait({ ...address, callId }, signal);
         return { stream, iterator: stream[Symbol.asyncIterator]() };
       }, async ({ stream, iterator }) => {
         const failures: unknown[] = [];

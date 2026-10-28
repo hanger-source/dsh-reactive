@@ -6,7 +6,9 @@ dsh-reactive 将业务程序接入 dsh 的多工作区、多会话运行环境�
 
 ## 程序定义与组件树
 
-`defineProgram({ input, surface })` 声明可跨宿主与客户端共享的纯合同。`implementProgram(program, { Component })` 将宿主组件绑定到这份合同，组件不进入共享定义。`defineEnvironment` 将程序实现、静态指令与静态 Skill 目录组成可复用场景，`defineApplication` 声明环境集合及输入准入。
+`defineProgram({ input, surface })` 声明纯本地程序合同；跨宿主与远程消费者共享的定义使用 `defineProgram({ name, version, input, surface })`，返回 SharedProgramContract，version 省略时为 1。`implementProgram(program, { Component })` 将宿主组件绑定到这份合同，组件不进入共享定义。`defineEnvironment` 将程序实现、静态指令与静态 Skill 目录组成可复用场景，`defineApplication` 声明环境集合及输入准入。
+
+Program 的 name/version 由发布者声明，与 npm 包版本、Environment 名称和业务目标分开。远程工厂及自行取得 SDK 的原生 UI retain 入口要求真实共享定义；Gateway 在 Program 请求的实际目标上核验身份，创建、补齐创建和恢复先核合同再产生副作用。SDK 也核对返回身份。本地传入实际定义仍核 exact 对象；模块 Surface 和纯本地 Program 无须增加共享名称，通用会话消费者保留 ProgramContract。身份一致不证明 schema、codec 或实现等价，不替代认证和业务准入。
 
 Workspace 由原生 registry 持有目录、稳定身份与成员。`createWorkspace({ directory, title })` 注册已存在的绝对目录，`create(environmentId, { workspaceId })` 显式组合场景和工作区。同一场景可以用于多个工作区，同一工作区也可以运行不同场景。会话自己的持久 binding 决定 application、environmentId 与 workspaceId，宿主交叉核验 Preset、header.cwd 及原生成员；不根据目录猜测场景，也不另存一套环境映射。
 

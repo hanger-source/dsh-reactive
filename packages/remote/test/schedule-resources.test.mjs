@@ -21,7 +21,7 @@ test('Schedule同步目标沿真实CAS读取，退出等待保留原生结果，
   const directory = join(root, 'workspace'); await mkdir(directory);
   const capability = createNativeSchedule({ service: { kind: 'install' } });
   const surface = defineSurface({ actions: {}, views: { reminders: resourceView(z.array(z.object({ id: z.string(), title: z.string(), status: z.string() }))) } });
-  const program = defineProgram({ input: z.null(), surface });
+  const program = defineProgram({ name: 'schedule_resources_test', input: z.null(), surface });
   let models = 0;
   const errors = [], subscriptions = [], entered = Promise.withResolvers(), release = Promise.withResolvers();
   const definition = defineApplication({ name: 'schedule-resources', admit: async () => {}, environments: [defineEnvironment({

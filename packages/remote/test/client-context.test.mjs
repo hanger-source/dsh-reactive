@@ -12,7 +12,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import * as Registry from '@deepseek-ai/dsh-typert-registry/client';
 import * as Gateway from '@deepseek-ai/dsh-api-gateway/client';
 import { installConnection } from '@deepseek-ai/dsh-client-connection/client';
-import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, resourceView, z } from '@hanger-source/dsh-reactive';
+import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, programIdentity, ProgramContractMismatchError, SharedProgramRequiredError, resourceView, z } from '@hanger-source/dsh-reactive';
 import { Expose, implementProgram, useAction } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
 import { assertProgramSessionConnection, bindProgramClient, createAuthenticatedTransport, createProgramClient, CreationUnknownError,
@@ -29,7 +29,7 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
   let models = 0;
   const mark = defineAction({ name: 'mark_context_owner', description: '只在当前实际宿主记录一次明确调用', scope: z.null(), input: z.string(), output: z.string() });
   const surface = defineSurface({ actions: { mark }, views: { owner: resourceView(z.string()) } });
-  const program = defineProgram({ input: z.null(), surface });
+  const program = defineProgram({ name: 'client_context_test', input: z.null(), surface });
   t.after(async () => {
     await Promise.all(clients.map(client => client.dispose()));
     await Promise.all(contexts.map(ctx => ctx.fiber.dispose()));
@@ -49,6 +49,8 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
         const bound = useAction(action, () => null, []);
         return h(Expose, { surface, value: { views: { owner: current }, actions: { mark: bound } } });
       } }),
+    }), defineEnvironment({ id: 'local_only', instructions: '局部无名Program不提供远程会话',
+      program: implementProgram(defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) }), { Component: () => null }),
     })] });
     const runtime = await createRuntime(() => application, { home: join(root, label, 'home'), actorId: 'context-operator',
       onError: event => errors.push(event.error), model: nativeModel({ provider: 'client-context', model: 'unused', create: () => new class extends LlmAdapter {
@@ -81,13 +83,19 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
     fetch: (url, init) => fetch(url, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), authorization: 'Bearer context-test' } }),
     createWebSocket: url => new WebSocket(url, { headers: { authorization: 'Bearer context-test' } }),
   });
-  const connect = async (baseUrl, delayed, requests) => {
+  const connect = async (baseUrl, delayed, requests, wire) => {
     const ctx = new Context(); contexts.push(ctx);
     await ctx.plugin(Registry);
     const selected = transport(baseUrl), fetch = selected.fetch;
-    if (delayed || requests) selected.fetch = async (url, init) => {
+    if (delayed || requests || wire) selected.fetch = async (url, init) => {
       const pathname = new URL(url).pathname;
       requests?.push(pathname);
+      const envelope = init?.body && JSON.parse(init.body), request = envelope?.payload?.args?.request;
+      if (wire && request?.program) wire.requests.push({ pathname, request: structuredClone(request) });
+      if (wire?.replaceProgram && request?.program) {
+        request.program = wire.replaceProgram;
+        init = { ...init, body: JSON.stringify(envelope) };
+      }
       const response = await fetch(url, init);
       if (delayed && !delayed.entered && pathname.endsWith('/reactivePrograms/' + delayed.endpoint)) {
         delayed.entered = true;
@@ -99,9 +107,32 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
         delayed.reply = reply.result;
         delayed.received.resolve(); await delayed.release.promise;
         if (delayed.transportError) throw delayed.transportError;
+        if (delayed.rewriteProgram) {
+          const envelope = await response.json();
+          envelope.result.value.program = delayed.rewriteProgram;
+          return new Response(JSON.stringify(envelope), { status: response.status, headers: { 'content-type': 'application/json' } });
+        }
       }
       return response;
     };
+    if (wire) {
+      const openSocket = selected.createWebSocket;
+      selected.createWebSocket = url => {
+        const socket = openSocket(url), send = socket.send.bind(socket);
+        socket.send = (data, ...args) => {
+          const frame = JSON.parse(data);
+          if (frame.type === 'open' && frame.endpoint === 'reactivePrograms/view') {
+            wire.views.push(structuredClone(frame.payload.args.request));
+            if (wire.replaceProgram) {
+              frame.payload.args.request.program = wire.replaceProgram;
+              return send(JSON.stringify(frame), ...args);
+            }
+          }
+          return send(data, ...args);
+        };
+        return socket;
+      };
+    }
     installConnection(ctx, { interactions: 'answer', transport: createAuthenticatedTransport(selected) });
     await ctx.plugin(Gateway);
     await ctx.remote.$mount(contribution);
@@ -134,7 +165,7 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
   await first.dispose();
   assert.throws(() => sa.viewResource('owner'), /REACTIVE_REMOTE_CLIENT_DISPOSED/u);
   assert.equal(await pa.readView('owner'), 'a');
-  assert.equal((await contextA.remote.reactivePrograms.open({ sessionId })).ok, true, 'SDK退出不撤销公共远程合同');
+  assert.equal((await contextA.remote.reactivePrograms.open({ sessionId, program: { name: program.name, version: program.version } })).ok, true, 'SDK退出不撤销公共远程合同');
   const value = pa.viewResource('owner'); await value.read();
   const invalidated = next(value.observations$, observation => observation.status === 'pending');
   a.current.next({ status: 'pending', generation: 2 }); await invalidated;
@@ -375,6 +406,94 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
         error.code === 'reactive/input-edit-rejected' && error.details.reason === 'unavailable');
       assert.equal(await session.readView('owner'), 'a-after-context-exit');
     } finally { proceed.resolve(); }
+  });
+  for (const endpoint of ['create', 'completeCreation']) await t.test(endpoint + '的成功ACK合同矛盾保留原恢复引用，显式完成不重复创建', { timeout: 3_000 }, async subject => {
+    const reference = { environmentId: 'work', workspaceId: a.workspace.workspaceId, sessionId: crypto.randomUUID() };
+    const expected = { ...reference };
+    a.visible.add(expected.sessionId);
+    if (endpoint === 'completeCreation') local.push(await a.runtime.application.create('work', { workspaceId: reference.workspaceId, sessionId: reference.sessionId }));
+    const delayed = { endpoint, received: Promise.withResolvers(), release: Promise.withResolvers(), entered: false,
+      rewriteProgram: { name: 'wrong_creation_ack', version: 1 } }, requests = [];
+    subject.signal.addEventListener('abort', () => delayed.release.resolve(), { once: true });
+    const ctx = await connect(a.gateway.url, delayed, requests), selected = await bindProgramClient(program, ctx); clients.push(selected);
+    let unknown;
+    const rejected = assert.rejects(endpoint === 'create' ? selected.create('work', reference) : selected.completeCreation(reference), error => {
+      unknown = error;
+      assert.ok(error instanceof CreationUnknownError); assert.deepEqual(error.reference, expected);
+      assert.ok(error.cause instanceof ProgramContractMismatchError);
+      return true;
+    });
+    try {
+      await delayed.received.promise;
+      const agent = a.runtime.native.agents.get(SessionId(expected.sessionId)); assert.ok(agent);
+      reference.environmentId = 'caller_changed_environment'; reference.workspaceId = 'caller-changed-workspace'; reference.sessionId = crypto.randomUUID();
+      delayed.release.resolve(); await rejected;
+      const recovered = await selected.completeCreation(unknown.reference);
+      assert.equal(recovered.id, expected.sessionId); assert.deepEqual(recovered.identity.program, programIdentity(program));
+      assert.equal(a.runtime.native.agents.get(SessionId(expected.sessionId)), agent, '沿准确引用完成不构造第二个Agent');
+      assert.equal(requests.filter(path => path.endsWith('/reactivePrograms/create')).length, endpoint === 'create' ? 1 : 0,
+        '错误ACK不自动重发创建');
+      assert.equal((await a.runtime.application.describe()).flatMap(workspace => workspace.sessionIds).filter(id => id === expected.sessionId).length, 1);
+    } finally { delayed.release.resolve(); }
+  });
+  await t.test('wire兼容的View不能替代Program身份，错误创建与恢复均在激活前拒绝', { timeout: 5_000 }, async () => {
+    const ctx = await connect(a.gateway.url), expected = programIdentity(program);
+    const alternatives = [
+      defineProgram({ name: 'other_context_program', input: program.input, surface }),
+      defineProgram({ name: program.name, version: program.version + 1, input: program.input, surface }),
+    ];
+    await assert.rejects(bindProgramClient(defineProgram({ input: program.input, surface }), ctx), SharedProgramRequiredError);
+    await a.runtime.application.close(sessionId);
+    assert.equal(a.runtime.native.agents.get(SessionId(sessionId)), undefined);
+    for (const alternative of alternatives) {
+      const selected = await bindProgramClient(alternative, ctx); clients.push(selected);
+      const mismatch = error => {
+        assert.equal(error.code, 'reactive/program-contract-mismatch');
+        assert.deepEqual(error.details, { expected: programIdentity(alternative), actual: expected });
+        return true;
+      };
+      await assert.rejects(selected.open(sessionId), mismatch);
+      await assert.rejects(selected.resume(sessionId), mismatch);
+      await assert.rejects(selected.completeCreation({ environmentId: 'work', workspaceId: a.workspace.workspaceId, sessionId }), mismatch);
+      assert.equal(a.runtime.native.agents.get(SessionId(sessionId)), undefined, '错Program不能恢复原Agent');
+      const createdId = crypto.randomUUID();
+      await assert.rejects(selected.create('work', { workspaceId: a.workspace.workspaceId, sessionId: createdId }), mismatch);
+      assert.equal(a.runtime.native.agents.get(SessionId(createdId)), undefined);
+      assert.equal(a.runtime.native.sessions.get(SessionId(createdId)), undefined);
+      assert.equal((await a.runtime.application.describe()).some(workspace => workspace.sessionIds.includes(createdId)), false,
+        '确定合同拒绝不产生新成员，也不误归创建未知');
+    }
+    const selected = await bindProgramClient(program, ctx); clients.push(selected);
+    const localOnlyId = crypto.randomUUID();
+    await assert.rejects(selected.create('local_only', { workspaceId: a.workspace.workspaceId, sessionId: localOnlyId }),
+      error => error.code === 'reactive/shared-program-required');
+    assert.equal(a.runtime.native.agents.get(SessionId(localOnlyId)), undefined);
+    assert.equal((await a.runtime.application.describe()).some(workspace => workspace.sessionIds.includes(localOnlyId)), false);
+    const resumed = await selected.resume(sessionId);
+    assert.deepEqual(resumed.identity.program, expected);
+    assert.equal(await resumed.readView('owner'), 'a-after-context-exit');
+  });
+  await t.test('已握手SDK的后续请求与每次物理View重连继续核原Program身份', { timeout: 8_000 }, async () => {
+    const wire = { requests: [], views: [] }, ctx = await connect(a.gateway.url, undefined, undefined, wire);
+    const selected = await bindProgramClient(program, ctx); clients.push(selected);
+    const session = await selected.open(sessionId), expected = programIdentity(program);
+    const view = session.viewResource('owner'), subscription = view.observations$.subscribe();
+    try {
+      assert.equal(await view.read(), 'a-after-context-exit');
+      assert.deepEqual(await session.requestStatus('never-submitted'), { requestId: 'never-submitted', state: 'absent' });
+      wire.replaceProgram = { name: 'other_context_program', version: 1 };
+      await assert.rejects(session.requestStatus('never-submitted'), error => error.code === 'reactive/program-contract-mismatch');
+      const denied = next(view.observations$, value => value.status === 'error');
+      ctx.get('connection').reconnect();
+      const failure = await denied;
+      assert.equal(failure.error.code, 'reactive/program-contract-mismatch');
+      assert.equal(view.peek().status, 'error', '错Program重连不能保留旧ready');
+      assert.ok(wire.views.length >= 2, '真实Connection重连打开了新的View物理查询');
+      assert.ok(wire.views.every(address => address.sessionId === sessionId));
+      for (const address of wire.views) assert.deepEqual(address.program, expected, '每个SDK重连闭包仍携原Program身份');
+      assert.ok(wire.requests.some(({ pathname }) => pathname.endsWith('/reactivePrograms/requestStatus')));
+      for (const { request } of wire.requests) assert.deepEqual(request.program, expected);
+    } finally { subscription.unsubscribe(); }
   });
   assert.deepEqual(calls, [{ label: 'a', input: 'first' }, { label: 'b', input: 'still-b' }]);
   assert.equal(models, 0); assert.deepEqual(errors, []);

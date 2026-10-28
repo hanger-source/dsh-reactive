@@ -60,7 +60,7 @@ Environment 提供 Program 实现、指令与原生扩展；Workspace 是原生 
 
 ## 同一份 Program 合同
 
-`defineProgram({ input, surface })` 定义输入与公开出口，合同模块可直接共享给宿主和消费者：
+远程消费者使用 `defineProgram({ name, version, input, surface })` 声明共享 Program。省略 version 时为 1；name 使用小写字母开头的小写字母、数字或下划线，最长 80 个字符，version 为正安全整数。纯合同模块由宿主与客户端共同导入：
 
 ```ts
 import { z, defineAction, defineProgram, defineSurface, view } from '@hanger-source/dsh-reactive';
@@ -76,6 +76,7 @@ const confirm = defineAction({
   output: z.object({ receiptId: z.string() }),
 });
 export const orderProgram = defineProgram({
+  name: 'orders', version: 1,
   input: z.object({ orderId: z.string(), asOf: z.iso.datetime().transform(value => new Date(value)) }),
   surface: defineSurface({
     views: { summary: view(z.object({ orderId: z.string(), updatedAt: date })) },
@@ -100,7 +101,11 @@ const invocation = await confirm({ amount: '7' }, options);
 const receipt = await invocation.result;
 ```
 
-`resolveAction` 发送调用者明确期望的原始 scope，宿主在当前合同下解析并核对当前公开绑定，返回其真实 `bindingId` 与解析后的 JSON scope。客户端不把这个输出再次交给 scope schema，因此字符串到对象等单向 transform 也可以使用。跨进程仍由应用保证所选 Program 合同一致，scope 必须满足 JSON 传输边界。
+`createProgramClient`、`bindProgramClient`、`createServiceProgramClient` 与 `bindServiceProgramClient` 只接受真实 `defineProgram` 签发的 `SharedProgramContract`。SDK 将 name/version 作为预期身份随 Program 请求发送，Gateway 核对目标环境或会话实际安装的合同；create、completeCreation 与 resume 在创建、补齐或恢复副作用前核验。会话取得回执也携带实际身份，SDK 在建立句柄时复核，随后按已核合同解码。工作区注册和 describe 是应用级发现，不绑定某个 Program。
+
+`ProgramContractMismatchError` 保留 expected/actual，宿主确定拒绝使用 `reactive/program-contract-mismatch`；未具名的本地 Program 不能从远程使用，使用 `SharedProgramRequiredError` 或宿主的 `reactive/shared-program-required` 表达。纯本地 `defineProgram({ input, surface })` 仍有效；本地取得传入实际定义对象时继续核对 exact 对象身份。同名同版本不能替代本地对象、认证或业务权限。
+
+`resolveAction` 发送调用者明确期望的原始 scope，宿主在当前合同下解析并核对当前公开绑定，返回其真实 `bindingId` 与解析后的 JSON scope。客户端不把这个输出再次交给 scope schema，因此字符串到对象等单向 transform 也可以使用，scope 仍须满足 JSON 传输边界。
 
 随后调用携带捕获的 bindingId。槽切换到另一目标、绑定撤下或同目标重新挂载都会使旧句柄明确失败，分别通过 `reactive/action-target-mismatch`、`reactive/action-binding-unavailable` 表达；这类确定拒绝不会归入未知受理。准入等待期间换绑也会在 execute 前被拒绝；已开始的业务不因页面切换或连接断开被取消。解析和业务执行各自授权，bindingId 不能替代权限核验，也不提供跨重启身份。
 
@@ -128,13 +133,13 @@ Action 受理 ACK 已确认后，观察作用域退出不能抹掉原 Invocation
 
 同一 Context 可为多个 Program 或多个消费者建立独立 SDK。SDK dispose 释放自己的 Session、观察与等待，保留公共 Context 和远程合同；Context 退出会同时关闭其借用 SDK。`bindNativeSession` 核验 SDK 原对象所使用的实际 Connection、Program 与原生 Session generation。原生扩展取得的 SDK 应来自该客户端 Context 的 bindProgramClient；相同会话 ID、相同合同或相同服务器地址不能替代这份连接归属。
 
-需要框架持有整组引用时，使用 `await retainNativeSession(Program, clientContext, sessionId, { signal })`，从返回对象的 `session` 消费同一 NativeSession，退出时 `await reference.release()` 或使用 `await using`。调用方提供已安装官方 Client Sessions、Connection、Gateway 和 Program 贡献的客户端根或应用插件 Context；目标 Agent generation 的 Context 不能成为这组引用的 owner，避免会话保留自己的寿命。取得入口先通过官方 sessions.refresh 刷新共享目录，再 retain 精确代际并打开 Program SDK；需要原生目录和该会话的读取许可，不授予新权限或创建 Host 会话。
+需要框架持有整组引用时，使用 `await retainNativeSession(Program, clientContext, sessionId, { signal })`；该入口自行创建 SDK，要求真实具名的 SharedProgramContract。从返回对象的 `session` 消费同一 NativeSession，退出时 `await reference.release()` 或使用 `await using`。调用方提供已安装官方 Client Sessions、Connection、Gateway 和 Program 贡献的客户端根或应用插件 Context；目标 Agent generation 的 Context 不能成为这组引用的 owner，避免会话保留自己的寿命。取得入口先通过官方 sessions.refresh 刷新共享目录，再 retain 精确代际并打开 Program SDK；需要原生目录和该会话的读取许可，不授予新权限或创建 Host 会话。
 
 取得失败或取得期间 signal 取消，会释放本次已取得的原生引用与 SDK；信号只控制取得过程，成功后引用由显式 release 或所属 Context 退出释放。release 关闭本次 UI 观察、原生引用及独立 SDK，其他引用保留当前代际；最后一个原生引用的代际退出继续由官方 Client Sessions 执行。同步 bindNativeSession 仍只拥有 UI 观察，不释放借入对象；两种入口都不取消 Host 已受理的 Action、Operation 或模型工作。
 
 SDK dispose 同时结束在途的 createWorkspace、describe、create、completeCreation、open 和 resume 等回执等待，并向连接传递取消信号；自定义 transport 未配合取消也不会使调用者继续挂起。停止等待不撤销 Host 已受理的登记或执行。create 请求已发出但结果尚未确认时返回 `CreationUnknownError`，保留原 environmentId、workspaceId、sessionId；用另一有效 SDK 沿同一引用显式 completeCreation，不生成新会话或自动重发。
 
-`createProgramClient` 校验 Program 确由当前 core 实例的 `defineProgram` 创建，拒绝用普通对象冒充合同。同进程的本地 typed 句柄可以核对同一个定义对象；跨进程对象身份不能互相证明。客户端声明自己预期的合同，应用负责把目标 environment/session 路由到对应合同。SDK 不从远程环境自动推断 schema，也不证明两个进程的合同等价；解析失败会明确报错，解析成功只说明该值满足本地所选 schema。合同选择不授予 endpoint、actor 或业务权限。
+Program name/version 是发布者声明的输入、Surface 和业务语义身份，与 npm 包版本无关。发布者为不兼容变化增加合同 version，并让宿主和消费者使用对应定义；框架不推断 schema、codec 或函数等价，也不按远程环境猜选客户端定义。`programIdentity` 提取身份，`assertProgramIdentity` 核对两份明确身份；这类核对不授予 endpoint、actor 或业务权限。
 
 `session.submit` 的范围类型是 `ProgramInput<typeof orderProgram>`，即 `z.input`。上述合同提交 `asOf` 字符串：
 

@@ -1,6 +1,6 @@
 import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-protocol';
 import { z } from 'zod';
-import type { ActionIdentity, NativeChildCommand, NativeChildReference } from '@hanger-source/dsh-reactive';
+import type { ActionIdentity, NativeChildCommand, NativeChildReference, ProgramContractIdentity } from '@hanger-source/dsh-reactive';
 import type { ProgramCreationReference, ProgramFailure } from './types.ts';
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
@@ -10,6 +10,8 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'reactive/action-binding-unavailable': { readonly name: string; readonly reason: 'not-exposed' | 'binding-changed' | 'connection-lost' };
     'reactive/action-target-mismatch': { readonly name: string; readonly reason: 'target-mismatch' };
     'reactive/action-contract-mismatch': { readonly expected: ActionIdentity; readonly actual: ActionIdentity };
+    'reactive/program-contract-mismatch': { readonly expected: ProgramContractIdentity; readonly actual: ProgramContractIdentity };
+    'reactive/shared-program-required': Record<string, never>;
     'reactive/input-edit-rejected': { readonly requestId: string; readonly reason: 'unavailable' | 'actor-mismatch' | 'content-conflict' | 'changed' };
   }
 }

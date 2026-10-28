@@ -26,6 +26,7 @@ metadata:
 贯穿各入口的约束：
 
 - 从纯核心导共享合同，从 `@hanger-source/dsh-reactive/program` 导后台 React 适配器；客户端不得导宿主、凭据或后台 renderer。原生宿主与 UI 分包。
+- 远程 SDK 工厂与 retainNativeSession 使用 `defineProgram({ name, version, input, surface })` 签发的共享 Program，version 默认 1，与包版本分开。宿主核实际目标身份，客户端核取得回执；纯本地 Program 和模块 Surface 不强迫命名，通用会话消费者仍接受 ProgramContract。
 - 构造定义、实现、实例、订阅和公开出口不等于业务命令。Action 调用与 Reaction `start()` 显式执行，渲染或读取不重放写入。
 - 业务服务拥有权限、权威事实、正式完成和幂等；框架接走实例共享、声明与调用关联。dsh 拥有 inbox、工具、Goal 和子 Agent，不再创建第二套队列或持久调度器。
 - 保留 `Observation` 的 pending/error 和真实输入来源。不把上次 ready、当前页面目标、工具字符串或模型文字冒充权威事实。

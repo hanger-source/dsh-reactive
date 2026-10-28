@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import { RemoteError, type Principal } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { ApplicationHost } from '@hanger-source/dsh-reactive-dsh';
-import { z, surfaceSlotDefinition, actionIdentity, assertActionIdentity, type ActionIdentity, type AnyEnvironment, type Invocation, type Json } from '@hanger-source/dsh-reactive';
+import { z, surfaceSlotDefinition, actionIdentity, assertActionIdentity, programIdentity, assertProgramIdentity, assertSharedProgramDefinition, type ProgramContractIdentity, type ActionIdentity, type AnyEnvironment, type Invocation, type Json } from '@hanger-source/dsh-reactive';
 import { Inbox } from '@hanger-source/dsh-reactive-client/transport';
 import type { ProgramActionRequest, ProgramActionStart, ProgramInvocationAddress, ProgramInvocationFrame } from '@hanger-source/dsh-reactive-client/types';
 import { decodeProgramFailure } from '@hanger-source/dsh-reactive-client/errors';
@@ -37,6 +37,7 @@ export interface ProgramActionOwnerOptions {
 
 type Entry = {
   readonly sessionId: string;
+  readonly program: ProgramContractIdentity;
   readonly participant: ProgramParticipant['participant'];
   readonly actorId: string;
   readonly name: string;
@@ -84,6 +85,8 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
     if (!entry || entry.sessionId !== request.sessionId || entry.actorId !== identity.actorId || entry.participant !== identity.participant) {
       throw new RemoteError('reactive/invocation-unavailable', 'Invocation is absent, expired, or belongs to another participant', {});
     }
+    try { assertProgramIdentity(request.program, entry.program); }
+    catch (error) { return rethrow(error); }
     return entry;
   };
   const dispose = (): void => {
@@ -97,11 +100,13 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
       const identity = participant(principal);
       querySignal.throwIfAborted();
       const handle = await (identity.participant === 'service'
-        ? application.service(identity.actorId).open(request.sessionId)
-        : application.open(request.sessionId)).catch(rethrow);
+        ? application.service(identity.actorId).open(request.sessionId, { contract: request.program })
+        : application.open(request.sessionId, { contract: request.program })).catch(rethrow);
       let retained = false;
       try {
         signal.throwIfAborted(); querySignal.throwIfAborted();
+        const program = handle.definition;
+        assertSharedProgramDefinition(program);
         const definition = surfaceSlotDefinition(handle.surface, 'actions', request.name);
         if (!definition) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
         assertActionIdentity(request.contract, definition);
@@ -111,7 +116,7 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
           identity.participant === 'human' ? { actorId: identity.actorId } : {});
         const wireResult = invocation.result.then(value => z.json().parse(z.encode(definition.output, value)))
           .catch(rethrow);
-        const entry: Entry = { sessionId: request.sessionId, participant: identity.participant, actorId: identity.actorId,
+        const entry: Entry = { sessionId: request.sessionId, program: programIdentity(program), participant: identity.participant, actorId: identity.actorId,
           name: request.name, contract: actionIdentity(definition), invocation, wireResult };
         entries.set(invocation.id, entry); retained = true;
         const settle = (): void => {

@@ -13,7 +13,7 @@ import * as Registry from '@deepseek-ai/dsh-typert-registry/client';
 import * as Gateway from '@deepseek-ai/dsh-api-gateway/client';
 import { installConnection } from '@deepseek-ai/dsh-client-connection/client';
 import { defineAction, defineApplication, defineEnvironment, defineOperation, defineProgram, defineSurface,
-  implementAction, implementOperation, observeResource, resourceView, z } from '@hanger-source/dsh-reactive';
+  implementAction, implementOperation, observeResource, programIdentity, resourceView, z } from '@hanger-source/dsh-reactive';
 import { Expose, implementProgram, useAction, useOperation } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
 import { bindProgramClient, bindServiceProgramClient, createAuthenticatedTransport, createProgramClient,
@@ -63,7 +63,7 @@ test('服务SDK贯通真实认证Gateway；身份来自宿主、人工控制隔�
     changed.next(); return { id, actorId: call.source.actorId };
   } });
   const surface = defineSurface({ views: { current: resourceView(z.string()) }, actions: { accept }, operations: { current: operation } });
-  const program = defineProgram({ input: z.null(), surface });
+  const program = defineProgram({ name: 'service_client_test', input: z.null(), surface });
   const application = defineApplication({ name: 'gateway-service-client', admit(input, _identity, access) {
     admissions.push({ input: structuredClone(input), actorId: access.actorId, participant: access.participant });
   }, environments: [defineEnvironment({ id: 'work', instructions: '只处理公开服务调用和注入资料，不启动模型。',
@@ -127,7 +127,8 @@ test('服务SDK贯通真实认证Gateway；身份来自宿主、人工控制隔�
   const ownTransport = transport('worker');
   const serviceClient = await createServiceProgramClient(program, ownTransport.options); clients.push(serviceClient);
   const created = await serviceClient.create('work', { workspaceId: workspace.workspaceId, sessionId });
-  assert.deepEqual(created.identity, { sessionId, environmentId: 'work', workspaceId: workspace.workspaceId, participant: 'service', actorId });
+  assert.deepEqual(created.identity, { sessionId, environmentId: 'work', workspaceId: workspace.workspaceId, participant: 'service', actorId,
+    program: { name: program.name, version: program.version } });
   const connect = async principal => {
     const ctx = new Context(), selected = transport(principal); contexts.push(ctx);
     await ctx.plugin(Registry);
@@ -191,7 +192,8 @@ test('服务SDK贯通真实认证Gateway；身份来自宿主、人工控制隔�
   assert.ok(operationSources.length > 0);
   assert.equal(actionSources.length, 1);
 
-  const address = { sessionId, invocationId: invocation.id };
+  const sessionAddress = { sessionId, program: programIdentity(program) };
+  const address = { ...sessionAddress, invocationId: invocation.id };
   const deniedResult = await operator.ctx.remote.reactivePrograms.actionResult(address);
   assert.equal(deniedResult.ok, false); assert.equal(deniedResult.error.code, 'reactive/invocation-unavailable');
   await assert.rejects(human.invocation('accept', invocation.id), error => error.code === 'reactive/invocation-unavailable');
@@ -199,11 +201,11 @@ test('服务SDK贯通真实认证Gateway；身份来自宿主、人工控制隔�
   try { await assert.rejects(deniedActivity[Symbol.asyncIterator]().next(), error => error.code === 'reactive/invocation-unavailable'); }
   finally { await deniedActivity.dispose(); }
   const raw = worker.ctx.remote.reactivePrograms;
-  for (const invoke of [() => raw.pause({ sessionId }), () => raw.cancel({ sessionId }),
-    () => raw.answerQuestion({ sessionId, callId: 'absent', answer: { answers: [] } })]) {
+  for (const invoke of [() => raw.pause(sessionAddress), () => raw.cancel(sessionAddress),
+    () => raw.answerQuestion({ ...sessionAddress, callId: 'absent', answer: { answers: [] } })]) {
     const result = await invoke(); assert.equal(result.ok, false); assert.equal(result.error.code, 'reactive/human-participant-required');
   }
-  const deniedWait = raw.attachWait({ sessionId, callId: 'absent' }, t.signal);
+  const deniedWait = raw.attachWait({ ...sessionAddress, callId: 'absent' }, t.signal);
   try { await assert.rejects(deniedWait[Symbol.asyncIterator]().next(), error => error.code === 'reactive/human-participant-required'); }
   finally { await deniedWait.dispose(); }
 
@@ -217,7 +219,7 @@ test('服务SDK贯通真实认证Gateway；身份来自宿主、人工控制隔�
   });
   const recovered = await serviceClient.open(mismatch.identity.sessionId);
   assert.equal(recovered.id, mismatchId); assert.equal(recovered.identity.participant, 'service');
-  assert.deepEqual((await raw.open({ sessionId: mismatchId })).value, mismatch.identity, '错工厂没有删除或悄悄重建已确认的会话');
+  assert.deepEqual((await raw.open({ ...sessionAddress, sessionId: mismatchId })).value, mismatch.identity, '错工厂没有删除或悄悄重建已确认的会话');
 
   const resource = session.viewResource('current'); subscriptions.push(resource.values$.subscribe());
   assert.equal(await resource.read(t.signal), 'original-facts');

@@ -6,6 +6,8 @@
 
 纯合同 `defineProgram` → `/program` 的 `implementProgram` → `defineEnvironment({ id, instructions, program, skills? })` → `defineApplication({ name, environments, admit })`。admit 消费 `AdmittedSubmission`：正文已是宿主准入的 text/attachment refs，首次投递与模型消费前使用同形合同，并核真实 actor/participant。
 
+允许远程消费的根定义必须使用具名 defineProgram 的 SharedProgramContract；纯本地 Program 可保持无名，Environment 和模块 Surface 不因此增加名称。Program name/version 是发布者的共享合同身份，version 默认 1、独立于 npm 包版本。Gateway 按请求中的预期身份核实际目标，create、completeCreation、resume 先核再进入副作用；本地 open/resume 传实际定义时仍要求 exact 对象，不按名称替换定义。
+
 ```ts
 import { defineApplication, defineEnvironment,
   type ApplicationDefinition, type ProgramContract, type ProgramImplementation } from '@hanger-source/dsh-reactive';

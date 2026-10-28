@@ -2,7 +2,9 @@
 
 ## 程序、组件与提交
 
-纯程序合同由 `defineProgram({ input, surface })` 定义，宿主使用 `implementProgram(program, { Component })` 提供组件，并把实现放入工作环境的 `program` 字段。会话 owner 创建后台 React 根，组件通过 props 取得对话事实、显式输入入口和工作区接点。程序不依赖页面挂载，也不产生 DOM。
+纯本地程序合同由 `defineProgram({ input, surface })` 定义；远程共享定义增加 name 与可选 version，version 默认 1。宿主使用 `implementProgram(program, { Component })` 提供组件，并把实现放入工作环境的 `program` 字段。会话 owner 创建后台 React 根，组件通过 props 取得对话事实、显式输入入口和工作区接点。程序不依赖页面挂载，也不产生 DOM。
+
+四种远程 SDK 工厂与 retainNativeSession 只接受真实的 SharedProgramContract。Program 请求携带预期 name/version，宿主核实际目标，SDK 核返回身份；create、completeCreation 和 resume 在原生副作用前拒绝错合同。本地传入 Program 定义继续核 exact 对象，通用 ProgramSessionClient、RemoteProgramSession 与 NativeSession 的类型仍接受 ProgramContract。合同版本独立于 npm 版本，不证明两份 schema 或 codec 等价。
 
 组件类型、位置与 key 遵循 React 身份规则。保持身份时 hooks 可以保留目标绑定与来源对象；替换 key 或卸载子树会清理该部分的查询、关系和声明。目标改变时，应将目标依赖明确传给相关 hook，不能只更换闭包中的业务对象而省略依赖。
 

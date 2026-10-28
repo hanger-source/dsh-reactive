@@ -2,7 +2,7 @@ import type { ClientScope } from './scope.ts';
 import { RemoteSnapshotStream } from '@deepseek-ai/dsh-api-gateway/client';
 import { BehaviorSubject, Subject, map, type Observable } from 'rxjs';
 import { ResourceReader, createAssistantProgress, createRequestHandle, decodeProgramEvent, parseAssistantProgressFrame, parseConversationProgress, type AssistantProgressFrame, type ConversationActivity, type ConversationEvent, type ConversationProgressSnapshot, type Observation, type RequestHandle, type ProgramContract, type ProgramParsedInput } from '@hanger-source/dsh-reactive';
-import type { ProgramProgressFrame } from './types.ts';
+import type { ProgramAddress, ProgramProgressFrame } from './types.ts';
 import { decodeProgramFailure } from './errors.ts';
 
 export interface RemoteProgress<P extends ProgramContract> {
@@ -14,7 +14,8 @@ export interface RemoteProgress<P extends ProgramContract> {
 }
 
 /** 会话拥有一个连接；request 只选择 core 的当前事实，不重折日志或重放历史。 */
-export function connectProgress<P extends ProgramContract>(owner: ClientScope, sessionId: string, program: P): RemoteProgress<P> {
+export function connectProgress<P extends ProgramContract>(owner: ClientScope, address: ProgramAddress, program: P): RemoteProgress<P> {
+  const { sessionId } = address;
   const { context: ctx, signal: lifetime } = owner;
   const assistant = createAssistantProgress();
   const current = new BehaviorSubject<Observation<ConversationActivity>>({ status: 'pending', generation: 0 });
@@ -44,7 +45,7 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, s
   const lease = owner.acquire(() => {
     const stream = new RemoteSnapshotStream<Extract<ProgramProgressFrame, { type: 'baseline' }>, Exclude<ProgramProgressFrame, { type: 'baseline' }>>(ctx.remote.$stream<ProgramProgressFrame>({
       name: 'program-progress:' + sessionId,
-      open: signal => ctx.remote.reactivePrograms.progress({ sessionId }, AbortSignal.any([lifetime, signal])),
+      open: signal => ctx.remote.reactivePrograms.progress(address, AbortSignal.any([lifetime, signal])),
       ended: () => new Error('REACTIVE_REMOTE_PROGRESS_ENDED'), carrierFailed: invalidate,
     }), {
       name: 'program-progress:' + sessionId,

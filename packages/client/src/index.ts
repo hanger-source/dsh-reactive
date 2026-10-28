@@ -7,7 +7,7 @@ import { type RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { bytesToBase64 } from '@deepseek-ai/dsh-util-crypto';
 import { BehaviorSubject, map, takeWhile, type Observable } from 'rxjs';
-import { z, assertProgramDefinition, surfaceSlotDefinition, createSurfaceCollectionClient, actionManifestSlot, createFileUploadInvocation, type ToolActionBinding, type ActionInput, type ActionInvocation, type ActionContract, type ActionScope, type InvocationActivity, type Observation, type Surface, type SurfaceViews, type ViewValue, type OperationContract, type OperationReference, type OperationCommand, type OperationHandle, type BoundOperation, type ProgramContract, type ProgramSurface, type WorkspaceRegistration, type ConversationCreateOptions, type FileUploadSource, type FileUploadInvocation, type CancellationOptions } from '@hanger-source/dsh-reactive';
+import { z, assertSharedProgramDefinition, programIdentity, assertProgramIdentity, surfaceSlotDefinition, createSurfaceCollectionClient, actionManifestSlot, createFileUploadInvocation, type ToolActionBinding, type ActionInput, type ActionInvocation, type ActionContract, type ActionScope, type InvocationActivity, type Observation, type Surface, type SurfaceViews, type ViewValue, type OperationContract, type OperationReference, type OperationCommand, type OperationHandle, type BoundOperation, type ProgramContract, type SharedProgramContract, type ProgramSurface, type WorkspaceRegistration, type ConversationCreateOptions, type FileUploadSource, type FileUploadInvocation, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import { decodeProgramFailure } from './errors.ts';
 import './errors.ts';
 import contribution from '@hanger-source/dsh-reactive-client/remote';
@@ -104,7 +104,7 @@ export class ProgramParticipantMismatchError extends Error {
   readonly identity: ProgramIdentity;
   constructor(readonly expectedParticipant: ProgramIdentity['participant'], identity: ProgramIdentity) {
     super('REACTIVE_PROGRAM_CLIENT_PARTICIPANT_MISMATCH');
-    this.identity = Object.freeze({ ...identity });
+    this.identity = Object.freeze({ ...identity, program: programIdentity(identity.program) });
   }
 }
 /** HTTP 回执未证明受理结果；保留原请求地址供只读核对和应用显式确定性重投。 */
@@ -140,7 +140,7 @@ export function assertProgramSessionConnection<P extends ProgramContract>(sessio
 }
 
 /** 同一纯 Program 合同声明输入与公开出口；构造客户端不携带宿主组件或业务执行。 */
-export async function createProgramClient<const P extends ProgramContract>(program: P, options: ProgramClientOptions): Promise<ProgramClient<P>> {
+export async function createProgramClient<const P extends SharedProgramContract>(program: P, options: ProgramClientOptions): Promise<ProgramClient<P>> {
   return createParticipantProgramClient(program, options, 'human');
 }
 
@@ -148,14 +148,14 @@ export async function createProgramClient<const P extends ProgramContract>(progr
  * 服务权限由宿主principal签发。正式rc.3的流恢复复用answer连接，
  * transport的interaction声明不赋予此服务端口人工回答或Goal控制能力。
  */
-export async function createServiceProgramClient<const P extends ProgramContract>(program: P, options: ProgramClientOptions): Promise<ServiceProgramClient<P>> {
+export async function createServiceProgramClient<const P extends SharedProgramContract>(program: P, options: ProgramClientOptions): Promise<ServiceProgramClient<P>> {
   return createParticipantProgramClient(program, options, 'service');
 }
 
-async function createParticipantProgramClient<const P extends ProgramContract, Participant extends ProgramIdentity['participant']>(
+async function createParticipantProgramClient<const P extends SharedProgramContract, Participant extends ProgramIdentity['participant']>(
   program: P, options: ProgramClientOptions, participant: Participant,
 ): Promise<ParticipantClient<P, Participant>> {
-  assertProgramDefinition(program);
+  assertSharedProgramDefinition(program);
   const ctx = new Context();
   try {
     await ctx.plugin(Registry);
@@ -168,20 +168,21 @@ async function createParticipantProgramClient<const P extends ProgramContract, P
 }
 
 /** 借用已安装Connection、Gateway和Program远程合同的客户端上下文；只释放本SDK的使用。 */
-export async function bindProgramClient<const P extends ProgramContract>(program: P, parent: Context): Promise<ProgramClient<P>> {
+export async function bindProgramClient<const P extends SharedProgramContract>(program: P, parent: Context): Promise<ProgramClient<P>> {
   return bindParticipantProgramClient(program, parent, 'human');
 }
 
 /** 正式rc.3要求已有answer流恢复连接；此transport声明不改变宿主签发的服务身份。 */
-export async function bindServiceProgramClient<const P extends ProgramContract>(program: P, parent: Context): Promise<ServiceProgramClient<P>> {
+export async function bindServiceProgramClient<const P extends SharedProgramContract>(program: P, parent: Context): Promise<ServiceProgramClient<P>> {
   return bindParticipantProgramClient(program, parent, 'service');
 }
 
-async function bindParticipantProgramClient<const P extends ProgramContract, Participant extends ProgramIdentity['participant']>(
+async function bindParticipantProgramClient<const P extends SharedProgramContract, Participant extends ProgramIdentity['participant']>(
   program: P, parent: Context, participant: Participant,
 ): Promise<ParticipantClient<P, Participant>> {
-  assertProgramDefinition(program);
+  assertSharedProgramDefinition(program);
   type S = ProgramSurface<P>;
+  const sharedIdentity = programIdentity(program);
   const surface: S = program.surface;
   const connection: ConnectionHandle | undefined = parent.get('connection');
   if (!connection || !parent.get('remote') || !parent.get('remote.reactivePrograms')) throw new Error('REACTIVE_PROGRAM_CLIENT_CONTEXT_REQUIRED');
@@ -191,7 +192,7 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
   try {
     const ctx = lifetime.context;
     // 已受理Invocation的Operation借用SDK寿命，不能由原Session句柄退出撤销。
-    const invocationQueries = createOperationQueries(lifetime);
+    const invocationQueries = createOperationQueries(lifetime, sharedIdentity);
     const remote = ctx.remote.reactivePrograms;
     const active = (): void => {
       lifetime.assertActive();
@@ -204,8 +205,10 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
     };
 
     const session = async (identity: ProgramIdentity): Promise<ParticipantSession<P, Participant>> => {
+      assertProgramIdentity(sharedIdentity, identity.program);
       if (identity.participant !== participant) throw new ProgramParticipantMismatchError(participant, identity);
-      Object.freeze(identity);
+      identity = Object.freeze({ ...identity, program: sharedIdentity });
+      const address = Object.freeze({ sessionId: identity.sessionId, program: sharedIdentity });
       const lease = lifetime.acquire(() => createClientScope(ctx, 'reactive-program-session:' + identity.sessionId,
         new Error('REACTIVE_CONVERSATION_HANDLE_RELEASED'), lifetime), owner => owner.close(), 'reactive Program session');
       const owner = lease.value;
@@ -215,19 +218,19 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
         const slots = new Map<string, ResourceReader<unknown>>();
         owner.acquire(() => slots, slots => { slots.clear(); }, 'program-view-slots');
         const assertActive = (): void => { active(); scopeSignal.throwIfAborted(); };
-        const actionBindings = createActionBindings(owner, identity.sessionId);
-        const operationQueries = createOperationQueries(owner);
+        const actionBindings = createActionBindings(owner, address);
+        const operationQueries = createOperationQueries(owner, sharedIdentity);
         const accessSource = { kind: 'participant', participant: identity.participant, actorId: identity.actorId, entrypoint: 'operation-query' } as const;
         let progress: RemoteProgress<P> | undefined;
         const progressOwner = (): RemoteProgress<P> => {
-          assertActive(); return progress ??= connectProgress(owner, identity.sessionId, program);
+          assertActive(); return progress ??= connectProgress(owner, address, program);
         };
-        const human = remoteHuman(owner, identity.sessionId);
+        const human = remoteHuman(owner, address);
         const viewSlot = (name: string): ResourceReader<unknown> => {
           assertActive();
           const existing = slots.get(name);
           if (existing) return existing;
-          const slot = remoteView(owner, identity.sessionId, surface, name);
+          const slot = remoteView(owner, address, surface, name);
           slots.set(name, slot);
           return slot;
         };
@@ -241,7 +244,7 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
             const cancelled = options.signal;
             const signal = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
             signal.throwIfAborted();
-            const binding = result(await remote.resolveOperation({ sessionId: identity.sessionId, name }, signal));
+            const binding = result(await remote.resolveOperation({ ...address, name }, signal));
             signal.throwIfAborted();
             if (binding.operation.kind !== definition.kind || binding.operation.version !== definition.version) {
               throw new Error('REACTIVE_OPERATION_SLOT_CONTRACT_MISMATCH');
@@ -288,7 +291,7 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
               const starting = signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal;
               starting.throwIfAborted();
               // input 本来就是 z.input；客户端仅核验 JSON，唯一业务解析仍在 Host。
-              const started = await remote.startAction({ sessionId: identity.sessionId, name, contract: binding.contract, bindingId: binding.bindingId,
+              const started = await remote.startAction({ ...address, name, contract: binding.contract, bindingId: binding.bindingId,
                 input: json(input) }, starting);
               if (!started.ok) {
                 if (started.error.code === 'gateway/internal' || started.error.code === 'gateway/cancelled')
@@ -315,7 +318,7 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
             assertActive();
             const contract = surfaceSlotDefinition(surface, 'actions', name);
             if (!contract) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
-            const stored = result(await remote.actionInvocation({ sessionId: identity.sessionId, invocationId: id }, lifetime.signal));
+            const stored = result(await remote.actionInvocation({ ...address, invocationId: id }, lifetime.signal));
             if (stored.name !== name) throw new Error('REACTIVE_ACTION_INVOCATION_SLOT_MISMATCH');
             return invocation(ctx.remote, identity.sessionId, stored, contract as S['actions'][K], lifetime, invocationQueries, callRemote);
           },
@@ -347,7 +350,7 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
             const reply = await owner.run(() => {
               signal.throwIfAborted();
               started = true;
-              return remote.submit({ sessionId: identity.sessionId, submission: submitted }, signal);
+              return remote.submit({ ...address, submission: submitted }, signal);
             }, waiting).catch(error => {
               if (started && waiting.aborted && error === waiting.reason)
                 throw new SubmissionAdmissionUnknownError(identity.sessionId, submitted.requestId, error);
@@ -369,7 +372,7 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
             const reply = await owner.run(() => {
               signal.throwIfAborted();
               started = true;
-              return remote.editQueuedInput({ sessionId: identity.sessionId, requestId, content }, signal);
+              return remote.editQueuedInput({ ...address, requestId, content }, signal);
             }, waiting).catch(error => {
               if (started && waiting.aborted && error === waiting.reason)
                 throw new InputEditAdmissionUnknownError(identity.sessionId, requestId, error);
@@ -392,7 +395,7 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
               async prepare() {
                 const bytes = source instanceof Uint8Array ? source : new Uint8Array(await source.arrayBuffer()).slice();
                 return descriptor.input({ strict: true }).create().parse({ request: {
-                  sessionId: identity.sessionId, data: bytesToBase64(bytes), ...(name === undefined ? {} : { name }),
+                  ...address, data: bytesToBase64(bytes), ...(name === undefined ? {} : { name }),
                 } });
               },
               async execute(input) {
@@ -414,7 +417,7 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
           async requestStatus(requestId, options = {}) {
             assertActive();
             const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
-            return result(await callRemote(current => remote.requestStatus({ sessionId: identity.sessionId, requestId }, current), signal));
+            return result(await callRemote(current => remote.requestStatus({ ...address, requestId }, current), signal));
           },
           attachOperation(definition, reference, options = {}) {
             assertActive();
@@ -438,18 +441,18 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
             const cancelled = options.signal;
             const signal = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
             signal.throwIfAborted();
-            return result(await remote.notifyOperation({ sessionId: identity.sessionId, followId }, signal));
+            return result(await remote.notifyOperation({ ...address, followId }, signal));
           },
           async openEvents(eventOptions, request = {}) {
             assertActive();
-            return ProgramJournal.create(owner, identity.sessionId, eventOptions, request);
+            return ProgramJournal.create(owner, address, eventOptions, request);
           },
           release(): Promise<void> {
             return lease.release();
           },
         };
         if (participant === 'human') {
-          const waits = createHumanWaits(owner, identity.sessionId);
+          const waits = createHumanWaits(owner, address);
           const controls: Pick<RemoteProgramSession<P>, 'question' | 'answerQuestion' | 'attachWait' | 'pause' | 'cancel'> = {
             question: createHumanQuestionResolver(human, {
               answerQuestion: (id, answer, options) => controls.answerQuestion(id, answer, options),
@@ -458,18 +461,18 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
             async pause(options = {}) {
               assertActive();
               const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
-              return result(await callRemote(current => remote.pause({ sessionId: identity.sessionId }, current), signal));
+              return result(await callRemote(current => remote.pause(address, current), signal));
             },
             async cancel(options = {}) {
               assertActive();
               const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
-              return result(await callRemote(current => remote.cancel({ sessionId: identity.sessionId }, current), signal));
+              return result(await callRemote(current => remote.cancel(address, current), signal));
             },
             async answerQuestion(callId, answer, options = {}) {
               assertActive();
               const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
               signal.throwIfAborted();
-              return result(await callRemote(current => remote.answerQuestion({ sessionId: identity.sessionId, callId, answer }, current), signal));
+              return result(await callRemote(current => remote.answerQuestion({ ...address, callId, answer }, current), signal));
             },
             async *attachWait(callId, options = {}) {
               assertActive();
@@ -498,23 +501,30 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
         try {
           const reply = await callRemote(signal => {
             dispatched = true;
-            return remote.create(reference, signal);
+            return remote.create({ ...reference, program: sharedIdentity }, signal);
           });
           if (!reply.ok && (reply.error.code === 'gateway/internal' || reply.error.code === 'gateway/cancelled')) throw new CreationUnknownError(reference, reply.error);
-          const identity = creation(reply); active(); return await session(identity);
+          const identity = creation(reply);
+          try { assertProgramIdentity(sharedIdentity, identity.program); }
+          catch (cause) { throw new CreationUnknownError(reference, cause); }
+          active(); return await session(identity);
         } catch (error) {
           if (dispatched && lifetime.signal.aborted && error === lifetime.signal.reason) throw new CreationUnknownError(reference, error);
           throw error;
         }
       },
       async completeCreation(reference) {
-        const identity = creation(await callRemote(signal => remote.completeCreation(reference, signal))); active(); return session(identity);
+        const captured = Object.freeze({ environmentId: reference.environmentId, workspaceId: reference.workspaceId, sessionId: reference.sessionId });
+        const identity = creation(await callRemote(signal => remote.completeCreation({ ...captured, program: sharedIdentity }, signal)));
+        try { assertProgramIdentity(sharedIdentity, identity.program); }
+        catch (cause) { throw new CreationUnknownError(captured, cause); }
+        active(); return session(identity);
       },
       async open(sessionId) {
-        const identity = creation(await callRemote(signal => remote.open({ sessionId }, signal))); active(); return session(identity);
+        const identity = creation(await callRemote(signal => remote.open({ sessionId, program: sharedIdentity }, signal))); active(); return session(identity);
       },
       async resume(sessionId) {
-        const identity = creation(await callRemote(signal => remote.resume({ sessionId }, signal))); active(); return session(identity);
+        const identity = creation(await callRemote(signal => remote.resume({ sessionId, program: sharedIdentity }, signal))); active(); return session(identity);
       },
       async describe() { return result(await callRemote(signal => remote.describe(signal))); },
       dispose: () => lifetime.close(),
@@ -537,7 +547,7 @@ function invocation<D extends ActionContract>(remote: ClientRemote, sessionId: s
   const activity = new ResourceReader<InvocationActivity>({ peek: () => activityState.value,
     observations$: activityState.pipe(takeWhile(ongoing, true)),
   }, { signal });
-  const address = { sessionId, invocationId: start.id };
+  const address = { sessionId, program: queries.program, invocationId: start.id };
   // 受理ACK是业务事实；观察owner已退出也保留原id，调用者可在另一SDK恢复它。
   if (lifetime.active) {
     const watch = lifetime.acquire(() => (async (): Promise<void> => {

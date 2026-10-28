@@ -31,10 +31,10 @@ test('同一View资源贯通本地、远程和hooks，动态重挂及真实断�
   const date = z.codec(z.iso.datetime(), z.date(), { decode: value => new Date(value), encode: value => value.toISOString() });
   const leaf = defineSurface({ actions: {}, views: { at: resourceView(date) } });
   const composed = composeSurface({ main: leaf, items: collectionSurface(leaf) });
-  const program = defineProgram({ input: z.null(), surface: composed.surface });
+  const program = defineProgram({ name: 'view_resources_test', input: z.null(), surface: composed.surface });
   const mirrorSurface = defineSurface({ actions: {}, views: { at: leaf.views.at,
     discovery: resourceView(z.object({ members: z.string().array().readonly(), actions: z.number().int() })) } });
-  const mirrorProgram = defineProgram({ input: z.null(), surface: mirrorSurface });
+  const mirrorProgram = defineProgram({ name: 'view_resources_mirror', input: z.null(), surface: mirrorSurface });
   const main = source({ status: 'pending', generation: 0 }), original = source(ready(new Date('2026-10-27T00:00:00Z')));
   const items = new Map([['a/b', original]]), layout = new BehaviorSubject(['a/b']);
   let borrowed, borrowedDirectory, borrowedManifest, models = 0;

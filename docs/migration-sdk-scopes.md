@@ -4,7 +4,7 @@ SDK 和 Session 使用独立的 dsh 原生 Fiber。取消使用权和等待实�
 
 ## 取得已安装的 SDK
 
-`bindProgramClient(program, ctx)` 返回 `Promise<ProgramClient<P>>`。普通调用、原生扩展和自定义 SDK 工厂都要等待安装完成；失败通过 Promise 拒绝交付。
+`bindProgramClient(program, ctx)` 返回 `Promise<ProgramClient<P>>`。program 使用具名 defineProgram 签发的 SharedProgramContract，合同身份见[共享 Program 合同](migration-shared-program-contracts.md)。普通调用、原生扩展和自定义 SDK 工厂都要等待安装完成；失败通过 Promise 拒绝交付。
 
 ```ts
 const client = await bindProgramClient(Program, ctx);

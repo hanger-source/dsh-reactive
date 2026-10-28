@@ -19,7 +19,7 @@ const ready = value => ({ status: 'ready', generation: 1, observedAt: Date.now()
 test('View与人工查询按消费者连接，独立endpoint授权与真实Gateway会话引用在退订和release后结算', { timeout: 15_000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-reader-lifecycle-'));
   const surface = defineSurface({ actions: {}, views: { current: resourceView(z.string()), unused: resourceView(z.string()) } });
-  const program = defineProgram({ input: z.null(), surface });
+  const program = defineProgram({ name: 'reader_lifecycle_test', input: z.null(), surface });
   const current = new BehaviorSubject(ready('first')), unused = new BehaviorSubject(ready('unused'));
   const definition = defineApplication({ name: 'reader-lifecycle', admit: async () => {}, environments: [defineEnvironment({
     id: 'work', instructions: '读取不执行业务', program: implementProgram(program, { Component: () => h(Expose, {

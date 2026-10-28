@@ -43,7 +43,7 @@ test('Operation查询按消费者共享连接，Session退出等待本次流退�
     input: z.literal('invocation'), output: z.string(), operation: { definition, command: input => input, reference: receipt => receipt } });
   const implementation = implementAction(start, { operationOwner: owner, execute(input) { bodies++; return input; } });
   const surface = defineSurface({ views: { current: resourceView(definition.state) }, actions: { start } });
-  const program = defineProgram({ input: z.null(), surface });
+  const program = defineProgram({ name: 'operation_query_lifecycle_test', input: z.null(), surface });
   const application = defineApplication({ name: 'operation-query-lifecycle', admit: async () => {}, environments: [defineEnvironment({
     id: 'work', instructions: '操作查询不执行模型或业务动作', program: implementProgram(program, { Component() {
       const bound = useAction(implementation, () => null, []);

@@ -1,4 +1,4 @@
-import type { ActionIdentity, ActionSource, Continuation, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue } from '@hanger-source/dsh-reactive';
+import type { ActionIdentity, ActionSource, Continuation, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity } from '@hanger-source/dsh-reactive';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { RemoteStreamFailure } from '@deepseek-ai/dsh-api-gateway/stream-protocol';
 export type { ProgramGoalControl, ProgramCancelResult, ProgramRequestStatus } from '@hanger-source/dsh-reactive';
@@ -17,9 +17,10 @@ export type ProgramViewFrame =
   | { readonly type: 'baseline'; readonly observation: WireObservation }
   | { readonly type: 'observation'; readonly observation: WireObservation };
 export type ProgramWorkspaceRegistration = WorkspaceRegistration;
-export interface ProgramCreateRequest extends ConversationCreateOptions { readonly environmentId: string; }
+export interface ProgramCreateRequest extends ConversationCreateOptions { readonly environmentId: string; readonly program: ProgramContractIdentity; }
 export type ProgramCreationReference = CreationReference;
-export interface ProgramAddress { readonly sessionId: string; }
+export interface ProgramCompleteCreationRequest extends ProgramCreationReference { readonly program: ProgramContractIdentity; }
+export interface ProgramAddress { readonly sessionId: string; readonly program: ProgramContractIdentity; }
 /** 参与来源由宿主principal映射签发，客户端请求不能自报。 */
 export interface ProgramIdentity {
   readonly sessionId: string;
@@ -27,6 +28,7 @@ export interface ProgramIdentity {
   readonly workspaceId: string;
   readonly actorId: string;
   readonly participant: 'human' | 'service';
+  readonly program: ProgramContractIdentity;
 }
 export type ProgramWorkspace = WorkspaceInfo;
 /** 从核心合同派生结构，递归 JSON 只用 Typert 的公开 canonical JSON 符号。 */

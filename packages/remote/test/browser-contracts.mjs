@@ -8,4 +8,4 @@ export const check = defineAction({ name: 'check', description: '明确受理浏
   output: z.object({ at: date, operation: z.string() }),
   operation: { definition: operation, command: input => String(input.amount), reference: receipt => receipt.operation } });
 export const surface = defineSurface({ views: { current: view(date) }, actions: { check } });
-export const program = defineProgram({ input: z.null(), surface });
+export const program = defineProgram({ name: 'browser_contracts', input: z.null(), surface });

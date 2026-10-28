@@ -5,6 +5,7 @@ import { z, implementOperation, attachOperation, locateOperation, bindOperation,
 import { RemoteError, type RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { ProgramViewFrame } from './types.ts';
+import type { ProgramContractIdentity } from '@hanger-source/dsh-reactive';
 import { decodeProgramFailure } from './errors.ts';
 
 function result<T>(value: RemoteResult<T>): T { if (!value.ok) throw value.error; return value.value; }
@@ -17,14 +18,15 @@ function wireInput<S extends z.ZodType>(_schema: S, value: JsonValue): z.input<S
 
 export interface RemoteOperationQueries {
   readonly remote: ClientRemote;
+  readonly program: ProgramContractIdentity;
   observe(name: string, open: (signal: AbortSignal) => AsyncIterable<ProgramViewFrame>, signal: AbortSignal): Observable<Observation<JsonValue>>;
 }
 
 /** 只拥有远程查询及其异步清理；Operation的唯一状态仍由core持有。 */
-export function createOperationQueries(owner: ClientScope): RemoteOperationQueries {
+export function createOperationQueries(owner: ClientScope, program: ProgramContractIdentity): RemoteOperationQueries {
   const ctx = owner.context;
   return {
-    remote: ctx.remote,
+    remote: ctx.remote, program,
     observe: (name, open, lifetime) => new Observable(subscriber => {
       lifetime.throwIfAborted();
       owner.assertActive();
@@ -76,14 +78,14 @@ function owner<D extends OperationContract>(queries: RemoteOperationQueries, ses
   return implementOperation(definition, {
     async locate(command, access) {
       const commandWire = z.json().parse(z.encode(definition.command, command));
-      const located = result(await remote.reactivePrograms.locateOperation({ sessionId, operation, command: commandWire }, access.signal));
+      const located = result(await remote.reactivePrograms.locateOperation({ sessionId, program: queries.program, operation, command: commandWire }, access.signal));
       return located.status === 'accepted' ? { status: 'accepted', reference: wireInput<D['reference']>(definition.reference, located.reference),
         state: wireInput<D['state']>(definition.state, located.state) } : located;
     },
     observe(reference, access) {
       const referenceWire = z.json().parse(z.encode(definition.reference, reference));
       return queries.observe('program-operation:' + definition.kind,
-        signal => remote.reactivePrograms.observeOperation({ sessionId, operation, reference: referenceWire }, signal), access.signal)
+        signal => remote.reactivePrograms.observeOperation({ sessionId, program: queries.program, operation, reference: referenceWire }, signal), access.signal)
         .pipe(map(observed => observed.status === 'ready'
           ? { ...observed, value: wireInput<D['state']>(definition.state, observed.value) } : observed));
     },
@@ -105,7 +107,7 @@ export async function readRemoteOperationFeedback<D extends OperationContract>(q
   definition: D, command: OperationCommand<D>, participationId: string, signal: AbortSignal):
   Promise<OperationFeedbackRead<OperationReference<D>, OperationFeedbackPayload<D>>> {
   signal.throwIfAborted();
-  const value = result(await queries.remote.reactivePrograms.readOperationFeedback({ sessionId,
+  const value = result(await queries.remote.reactivePrograms.readOperationFeedback({ sessionId, program: queries.program,
     operation: { kind: definition.kind, version: definition.version }, command: z.json().parse(command), participationId }, signal));
   if (value.status === 'unknown' || value.status === 'rejected') return value;
   // 反馈中的正式引用仍是 schema input wire；验证可逆身份后保留 wire，不交付领域 reference。

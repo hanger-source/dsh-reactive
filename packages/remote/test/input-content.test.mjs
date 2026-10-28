@@ -25,7 +25,7 @@ const digest = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('h
 test('认证content保留正文附件与原请求身份，排队编辑重新准入且消费后不再上传或执行', { timeout: 30_000 }, async context => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-remote-content-'));
   const admissions = [], errors = [], carrierErrors = [], uploads = [], modelInjects = [];
-  const program = defineProgram({ input: z.object({ merchantId: z.string() }).strict(), surface: defineSurface({ views: {}, actions: {} }) });
+  const program = defineProgram({ name: 'input_content_test', input: z.object({ merchantId: z.string() }).strict(), surface: defineSurface({ views: {}, actions: {} }) });
   const scope = { merchantId: 'merchant-a' };
   const definition = defineApplication({ name: 'remote-input-content',
     admit(input, _identity, access) {
