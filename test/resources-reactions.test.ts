@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { NEVER, Observable, Subject, Subscription, concatMap, firstValueFrom, lastValueFrom, map, of, take, tap } from 'rxjs';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { NEVER, Observable, Subject, Subscription, concatMap, firstValueFrom, lastValueFrom, map, mergeMap, of, switchMap, take, tap } from 'rxjs';
 import { Scope, createResource, createReaction, defineResource, implementResource, bindResource, defineReaction, implementReaction, bindReaction, z } from '@hanger-source/dsh-reactive';
 import type { Observation } from '@hanger-source/dsh-reactive';
 
@@ -167,18 +170,167 @@ test('停止持续反应撤掉排队关系，已经受理的业务仍可按原 o
     },
   });
   const run = instance.start();
+  const delivered: string[] = [];
+  let completed = false, settled = false;
+  run.events$.subscribe({ next: event => delivered.push(event.result), complete: () => { completed = true; } });
+  void run.settled.then(() => { settled = true; });
   const one = run.events$.subscribe(), two = run.state$.subscribe();
   assert.throws(() => instance.start(), /ALREADY_RUNNING/);
   source.next({ commandId: 'accepted-one' }); source.next({ commandId: 'queued-two' });
   run.stop();
   assert.deepEqual(started, ['accepted-one']);
-  assert.equal((await run.settled).status, 'stopped');
+  assert.equal(source.observed, false);
+  assert.equal(completed, true);
+  assert.deepEqual(run.snapshot(), { status: 'draining', reason: 'stopped', pending: 1, emitted: 0 });
+  assert.throws(() => instance.start(), /ALREADY_RUNNING/);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
   accepted.resolve('official-result');
-  await accepted.promise; await Promise.resolve();
+  assert.equal((await run.settled).status, 'stopped');
   assert.deepEqual(committed, ['accepted-one']);
   assert.deepEqual(started, ['accepted-one']);
   assert.equal(run.snapshot().emitted, 0);
+  assert.deepEqual(delivered, []);
+  instance.start().stop();
   one.unsubscribe(); two.unsubscribe(); scope.dispose();
+});
+
+test('Scope 退出后真实文件写入的迟到拒绝仍结算原反应，不执行队列或补发结果', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-reaction-drain-'));
+  const scope = new Scope(), source = new Subject<number>();
+  const release = Promise.withResolvers<void>();
+  const started: number[] = [];
+  let writeFailure: unknown, completed = false, settled = false;
+  const instance = createReaction(scope, { event: z.number(), result: z.number(), observe: () => source, operator: concatMap,
+    async execute(value) {
+      started.push(value); await release.promise;
+      // 路径的父项是实际普通文件；失败来自真实 writeFile，而非模拟写入者。
+      try { await writeFile(join(directory, 'unavailable', 'result'), String(value)); }
+      catch (error) { writeFailure = error; throw error; }
+      return value;
+    },
+  });
+  await writeFile(join(directory, 'unavailable'), 'not a directory');
+  const run = instance.start(), delivered: number[] = [];
+  run.events$.subscribe({ next: event => delivered.push(event.result), complete: () => { completed = true; } });
+  void run.settled.then(() => { settled = true; });
+  try {
+    source.next(1); source.next(2); scope.dispose();
+    assert.equal(source.observed, false); assert.equal(completed, true);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(settled, false);
+    assert.deepEqual(run.snapshot(), { status: 'draining', reason: 'stopped', pending: 1, emitted: 0 });
+    release.resolve();
+    const settlement = await run.settled;
+    assert.equal(settlement.status, 'failed'); assert.ok(writeFailure);
+    if (settlement.status === 'failed') assert.equal(settlement.error, writeFailure);
+    const late = await firstValueFrom(run.state$);
+    assert.equal(late.status, 'failed');
+    if (late.status === 'failed') assert.equal(late.error, writeFailure);
+    assert.deepEqual(started, [1]); assert.deepEqual(delivered, []);
+    assert.equal(await readFile(join(directory, 'unavailable'), 'utf8'), 'not a directory');
+  } finally { release.resolve(); scope.dispose(); }
+});
+
+test('来源与清理失败先停 RxJS 并发关系，所有已开始 Promise 的迟到失败仍保留且同错只记一次', async () => {
+  const scope = new Scope(), source = new Subject<number>();
+  const accepted = [Promise.withResolvers<number>(), Promise.withResolvers<number>(), Promise.withResolvers<number>()];
+  const original = new Error('source lost'), cleanup = new Error('source cleanup failed'), late = new Error('late write failed');
+  const started: number[] = [];
+  let sourceSignal: AbortSignal | undefined, settled = false;
+  const run = createReaction(scope, { event: z.number(), result: z.number(), operator: mergeMap,
+    observe: ({ signal }) => {
+      sourceSignal = signal;
+      return new Observable<number>(subscriber => {
+        const connection = source.subscribe(subscriber);
+        return () => { connection.unsubscribe(); throw cleanup; };
+      });
+    },
+    execute(value) { started.push(value); return accepted[value - 1]!.promise; },
+  }).start();
+  void run.settled.then(() => { settled = true; });
+  try {
+    source.next(1); source.next(2); source.next(3); source.error(original);
+    assert.equal(source.observed, false); assert.equal(sourceSignal?.aborted, true);
+    const draining = run.snapshot();
+    assert.equal(draining.status, 'draining');
+    if (draining.status === 'draining') { assert.equal(draining.reason, 'failed'); assert.equal(draining.pending, 3); }
+    accepted[0]!.reject(original); accepted[1]!.reject(late);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(settled, false);
+    assert.equal(run.snapshot().status, 'draining');
+    const remaining = run.snapshot();
+    if (remaining.status === 'draining') assert.equal(remaining.pending, 1);
+    accepted[2]!.resolve(3);
+    const settlement = await run.settled;
+    assert.equal(settlement.status, 'failed');
+    if (settlement.status === 'failed') {
+      assert.ok(settlement.error instanceof AggregateError);
+      assert.deepEqual(settlement.error.errors, [original, cleanup, late]);
+    }
+    assert.deepEqual(started, [1, 2, 3]); assert.equal(settlement.emitted, 0);
+  } finally { for (const call of accepted) call.resolve(0); scope.dispose(); }
+});
+
+test('switchMap 只交付当前结果，失选的原 Promise 及其一次解析仍由同一运行等到真实结算', async () => {
+  for (const outcome of ['success', 'parse-failure'] as const) {
+    const scope = new Scope(), source = new Subject<number>();
+    const previous = Promise.withResolvers<string>(), current = Promise.withResolvers<string>();
+    const parseFailure = new Error('late result rejected by schema');
+    let parses = 0;
+    const instance = createReaction(scope, { event: z.number(), result: z.string().transform(raw => {
+      parses++; if (raw === 'invalid') throw parseFailure; return Number(raw);
+    }), observe: () => source, operator: switchMap,
+    execute(value) { return value === 1 ? previous.promise : current.promise; },
+    });
+    const run = instance.start(), delivered: number[] = [];
+    run.events$.subscribe(event => delivered.push(event.result));
+    try {
+      source.next(1); source.next(2);
+      const selected = firstValueFrom(run.events$);
+      current.resolve('2');
+      assert.equal((await selected).result, 2);
+      source.complete();
+      assert.deepEqual(run.snapshot(), { status: 'draining', reason: 'completed', pending: 1, emitted: 1 });
+      assert.throws(() => instance.start(), /ALREADY_RUNNING/);
+      previous.resolve(outcome === 'success' ? '1' : 'invalid');
+      const settlement = await run.settled;
+      assert.equal(settlement.status, outcome === 'success' ? 'completed' : 'failed');
+      if (settlement.status === 'failed') assert.equal(settlement.error, parseFailure);
+      assert.deepEqual(delivered, [2]); assert.equal(parses, 2, 'selected 与迟到 Promise 各只解析一次');
+    } finally { previous.resolve('1'); current.resolve('2'); scope.dispose(); }
+  }
+});
+
+test('RxJS operator 自身失败也等待已开始的 Promise，并保留两条真实失败原因', async () => {
+  const scope = new Scope(), source = new Subject<number>();
+  const accepted = Promise.withResolvers<number>();
+  const original = new Error('operator rejected next occurrence'), late = new Error('started work later failed');
+  const started: number[] = [];
+  const run = createReaction(scope, { event: z.number(), result: z.number(), observe: () => source,
+    operator<Input, Output>(project: (event: Input, index: number) => Observable<Output>) {
+      return mergeMap((event: Input, index) => {
+        if (index === 1) throw original;
+        return project(event, index);
+      });
+    },
+    execute(value) { started.push(value); return accepted.promise; },
+  }).start();
+  try {
+    source.next(1); source.next(2);
+    assert.equal(source.observed, false);
+    const draining = run.snapshot();
+    assert.equal(draining.status, 'draining');
+    if (draining.status === 'draining') { assert.equal(draining.reason, 'failed'); assert.equal(draining.pending, 1); }
+    accepted.reject(late);
+    const settlement = await run.settled;
+    assert.equal(settlement.status, 'failed');
+    if (settlement.status === 'failed') {
+      assert.ok(settlement.error instanceof AggregateError);
+      assert.deepEqual(settlement.error.errors, [original, late]);
+    }
+    assert.deepEqual(started, [1]);
+  } finally { accepted.resolve(1); scope.dispose(); }
 });
 
 test('同步来源完成后登记的清理失败进入原运行结算，并保留先发生的来源错误', async () => {
@@ -308,18 +460,35 @@ test('执行失败释放来源并撤掉排队工作；晚到监控取得失败�
 
 test('同步来源首次业务处理释放Scope后，不再开始下一项处理或资源读取', async () => {
   const scope = new Scope();
+  const accepted = Promise.withResolvers<number>();
   const effects: number[] = [];
   const reaction = defineReaction({ name: 'synchronous-delivery', params: z.null(), event: z.number(), result: z.number() });
   const implementation = implementReaction(reaction, { observe: () => of(1, 2), operator: concatMap,
     execute(event) {
       effects.push(event);
       scope.dispose();
-      return event;
+      return accepted.promise;
     },
   });
   const run = bindReaction(implementation, { scope }).instance(null).start();
-  await run.settled;
+  let settled = false; void run.settled.then(() => { settled = true; });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(settled, false, 'execute 返回之前发生 stop，随后取得的 Promise 仍归原运行');
+  assert.deepEqual(run.snapshot(), { status: 'draining', reason: 'stopped', pending: 1, emitted: 0 });
+  accepted.resolve(1);
+  assert.equal((await run.settled).status, 'stopped');
   assert.deepEqual(effects, [1]);
+
+  const coldScope = new Scope();
+  let coldStarts = 0;
+  const cold = createReaction(coldScope, { event: z.number(), result: z.number(), observe: () => of(1, 2), operator: concatMap,
+    execute() {
+      coldScope.dispose();
+      return new Observable<number>(subscriber => { coldStarts++; subscriber.next(1); subscriber.complete(); });
+    },
+  }).start();
+  assert.equal((await cold.settled).status, 'stopped');
+  assert.equal(coldStarts, 0, 'execute 返回冷 Observable 前，订阅资格已被同步退出撤销');
 
   const resourceScope = new Scope();
   const reads: number[] = [];
@@ -330,4 +499,51 @@ test('同步来源首次业务处理释放Scope后，不再开始下一项处理
   })) }), { scope: resourceScope }).instance(null);
   facts.observations$.subscribe(observation => { if (observation.status === 'ready') resourceScope.dispose(); });
   assert.deepEqual(reads, [1]);
+});
+
+test('业务订阅和 teardown 中同步 stop 保持原运行身份，释放失败在最终结算之前收齐', async () => {
+  const scope = new Scope(), source = new Subject<number>();
+  const failure = new Error('teardown failed after reentrant stop');
+  let stop = () => {};
+  let teardowns = 0;
+  const instance = createReaction(scope, { event: z.number(), result: z.number(), observe: () => source, operator: concatMap,
+    execute: () => new Observable<number>(() => {
+      stop();
+      return () => {
+        teardowns++; stop();
+        assert.throws(() => instance.start(), /ALREADY_RUNNING/);
+        throw failure;
+      };
+    }),
+  });
+  const run = instance.start(); stop = () => run.stop();
+  try {
+    source.next(1);
+    const settlement = await run.settled;
+    assert.equal(settlement.status, 'failed');
+    if (settlement.status === 'failed') assert.equal(settlement.error, failure);
+    assert.equal(teardowns, 1); assert.equal(source.observed, false);
+    instance.start().stop();
+  } finally { scope.dispose(); }
+});
+
+test('热事件先交付再通知计数，状态观察者同步 stop 不制造未交付事件或终态后的 running', async () => {
+  const scope = new Scope(), source = new Subject<number>();
+  const run = createReaction(scope, { event: z.number(), result: z.number(), observe: () => source,
+    operator: concatMap, execute: value => value,
+  }).start();
+  const delivered: number[] = [], states: string[] = [];
+  run.events$.subscribe(event => delivered.push(event.result));
+  run.state$.subscribe(state => {
+    states.push(state.status);
+    if (state.status === 'running' && state.emitted === 1) run.stop();
+  });
+  try {
+    source.next(1); source.next(2);
+    const settlement = await run.settled;
+    assert.equal(settlement.status, 'stopped'); assert.equal(settlement.emitted, 1);
+    assert.deepEqual(delivered, [1]);
+    assert.equal(states.at(-1), 'stopped');
+    assert.equal(states.slice(states.indexOf('draining')).includes('running'), false);
+  } finally { scope.dispose(); }
 });

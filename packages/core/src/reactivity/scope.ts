@@ -1,4 +1,4 @@
-import { signal, computed, effect, batch, type ReadonlySignal, type Signal } from '@preact/signals-core';
+import { signal, computed, effect, batch, untracked, type ReadonlySignal, type Signal } from '@preact/signals-core';
 import { Observable, Subscriber, EmptyError } from 'rxjs';
 import { ResourceValue } from '../resources/value.ts';
 import type { Observation } from '../resources/observation.ts';
@@ -26,11 +26,18 @@ export class Scope {
   #released = false;
   #controller = new AbortController();
   #signal = this.#controller.signal;
+  #availability = signal(true);
+  #parent?: Scope;
   #releases = new Set<() => void>();
   constructor(private readonly options: ScopeOptions = {}) {}
   get disposed() { return this.#signal.aborted; }
   get signal() { return this.#signal; }
-  assertActive() { this.#signal.throwIfAborted(); }
+  private trackAvailability(): void {
+    // 只把读取资格接入现有signals图；取消原因仍由原AbortSignal持有。
+    this.#availability.value;
+    this.#parent?.trackAvailability();
+  }
+  assertActive() { this.trackAvailability(); this.#signal.throwIfAborted(); }
   own(release: () => void): () => void {
     this.assertActive();
     const stop = () => { if (this.#releases.delete(stop)) release(); };
@@ -40,6 +47,7 @@ export class Scope {
   child() {
     this.assertActive();
     const child = new Scope(this.options);
+    child.#parent = this;
     child.#signal = AbortSignal.any([this.signal, child.signal]);
     const release = this.own(() => child.dispose());
     child.own(() => release());
@@ -87,11 +95,17 @@ export class Scope {
   dispose() {
     if (this.#released) return;
     this.#released = true;
-    this.#controller.abort(new ScopeDisposedError());
     const failures: unknown[] = [];
-    for (const release of [...this.#releases].reverse()) {
-      try { release(); } catch (error) { failures.push(error); }
-    }
+    try {
+      batch(() => {
+        // 派生缓存先失效；abort回调和子Scope清理重入时不能再读取旧值。
+        this.#availability.value = false;
+        this.#controller.abort(new ScopeDisposedError());
+        for (const release of [...this.#releases].reverse()) {
+          try { release(); } catch (error) { failures.push(error); }
+        }
+      });
+    } catch (error) { failures.push(error); }
     if (failures.length) throw new AggregateError(failures, 'REACTIVE_SCOPE_DISPOSAL_FAILED');
   }
 }
@@ -106,27 +120,41 @@ export class Value<T> {
       if (scope.disposed) { subscriber.complete(); return; }
       const release = scope.own(() => subscriber.complete());
       let stop: (() => void) | undefined;
-      try { stop = node.subscribe(value => { if (!scope.disposed) subscriber.next(value); }); }
+      try { stop = this.watch(value => subscriber.next(value), error => subscriber.error(error)); }
       catch (error) { subscriber.error(error); }
       return () => { stop?.(); release(); };
     });
   }
   protected assertActive(): void { this.#scope.assertActive(); }
-  get value(): T { this.assertActive(); return this.node.value; }
+  get value(): T { this.assertActive(); const value = this.node.value; this.assertActive(); return value; }
   get(): T { return this.value; }
-  peek(): T { this.assertActive(); return this.node.peek(); }
+  /** 不跟踪业务值；借用读取的owner资格仍参与当前依赖。 */
+  peek(): T { this.assertActive(); const value = this.node.peek(); this.assertActive(); return value; }
   read(signal?: AbortSignal): Promise<T> {
     signal?.throwIfAborted();
     return Promise.resolve(this.peek());
   }
   map<U>(project: (value: T) => U): Value<U> { return this.#scope.computed(() => project(this.value)); }
-  subscribe(accept: (value: T) => void): () => void {
-    this.assertActive();
-    // signals 的同步订阅先登记依赖，再交付基线；调用者无需自己先读再订阅。
-    const stop = this.node.subscribe(value => {
+  private watch(accept: (value: T) => void, onError: (error: unknown) => void): () => void {
+    return effect(() => {
       if (this.#scope.disposed) return;
-      try { accept(value); } catch (error) { this.#scope.observerError(error); }
+      let value: T;
+      try { value = this.value; }
+      catch (error) {
+        if (!this.#scope.disposed) untracked(() => onError(error));
+        return;
+      }
+      untracked(() => accept(value));
     });
+  }
+  /** 读取失败交给onError或observerError，保留依赖以等待当前分支恢复。 */
+  subscribe(accept: (value: T) => void, onError?: (error: unknown) => void): () => void {
+    this.assertActive();
+    const stop = this.watch(value => {
+      try { accept(value); } catch (error) { this.#scope.observerError(error); }
+    }, onError ? error => {
+      try { onError(error); } catch (callbackError) { this.#scope.observerError(callbackError); }
+    } : error => this.#scope.observerError(error));
     if (this.#scope.disposed) { stop(); return () => {}; }
     return this.#scope.own(stop);
   }

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@deepseek-ai/cordis";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
+import { firstValueFrom } from 'rxjs';
+import { abortable } from '@hanger-source/dsh-reactive';
 import { z } from "zod";
 import { type Continuation, type WaitReference, type SubmitOptions } from "@hanger-source/dsh-reactive/kernel";
 import { ActionBindingUnavailableError, ActionTargetMismatchError, type ActionCallContext, type ActionExecutionContext, type ActionReference, type Invocation } from "@hanger-source/dsh-reactive/kernel";
@@ -52,20 +54,36 @@ export class ActionAuthority {
         });
         return execution;
     }
-    async admitAction(session: ConversationSession, action: ActionReference, input: unknown, call: ActionCallContext<unknown>, execution: ActionExecutionContext) {
-        this.assertActionExecution(session, execution);
-        this.sessions.assertSessionWorkspace(session);
-        if (!session.live.value) {
-            const inspection = await this.facts.inspect(session.header.id);
-            this.workspaces.verifyInspection(inspection, session.workspace, session.environment);
+    async admitAction(session: ConversationSession, action: ActionReference, input: unknown, call: ActionCallContext<unknown>, execution: ActionExecutionContext, admissionSignal: AbortSignal) {
+        const native = this.#toolCalls.get(execution);
+        const signal = AbortSignal.any([admissionSignal, this.signal, session.program.signal,
+            ...(native ? [native.entry.scope.signal] : [])]);
+        const check = () => {
+            signal.throwIfAborted();
+            this.assertActionExecution(session, execution);
+            session.program.flush();
+            signal.throwIfAborted();
             this.sessions.assertSessionWorkspace(session);
+        };
+        check();
+        if (!session.live.value) {
+            const inspection = await firstValueFrom(abortable(() => this.facts.inspect(session.header.id, signal), signal));
+            check();
+            this.workspaces.verifyInspection(inspection, session.workspace, session.environment);
+            check();
         }
         if (!this.delegations.owns(action))
             return;
-        await this.inputs.revalidateCauses(execution.inputs, execution.signal);
-        await this.sessions.activate(session.header.id);
-        const parent = this.sessions.live(session).agent;
-        await this.delegations.admit(action, input, call, execution, parent, session.conversation.identity);
+        await firstValueFrom(abortable(() => this.inputs.revalidateCauses(execution.inputs, signal), signal));
+        check();
+        // 已开始的原生activate仍归其真实owner；本准入退等后不再继续授权或准备child。
+        await firstValueFrom(abortable(() => this.sessions.activate(session.header.id), signal));
+        check();
+        const live = this.sessions.live(session);
+        const authorizationSignal = AbortSignal.any([signal, live.scope.signal]);
+        await this.delegations.admit(action, input, call, execution, live.agent, session.conversation.identity, authorizationSignal);
+        check();
+        authorizationSignal.throwIfAborted();
     }
     call(entry: LiveConversation, exec: ToolRunContext, offer: BoundOffer,
         registerWait: (continuation: Continuation, wait: WaitReference) => Promise<void>): ActionExecutionContext {

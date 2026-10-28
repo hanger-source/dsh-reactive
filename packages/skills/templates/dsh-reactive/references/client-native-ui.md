@@ -119,7 +119,7 @@ Action 受理 ACK 已确认后，即使 SDK 在构造观察时退出，仍保留
 
 需要整体取得并拥有引用时，使用 `const reference = await retainNativeSession(Program, clientContext, sessionId, { signal })`；该入口自行创建 SDK，Program 必须是 SharedProgramContract，并在取得引用前核验。消费 `reference.session`，退出时 `await reference.release()`，也支持 await using。Context 由客户端根或应用插件拥有，须已有官方 Client Sessions 与上述 Program 远程贡献；不要用目标 Agent generation 的 Context 保留其自身寿命。框架通过官方目录刷新、精确代际 retain 和 SDK open 完成装配，权限仍由原生目录及 Program 读取入口分别核验。取得失败或取消释放部分成果，成功后的 signal 不释放已返回引用；显式 release 或所属 Context 退出释放本次 UI、SDK 和原生引用，不影响其他引用或 Host 工作。已有 binding 和 SDK 时用 bindNativeSession，原对象仍由调用者释放。
 
-- `nativeSource` 直接接已有 peek/subscribe；`observeNativeResource` 保 pending/error；NativeSession.resource/operation/invocation/view 将同一个对象交给原生观察。
+- `nativeSource` 直接接已有 peek/subscribe；NativeReadable 的可选第二个 subscribe 参数接收读取错误。值失效也通知原生消费者重新读取 getSnapshot，不能继续显示旧缓存。`observeNativeResource` 保 pending/error；NativeSession.resource/operation/invocation/view 将同一个对象交给原生观察。
 - Invocation 的 activity 资源可直接 read、peek 或交给业务 hook；activity$ 是其 values$。native.invocation(invocation) 保留调用的 source 类型，直接读取同一个 Observation，不在 UI 重新物化活动。Action 的远程资源在 returned/failed 后继续保留 SDK 的有效性观察，result 独立等待业务完成。按 state 等待终态，不用 lastValueFrom 推断业务完成。业务 failed 是 ready.value 的调用事实，SDK 失效或观察错误不会伪装成业务失败。
 - FileUploadInvocation 的 source 是 `{ kind: 'file-upload', sessionId }`，id 只关联本次内存调用，不授予 Action、Goal、幂等或持久恢复身份。上传活动是有限事实，running 只表示已分派，不证明存储受理；Session 或 UI 退出不改写真实终态，晚读仍有效。原生 UI 的 uploadFile 返回 SDK 原调用对象，可直接传给 native.invocation(call)、useResource(call.activity) 或组合 observations$。
 - 未终结的远程 Action 活动连接断开时，资源立即 pending，重连读取原调用的当前事实；取消单次 activity.read 只退出本次等待，不重发 Action 或关闭共享观察。已确认终态不被流清理错误撤销，清理失败保留日志。

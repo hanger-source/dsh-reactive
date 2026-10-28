@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { actionIdentityKey } from '@hanger-source/dsh-reactive';
+import { abortable, actionIdentityKey } from '@hanger-source/dsh-reactive';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { SessionId, appendPluginRecord, pluginRecordOf, type Session, type UserMessage } from '@deepseek-ai/dsh-session';
@@ -7,7 +7,7 @@ import { SessionPersistenceNotFoundError, type SessionInspection } from '@deepse
 import { foldGoal } from '@deepseek-ai/dsh-goal';
 import { steerHostSubagentPrompt } from '@deepseek-ai/dsh-subagent/internal';
 import type {} from '@deepseek-ai/dsh-subagent';
-import { Observable, Subject } from 'rxjs';
+import { firstValueFrom, Observable, Subject } from 'rxjs';
 import { z } from 'zod';
 import { implementAction, actionOperationOwner, actionInvocationArguments, captureActionArguments, type ActionContract, type ActionImplementation, type ActionParsedInput, type ActionScope, type ActionCallContext, type ActionExecutionContext, type ActionReference, type ActionSource } from '@hanger-source/dsh-reactive/kernel';
 import { implementOperation, operationFollowLinkSchema, type OperationOwner, type OperationAccessContext, type OperationFeedbackNode } from '@hanger-source/dsh-reactive/kernel';
@@ -225,17 +225,19 @@ export class NativeDelegations {
     return descriptor;
   }
   private async authorize(record: DelegationRecord, phase: DelegationAdmission['phase'], requester: DelegationRequester, signal: AbortSignal, parsed?: { input: unknown; target: unknown }) {
+    signal.throwIfAborted();
     const descriptor = this.descriptor(record);
-    await descriptor.authorize({ phase, input: parsed ? parsed.input : descriptor.action.input.parse(record.input), target: parsed ? parsed.target as never : descriptor.action.scope.parse(record.target),
+    await firstValueFrom(abortable(admissionSignal => descriptor.authorize({ phase, input: parsed ? parsed.input : descriptor.action.input.parse(record.input), target: parsed ? parsed.target as never : descriptor.action.scope.parse(record.target),
       parent: record.parent, executor: record.executor, requester, causes: record.causes,
-      childInput: record.childInput, objective: record.objective, signal });
+      childInput: record.childInput, objective: record.objective, signal: admissionSignal }), signal));
     signal.throwIfAborted();
   }
   private assertAccess(record: DelegationRecord, access: OperationAccessContext) {
     if (access.sessionId !== record.command.parentSessionId) throw new Error('REACTIVE_CHILD_PARENT_ACCESS_REQUIRED');
   }
   async admit(action: ActionReference, input: unknown, call: ActionCallContext<unknown>, execution: ActionExecutionContext,
-    parent: Agent, identity: ConversationIdentity) {
+    parent: Agent, identity: ConversationIdentity, signal: AbortSignal) {
+    signal.throwIfAborted();
     const descriptor = this.#definitions.get(action.definition);
     if (!descriptor || actionOperationOwner(action) !== this.owner) throw new Error('REACTIVE_DELEGATION_IMPLEMENTATION_REQUIRED');
     if (this.ctx.agents.get(parent.id) !== parent || parent.id !== identity.sessionId || execution.sessionId !== parent.id) throw new Error('REACTIVE_DELEGATION_PARENT_NOT_LIVE');
@@ -246,7 +248,9 @@ export class NativeDelegations {
       childSessionId: randomUUID(), action: descriptor.action.name, actionVersion: descriptor.action.version, mode: descriptor.mode,
       input: original.input, target: original.scope, childInput,
       objective: descriptor.objective(input, call), parent: identity, executor: execution.source, causes: execution.inputs });
-    await this.authorize(record, 'create', execution.source, execution.signal, { input, target: call.scope });
+    await this.authorize(record, 'create', execution.source, signal, { input, target: call.scope });
+    signal.throwIfAborted();
+    if (this.ctx.agents.get(parent.id) !== parent) throw new Error('REACTIVE_DELEGATION_PARENT_NOT_LIVE');
     const prepared = { record, parent, input, target: call.scope };
     this.#prepared.set(call, prepared);
     this.#preparedExecutions.set(execution, prepared);

@@ -86,13 +86,13 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
   }
 
   private guard<T>(source: HostObservable<T>): HostObservable<T> {
-    return nativeSource({
-      peek: () => { this.assertActive(); return source.getSnapshot(); },
-      subscribe: (accept: (value: T) => void) => {
+    return Object.freeze({
+      getSnapshot: () => { this.assertActive(); const value = source.getSnapshot(); this.assertActive(); return value; },
+      subscribe: (notify: () => void) => {
         this.assertActive();
         let stop: (() => void) | undefined;
         const release = this.scope.own(() => stop?.());
-        try { stop = source.subscribe(() => { if (!this.scope.disposed) accept(source.getSnapshot()); }); }
+        try { stop = source.subscribe(() => { if (!this.scope.disposed) notify(); }); }
         catch (error) { release(); throw error; }
         if (this.scope.disposed) stop();
         return release;

@@ -95,7 +95,7 @@ test('Program fatal 在同次广播中停止其他关系与查询，已受理的
     assert.equal(directSignals[0]!.aborted, true, '普通函数和直接流的读取也归程序拥有');
     assert.equal(directObservation.closed, true);
     await directWaiting;
-    assert.equal((await run.settled).status, 'stopped');
+    assert.deepEqual(run.snapshot(), { status: 'draining', reason: 'stopped', pending: 1, emitted: 0 });
     assert.throws(() => reaction.start(), /REACTIVE_SCOPE_DISPOSED/);
     assert.throws(() => resource.read(), /REACTIVE_SCOPE_DISPOSED/);
     assert.equal(sessionScope.disposed, false);
@@ -103,6 +103,7 @@ test('Program fatal 在同次广播中停止其他关系与查询，已受理的
     finish.resolve('saved');
     assert.equal(await invocation.result, 'saved');
     acceptedReaction.resolve(7); directRead.resolve(8); read.resolve(9); await immediate();
+    assert.equal((await run.settled).status, 'stopped');
     assert.deepEqual(committedReactions, [1], '已进入业务函数的处理继续由业务 owner 完成');
     assert.deepEqual(startedReactions, [1], '尚未开始的第二项不在程序失败后执行');
     assert.deepEqual(queryValues, [], '迟到的查询结果不能在 fatal 后重新交付');

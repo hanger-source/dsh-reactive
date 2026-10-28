@@ -135,11 +135,16 @@ test('局部复合hook用同一Resource、Action和Reaction跨函数消费；组
     changes.next(2); changes.next(3); await entered.promise;
     const failure = new Error('LOCAL_PROGRAM_FAILED');
     programs[0]!.fail(failure);
-    assert.equal((await run.settled).status, 'stopped'); assert.equal(observing, 0);
+    let settled = false; void run.settled.then(() => { settled = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(settled, false, '真实文件写入尚未完成，原运行仍拥有结算责任');
+    assert.deepEqual(run.snapshot(), { status: 'draining', reason: 'stopped', pending: 1, emitted: 1 });
+    assert.equal(observing, 0);
     assert.throws(() => first.resource.read(), /REACTIVE_SCOPE_DISPOSED/);
     assert.throws(() => next.reaction.start(), /REACTIVE_SCOPE_DISPOSED/);
     assert.equal(await remaining.resource.read(), 33, '另一个Program的对象继续有效');
     release.resolve(); await written.promise;
+    assert.equal((await run.settled).status, 'stopped');
     assert.equal(await readFile(join(root, 'business-effect'), 'utf8'), 'a:2', '已进入业务函数的工作沿原目标完成');
     assert.deepEqual(executions, [1, 2], '失败后尚未开始的队列项不再执行');
     actionRelease.resolve();

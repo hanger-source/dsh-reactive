@@ -195,8 +195,8 @@ test('正式与局部资源反应归真实工作区所有，跨环境共享返�
         assert.equal(await readBusiness(isolatedLocal), 42, '其他工作区的局部读取不被本实例失效重定向');
         commands.next(1); commands.next(2); await Promise.all([accepted.promise, localAccepted.promise]);
         await app.native.workspaceRegistry.delete(WorkspaceId(workspace.id));
-        assert.equal((await run.settled).status, 'stopped');
-        assert.equal((await localRun.settled).status, 'stopped');
+        assert.deepEqual(run.snapshot(), { status: 'draining', reason: 'stopped', pending: 1, emitted: 0 });
+        assert.deepEqual(localRun.snapshot(), { status: 'draining', reason: 'stopped', pending: 1, emitted: 0 });
         assert.deepEqual(started, [1]);
         assert.deepEqual(localStarted, [1], '停止另一局部实例和Session退出均未停止本实例的显式运行');
         assert.throws(() => current.peek(), /REACTIVE_SCOPE_DISPOSED/);
@@ -208,6 +208,8 @@ test('正式与局部资源反应归真实工作区所有，跨环境共享返�
         assert.equal(await isolated.read(), 42);
         assert.equal(await readBusiness(isolatedLocal), 42);
         release.resolve(); await Promise.all([committed.promise, localCommitted.promise]);
+        assert.equal((await run.settled).status, 'stopped');
+        assert.equal((await localRun.settled).status, 'stopped');
         assert.equal(await readFile(result, 'utf8'), '1', '已经受理的业务写入仍由原函数完成');
         assert.equal(await readFile(localResult, 'utf8'), '1', '已开始的局部业务写入同样在工作区退出后完成');
         assert.deepEqual(started, [1], '排队的第二项没有越过已结束的反应关系');

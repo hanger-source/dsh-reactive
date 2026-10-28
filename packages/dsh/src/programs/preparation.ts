@@ -29,7 +29,7 @@ export class ConversationPrograms {
     release(agent: Agent): Promise<void> { return this.bindings.release(agent); }
     create(scope: Scope, conversation: Conversation<any>, implementation: ProgramImplementation, workspace: ManagedWorkspace, session: () => ConversationSession): ProgramInstance<any> {
         return new ProgramInstance(scope, implementation, conversation, workspace.context, { execution: () => this.authority.programExecution(session(), 'program'),
-            admit: (action, input, call, execution) => this.authority.admitAction(session(), action, input, call, execution),
+            admit: (action, input, call, execution, signal) => this.authority.admitAction(session(), action, input, call, execution, signal),
             operation: (action, event, execution) => this.operations.operationEvent(action, event, execution),
             operationAccess: binding => this.operations.programAccess(session(), binding),
             readOperationFeedback: (binding, id, access) => this.operations.readBoundOperationFeedback(session(), binding, id, access),

@@ -22,6 +22,8 @@ export const ItemProgram = defineProgram({ input: Target, surface: ItemSurface }
 
 `implementAction(Save, { execute(input, call) { ... } })` 在宿主固定真实服务依赖。`call.scope` 是本次绑定已解析目标；业务不得读取当前页面或当前选择来代替它。宿主逐调用核验来源与权限；Offer.enabled 是当前可用性声明，不能代替权威授权。
 
+准入与业务执行分别拥有寿命。`ActionBindingOptions.admit(input, call, originalExecution, signal)` 用第四参数等待本次准入；原 execution 保持宿主签名身份，call.signal 继续属于真实执行。绑定 release、声明代际退出、Program 失败或调用取消会结束准入等待，不合作检查的迟到结果不能开始 execute。直接绑定可用 admissionSignal() 提供当前声明代际；单纯 active() 是同步条件，框架不轮询普通变量。已经开始的可靠 Operation 准备必须先结算其受理事实，再决定是否允许进入业务。
+
 `defineAction` 的 `version` 省略时为 1，也可显式指定正安全整数。名称与版本是合同发布者声明的跨进程、原生结果和委托恢复身份；输入、目标、输出或业务语义发生不兼容变化时增加版本，并同步消费同一纯合同。本地绑定仍核对定义对象，不以同名同版本替代对象身份。`actionIdentity`、`assertActionIdentity` 与 `ActionContractMismatchError` 可用于自己的明确合同边界；`actionIdentityKey` 供同名多版本目录使用。它们不推断函数等价、不授予权限、不承担业务幂等。
 
 在模块中用 `useAction(saveImplementation, () => target, [target.sku])` 取得绑定。target factory 只构造数据，deps 表达身份；未列依赖会错误保留旧目标，不能把每次 render 当新绑定修补它。

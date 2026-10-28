@@ -6,7 +6,7 @@ import { Subscriber, type Observable } from 'rxjs';
 /** Value、ResourceInstance 和 ResourceValue 的同一个同步读侧。 */
 export interface NativeReadable<T> {
   peek(): T;
-  subscribe(accept: (value: T) => void): () => void;
+  subscribe(accept: (value: T) => void, onError?: (error: unknown) => void): () => void;
 }
 export type NativeSourceInput<T> = NativeReadable<T> | HostObservable<T>;
 export type NativeSourceValue<S> = S extends NativeReadable<infer T> ? T
@@ -15,7 +15,7 @@ export type NativeSourceValue<S> = S extends NativeReadable<infer T> ? T
 /** 不复制资源状态；原生 renderer 直接读取并订阅原对象。 */
 export function nativeSource<T>(source: NativeSourceInput<T>): HostObservable<T> {
   if ('getSnapshot' in source) return source;
-  return Object.freeze({ getSnapshot: () => source.peek(), subscribe: (notify: () => void) => source.subscribe(() => notify()) });
+  return Object.freeze({ getSnapshot: () => source.peek(), subscribe: (notify: () => void) => source.subscribe(() => notify(), () => notify()) });
 }
 
 /** 普通事件的“尚未交付 / 当前值 / 观察失败”由既有 Scope.observe 表达。 */

@@ -1,6 +1,7 @@
-import { BehaviorSubject, ReplaySubject, Subject, takeWhile, type Observable } from 'rxjs';
+import { BehaviorSubject, ReplaySubject, Subject, firstValueFrom, takeWhile, type Observable } from 'rxjs';
 import { z } from 'zod';
 import { ResourceReader } from '../resources/reader.ts';
+import { abortable } from '../reactivity/observable.ts';
 import type { Observation } from '../resources/observation.ts';
 import type { Continuation, InputReference, Json, WaitReference } from '../conversations/protocol.ts';
 import { humanPromptsSchema, humanAskOptionsSchema, humanAskResultSchema, type HumanPrompt, type HumanAskOptions, type HumanAnswer, type HumanAskResult } from '../participation/contract.ts';
@@ -139,13 +140,16 @@ export type ActionOperationEvent =
 export interface ActionBindingOptions<D extends ActionContract> {
   /** 声明 owner 当前是否已提交并激活；临时退出不等同于永久 release。 */
   active?(): boolean;
+  /** 当前声明代际的准入寿命；不会取消已经进入 execute 的业务。 */
+  admissionSignal?(): AbortSignal;
   /** 程序普通调用的可信来源工厂；原生入口仍显式传入本次原生执行关联。 */
   execution?(action: ActionReference): ActionExecutionContext;
   /**
    * 每次调用在副作用之前核验宿主执行关联、权限和当前绑定。
    * 框架没有可由调用者自报而绕过该检查的授权标记。
    */
-  admit(input: ActionParsedInput<D>, call: ActionCallContext<ActionScope<D>>, execution: ActionExecutionContext): void | PromiseLike<void>;
+  admit(input: ActionParsedInput<D>, call: ActionCallContext<ActionScope<D>>, execution: ActionExecutionContext,
+    signal: AbortSignal): void | PromiseLike<void>;
   /** @internal 原始 execution 身份继续由实际宿主核验。 */
   operation?(event: ActionOperationEvent, execution: ActionExecutionContext): void | PromiseLike<void>;
 }
@@ -317,6 +321,7 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
       scope: ownJson(captureArguments.scope(rawScope), 'REACTIVE_ACTION_SCOPE_SNAPSHOT_NOT_JSON') } : undefined;
     const scope = ownJson(definition.scope.parse(captured ? captured.scope : rawScope), 'REACTIVE_ACTION_SCOPE_NOT_JSON');
     let released = false;
+    const lifetime = new AbortController();
     const invocations = new Subject<ActionInvocation<Definition>>();
     const active = new Set<ActionInvocation<Definition>>();
     const activeInvocations = new ReplaySubject<readonly ActionInvocation<Definition>[]>(1);
@@ -434,9 +439,18 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
           }
           const input = definition.input.parse(inputSource);
           phase = 'admission';
-          await options.admit(input, call, execution);
+          const declarationSignal = options.admissionSignal?.();
+          const admissionSignal = AbortSignal.any([signal, lifetime.signal, ...(declarationSignal ? [declarationSignal] : [])]);
+          try {
+            await firstValueFrom(abortable(() => options.admit(input, call, execution, admissionSignal), admissionSignal));
+          } catch (error) {
+            // 宿主拥有具名出口与绑定身份的精确诊断；声明退出后仍由原签发者核验。
+            if (declarationSignal?.aborted) executionGuards.get(execution)?.();
+            throw error;
+          }
           // 等待准入期间退出的声明没有受理执行；已进入 execute 后不再依赖声明。
           assertActive();
+          admissionSignal.throwIfAborted();
           call.signal.throwIfAborted();
           let command: Json | undefined;
           const mapping = definition.operation;
@@ -447,17 +461,19 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
             await options.operation?.({ phase: 'prepare', owner: operationOwner, command }, execution);
             // 持久准备也属于受理之前；退出声明不允许在等待之后开始新副作用。
             assertActive();
+            admissionSignal.throwIfAborted();
             call.signal.throwIfAborted();
           }
           // 准入和持久准备的所有异步等待结束后，在副作用开始的同一同步边界核验宿主权威。
           executionGuards.get(execution)?.();
-          publishActivity({ state: 'running' });
           phase = 'execute';
           let rawOutput: z.input<O>;
           try {
             bodyActive = true;
             started = true;
             const returned = execute(input, call);
+            // 先真正进入业务，再交付可同步重入的活动通知。
+            publishActivity({ state: 'running' });
             rawOutput = isPromiseLike(returned) ? await returned : returned;
           } finally {
             bodyActive = false;
@@ -529,7 +545,9 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
       locate,
       release() {
         if (released) return;
-        released = true; invocations.complete();
+        released = true;
+        lifetime.abort(new Error('REACTIVE_ACTION_BINDING_RELEASED'));
+        invocations.complete();
         if (!active.size) activeInvocations.complete();
       },
     });

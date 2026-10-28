@@ -43,6 +43,8 @@ export function inventory(scope: Scope, service: {
 
 父 Scope 撤销立即传播到所有子 Scope，后代不能在同步清理重入中读取旧事实或启动 effect；实际清理仍由 Scope 树汇总，子 signal.reason 保留父的原原因。
 
+跨 Scope 的 computed 同时依赖实际读取的值与来源的读取资格。来源退出后，value/get/peek/read 拒绝旧缓存；peek 不跟踪业务值变化。`changes$` 按 RxJS 合同以 error 终止，分支恢复后重新订阅；`subscribe(accept, onError?)` 通过错误回调报告依赖失败并继续观察条件分支的恢复，省略时使用 owner 的 observerError。Resource 的 pending/error/ready 继续沿同一个 Observation 表达。
+
 一次读取的 owner 使用 `read(params, { signal })` 加 `invalidations(params, context)`；推送 owner 使用 `observe` 发出完整 Observation。失效通知只表示需重新读取，不携带替代事实。写入成功后可显式 `instance.invalidate()`；这不会重发写入或唤醒模型。
 
 ## 派生仍使用标准 Observable
@@ -94,6 +96,8 @@ export function restock(scope: Scope, events: Observable<{ sku: string; revision
 `operator` 直接接 `concatMap`、`mergeMap`、`switchMap`、`exhaustMap`。条件、去重和并发用 RxJS；不要另创策略字符串。execute 可返回普通值、PromiseLike 或 Observable，也可直接返回真实 Action 的 `invocation.result`。
 
 `run.state$`、`run.events$`、`run.settled` 观察同一次运行。`events$` 只交付热的成功结果，不回放执行；运行终止时正常 complete。来源、执行或释放失败保存在 `state$` 的 failed 状态和 `settled` 的 failed 结算中，不进入 `events$` 的 error 回调，也不会使 `settled` reject。`state$` 回放当前状态，先 start 后订阅也能观察同步发生的失败。
+
+`stop()` 同步停止来源、排队工作和 Observable 订阅；已经进入 execute 的裸 Promise 仍归本次 run 结算。存在未完成 Promise 时，state$ 交付 draining，settled 等实际结果解析及清理结束后再给终态；同实例在此之前不能重新 start。switchMap 失选的迟到成功不补发到 events$，迟到失败仍进入原 run；多个独立失败保全为 AggregateError。不要先 await settled 再释放业务执行正在等待的条件。
 
 来源或执行结果同步完成时，订阅返回并接收清理函数后才交付终止；这次连接传播出的清理失败仍进入 failed，不回滚已经发生的业务。来源内部自行吞掉的错误不由框架恢复，不要通过修改 RxJS 全局错误配置改变其他模块的语义。
 

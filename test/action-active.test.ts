@@ -1,7 +1,41 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { firstValueFrom, lastValueFrom } from 'rxjs';
 import { bindAction, defineAction, implementAction, z, type ActionExecutionContext } from '@hanger-source/dsh-reactive';
+
+test('绑定release与原调用取消在不合作准入返回前结案，迟到准入不能开始真实写入', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-action-admission-'));
+  for (const mode of ['release', 'cancel'] as const) {
+    const file = join(directory, mode);
+    const entered = Promise.withResolvers<AbortSignal>(), gate = Promise.withResolvers<void>();
+    const controller = new AbortController(), reason = new Error('CALL_CANCELLED');
+    const original: ActionExecutionContext = { invocationId: mode, sessionId: 'admission',
+      source: { kind: 'participant', actorId: 'operator', participant: 'human', entrypoint: 'cli' },
+      signal: controller.signal, inputs: [], continuation: null };
+    const action = bindAction(implementAction({ name: 'write_file', description: '写入本次目标', scope: z.null(),
+      input: z.null(), output: z.string(), async execute() { await writeFile(file, 'written'); return file; } }), null, {
+      async admit(_input, _call, execution, signal) {
+        assert.equal(execution, original);
+        entered.resolve(signal); await gate.promise;
+      },
+    });
+    const invocation = action(null, original);
+    const signal = await entered.promise;
+    const rejected = assert.rejects(invocation.result, mode === 'cancel' ? reason : /REACTIVE_ACTION_BINDING_RELEASED/u);
+    try {
+      if (mode === 'release') action.release(); else controller.abort(reason);
+      await rejected;
+      assert.equal(signal.aborted, true);
+      assert.deepEqual(await firstValueFrom(action.activeInvocations$), []);
+      gate.resolve();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      await assert.rejects(readFile(file), { code: 'ENOENT' });
+    } finally { gate.resolve(); action.release(); }
+  }
+});
 
 test('绑定当前调用集合包含并发准入与执行，晚订和退订不丢调用，release后原业务独立结算', async () => {
   const firstStarted = Promise.withResolvers<void>(), firstResult = Promise.withResolvers<string>();
@@ -37,8 +71,14 @@ test('绑定当前调用集合包含并发准入与执行，晚订和退订不�
   assert.equal((await first.activity.read()).state, 'returned');
   assert.deepEqual(await firstValueFrom(action.activeInvocations$), [second]);
   assert.deepEqual(late, [first, second], '此前交付的快照不会随当前集合删除成员');
+  const runningObserved: boolean[] = [];
+  const receipt = second.activity$.subscribe(activity => {
+    if (activity.state === 'running') runningObserved.push(effects.includes('second'));
+  });
   secondAdmission.resolve();
   await secondStarted.promise;
+  assert.deepEqual(runningObserved, [true], 'running通知前业务必须已经进入，观察者同步重入不能抢先改变准入');
+  receipt.unsubscribe();
   assert.equal((await second.activity.read()).state, 'running');
   action.release();
   await assert.rejects(action('first', execution('after-release')).result, /REACTIVE_ACTION_BINDING_RELEASED/u);

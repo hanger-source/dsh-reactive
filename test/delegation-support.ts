@@ -2,11 +2,11 @@ import { mkdir, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createElement as h, Fragment } from 'react';
-import { tap } from 'rxjs';
+import { of, tap, type Observable } from 'rxjs';
 import { LlmAdapter, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm';
 import type { Context as NativeContext } from '@deepseek-ai/cordis';
 import { SessionId } from '@deepseek-ai/dsh-session';
-import { Context, Expose, Offer, implementProgram, useAction, useRelation } from '@hanger-source/dsh-reactive/program';
+import { Context, Expose, Offer, implementProgram, useAction, useObservable, useRelation } from '@hanger-source/dsh-reactive/program';
 import { defineAction, implementAction, defineProgram, defineSurface, defineApplication, defineEnvironment, nativeChildWorkAction, z, type ActionCallContext, type ActionInvocation, type InputReference } from '@hanger-source/dsh-reactive';
 import { createRuntime, nativeModel, type DelegationAdmission, type RuntimeOptions } from '@hanger-source/dsh-reactive-dsh';
 
@@ -30,6 +30,7 @@ export interface DelegationFixtureOptions {
   readonly root?: string;
   readonly parentSessionId?: string;
   readonly subagents?: RuntimeOptions['subagents'];
+  readonly declaration$?: Observable<boolean>;
   respond(request: GenerateOptions): AsyncIterable<StreamChunk>;
   installNative?(native: NativeContext): void | Promise<void>;
   authorize?(admission: DelegationAdmission<typeof DelegateWork>): void | PromiseLike<void>;
@@ -39,6 +40,7 @@ export interface DelegationFixtureOptions {
 
 /** 正式 Runtime 与原生 provider；只在供应商模型边界注入确定性适配器。 */
 export async function bootDelegationFixture(mode: 'spawn' | 'fork', options: DelegationFixtureOptions) {
+  const declaration$ = options.declaration$ ?? of(true);
   const root = options.root ?? await mkdtemp(join(tmpdir(), 'dsh-reactive-delegation-' + mode + '-'));
   const directory = join(root, 'workspace');
   await mkdir(directory, { recursive: true });
@@ -69,6 +71,8 @@ export async function bootDelegationFixture(mode: 'spawn' | 'fork', options: Del
       authorize(admission) { admissions.push(admission); return options.authorize?.(admission); },
     });
     const implementation = implementProgram(ParentProgram, { Component() {
+      const declared = useObservable(() => declaration$, []);
+      const enabled = declared.status === 'ready' && declared.value;
       const action = useAction(delegation, () => delegationScope, []);
       useRelation(() => action.invocations$.pipe(tap(invocation => {
         invocations.push(invocation); options.onInvocation?.(invocation);
@@ -77,8 +81,8 @@ export async function bootDelegationFixture(mode: 'spawn' | 'fork', options: Del
       const complete = useAction(parentComplete, () => null, []);
       return h(Fragment, null, h(Context, { name: 'parent-only', value: { marker: 'PARENT_ONLY_SECRET' } }),
         Offer({ name: 'parent_only_tool', action: only }), Offer({ name: 'parent_complete', action: complete }),
-        Offer({ name: 'delegate_work', action, follow: { when: 'feedback', scope: { parentId: delegationScope } } }),
-        Expose({ surface: ParentProgram.surface, value: { actions: { delegate: action } } }));
+        Offer({ name: 'delegate_work', action, enabled, follow: { when: 'feedback', scope: { parentId: delegationScope } } }),
+        enabled ? Expose({ surface: ParentProgram.surface, value: { actions: { delegate: action } } }) : null);
     } });
     return defineApplication({ name: 'delegation-' + mode, admit: async () => {}, environments: [defineEnvironment({
       id: 'work', instructions: '父工作只依据当前动态现场', program: implementation,

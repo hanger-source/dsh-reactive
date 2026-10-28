@@ -25,7 +25,8 @@ export interface ProgramHookOwner {
   /** 程序失败或释放的查询/关系寿命；已受理业务执行保留自己的 signal。 */
   readonly signal: AbortSignal;
   execution(action: ActionReference): ActionExecutionContext;
-  admit(action: ActionReference, input: unknown, call: ActionCallContext<unknown>, execution: ActionExecutionContext): void | PromiseLike<void>;
+  admit(action: ActionReference, input: unknown, call: ActionCallContext<unknown>, execution: ActionExecutionContext,
+    signal: AbortSignal): void | PromiseLike<void>;
   operation?(action: ActionReference, event: ActionOperationEvent, execution: ActionExecutionContext): void | PromiseLike<void>;
   operationAccess(binding: OperationBindingReference): OperationAccessContext;
   readOperationFeedback<D extends OperationContract>(binding: OperationBindingReference<D>, id: string, access: OperationAccessContext):
@@ -76,11 +77,12 @@ export function useAction<I extends z.ZodType, O extends z.ZodType, S extends z.
     const localOptions = typeof source === 'function' ? source() : undefined;
     const implementation = typeof source === 'function' ? implementAction(localOptions!) : source;
     const target = localOptions === undefined ? (targetOrDependencies as () => z.input<S>)() : localOptions.target;
-    const state = { active: false, owned: false };
+    const state: { admission: AbortController | undefined; owned: boolean } = { admission: undefined, owned: false };
     const action: BoundAction<ActionDefinition<I, O, S, Observed, P>, true> = bindAction(implementation, target, {
-      active: () => state.active,
+      active: () => state.admission !== undefined && !state.admission.signal.aborted,
+      admissionSignal: () => state.admission!.signal,
       execution: reference => owner.execution(reference),
-      admit: (input, call, execution) => owner.admit(action, input, call, execution),
+      admit: (input, call, execution, signal) => owner.admit(action, input, call, execution, signal),
       operation: (event, execution) => owner.operation?.(action, event, execution),
     });
     return { action, state };
@@ -90,9 +92,9 @@ export function useAction<I extends z.ZodType, O extends z.ZodType, S extends z.
       owner.scope.own(() => binding.action.release());
       binding.state.owned = true;
     }
-    binding.state.active = true;
+    const admission = binding.state.admission = new AbortController();
     // StrictMode 的 setup-cleanup-setup 只改变当前准入，不永久撤销同一个绑定。
-    return () => { binding.state.active = false; };
+    return () => { admission.abort(new Error('REACTIVE_ACTION_BINDING_INACTIVE')); };
   }, [owner, binding]);
   return binding.action;
 }

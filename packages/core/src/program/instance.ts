@@ -4,6 +4,7 @@ import { invokeBoundAction, type ActionCallContext, type ActionExecutionContext,
 import type { Json } from '../conversations/protocol.ts';
 import type { OperationAccessContext, OperationBindingReference, OperationContract, OperationFeedbackRead, OperationFeedbackPayload, OperationReference, OperationFollowMode } from '../operations/contract.ts';
 import { Scope, batch, type Cell } from '../reactivity/scope.ts';
+import { abortable } from '../reactivity/observable.ts';
 import { ResourceValue } from '../resources/value.ts';
 import { type Observation } from '../resources/observation.ts';
 import { ProgramHookProvider, type ProgramHookOwner } from './hooks.ts';
@@ -36,7 +37,8 @@ export interface ProgramInstanceOptions {
   /** 普通程序调用的真实服务身份与宿主信号；不由组件自报原生身份。 */
   execution(action: ActionReference): ActionExecutionContext;
   /** 核验绑定后把原始执行对象交还宿主；宿主可据其私有身份签认调用。 */
-  admit?(action: ActionReference, input: unknown, call: ActionCallContext<unknown>, originalExecution: ActionExecutionContext):
+  admit?(action: ActionReference, input: unknown, call: ActionCallContext<unknown>, originalExecution: ActionExecutionContext,
+    signal: AbortSignal):
     void | PromiseLike<void>;
   operation?(action: ActionReference, event: ActionOperationEvent, execution: ActionExecutionContext): void | PromiseLike<void>;
   validateOffer?(offer: OfferDeclaration): void;
@@ -226,13 +228,27 @@ export class ProgramInstance<P extends ProgramContract> implements ProgramHookOw
     }
   }
   /** 只信任由本会话的宿主入口签发的原始执行对象。 */
-  async admit(action: ActionReference, input: unknown, call: ActionCallContext<unknown>, originalExecution: ActionExecutionContext): Promise<void> {
+  async admit(action: ActionReference, input: unknown, call: ActionCallContext<unknown>, originalExecution: ActionExecutionContext,
+    admissionSignal: AbortSignal): Promise<void> {
     this.flush();
     const trusted = this.#trusted.get(originalExecution);
     if (trusted?.action !== action) throw new Error('REACTIVE_ACTION_EXECUTION_UNTRUSTED');
     originalExecution.signal.throwIfAborted();
     if (!trusted.allowed()) throw new Error('REACTIVE_ACTION_NOT_AVAILABLE');
-    await this.options.admit?.(action, input, call, originalExecution);
+    const changed = new AbortController();
+    const signal = AbortSignal.any([this.signal, originalExecution.signal, admissionSignal, changed.signal]);
+    signal.throwIfAborted();
+    const stop = this.scope.effect(() => {
+      this.revision.get();
+      try {
+        if (this.#trusted.get(originalExecution) !== trusted) throw new Error('REACTIVE_ACTION_EXECUTION_UNTRUSTED');
+        if (!trusted.allowed()) throw new Error('REACTIVE_ACTION_NOT_AVAILABLE');
+      } catch (error) { changed.abort(error); }
+    });
+    try {
+      await firstValueFrom(abortable(() => this.options.admit?.(action, input, call, originalExecution, signal), signal));
+    } finally { stop(); }
+    signal.throwIfAborted();
     this.flush();
     originalExecution.signal.throwIfAborted();
     if (this.#trusted.get(originalExecution) !== trusted) throw new Error('REACTIVE_ACTION_EXECUTION_UNTRUSTED');

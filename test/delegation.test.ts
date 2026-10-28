@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
-import { filter, firstValueFrom } from 'rxjs';
+import { BehaviorSubject, filter, firstValueFrom, from, timeout } from 'rxjs';
 import { SessionId, pluginRecordOf } from '@deepseek-ai/dsh-session';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
-import { defineProgram, programIdentity, ProgramContractMismatchError, z } from '@hanger-source/dsh-reactive';
+import { ActionBindingUnavailableError, defineProgram, programIdentity, ProgramContractMismatchError, z } from '@hanger-source/dsh-reactive';
 import type { ApplicationService } from '@hanger-source/dsh-reactive-dsh';
 import { delegationRecordSchema } from '../packages/dsh/src/delegations.ts';
 import { bootDelegationFixture, delegationDate, delegationScope, inspectDelegationSession } from './delegation-support.ts';
@@ -164,4 +164,102 @@ for (const mode of ['spawn', 'fork'] as const) test(`${mode} 子程序隔离当�
     assert.equal(totalCalls, callsBeforeRead, '冷合同核验和只读打开不启动父或子模型');
     assert.deepEqual(fixture.errors, []);
   } finally { releaseChild.resolve(); if (fixture) await fixture.dispose(); }
+});
+
+test('冷Action读回执与委托授权不合作时，取消或撤声明及时结束准入，迟到返回不激活或启动child', { timeout: 20_000 }, async () => {
+  const declaration$ = new BehaviorSubject(true);
+  const readEntered = Promise.withResolvers<void>(), readRelease = Promise.withResolvers<void>();
+  const gates = new Map(['caller', 'declaration'].map(job => [job, {
+    entered: Promise.withResolvers<AbortSignal>(), release: Promise.withResolvers<void>(),
+  }]));
+  let models = 0;
+  const fixture = await bootDelegationFixture('spawn', {
+    declaration$,
+    async *respond() { models++; throw new Error('REJECTED_ADMISSION_MUST_NOT_START_MODEL'); },
+    authorize(admission) {
+      if (admission.phase !== 'create') return;
+      const gate = gates.get(admission.input.job);
+      assert.ok(gate);
+      gate.entered.resolve(admission.signal);
+      return gate.release.promise;
+    },
+  });
+  const { parent, runtime } = fixture;
+  const open = runtime.native.sessionPersistence.open;
+  const resume = runtime.native.agents.resume;
+  let holdRead = false, resumed = 0;
+  const wait = <T>(work: Promise<T>) => firstValueFrom(from(work).pipe(timeout(3_000)));
+  runtime.native.sessionPersistence.open = new Proxy(open, { async apply(target, receiver, args) {
+    const handle: Awaited<ReturnType<typeof open>> = await Reflect.apply(target, receiver, args);
+    if (holdRead && args[0] === parent.id && args[1] === 'read') {
+      holdRead = false;
+      const read = handle.read;
+      handle.read = new Proxy(read, { async apply(target, receiver, args) {
+        const snapshot = await Reflect.apply(target, receiver, args);
+        readEntered.resolve(); await readRelease.promise;
+        return snapshot;
+      } });
+    }
+    return handle;
+  } });
+  runtime.native.agents.resume = new Proxy(resume, { async apply(target, receiver, args) {
+    const handle: Awaited<ReturnType<typeof resume>> = await Reflect.apply(target, receiver, args);
+    if (handle.agent.id === parent.id) resumed++;
+    return handle;
+  } });
+  try {
+    await runtime.application.close(parent.id);
+    await parent.actionManifest.read();
+    const coldAction = parent.resolveAction('delegate', delegationScope);
+    const controller = new AbortController(), reason = new Error('COLD_ACTION_CALLER_LEFT');
+    holdRead = true;
+    const reading = coldAction({ at: delegationDate, job: 'cold' }, { signal: controller.signal });
+    await wait(readEntered.promise);
+    controller.abort(reason);
+    await assert.rejects(wait(reading.result), error => error === reason);
+    assert.equal(runtime.native.agents.get(SessionId(parent.id)), undefined);
+    assert.equal(resumed, 0, '真实冷日志回执挂起时尚未激活Agent');
+    readRelease.resolve(); await setImmediate();
+    assert.equal(runtime.native.agents.get(SessionId(parent.id)), undefined, '迟到读回执不再继续activate');
+    assert.equal(resumed, 0);
+    assert.equal(fixture.admissions.length, 0);
+
+    for (const exit of ['caller', 'declaration'] as const) {
+      const controller = new AbortController(), reason = new Error('DELEGATION_CALLER_LEFT');
+      const invocation = parent.resolveAction('delegate', delegationScope)({ at: delegationDate, job: exit }, { signal: controller.signal });
+      const gate = gates.get(exit)!;
+      const admissionSignal = await wait(gate.entered.promise);
+      assert.equal(admissionSignal.aborted, false);
+      if (exit === 'caller') {
+        controller.abort(reason);
+        await assert.rejects(wait(invocation.result), error => error === reason);
+      } else {
+        const withdrawn = firstValueFrom(parent.actionManifest$.pipe(
+          filter(manifest => manifest.some(action => action.toolName === 'delegate_work' && !action.enabled)), timeout(3_000)));
+        declaration$.next(false); await withdrawn;
+        await assert.rejects(wait(invocation.result), error => error instanceof ActionBindingUnavailableError
+          && error.reason === 'not-exposed');
+        assert.equal(controller.signal.aborted, false, '声明退出没有取消原调用者或已受理业务的执行signal');
+      }
+      assert.equal(admissionSignal.aborted, true, '不合作authorize在门闩释放前收到本次准入退出');
+      assert.equal((await runtime.native.subagents.listDescendants(SessionId(parent.id))).length, 0);
+      if (exit === 'caller') gate.release.reject(new Error('RETIRED_DELEGATION_POLICY_FAILED_LATE'));
+      else gate.release.resolve();
+      await setImmediate();
+      assert.equal((await runtime.native.subagents.listDescendants(SessionId(parent.id))).length, 0, '迟到authorize不能启动child');
+      assert.equal(models, 0);
+    }
+    const agent = runtime.native.agents.get(SessionId(parent.id));
+    assert.ok(agent);
+    assert.equal(await runtime.native.sessions.flush(agent.session), true);
+    const persisted = await inspectDelegationSession(runtime.native, parent.id);
+    assert.equal(persisted.events.filter(event => pluginRecordOf(event)?.type === 'plugin:reactive/delegation').length, 0,
+      '本次准入失败没有持久受理委托或自动重发');
+    assert.deepEqual(fixture.errors, []);
+  } finally {
+    readRelease.resolve(); for (const gate of gates.values()) gate.release.resolve();
+    runtime.native.sessionPersistence.open = open;
+    runtime.native.agents.resume = resume;
+    declaration$.complete(); parent.release(); await fixture.dispose();
+  }
 });

@@ -5,7 +5,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Fragment, createElement as h, useLayoutEffect } from 'react';
-import { BehaviorSubject, Observable, Subject, filter, firstValueFrom, tap, timeout } from 'rxjs';
+import { BehaviorSubject, Observable, Subject, filter, firstValueFrom, from, tap, timeout } from 'rxjs';
 import { LlmAdapter, type GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { assembleContextFor } from '@deepseek-ai/dsh-agent';
 import { Context } from '@deepseek-ai/cordis';
@@ -13,8 +13,8 @@ import LocalJobs from '@deepseek-ai/dsh-jobs-local';
 import * as jobTools from '@deepseek-ai/dsh-tool-jobs';
 import type { JobOutcome } from '@deepseek-ai/dsh-jobs';
 import { SessionId } from '@deepseek-ai/dsh-session';
-import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
-import { collectionSurface, defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, composeSurface, readActionPresentation, Scope, z, type NativeToolCall, type ProgramSession } from '@hanger-source/dsh-reactive';
+import type { ToolDefinition, ToolExecutionResult } from '@deepseek-ai/dsh-tools';
+import { collectionSurface, defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, composeSurface, readActionPresentation, Scope, z, type NativeToolCall, type NativeToolAdmission, type ProgramSession } from '@hanger-source/dsh-reactive';
 import { implementProgram, NativeTools, Offer, Expose, Module, useAction, useObservable, useResource, useRelation } from '@hanger-source/dsh-reactive/program';
 import { boot, text, tool } from './native-support.ts';
 import type { ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
@@ -97,12 +97,18 @@ test('原生读侧构造不连接，首次订阅后共享同一来源，owner退
 });
 
 for (const mode of ['native', 'ptc'] as const) {
-  test(`${mode} 模块共享原生工具，单项退出保留在途准入，最后退出与政策撤销仍受原生guard核验`, { timeout: 30_000 }, async () => {
+  test(`${mode} 共享原生工具的准入随真实调用和声明退出，迟到政策不越过正式guard`, { timeout: 30_000 }, async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-native-capabilities-'));
     const enabled$ = new BehaviorSubject(true), commits$ = new Subject<boolean>();
     const selected = new BehaviorSubject<readonly string[]>(['left', 'right']);
     const entered = Promise.withResolvers<NativeToolCall>(), release = Promise.withResolvers<void>();
     const sharedEntered = Promise.withResolvers<NativeToolCall>(), sharedRelease = Promise.withResolvers<void>();
+    const gates = new Map(['cancelled', 'replaced', 'downstream', 'failed'].map(marker => [marker, {
+      entered: Promise.withResolvers<NativeToolCall>(), release: Promise.withResolvers<void>(),
+      settled: Promise.withResolvers<Readonly<ToolExecutionResult>>(),
+    }]));
+    const downstreamEntered = Promise.withResolvers<void>(), downstreamRelease = Promise.withResolvers<void>();
+    const failed = new BehaviorSubject(false), failure = new Error('NATIVE_POLICY_PROGRAM_FAILED');
     const admissions: NativeToolCall[] = [], requests: GenerateOptions[] = [];
     const executions: string[] = [];
     const admit = async (call: NativeToolCall) => {
@@ -110,7 +116,10 @@ for (const mode of ['native', 'ptc'] as const) {
       const { marker } = nativeArguments.parse(call.arguments);
       if (marker === 'revoked') { entered.resolve(call); await release.promise; }
       if (marker === 'shared') { sharedEntered.resolve(call); await sharedRelease.promise; }
+      const gate = gates.get(marker);
+      if (gate) { gate.entered.resolve(call); if (marker !== 'downstream') await gate.release.promise; }
     };
+    const policy = new BehaviorSubject<NativeToolAdmission>(admit);
     const empty = defineSurface({ views: {}, actions: {} });
     const composed = composeSurface({ dependencies: collectionSurface(empty) });
     const definition = defineApplication({ name: 'native-capabilities-' + mode, admit: async () => {}, environments: [defineEnvironment({
@@ -119,11 +128,15 @@ for (const mode of ['native', 'ptc'] as const) {
         Component() {
           const observed = useObservable(() => enabled$, []);
           const members = useObservable(() => selected, []);
+          const admission = useObservable(() => policy, []);
+          const broken = useObservable(() => failed, []);
           const enabled = observed.status === 'ready' && observed.value;
-          useLayoutEffect(() => commits$.next(enabled), [enabled]);
-          return members.status === 'ready' ? h(Fragment, null, members.value.map(member =>
+          const current = admission.status === 'ready' ? admission.value : undefined;
+          useLayoutEffect(() => commits$.next(enabled), [enabled, current]);
+          if (broken.status === 'ready' && broken.value) throw failure;
+          return members.status === 'ready' && admission.status === 'ready' ? h(Fragment, null, members.value.map(member =>
             h(Module, { key: member, mount: composed.mounts.dependencies.instance(member) },
-              NativeTools({ names: ['native_tool'], enabled, admit })))) : null;
+              NativeTools({ names: ['native_tool'], enabled, admit: current })))) : null;
         },
       }),
     })] });
@@ -150,6 +163,16 @@ for (const mode of ['native', 'ptc'] as const) {
     });
     const removeNative = app.native.tools.register(installed('native_tool'));
     const removeUndeclared = app.native.tools.register(installed('undeclared_tool'));
+    const removeResults = app.native.on('tools/result', (execution, result) => {
+      if (execution.name === 'native_tool') gates.get(nativeArguments.parse(execution.arguments).marker)?.settled.resolve(result);
+    });
+    const removeDownstream = app.native.on('tools/pre-execute', async (execution, next) => {
+      if (execution.name === 'native_tool' && nativeArguments.parse(execution.arguments).marker === 'downstream') {
+        assert.ok(admissions.some(call => call.source.callId === execution.callId), '本框架政策先完成，再进入另一正式gate');
+        downstreamEntered.resolve(); await downstreamRelease.promise;
+      }
+      return next();
+    });
     let guardCalls = 0;
     const removeGuard = app.native.tools.guard(execution => {
       if (execution.name !== 'native_tool' || nativeArguments.parse(execution.arguments).marker !== 'guarded') return;
@@ -157,6 +180,7 @@ for (const mode of ['native', 'ptc'] as const) {
     });
     try {
       const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+      const idle = () => firstValueFrom(from(session.whenIdle()).pipe(timeout(3_000)));
       const members = session.collection('dependencies');
       let sequence = 0;
       const send = async (name: string, marker: string) => {
@@ -197,12 +221,43 @@ for (const mode of ['native', 'ptc'] as const) {
       const pending = await entered.promise;
       const disabled = firstValueFrom(commits$.pipe(filter(value => !value)));
       enabled$.next(false); await disabled;
-      assert.equal(pending.signal.aborted, false, '撤下能力不是取消已经进入政策的原生调用signal');
+      await idle();
+      assert.equal(pending.signal.aborted, true, '声明撤销立即结束本次准入，不等待不合作政策返回');
       release.resolve();
-      await session.whenIdle();
       await assert.rejects(access(join(root, 'revoked.txt')), { code: 'ENOENT' });
       const enabled = firstValueFrom(commits$.pipe(filter(value => value)));
       enabled$.next(true); await enabled;
+      await send('native_tool', 'replaced');
+      const replacing = gates.get('replaced')!;
+      const oldPolicy = await replacing.entered.promise;
+      const replaced = firstValueFrom(commits$);
+      const replacement: NativeToolAdmission = call => admit(call);
+      policy.next(replacement); await replaced;
+      await idle();
+      assert.equal(oldPolicy.signal.aborted, true);
+      assert.equal((await replacing.settled.promise).isError, true);
+      replacing.release.reject(new Error('RETIRED_NATIVE_POLICY_FAILED_LATE'));
+      await assert.rejects(access(join(root, 'replaced.txt')), { code: 'ENOENT' });
+      const restored = firstValueFrom(commits$);
+      policy.next(admit); await restored;
+      await send('native_tool', 'cancelled');
+      const cancelling = gates.get('cancelled')!;
+      const cancelled = await cancelling.entered.promise;
+      assert.deepEqual(await firstValueFrom(from(session.cancel()).pipe(timeout(3_000))), { canceled: true });
+      assert.equal(cancelled.signal.aborted, true);
+      assert.equal((await cancelling.settled.promise).isError, true);
+      cancelling.release.resolve();
+      await assert.rejects(access(join(root, 'cancelled.txt')), { code: 'ENOENT' });
+      await send('native_tool', 'downstream'); await downstreamEntered.promise;
+      const withdrawn = firstValueFrom(members.instances$.pipe(filter(ids => ids.length === 0), timeout(3_000)));
+      selected.next([]); await withdrawn;
+      const returned = firstValueFrom(members.instances$.pipe(filter(ids => ids.length === 1), timeout(3_000)));
+      selected.next(['right']); await returned;
+      assert.equal((await gates.get('downstream')!.entered.promise).signal.aborted, true,
+        '下游gate期间曾真实撤声明，即使同政策恢复，原准入也不能复活');
+      downstreamRelease.resolve(); await idle();
+      assert.equal((await gates.get('downstream')!.settled.promise).isError, true);
+      await assert.rejects(access(join(root, 'downstream.txt')), { code: 'ENOENT' });
       await send('native_tool', 'guarded'); await session.whenIdle();
       assert.ok(guardCalls > 0, '原生其他guard实际拒绝了本次调用，声明不能覆盖其结论');
       await assert.rejects(access(join(root, 'guarded.txt')), { code: 'ENOENT' });
@@ -218,10 +273,22 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.ok(app.native.tools.get('native_tool'));
       assert.deepEqual(executions, ['accepted', 'shared']);
       assert.deepEqual(app.errors, []);
+      const reinstated = firstValueFrom(members.instances$.pipe(filter(ids => ids.length === 1), timeout(3_000)));
+      selected.next(['right']); await reinstated;
+      await send('native_tool', 'failed');
+      const failing = gates.get('failed')!;
+      const retiring = await failing.entered.promise;
+      failed.next(true);
+      assert.equal((await firstValueFrom(from(failing.settled.promise).pipe(timeout(3_000)))).isError, true);
+      assert.equal(retiring.signal.aborted, true, 'Program失败撤销Agent声明安装，同时结束自有政策等待');
+      failing.release.resolve();
+      await assert.rejects(access(join(root, 'failed.txt')), { code: 'ENOENT' });
       session.release();
     } finally {
-      release.resolve(); sharedRelease.resolve(); removeGuard(); removeUndeclared(); removeNative();
-      selected.complete(); enabled$.complete(); commits$.complete(); await app.dispose();
+      release.resolve(); sharedRelease.resolve(); downstreamRelease.resolve();
+      for (const gate of gates.values()) gate.release.resolve();
+      removeGuard(); removeDownstream(); removeResults(); removeUndeclared(); removeNative();
+      selected.complete(); enabled$.complete(); commits$.complete(); policy.complete(); failed.complete(); await app.dispose();
     }
   });
 
