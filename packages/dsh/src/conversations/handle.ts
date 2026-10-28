@@ -60,7 +60,7 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
     #requests = new Map<string, RequestHandle<ProgramParsedInput<P>>>();
     private constructor(private readonly entry: ConversationSession, private readonly participant: 'human' | 'service', private readonly sessions: ConversationSessions, private readonly inputs: ConversationInputs, private readonly actions: ActionAuthority, private readonly participation: OperationParticipation, private readonly questions: ConversationQuestions, private readonly facts: ConversationObservations) {
         this.#scope = entry.conversation.scope.child();
-        facts.registerSessionAccess(this, entry, this.#scope.signal, () => this.assertActive());
+        sessions.registerSessionAccess(this, entry, this.#scope.signal, () => this.assertActive());
         entry.pins++;
         this.activity$ = this.observe(entry.conversation.activity$);
         this.progress = new ResourceReader(entry.conversation.progress,

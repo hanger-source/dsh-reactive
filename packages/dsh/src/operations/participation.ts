@@ -4,7 +4,6 @@ import { appendPluginRecord } from "@deepseek-ai/dsh-session";
 import { z } from "zod";
 import { type Continuation, type WaitReference, type SubmitOptions, type GoalReference } from "@hanger-source/dsh-reactive/kernel";
 import { type ApplicationDefinition } from "@hanger-source/dsh-reactive/kernel";
-import { type Scope } from "@hanger-source/dsh-reactive/kernel";
 import { type ActionExecutionContext, type ActionReference } from "@hanger-source/dsh-reactive/kernel";
 import { type BoundOffer, type BoundFollow } from "@hanger-source/dsh-reactive/kernel";
 import { OperationFollows, operationFollowId } from "./follows.ts";
@@ -25,7 +24,7 @@ import type { ActionAuthority } from '../execution/authority.ts';
 /** 可靠操作参与与精确 Goal 续接；Operation 事实仍由业务 owner 持有。 */
 export class OperationParticipation {
     #follows: OperationFollows;
-    constructor(private readonly ctx: Context, private readonly definition: ApplicationDefinition, private readonly options: HostOptions, private readonly signal: AbortSignal, private readonly sessions: ConversationSessions, private readonly facts: ConversationObservations, private readonly inputs: ConversationInputs, private readonly authority: ActionAuthority, private readonly delegations: NativeDelegations, private readonly nativeScope: (agent: Agent) => Scope) {
+    constructor(private readonly ctx: Context, private readonly definition: ApplicationDefinition, private readonly options: HostOptions, private readonly signal: AbortSignal, private readonly sessions: ConversationSessions, private readonly facts: ConversationObservations, private readonly inputs: ConversationInputs, private readonly authority: ActionAuthority, private readonly delegations: NativeDelegations) {
         this.#follows = new OperationFollows(ctx, [...this.options.operations ?? [], delegations.owner], {
             publisherId: () => {
                 const actorId = this.options.serviceActorId;
@@ -33,7 +32,11 @@ export class OperationParticipation {
                     throw new Error('REACTIVE_OPERATION_PUBLISHER_REQUIRED');
                 return actorId;
             },
-            recoveryAccess: agent => this.operationRecoveryAccess(agent),
+            recoveryAccess: agent => {
+                const entry = this.sessions.forAgent(agent);
+                if (!entry) throw new Error('REACTIVE_AGENT_NOT_BOUND');
+                return this.operationRecoveryAccess(entry);
+            },
             checkpoint: agent => this.facts.flush(agent),
             wait: (agent, continuation, wait) => this.registerWait(agent, continuation, wait),
             resolved: (agent, link) => {
@@ -217,11 +220,12 @@ export class OperationParticipation {
         const callerSignal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
         callerSignal.throwIfAborted();
         const session = await this.sessions.readSession(sessionId);
-        const signal = session.live.value ? AbortSignal.any([callerSignal, this.nativeScope(session.live.value.agent).signal]) : callerSignal;
+        const live = session.live.value;
+        const signal = live ? AbortSignal.any([callerSignal, live.scope.signal]) : callerSignal;
         signal.throwIfAborted();
-        const inspection = session.live.value ? undefined : await this.facts.inspect(sessionId);
-        const link = session.live.value ? this.#follows.link(session.live.value.agent, followId) : this.#follows.inspectedLink(inspection!, followId);
-        const notStarted = session.live.value ? this.#follows.isNotStarted(session.live.value.agent, followId) : this.#follows.inspectedNotStarted(inspection!, followId);
+        const inspection = live ? undefined : await this.facts.inspect(sessionId);
+        const link = live ? this.#follows.link(live.agent, followId) : this.#follows.inspectedLink(inspection!, followId);
+        const notStarted = live ? this.#follows.isNotStarted(live.agent, followId) : this.#follows.inspectedNotStarted(inspection!, followId);
         const access: OperationAccess = { sessionId, source: {
                 kind: 'participant', participant: 'service', actorId, entrypoint: 'operation-feedback',
             }, signal };
@@ -231,24 +235,24 @@ export class OperationParticipation {
         if (notStarted)
             return { status: 'not-started' };
         await this.sessions.activate(sessionId);
-        const agent = this.sessions.live(this.sessions.get(sessionId)!).agent;
-        return this.#follows.complete(agent, followId, { ...access,
-            signal: AbortSignal.any([signal, this.nativeScope(agent).signal]) });
+        const entry = this.sessions.live(this.sessions.get(sessionId)!);
+        return this.#follows.complete(entry.agent, followId, { ...access,
+            signal: AbortSignal.any([signal, entry.scope.signal]) });
     }
     async reconcileOperations(entry: LiveConversation) {
         const links = this.#follows.links(entry.agent);
         const pending = links.filter(link => !['consumed', 'settled'].includes(entry.session.state.activity.requests['operation:' + link.id]?.state ?? ''));
         if (!pending.length)
             return;
-        await this.#follows.restore(entry.agent, pending, this.operationRecoveryAccess(entry.agent));
+        await this.#follows.restore(entry.agent, pending, this.operationRecoveryAccess(entry));
     }
-    operationRecoveryAccess(agent: Agent): OperationAccess {
+    private operationRecoveryAccess(entry: LiveConversation): OperationAccess {
         const actorId = this.options.serviceActorId;
         if (!actorId?.trim())
             throw new Error('REACTIVE_OPERATION_PUBLISHER_REQUIRED');
-        return { sessionId: agent.id, source: {
+        return { sessionId: entry.agent.id, source: {
                 kind: 'participant', participant: 'service', actorId, entrypoint: 'operation-recovery',
-            }, signal: AbortSignal.any([this.signal, this.nativeScope(agent).signal]) };
+            }, signal: AbortSignal.any([this.signal, entry.scope.signal]) };
     }
     shouldWake(entry: LiveConversation, input: AdmittedSubmission): boolean {
         const result = input.result;

@@ -28,9 +28,9 @@ export class ProgramSkills {
   #bindingsClosing?: Promise<void>;
   #closing?: Promise<void>;
 
-  constructor(private readonly agent: Agent) {
-    // 新的 plugin fiber 继承 Agent 的 scope；显式注入不依赖 agent-loop 的依赖清单。
-    this.#owner = agent.ctx.inject(['skills', 'systemPrompt', 'workingDirectory', 'fs'], ctx => {
+  constructor(private readonly agent: Agent, installation: Context) {
+    // 同一声明安装内的子Fiber保留Agent路由，并随Program结束释放目录watcher。
+    this.#owner = installation.inject(['skills', 'systemPrompt', 'workingDirectory', 'fs'], ctx => {
       this.#ctx = ctx;
       const invalidate = () => { this.#lookupRevision++; this.invalidatePreparation(); };
       ctx.on('skills/change', invalidate);

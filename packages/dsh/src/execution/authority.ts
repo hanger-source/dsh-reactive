@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@deepseek-ai/cordis";
-import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 import { z } from "zod";
 import { type Continuation, type WaitReference, type SubmitOptions } from "@hanger-source/dsh-reactive/kernel";
@@ -31,7 +30,7 @@ export class ActionAuthority {
         offer: BoundOffer;
     }>();
     #executions = new WeakMap<ActionExecutionContext, ConversationSession>();
-    constructor(private readonly ctx: Context, private readonly options: HostOptions, private readonly signal: AbortSignal, private readonly workspaces: Workspaces, private readonly sessions: ConversationSessions, private readonly facts: ConversationObservations, private readonly inputs: ConversationInputs, private readonly delegations: NativeDelegations, private readonly registerWait: (agent: Agent, continuation: Continuation, wait: WaitReference) => Promise<void>) { }
+    constructor(private readonly ctx: Context, private readonly options: HostOptions, private readonly signal: AbortSignal, private readonly workspaces: Workspaces, private readonly sessions: ConversationSessions, private readonly facts: ConversationObservations, private readonly inputs: ConversationInputs, private readonly delegations: NativeDelegations) { }
     private assertActive() { if (this.signal.aborted)
         throw new Error('REACTIVE_HOST_DISPOSED'); }
     nativeCall(execution: ActionExecutionContext) { return this.#toolCalls.get(execution); }
@@ -67,12 +66,14 @@ export class ActionAuthority {
         const parent = this.sessions.live(session).agent;
         await this.delegations.admit(action, input, call, execution, parent, session.conversation.identity);
     }
-    call(entry: LiveConversation, exec: ToolRunContext, offer: BoundOffer): ActionExecutionContext {
-        const execution = this.toolExecution(entry, exec);
+    call(entry: LiveConversation, exec: ToolRunContext, offer: BoundOffer,
+        registerWait: (continuation: Continuation, wait: WaitReference) => Promise<void>): ActionExecutionContext {
+        const execution = this.toolExecution(entry, exec, registerWait);
         this.#toolCalls.set(execution, { entry, exec, offer });
         return execution;
     }
-    toolExecution(entry: LiveConversation, exec: ToolRunContext): ToolExecution {
+    toolExecution(entry: LiveConversation, exec: ToolRunContext,
+        registerWait: (continuation: Continuation, wait: WaitReference) => Promise<void>): ToolExecution {
         const occurrence = entry.session.state.call(exec.callId);
         if (!occurrence || occurrence.rootCallId !== exec.rootCallId)
             throw new Error('REACTIVE_CALL_INPUT_UNAVAILABLE');
@@ -97,7 +98,7 @@ export class ActionAuthority {
                 this.ctx.goals.complete(entry.agent, goal);
             },
             wait: raw => {
-                const accepted = this.registerWait(entry.agent, continuation, raw);
+                const accepted = registerWait(continuation, raw);
                 exec.concludeTurn();
                 return accepted;
             },

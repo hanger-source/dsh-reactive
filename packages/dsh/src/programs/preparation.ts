@@ -1,7 +1,6 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import { type Conversation, conversationBindings } from "@hanger-source/dsh-reactive/kernel";
-import { type Scope } from "@hanger-source/dsh-reactive/kernel";
 import { ProgramInstance } from "@hanger-source/dsh-reactive/kernel";
 import { ProgramSkills } from "./program-skills.ts";
 import { HumanInputs } from "../participation/human-input.ts";
@@ -25,10 +24,9 @@ declare module '@deepseek-ai/dsh-system-prompt' {
 export class ConversationPrograms {
     private readonly bindings: AgentBindings;
     constructor(private readonly ctx: Context, private readonly sessions: ConversationSessions, private readonly inputs: ConversationInputs, private readonly authority: ActionAuthority, private readonly operations: OperationParticipation, private readonly tools: ProgramTools, private readonly delegations: NativeDelegations) {
-        this.bindings = new AgentBindings(ctx);
+        this.bindings = new AgentBindings();
     }
-    scope(agent: Agent, provided?: Scope) { return this.bindings.scope(agent, provided); }
-    release(agent: Agent): void { this.bindings.release(agent); }
+    release(agent: Agent): Promise<void> { return this.bindings.release(agent); }
     create(conversation: Conversation<any>, implementation: ProgramImplementation, workspace: ManagedWorkspace, session: () => ConversationSession): ProgramInstance<any> {
         return new ProgramInstance(conversation.scope, implementation, conversation, workspace.context, { execution: () => this.authority.participantExecution(session(), {}, 'service', 'program'),
             admit: (action, input, call, execution) => this.authority.admitAction(session(), action, input, call, execution),
@@ -39,12 +37,19 @@ export class ConversationPrograms {
             validateOffer: offer => this.operations.validateOffer(offer, implementation) });
     }
     createLive(agent: Agent, session: ConversationSession): LiveConversation {
-        return { agent, session, claimed: [], preparing: false, recovery: new Set(), recoveryErrors: [],
-            skills: new ProgramSkills(agent), human: new HumanInputs(this.ctx, agent, session.program, this.bindings.scope(agent)), progress: new NativeProgress() };
+        let skills: ProgramSkills | undefined;
+        const installation = this.bindings.create(agent, session.conversation.scope, session.program.signal, () => skills?.dispose());
+        session.program.signal.throwIfAborted();
+        installation.scope.assertActive();
+        skills = new ProgramSkills(agent, installation.context);
+        return { agent, session, scope: installation.scope, closed: installation.closed, dispose: installation.dispose,
+            claimed: [], preparing: false, recovery: new Set(), recoveryErrors: [], skills,
+            human: new HumanInputs(installation.context, agent, session.program, installation.scope), progress: new NativeProgress() };
     }
     async attach(entry: LiveConversation): Promise<void> {
         const { session, agent } = entry, { conversation } = session;
         const program = session.program;
+        await this.bindings.ready(agent);
         this.bindings.contexts(agent, conversation.scope.computed(() => { program.revision.get(); return new Map(program.contexts); }));
         const tools = conversation.scope.computed(() => {
             program.revision.get();
@@ -54,7 +59,7 @@ export class ConversationPrograms {
             ];
         });
         this.bindings.tools(agent, tools);
-        const nativeScope = this.bindings.scope(agent);
+        const nativeScope = entry.scope;
         nativeScope.own(() => { entry.nativeMask?.(); entry.nativeMask = undefined; });
         const questions = entry.human.questions$.subscribe({ next: value => conversation[conversationBindings]().publishQuestions(value), error: error => program.fail(error) });
         const foreground = entry.human.foreground$.subscribe({ next: value => conversation[conversationBindings]().publishForegroundQuestions(value), error: error => program.fail(error) });

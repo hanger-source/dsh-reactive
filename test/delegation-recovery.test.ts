@@ -5,7 +5,9 @@ import { once } from 'node:events';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate } from 'node:timers/promises';
 import { SessionId, pluginRecordOf } from '@deepseek-ai/dsh-session';
+import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { Context } from '@deepseek-ai/cordis';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { NativeChildWork, nativeChildReceiptSchema, z, type NativeChildReceipt, type ActionInvocation } from '@hanger-source/dsh-reactive';
@@ -42,7 +44,7 @@ async function bootRecovery(options: { root?: string; parentSessionId?: string; 
   const releaseChild = Promise.withResolvers<void>();
   const returned = Promise.withResolvers<{ invocation: Invocation; receipt: NativeChildReceipt }>();
   const failed = Promise.withResolvers<{ invocation: Invocation; error: unknown }>();
-  const state = { starts: 0, childCalls: 0 };
+  const state = { starts: 0, childCalls: 0, modelCalls: 0 };
   let fixture!: Awaited<ReturnType<typeof bootDelegationFixture>>;
   fixture = await bootDelegationFixture('spawn', {
     root: options.root, parentSessionId: options.parentSessionId,
@@ -67,6 +69,7 @@ async function bootRecovery(options: { root?: string; parentSessionId?: string; 
     },
     onChildComplete() { childCompleted.resolve(); },
     async *respond(request) {
+      state.modelCalls++;
       if (request.tools?.some(value => value.name === 'child_complete')) {
         state.childCalls++; childEntered.resolve();
         if (hasCall(request, 'child_complete')) { yield* text('原子工作完成'); return; }
@@ -145,12 +148,67 @@ async function crashAtCheckpoint(root: string, context: TestContext) {
 
 if (process.argv[2] === '--child-receipt-checkpoint') await checkpointWorker(process.argv[3]!);
 else {
-  test('子receipt持久而父ACK尚未持久时硬崩溃，只恢复同一原消息与独立Goal', async context => {
+  test('子receipt持久而父ACK尚未持久时硬崩溃，父恢复失败与并发等待完整撤回后只恢复原消息和Goal', async context => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-child-crash-'));
     const checkpoint = await crashAtCheckpoint(root, context);
-    const fixture = await bootRecovery({ root, parentSessionId: checkpoint.parentId, forbidStart: true });
+    const restoreEntered = Promise.withResolvers<void>(), restoreReleased = Promise.withResolvers<void>();
+    const failure = new Error('PARENT_CHILD_RESTORE_READ_FAILED');
+    const resumedParents: Agent[] = [], closedParents = new Set<Agent>();
+    let rejected = false;
+    const releaseRestore = () => restoreReleased.resolve();
+    context.signal.addEventListener('abort', releaseRestore, { once: true });
+    const fixture = await bootRecovery({ root, parentSessionId: checkpoint.parentId, forbidStart: true, installNative(native) {
+      const resume = native.agents.resume;
+      native.agents.resume = new Proxy(resume, { async apply(target, receiver, args) {
+        const handle: Awaited<ReturnType<typeof resume>> = await Reflect.apply(target, receiver, args);
+        if (handle.agent.id === checkpoint.parentId) {
+          resumedParents.push(handle.agent);
+          handle.agent.ctx.effect(() => () => { closedParents.add(handle.agent); });
+        }
+        return handle;
+      } });
+      const open = native.sessionPersistence.open;
+      native.sessionPersistence.open = new Proxy(open, { async apply(target, receiver, args) {
+        // 只有原生resume实际成功返回后的parent只读日志才注入；不干预Agent自身恢复。
+        if (!rejected && resumedParents.length && args[0] === checkpoint.parentId && args[1] === 'read') {
+          rejected = true; restoreEntered.resolve(); await restoreReleased.promise; throw failure;
+        }
+        return Reflect.apply(target, receiver, args);
+      } });
+    } });
     try {
+      const coldReader = fixture.parent.actionManifest;
+      await coldReader.read();
+      const originalBinding = fixture.parent.resolveAction('delegate', fixture.rawScope);
+      const beforeRestoreModels = fixture.state.modelCalls;
+      const first = fixture.runtime.application.resume(checkpoint.parentId, fixture.parentProgram).then(
+        value => ({ value, error: null }), error => ({ value: null, error }));
+      await restoreEntered.promise;
+      assert.equal(resumedParents.length, 1);
+      assert.equal(fixture.runtime.native.agents.get(SessionId(checkpoint.parentId)), resumedParents[0]);
+      let secondSettled = false;
+      const second = fixture.runtime.application.resume(checkpoint.parentId, fixture.parentProgram).then(
+        value => { secondSettled = true; return { value, error: null }; },
+        error => { secondSettled = true; return { value: null, error }; });
+      await setImmediate();
+      assert.equal(secondSettled, false, '并发恢复不能把已创建但子恢复尚未完成的Agent当作成功');
+      restoreReleased.resolve();
+      const outcomes = await Promise.all([first, second]);
+      for (const outcome of outcomes) {
+        assert.equal(outcome.error, failure); assert.equal(outcome.value, null);
+      }
+      assert.equal(closedParents.has(resumedParents[0]!), true, '失败回执返回前必须完成本次实际Agent清理');
+      assert.equal(fixture.runtime.native.agents.get(SessionId(checkpoint.parentId)), undefined);
+      assert.equal(fixture.runtime.native.agents.get(SessionId(checkpoint.receipt.childSessionId)), undefined);
+      assert.equal(fixture.parent.actionManifest, coldReader);
+      await coldReader.read();
+      assert.equal(fixture.parent.resolveAction('delegate', fixture.rawScope).bindingId, originalBinding.bindingId);
+      assert.equal(fixture.state.modelCalls, beforeRestoreModels, '失败恢复与并发等待不增加模型步骤');
       const parent = await fixture.runtime.application.resume(checkpoint.parentId, fixture.parentProgram);
+      assert.equal(resumedParents.length, 2);
+      assert.notEqual(resumedParents[1], resumedParents[0]);
+      assert.equal(fixture.parent.actionManifest, coldReader);
+      assert.equal(fixture.parent.resolveAction('delegate', fixture.rawScope).bindingId, originalBinding.bindingId);
       await fixture.childCompleted;
       await parent.whenIdle();
       const child = await fixture.runtime.application.open(checkpoint.receipt.childSessionId, fixture.childProgram);
@@ -168,7 +226,10 @@ else {
       assert.equal(parentLog.events.filter(event => event.type === 'subagent/catalog').length, 1);
       assert.equal(fixture.state.starts, 0); assert.deepEqual(fixture.errors, []);
       parent.release(); fixture.parent.release();
-    } finally { fixture.releaseChild(); await fixture.dispose(); }
+    } finally {
+      context.signal.removeEventListener('abort', releaseRestore); restoreReleased.resolve();
+      fixture.releaseChild(); await fixture.dispose();
+    }
   });
 
   test('受理后父receipt单次拒写保留首步gate，显式resume修复且故障feedback身份保留', async () => {

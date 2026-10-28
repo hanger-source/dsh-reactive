@@ -35,18 +35,18 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
     private constructor(ctx: Context, definition: ApplicationDefinition<E>, private readonly workspaces: Workspaces, options: HostOptions, private readonly delegations: NativeDelegations, private readonly releaseInstallation: () => Promise<void>) {
         installReactiveProjection(ctx);
         const signal = this.#lifetime.signal;
-        this.facts = new ConversationObservations(ctx, workspaces, signal, () => this.sessions);
-        this.sessions = new ConversationSessions(ctx, definition, workspaces, options, signal, this.facts, delegations, () => this.programs, () => this.inputs, () => this.operations);
+        this.facts = new ConversationObservations(ctx, signal);
+        this.sessions = new ConversationSessions(ctx, definition, workspaces, options, signal, this.facts, delegations, () => this.programs, () => this.inputs);
         this.inputs = new ConversationInputs(ctx, definition, workspaces, options, signal, this.sessions, this.facts, delegations, () => this.operations);
-        this.actions = new ActionAuthority(ctx, options, signal, workspaces, this.sessions, this.facts, this.inputs, delegations, (agent, continuation, wait) => this.operations.registerWait(agent, continuation, wait));
-        this.operations = new OperationParticipation(ctx, definition, options, signal, this.sessions, this.facts, this.inputs, this.actions, delegations, agent => this.programs.scope(agent));
+        this.actions = new ActionAuthority(ctx, options, signal, workspaces, this.sessions, this.facts, this.inputs, delegations);
+        this.operations = new OperationParticipation(ctx, definition, options, signal, this.sessions, this.facts, this.inputs, this.actions, delegations);
         const tools = new ProgramTools(ctx, workspaces, this.sessions, this.actions, this.operations);
         this.programs = new ConversationPrograms(ctx, this.sessions, this.inputs, this.actions, this.operations, tools, delegations);
         this.questions = new ConversationQuestions(ctx, options, signal, this.sessions, this.facts);
         delegations.install();
         this.stopDelegationUpdates = this.operations.installDelegationUpdates();
         this.sessions.installDisposed();
-        this.facts.install(entry => this.inputs.retainPausedResults(entry));
+        this.facts.install(this.sessions, entry => this.inputs.retainPausedResults(entry));
         this.inputs.installClaimed();
         this.programs.installAssembly();
         this.inputs.installPreStep();
@@ -72,21 +72,28 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
     open(sessionId: string): Promise<ConversationHandle>;
     open<P extends ProgramContract>(sessionId: string, expected: P): Promise<ConversationHandle<P>>;
     async open(sessionId: string, expected?: ProgramContract): Promise<ConversationHandle> {
-        const session = await this.sessions.readSession(sessionId);
-        this.sessions.expectProgram(session, expected);
+        const session = await this.sessions.readSession(sessionId, expected);
         return this.handle(session);
     }
     async completeCreation(reference: CreationReference): Promise<ConversationHandle> { return this.handle(await this.sessions.completeCreation(reference)); }
     resume(sessionId: string): Promise<ConversationHandle>;
     resume<P extends ProgramContract>(sessionId: string, expected: P): Promise<ConversationHandle<P>>;
     async resume(sessionId: string, expected?: ProgramContract): Promise<ConversationHandle> {
-        const session = await this.sessions.readSession(sessionId);
-        this.sessions.expectProgram(session, expected);
-        await this.sessions.activate(sessionId);
-        if (session.child)
-            await this.sessions.recoverChild(session);
-        await this.operations.reconcileOperations(this.sessions.live(this.sessions.require(sessionId)));
-        return this.handle(session);
+        const session = await this.sessions.readSession(sessionId, expected);
+        const acquired = await this.sessions.activate(sessionId);
+        try {
+            if (session.child)
+                await this.sessions.recoverChild(session);
+            await this.operations.reconcileOperations(this.sessions.live(this.sessions.require(sessionId)));
+            return this.handle(session);
+        }
+        catch (error) {
+            if (acquired) {
+                try { await this.sessions.rollbackActivation(acquired); }
+                catch (cleanup) { throw new AggregateError([error, cleanup], 'REACTIVE_CONVERSATION_RESUME_FAILED'); }
+            }
+            throw error;
+        }
     }
     conversation(sessionId: string): ConversationHandle;
     conversation<P extends ProgramContract>(sessionId: string, expected: P): ConversationHandle<P>;
@@ -97,8 +104,7 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
     }
     async service<P extends ProgramContract>(sessionId: string, expected: P): Promise<ServiceConversation<P>> {
         this.sessions.assertServiceActor();
-        const session = await this.sessions.readSession(sessionId);
-        this.sessions.expectProgram(session, expected);
+        const session = await this.sessions.readSession(sessionId, expected);
         return this.handle<P>(session, 'service');
     }
     operationDefinition(kind: string, version: number): OperationContract { return this.operations.operationDefinition(kind, version); }

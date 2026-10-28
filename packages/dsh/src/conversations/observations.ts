@@ -1,14 +1,11 @@
-import { registerNativeSession } from "./session-access.ts";
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
-import { map, distinctUntilChanged } from 'rxjs';
 import { SessionLogOffset, type Session } from "@deepseek-ai/dsh-session";
 import { SessionPersistenceNotFoundError, type SessionInspection } from "@deepseek-ai/dsh-session-persistence";
 import { goalProjectionDefinition } from "@deepseek-ai/dsh-goal";
 import { conversationBindings } from "@hanger-source/dsh-reactive/kernel";
 import { humanInputSnapshot } from "../participation/human-input.ts";
 import { NativeState, type ConversationActivity } from "./records.ts";
-import { type Workspaces } from "../workspaces/workspaces.ts";
 import type { ConversationEvent } from "@hanger-source/dsh-reactive/kernel";
 import { reactiveProjectionSchema } from "./projections.ts";
 import { sessionOccurrences, assistantFrame } from "./events.ts";
@@ -17,7 +14,7 @@ import type { ConversationSession, LiveConversation } from './session.ts';
 import type { ConversationSessions } from './sessions.ts';
 /** 官方投影、流式前缀与精确日志读取；不启动或持有 Agent。 */
 export class ConversationObservations {
-    constructor(private readonly ctx: Context, private readonly workspaces: Workspaces, private readonly signal: AbortSignal, private readonly sessions: () => ConversationSessions) { }
+    constructor(private readonly ctx: Context, private readonly signal: AbortSignal) { }
     private assertActive() { if (this.signal.aborted)
         throw new Error('REACTIVE_HOST_DISPOSED'); }
     emit(entry: ConversationSession, event: ConversationEvent) {
@@ -74,50 +71,14 @@ export class ConversationObservations {
             throw cause;
         }
     }
-    registerSessionAccess(handle: object, session: ConversationSession, signal: AbortSignal, assertHandle: () => void) {
-        registerNativeSession(handle, { context: this.ctx, sessionId: session.header.id, signal,
-            assertCurrent: () => { assertHandle(); this.sessions().assertSessionWorkspace(session); },
-            workspaceRoot: () => {
-                signal.throwIfAborted(); assertHandle(); this.sessions().assertSessionWorkspace(session);
-                const directory = session.header.cwd;
-                if (!directory) throw new Error('REACTIVE_NATIVE_FILE_WORKSPACE_REQUIRED');
-                return directory;
-            },
-            liveAgent$: session.live.pipe(map(entry => entry?.agent), distinctUntilChanged()),
-            liveAgent: () => session.live.value?.agent,
-            inspect: async (callerSignal?: AbortSignal) => {
-                const readSignal = callerSignal ? AbortSignal.any([signal, callerSignal]) : signal;
-                readSignal.throwIfAborted();
-                assertHandle();
-                this.sessions().assertSessionWorkspace(session);
-                const live = session.live.value;
-                if (live) {
-                    await this.flush(live.agent);
-                    readSignal.throwIfAborted();
-                    assertHandle();
-                    this.sessions().assertSessionWorkspace(session);
-                    if (session.live.value !== live || this.ctx.agents.get(live.agent.id) !== live.agent)
-                        throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
-                }
-                const inspection = await this.inspect(session.header.id, readSignal);
-                readSignal.throwIfAborted();
-                assertHandle();
-                this.sessions().assertSessionWorkspace(session);
-                if (session.live.value !== live || live && this.ctx.agents.get(live.agent.id) !== live.agent)
-                    throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
-                this.workspaces.verifyInspection(inspection, session.workspace, session.environment);
-                return inspection;
-            },
-        });
-    }
     async flush(agent: Agent) {
         if (!await this.ctx.sessions.flush(agent.session))
             throw new Error('REACTIVE_PERSISTENCE_UNAVAILABLE');
     }
-    install(onGoalPause: (entry: LiveConversation) => void): void {
+    install(sessions: Pick<ConversationSessions, 'forAgent' | 'get'>, onGoalPause: (entry: LiveConversation) => void): void {
         this.ctx.on('session/event', (session, event) => {
             const agent = this.ctx.agents.get(session.id);
-            const entry = agent && this.sessions().forAgent(agent);
+            const entry = agent && sessions.forAgent(agent);
             if (!entry)
                 return;
             const previous = entry.session.state;
@@ -136,14 +97,14 @@ export class ConversationObservations {
                 this.emit(entry.session, occurrence);
         });
         this.ctx.on('agent/status', ({ agent, status }) => {
-            const entry = this.sessions().forAgent(agent);
+            const entry = sessions.forAgent(agent);
             if (!entry)
                 return;
             this.publish(entry.session);
             this.emit(entry.session, { sessionId: agent.id, time: Date.now(), sequence: null, kind: 'execution.changed', execution: status });
         });
         this.ctx.on('goal/changed', ({ agent, change }) => {
-            const entry = this.sessions().forAgent(agent);
+            const entry = sessions.forAgent(agent);
             if (!entry)
                 return;
             if (change.operation === 'pause')
@@ -151,7 +112,7 @@ export class ConversationObservations {
             this.publish(entry.session);
         }, { prepend: true });
         this.ctx.on('goal/activation-changed', ({ sessionId, goal }) => {
-            const entry = this.sessions().get(sessionId);
+            const entry = sessions.get(sessionId);
             if (!entry?.live.value)
                 return;
             this.publish(entry);
@@ -160,7 +121,7 @@ export class ConversationObservations {
                     goalId: goal.id, revision: goal.revision, activation: goal.activation });
         });
         this.ctx.on('agent/assistant-stream', ({ agent, frame }) => {
-            const entry = this.sessions().forAgent(agent);
+            const entry = sessions.forAgent(agent);
             if (!entry)
                 return;
             const inputs = entry.progress.accept(frame, entry.session.state.current);
@@ -171,7 +132,7 @@ export class ConversationObservations {
                     kind: 'assistant.stream', inputs, frame: value });
         });
         this.ctx.on('agent/error', ({ agent, turn, step, error }) => {
-            const entry = this.sessions().forAgent(agent);
+            const entry = sessions.forAgent(agent);
             if (!entry)
                 return;
             this.publish(entry.session);

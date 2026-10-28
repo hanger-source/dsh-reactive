@@ -1,43 +1,119 @@
-import type { Context } from '@deepseek-ai/cordis';
+import type { Context, Fiber } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
 import type {} from '@deepseek-ai/dsh-system-prompt';
 import type {} from '@deepseek-ai/dsh-fs';
 import { Scope, type Cell, type Value, batch } from '@hanger-source/dsh-reactive/kernel';
 import { type ResourceValue } from '@hanger-source/dsh-reactive/kernel';
+import { requireActivePlugin } from '../native-installation.ts';
 
 type BoundContext = { source: ResourceValue<string>; committed: Cell<string>; release(): void };
-type Entry = { scope: Scope; sourceScope: Scope; contexts: Map<string, BoundContext> };
+interface Entry {
+  readonly scope: Scope;
+  readonly sourceScope: Scope;
+  readonly context: Context;
+  readonly contexts: Map<string, BoundContext>;
+  readonly closed: Promise<void>;
+  ready(): Promise<void>;
+  dispose(): Promise<void>;
+}
 
 /** dsh 的原生接点。业务派生值与读取逻辑位于普通响应式代码中。 */
 export class AgentBindings {
-  #entries = new Map<Agent, Entry>();
-  constructor(ctx: Context) {
-    const releaseAgent = ctx.on('agent/disposed', ({ agent }) => this.release(agent));
-    ctx.effect(() => () => {
-      releaseAgent();
-      const failures: unknown[] = [];
-      for (const agent of this.#entries.keys()) {
-        try { this.release(agent); } catch (error) { failures.push(error); }
-      }
-      if (failures.length) throw new AggregateError(failures, 'REACTIVE_AGENTS_DISPOSAL_FAILED');
-    });
-  }
-  scope(agent: Agent, provided?: Scope): Scope {
-    let entry = this.#entries.get(agent);
-    if (!entry) {
-      if (!provided) throw new Error('REACTIVE_AGENT_SCOPE_REQUIRED');
-      const sourceScope = provided;
-      entry = { scope: sourceScope.child(), sourceScope, contexts: new Map() };
+  #entries = new WeakMap<Agent, Entry>();
+
+  /** 一次声明安装同时借用Program图，并由实际Agent的原生scope持有。 */
+  create(agent: Agent, sourceScope: Scope, signal: AbortSignal, release: () => void | Promise<void>): Entry {
+    signal.throwIfAborted();
+    if (this.#entries.has(agent)) throw new Error('REACTIVE_AGENT_ALREADY_BOUND');
+    const scope = sourceScope.child();
+    const resources = Promise.withResolvers<void>();
+    const ended = Promise.withResolvers<void>();
+    let closing = false;
+    let disposing: Promise<void> | undefined;
+    let installation: (Fiber & PromiseLike<Fiber>) | undefined;
+    const closeBindings = (): Promise<void> => {
+      if (closing) return resources.promise;
+      closing = true;
+      signal.removeEventListener('abort', stop);
+      const failures = new Set<unknown>();
+      try { scope.dispose(); } catch (error) { failures.add(error); }
+      void (async () => {
+        try { await release(); } catch (error) { failures.add(error); }
+        if (failures.size === 1) throw [...failures][0];
+        if (failures.size) throw new AggregateError([...failures], 'REACTIVE_AGENT_BINDINGS_DISPOSAL_FAILED');
+      })().then(resources.resolve, resources.reject);
+      return resources.promise;
+    };
+    const dispose = (): Promise<void> => {
+      if (disposing) return disposing;
+      disposing = ended.promise;
+      // 先同步撤销声明和读取；原生Fiber与Skill的异步退出保留同一回执。
+      const closed = closeBindings();
+      void (async () => {
+        const failures = new Set<unknown>();
+        try { await closed; } catch (error) { failures.add(error); }
+        if (installation) {
+          try { await installation.dispose(); } catch (error) { failures.add(error); }
+          try { await installation; } catch (error) { failures.add(error); }
+        }
+        if (failures.size === 1) throw [...failures][0];
+        if (failures.size) throw new AggregateError([...failures], 'REACTIVE_AGENT_INSTALLATION_DISPOSAL_FAILED');
+      })().then(ended.resolve, ended.reject);
+      return disposing;
+    };
+    const stop = () => {
+      // Abort事件不能等待；错误回执仍由显式关闭及Agent清理加入，日志只保留现场。
+      const closing = dispose();
+      void closing.catch(error => agent.ctx.logger.error('reactive.program.disposal.failed', { sessionId: agent.id, error }));
+    };
+    try {
+      installation = agent.ctx.plugin({ name: 'reactive-program-bindings', inject: ['tools', 'systemPrompt', 'agents', 'sessionProjections', 'userQuestions'], apply(native: Context) {
+        if (closing) return;
+        native.effect(() => () => {
+          const closed = closeBindings();
+          // provider退出也退休原实例；清理回调只等待资源，不反向等待自己的Fiber。
+          if (!disposing) stop();
+          return closed;
+        });
+      } });
+      const installed = installation;
+      const entry: Entry = { scope, sourceScope, context: installed.ctx, contexts: new Map(), closed: ended.promise,
+        async ready() { signal.throwIfAborted(); await requireActivePlugin(installed); signal.throwIfAborted(); scope.assertActive(); },
+        dispose,
+      };
       this.#entries.set(agent, entry);
+      signal.addEventListener('abort', stop, { once: true });
+      if (signal.aborted) stop();
+      return entry;
+    } catch (error) {
+      // 已取得的安装由compose/attach失败边界await release；构造未取得Fiber时只回收本地scope。
+      if (!installation) {
+        try { scope.dispose(); }
+        catch (cleanup) { throw new AggregateError([error, cleanup], 'REACTIVE_AGENT_INSTALLATION_FAILED'); }
+      }
+      throw error;
     }
-    if (provided && entry.sourceScope !== provided) throw new Error('REACTIVE_AGENT_SCOPE_CONFLICT');
+  }
+  scope(agent: Agent): Scope {
+    const entry = this.#entries.get(agent);
+    if (!entry) throw new Error('REACTIVE_AGENT_NOT_BOUND');
     return entry.scope;
+  }
+  ready(agent: Agent): Promise<void> {
+    const entry = this.#entries.get(agent);
+    if (!entry) throw new Error('REACTIVE_AGENT_NOT_BOUND');
+    return entry.ready();
   }
   contexts(agent: Agent, definitions: Value<ReadonlyMap<string, ResourceValue<string>>>) {
     const scope = this.scope(agent);
-    const contexts = this.#entries.get(agent)!.contexts;
-    scope.own(() => { for (const binding of contexts.values()) binding.release(); contexts.clear(); });
+    const { contexts, context } = this.#entries.get(agent)!;
+    scope.own(() => {
+      const previous = [...contexts.values()]; contexts.clear();
+      const failures: unknown[] = [];
+      for (const binding of previous) { try { binding.release(); } catch (error) { failures.push(error); } }
+      if (failures.length) throw new AggregateError(failures, 'REACTIVE_CONTEXTS_DISPOSAL_FAILED');
+    });
     scope.effect(() => {
       const current = definitions.get();
       for (const [name, binding] of contexts) if (current.get(name) !== binding.source) {
@@ -46,7 +122,7 @@ export class AgentBindings {
       for (const [name, source] of current) if (!contexts.has(name)) {
         // 原生预装配不会发往模型；正式装配必须经过 prepare 的异步读取边界。
         const committed = scope.state('');
-        const release = agent.ctx.systemPrompt.context({ name, order: 1000, required: true,
+        const release = context.systemPrompt.context({ name, order: 1000, required: true,
           interpolate: false, text: () => committed.peek() });
         contexts.set(name, { source, committed, release });
       }
@@ -83,11 +159,14 @@ export class AgentBindings {
   /** 能力表随派生值变化注册到原生 agent scope，移除的能力也同时退出执行准入。 */
   tools(agent: Agent, definitions: Value<readonly ToolDefinition[]>) {
     const scope = this.scope(agent);
-    if (definitions.scope !== this.#entries.get(agent)!.sourceScope) throw new Error('REACTIVE_TOOLS_SCOPE_MISMATCH');
+    const entry = this.#entries.get(agent)!;
+    if (definitions.scope !== entry.sourceScope) throw new Error('REACTIVE_TOOLS_SCOPE_MISMATCH');
     const registrations = new Map<string, { definition: ToolDefinition; release(): void }>();
     const clear = () => {
       const previous = [...registrations.values()]; registrations.clear();
-      for (const registration of previous.reverse()) registration.release();
+      const failures: unknown[] = [];
+      for (const registration of previous.reverse()) { try { registration.release(); } catch (error) { failures.push(error); } }
+      if (failures.length) throw new AggregateError(failures, 'REACTIVE_TOOLS_DISPOSAL_FAILED');
     };
     scope.own(clear);
     scope.effect(() => {
@@ -99,14 +178,13 @@ export class AgentBindings {
         registration.release(); registrations.delete(name);
       }
       for (const definition of current) if (!registrations.has(definition.name)) {
-        const release = agent.ctx.tools.register(definition);
+        const release = entry.context.tools.register(definition);
         registrations.set(definition.name, { definition, release });
       }
     });
   }
-  release(agent: Agent) {
+  release(agent: Agent): Promise<void> {
     const entry = this.#entries.get(agent);
-    this.#entries.delete(agent);
-    entry?.scope.dispose();
+    return entry ? entry.dispose() : Promise.resolve();
   }
 }

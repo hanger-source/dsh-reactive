@@ -1,7 +1,7 @@
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { BehaviorSubject } from 'rxjs';
 import type { SessionHeader, UserMessage } from '@deepseek-ai/dsh-session';
-import type { AnyEnvironment, Conversation, ProgramImplementation, ProgramInstance, Views } from '@hanger-source/dsh-reactive/kernel';
+import type { AnyEnvironment, Conversation, ProgramImplementation, ProgramInstance, Scope, Views } from '@hanger-source/dsh-reactive/kernel';
 import type { ManagedWorkspace } from '../workspaces/workspaces.ts';
 import type { DelegationRecord } from '../delegations.ts';
 import type { NativeState } from './records.ts';
@@ -27,6 +27,12 @@ export interface ConversationSession {
 export interface LiveConversation {
     readonly agent: Agent;
     readonly session: ConversationSession;
+    /** 同一原生声明安装的观察与准入寿命，不拥有已受理业务的取消。 */
+    readonly scope: Scope;
+    /** 原生声明、Skill和实际安装Fiber的同一退出回执；清理失败仍会拒绝。 */
+    readonly closed: Promise<void>;
+    /** 撤销上述scope并等待原生声明Fiber退出；与父Agent清理共用回执。 */
+    dispose(): Promise<void>;
     claimed: UserMessage[];
     stepSignal?: AbortSignal;
     preparing: boolean;
