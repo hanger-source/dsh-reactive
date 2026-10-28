@@ -327,15 +327,27 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
           async submit(input, options = {}): Promise<ProgramInputReceipt> {
             assertActive();
             const cancelled = options.signal;
+            // Session退出只结束本消费者等待；已启动提交仍使用SDK与caller的原HTTP signal。
             const signal = cancelled ? AbortSignal.any([lifetime.signal, cancelled]) : lifetime.signal;
+            const waiting = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
             signal.throwIfAborted();
+            waiting.throwIfAborted();
             json(input);
             const submitted: ProgramSubmission = input.intent === 'result'
               ? { ...input, scope: json(input.scope), result: { ...input.result,
                 continuation: { ...input.result.continuation, inputs: input.result.continuation.inputs.map(reference => ({ ...reference, scope: json(reference.scope) })) },
                 wait: { ...input.result.wait, operation: json(input.result.wait.operation) } } }
               : { ...input, scope: json(input.scope) };
-            const reply = await remote.submit({ sessionId: identity.sessionId, submission: submitted }, signal);
+            let started = false;
+            const reply = await owner.run(() => {
+              signal.throwIfAborted();
+              started = true;
+              return remote.submit({ sessionId: identity.sessionId, submission: submitted }, signal);
+            }, waiting).catch(error => {
+              if (started && waiting.aborted && error === waiting.reason)
+                throw new SubmissionAdmissionUnknownError(identity.sessionId, submitted.requestId, error);
+              throw error;
+            });
             if (!reply.ok && (reply.error.code === 'gateway/internal' || reply.error.code === 'gateway/cancelled')) {
               throw new SubmissionAdmissionUnknownError(identity.sessionId, submitted.requestId, reply.error);
             }
@@ -343,9 +355,21 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
           },
           async editQueuedInput(requestId, content, options = {}): Promise<ProgramInputReceipt> {
             assertActive();
-            const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
+            const cancelled = options.signal;
+            const signal = cancelled ? AbortSignal.any([lifetime.signal, cancelled]) : lifetime.signal;
+            const waiting = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
             signal.throwIfAborted();
-            const reply = await remote.editQueuedInput({ sessionId: identity.sessionId, requestId, content }, signal);
+            waiting.throwIfAborted();
+            let started = false;
+            const reply = await owner.run(() => {
+              signal.throwIfAborted();
+              started = true;
+              return remote.editQueuedInput({ sessionId: identity.sessionId, requestId, content }, signal);
+            }, waiting).catch(error => {
+              if (started && waiting.aborted && error === waiting.reason)
+                throw new InputEditAdmissionUnknownError(identity.sessionId, requestId, error);
+              throw error;
+            });
             if (!reply.ok && (reply.error.code === 'gateway/internal' || reply.error.code === 'gateway/cancelled'))
               throw new InputEditAdmissionUnknownError(identity.sessionId, requestId, reply.error);
             return result(reply);
@@ -353,14 +377,16 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
           async uploadFile(data, options = {}): Promise<FileUploadValue> {
             assertActive();
             const cancelled = options.signal;
-            const signal = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
+            const signal = cancelled ? AbortSignal.any([lifetime.signal, cancelled]) : lifetime.signal;
+            const waiting = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
             signal.throwIfAborted();
+            waiting.throwIfAborted();
             const name = options.name;
-            const bytes = data instanceof Uint8Array ? data : new Uint8Array(await data.arrayBuffer());
-            signal.throwIfAborted();
-            const uploaded = await remote.uploadFile({ sessionId: identity.sessionId, data: bytesToBase64(bytes),
-              ...(name === undefined ? {} : { name }) }, signal);
-            signal.throwIfAborted();
+            const bytes = data instanceof Uint8Array ? new Uint8Array(data) : new Uint8Array(await owner.run(() => data.arrayBuffer(), waiting)).slice();
+            waiting.throwIfAborted();
+            const uploaded = await owner.run(() => remote.uploadFile({ sessionId: identity.sessionId, data: bytesToBase64(bytes),
+              ...(name === undefined ? {} : { name }) }, signal), waiting);
+            waiting.throwIfAborted();
             return result(uploaded);
           },
           async requestStatus(requestId, options = {}) {

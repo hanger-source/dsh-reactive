@@ -45,3 +45,14 @@ export interface LiveConversation {
     readonly progress: NativeProgress;
     nativeMask?: () => void;
 }
+
+/** 已受理的提交与共享恢复归实际挂载结算，调用者退等后仍由 settle/close 观察失败。 */
+export function retainRecovery<T>(entry: LiveConversation, work: Promise<T>, event: string, details: Readonly<Record<string, unknown>>, ownerSignal?: AbortSignal): Promise<T> {
+    const recovery = work.then(() => {}, error => {
+        if (ownerSignal?.aborted && error === ownerSignal.reason) return;
+        entry.recoveryErrors.push(error);
+        console.error(event, { sessionId: entry.agent.id, ...details, error });
+    }).finally(() => { entry.recovery.delete(recovery); });
+    entry.recovery.add(recovery);
+    return work;
+}

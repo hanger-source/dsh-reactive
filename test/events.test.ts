@@ -4,9 +4,10 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session';
 import { Fragment, createElement as h } from 'react';
-import { Subject, concatMap, filter, firstValueFrom, from, map, tap, withLatestFrom } from 'rxjs';
-import { abortable, defineApplication, defineEnvironment, z, type Continuation, type ConversationEvent } from '@hanger-source/dsh-reactive';
+import { Subject, concatMap, filter, firstValueFrom, from, map, tap, timeout, withLatestFrom } from 'rxjs';
+import { abortable, defineApplication, defineEnvironment, z, type Continuation, type ConversationEvent, type ProgramSession } from '@hanger-source/dsh-reactive';
 import { defineAction, implementAction } from '@hanger-source/dsh-reactive';
 import { inputReferenceSchema } from '@hanger-source/dsh-reactive/kernel';
 import { defineProgram } from '@hanger-source/dsh-reactive';
@@ -262,6 +263,60 @@ test('反应在等待上下文期间失败，随后上下文就绪也不能让�
     assert.equal(app.errors.length, 1);
     assert.match(String(app.errors[0]), /BUSINESS_REACTION_FAILED_WHILE_WAITING/u);
   } finally { context$.complete(); await app.dispose(); }
+});
+
+test('Program失败结束自身提交回执并拒绝新输入，已受理输入仍由原Agent完成持久化', { timeout: 15_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-program-input-wait-'));
+  const reaction = new Subject<void>();
+  const accepted = Promise.withResolvers<void>(), commit = Promise.withResolvers<void>();
+  const failure = new Error('PROGRAM_FAILED_AFTER_INPUT_ACCEPTANCE');
+  const contract = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+  let conversation!: ProgramSession<typeof contract>, models = 0;
+  const definition = defineApplication({ name: 'program-input-wait', admit: async () => {}, environments: [defineEnvironment({
+    id: 'work', instructions: '程序声明退出与已受理输入分别结算。',
+    program: implementProgram(contract, { Component(props) {
+      conversation = props.conversation;
+      useRelation(reaction);
+      return null;
+    } }),
+  })] });
+  const app = await boot(join(root, 'home'), definition, async function* () {
+    models++; throw new Error('PROGRAM_INPUT_WAIT_MUST_NOT_CALL_MODEL');
+  });
+  const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+  const peer = await app.host.open(session.id, contract);
+  let stop = () => {};
+  try {
+    const agent = app.native.agents.get(SessionId(session.id))!;
+    const input = { requestId: 'program-accepted-input', intent: 'question' as const,
+      delivery: 'inject' as const, content: '程序失败前已受理的业务资料', scope: null };
+    let armed = true;
+    stop = app.native.on('session/flush', async native => {
+      if (!armed || native !== agent.session || !agent.inbox.nextStep.some(message =>
+        message.source.kind === 'user' && 'rpcId' in message.source && message.source.rpcId === input.requestId)) return;
+      armed = false; accepted.resolve(); await commit.promise;
+    });
+    const pending = conversation.submit(input);
+    const failed = assert.rejects(pending, error => error === failure);
+    await firstValueFrom(from(accepted.promise).pipe(timeout(3_000)));
+    reaction.error(failure);
+    await firstValueFrom(from(failed).pipe(timeout(3_000)));
+    await assert.rejects(conversation.submit({ ...input, requestId: 'after-program-failure' }), error => error === failure);
+    const settled = peer.whenIdle();
+    commit.resolve(); await firstValueFrom(from(settled).pipe(timeout(3_000)));
+    await app.native.sessionPersistence.flush();
+    const stored = await app.native.sessionPersistence.open(agent.id, 'read');
+    try {
+      const { events } = await stored.read(SessionLogOffset(0));
+      const inserted = events.flatMap(event => event.type === 'agent/inbox/spliced' ? event.data.inserted : [])
+        .flatMap(message => message.source.kind === 'user' && 'rpcId' in message.source ? [message.source.rpcId] : []);
+      assert.equal(inserted.filter(requestId => requestId === input.requestId).length, 1);
+      assert.equal(inserted.includes('after-program-failure'), false);
+    } finally { await stored.close(); }
+    assert.equal(app.native.agents.get(agent.id), agent, 'Program失败不能关闭已受理输入的实际Agent');
+    assert.deepEqual(await peer.requestStatus(input.requestId), { requestId: input.requestId, state: 'accepted' });
+    assert.equal(models, 0); assert.deepEqual(app.errors, []);
+  } finally { commit.resolve(); stop(); reaction.complete(); session.release(); peer.release(); await app.dispose(); }
 });
 
 test('释放一个观察句柄只取消自己的挂起读取，其他句柄继续读取同一业务来源', async () => {

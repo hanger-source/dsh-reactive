@@ -205,7 +205,7 @@ Jobs、Schedule、Team、Files、Approval 与 Clock 的 `forSession` 接受 Host
 
 Jobs、Schedule 与 Team 的会话 SDK 和固定任务提供只读 `state` 资源；Job 的 `output` 单独提供非消费输出切面。普通 read、peek、完整 Observation、RxJS、hooks 和资源 View 共享正式 Resource 实例，不从值流另存有效性。状态构造不读取，首次消费者建立原生监听后读取，最后消费者退出撤销查询并撤下旧 ready。Schedule 和 Team 发生变化时立即 pending，旧切面失效，读取失败成为 error，后续原生通知可恢复。资源只持有观察，执行、CAS、投递与成员仍由各自原生 owner 负责。显式 SDK list、catalog、readProjection、任务 read 等单次查询保留原生权威读取含义，不因已有资源快照跳过调用。
 
-Team 的 `task(id)` 先从当前原生任务板核验存在与归属，返回固定会话、固定 id 的任务对象。同一 SDK 重复取得同一任务会复用对象；`state`、`state$`、`read` 与显式 `update` 共用原生投影和任务 CAS，不保存另一份任务状态或修订。删除从任务板撤下后，原对象的读侧返回 undefined；原生 getTask 的墓碑查询保留其独立语义。冷 Lead 可读取和绑定任务，写入仍要求真实活跃成员；任务对象不会随其他选择或调用参数改指目标。Team 投影观察跟随实际 Agent 关闭、恢复，取消旧读取，不因读取创建成员或启动模型。
+Team 的 `task(id)` 同步绑定固定来源会话与 id，构造不读取原生任务板或证明目标存在。同一 SDK 重复取得同一任务会复用对象；`state`、`state$`、`read` 与显式 `update` 共用原生投影和任务 CAS，在实际读取或修改时核验存在、归属与权限，不保存另一份任务状态或修订。删除从任务板撤下后，原对象的读侧返回 undefined；原生 getTask 的墓碑查询保留其独立语义。冷 Lead 可读取和绑定任务，写入仍要求真实活跃成员；任务对象不会随其他选择或调用参数改指目标。Team 投影观察跟随实际 Agent 关闭、恢复，取消旧读取，不因读取创建成员或启动模型。
 
 Files 的 text(path, range)、metadata(path)、directory(path) 返回既有 ResourceInstance，固定原始路径和读取窗口，提供同一个 read、peek、values$、observations$ 与失效入口。构造只建立参数身份，首次观察等待正式 watch 的 ready 后读取；同一 SDK、同一原始路径的不同资源共享原生 watch，最后一个查询退出触发原生异步 unwatch，SDK dispose 等待实际退出。文本页、目录与元数据仍由 WorkspaceFiles 决定版本、范围、限额和错误，目录每次变更都重新列举，不因目录版本相同忽略子项变化。文件范围直接来自已核验会话 header，不为文件读取冲刷会话日志，也不因关闭 Agent 停止仍有效来源的文件观察。字节读取保留每次独立缓冲区，不加入共享快照。公开产物通过 Program 的资源 View 选择内容并沿原权限提供，本地与远程不维护另一份文件状态。
 

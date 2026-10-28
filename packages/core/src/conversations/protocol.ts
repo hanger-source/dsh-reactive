@@ -76,6 +76,7 @@ export type Submission<T = Json> = WithInputScope<z.input<typeof submissionSchem
 export type NormalizedSubmission<T = Json> = WithInputScope<z.output<typeof submissionSchema>, T>;
 export type AdmittedSubmission<T = Json> = WithInputScope<z.output<typeof admittedSubmissionSchema>, T>;
 export interface Admission { actorId: string; participant: Exclude<InputParticipant, 'native'>; signal: AbortSignal; }
+/** 调用取消；读取、受理前检查和回执等待按各自边界响应，不撤回已经受理的工作。 */
 export interface CancellationOptions { readonly signal?: AbortSignal; }
 export interface SubmitOptions extends CancellationOptions { actorId?: string; }
 export type FileUploadSource = Uint8Array | Blob;

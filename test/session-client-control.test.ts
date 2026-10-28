@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate as immediate } from 'node:timers/promises';
+import { firstValueFrom, from, timeout } from 'rxjs';
 import { foldGoal } from '@deepseek-ai/dsh-goal';
 import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session';
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, z, type HumanProgramSessionClient } from '@hanger-source/dsh-reactive';
@@ -10,6 +12,7 @@ import { implementProgram } from '@hanger-source/dsh-reactive/program';
 import { boot } from './native-support.ts';
 
 const program = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+const wait = <T>(work: Promise<T>) => firstValueFrom(from(work).pipe(timeout(3_000)));
 function definition() {
   return defineApplication({ name: 'session-client-control', admit: async () => {}, environments: [defineEnvironment({
     id: 'work', instructions: '控制与只读查询均不启动模型。',
@@ -149,4 +152,145 @@ test('权威请求查询的调用者或句柄退出结束等待，不影响同�
     assert.equal(models, 0);
     assert.deepEqual(app.errors, []);
   } finally { peer.release(); await app.dispose(); }
+});
+
+test('同一输入共享受理，加入者退出不清除事务，最后回执退出后仍由原Agent完成持久化', { timeout: 15_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-shared-input-wait-'));
+  const admitting = Promise.withResolvers<void>(), admit = Promise.withResolvers<void>();
+  const accepted = Promise.withResolvers<void>(), commit = Promise.withResolvers<void>();
+  let admissions = 0, models = 0;
+  const app = await boot(join(directory, 'home'), defineApplication({ name: 'shared-input-wait', admit: async () => {
+    admissions++; admitting.resolve(); await admit.promise;
+  }, environments: [defineEnvironment({ id: 'work', instructions: '受理不启动模型。',
+    program: implementProgram(program, { Component: () => null }) })] }), async function* () {
+    models++; throw new Error('SHARED_INPUT_WAIT_MUST_NOT_CALL_MODEL');
+  });
+  const first = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+  const second = await app.host.open(first.id, program), departing = await app.host.open(first.id, program);
+  const third = await app.host.open(first.id, program), peer = await app.host.open(first.id, program);
+  const input = { requestId: 'shared-input', intent: 'question' as const, delivery: 'inject' as const,
+    content: '原始调用者与重试共享同一份资料', scope: null };
+  let stop = () => {};
+  try {
+    const agent = app.native.agents.get(SessionId(first.id))!;
+    let armed = true;
+    stop = app.native.on('session/flush', async native => {
+      if (!armed || native !== agent.session || !agent.inbox.nextStep.some(message =>
+        message.source.kind === 'user' && 'rpcId' in message.source && message.source.rpcId === input.requestId)) return;
+      armed = false; accepted.resolve(); await commit.promise;
+    });
+    const original = first.submit(input);
+    const originalReleased = assert.rejects(original, /REACTIVE_SCOPE_DISPOSED/u);
+    await wait(admitting.promise);
+
+    const abort = new AbortController(), reason = new Error('JOINED_INPUT_WAIT_CANCELLED');
+    const joined = second.submit(input, { signal: abort.signal });
+    const cancelled = assert.rejects(joined, error => error === reason);
+    abort.abort(reason); await wait(cancelled);
+    const abandoned = departing.submit(input);
+    const released = assert.rejects(abandoned, /REACTIVE_SCOPE_DISPOSED/u);
+    departing.release(); await wait(released);
+
+    const finalCaller = new AbortController(), finalReason = new Error('ACCEPTED_INPUT_RECEIPT_ABANDONED');
+    const retried = third.submit(input, { signal: finalCaller.signal });
+    const retryCancelled = assert.rejects(retried, error => error === finalReason);
+    first.release(); await wait(originalReleased);
+    await immediate();
+    assert.equal(admissions, 1, '退出的加入者不能清掉共享事务，让第三次调用再次进入真实准入');
+    admit.resolve(); await wait(accepted.promise);
+    assert.equal(agent.inbox.nextStep.filter(message => message.source.kind === 'user'
+      && 'rpcId' in message.source && message.source.rpcId === input.requestId).length, 1);
+    finalCaller.abort(finalReason); await wait(retryCancelled);
+
+    const idle = third.whenIdle(), idleReleased = assert.rejects(idle, /REACTIVE_SCOPE_DISPOSED/u);
+    third.release(); await wait(idleReleased);
+    const settled = peer.whenIdle();
+    commit.resolve(); await wait(settled);
+    await app.native.sessionPersistence.flush();
+    const stored = await app.native.sessionPersistence.open(agent.id, 'read');
+    try {
+      const { events } = await stored.read(SessionLogOffset(0));
+      assert.equal(events.flatMap(event => event.type === 'agent/inbox/spliced' ? event.data.inserted : [])
+        .filter(message => message.source.kind === 'user' && 'rpcId' in message.source
+          && message.source.rpcId === input.requestId).length, 1, '所有回执退出后，唯一原生入队仍完成真实持久化');
+    } finally { await stored.close(); }
+    assert.deepEqual(await peer.requestStatus(input.requestId), { requestId: input.requestId, state: 'accepted' });
+    assert.equal(admissions, 1); assert.equal(models, 0); assert.deepEqual(app.errors, []);
+  } finally {
+    admit.resolve(); commit.resolve(); stop();
+    first.release(); second.release(); departing.release(); third.release(); peer.release();
+    await app.dispose();
+  }
+});
+
+test('输入已入队后调用者取消等待，迟到的持久化失败仍由同一Agent的whenIdle报告', { timeout: 15_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-input-commit-failure-'));
+  let models = 0;
+  const app = await boot(join(directory, 'home'), definition(), async function* () {
+    models++; throw new Error('INPUT_COMMIT_FAILURE_MUST_NOT_CALL_MODEL');
+  });
+  const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+  const peer = await app.host.open(session.id, program);
+  const departing = await app.host.open(session.id, program);
+  const entered = Promise.withResolvers<void>(), proceed = Promise.withResolvers<void>();
+  const failure = new Error('ACCEPTED_INPUT_CHECKPOINT_FAILED_LATE');
+  let stop = () => {};
+  try {
+    const agent = app.native.agents.get(SessionId(session.id))!;
+    const input = { requestId: 'late-input-checkpoint', intent: 'question' as const,
+      delivery: 'inject' as const, content: '已进入原生队列的资料', scope: null };
+    let armed = true;
+    stop = app.native.on('session/flush', async native => {
+      if (!armed || native !== agent.session || !agent.inbox.nextStep.some(message =>
+        message.source.kind === 'user' && 'rpcId' in message.source && message.source.rpcId === input.requestId)) return;
+      armed = false; entered.resolve(); await proceed.promise; throw failure;
+    });
+    const abort = new AbortController(), reason = new Error('INPUT_CALLER_LEFT_BEFORE_CHECKPOINT_FAILURE');
+    const pending = session.submit(input, { signal: abort.signal });
+    const cancelled = assert.rejects(pending, error => error === reason);
+    await wait(entered.promise);
+    abort.abort(reason); await wait(cancelled);
+    const idleReleased = assert.rejects(departing.whenIdle(), /REACTIVE_SCOPE_DISPOSED/u);
+    departing.release(); await wait(idleReleased);
+    const failed = assert.rejects(peer.whenIdle(), error => error instanceof AggregateError && error.errors.includes(failure));
+    proceed.resolve(); await wait(failed);
+    assert.deepEqual(await peer.requestStatus(input.requestId), { requestId: input.requestId, state: 'accepted' });
+    assert.equal(models, 0); assert.deepEqual(app.errors, []);
+  } finally { proceed.resolve(); stop(); session.release(); peer.release(); departing.release(); await app.dispose(); }
+});
+
+test('Blob来源取消结束当前上传等待，迟到字节不激活冷Agent，正常上传仍保留首次字节快照', { timeout: 15_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-blob-upload-wait-'));
+  let models = 0;
+  const app = await boot(join(directory, 'home'), definition(), async function* () {
+    models++; throw new Error('BLOB_UPLOAD_WAIT_MUST_NOT_CALL_MODEL');
+  });
+  const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+  const peer = await app.host.open(session.id, program);
+  const entered = Promise.withResolvers<void>(), bytes = Promise.withResolvers<ArrayBuffer>();
+  class DelayedBlob extends Blob {
+    override arrayBuffer(): Promise<ArrayBuffer> { entered.resolve(); return bytes.promise; }
+  }
+  try {
+    await app.host.close(session.id);
+    assert.equal(app.native.agents.get(SessionId(session.id)), undefined);
+    const abort = new AbortController(), reason = new Error('BLOB_SOURCE_WAIT_CANCELLED');
+    const pending = session.uploadFile(new DelayedBlob(['等待外部字节']), { name: 'cancelled.txt', signal: abort.signal });
+    const cancelled = assert.rejects(pending, error => error === reason);
+    await wait(entered.promise);
+    abort.abort(reason); await wait(cancelled);
+    bytes.resolve(await new Blob(['不应进入上传的迟到字节']).arrayBuffer());
+    await immediate();
+    assert.equal(app.native.agents.get(SessionId(session.id)), undefined, '取消后的Blob完成不得继续调用原生upload并恢复Agent');
+    const original = new TextEncoder().encode('首次取得的正式文件字节');
+    const uploading = peer.uploadFile(original, { name: 'snapshot.txt' });
+    original.fill(0);
+    const file = await wait(uploading);
+    const path = app.native.attachments.fileHostPath(file.file);
+    assert.ok(path);
+    assert.equal(await readFile(path, 'utf8'), '首次取得的正式文件字节');
+    const agent = app.native.agents.get(SessionId(session.id))!;
+    assert.ok(agent); assert.ok(app.native.fileUploads.resolve(agent, file.receiptId));
+    assert.equal(models, 0); assert.deepEqual(app.errors, []);
+  } finally { bytes.resolve(new ArrayBuffer(0)); session.release(); peer.release(); await app.dispose(); }
 });

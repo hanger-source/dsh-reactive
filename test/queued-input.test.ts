@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate as immediate } from 'node:timers/promises';
 import { SessionId, pluginRecordOf, type UserMessage } from '@deepseek-ai/dsh-session';
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, InputEditRejectedError, z, type AdmittedSubmission, type Submission } from '@hanger-source/dsh-reactive';
 import { implementProgram, useBeforeStep } from '@hanger-source/dsh-reactive/program';
@@ -121,6 +122,61 @@ test('编辑准入等待期间原生claim原输入，编辑不得改写已提取
     assert.deepEqual(app.errors, []);
     session.release();
   } finally { proceed.resolve(); nextStep.resolve(); await app.dispose(); }
+});
+
+test('原生队列已替换后取消编辑等待，exact Agent仍完成最终持久回执', { timeout: 15_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-edit-accepted-'));
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const program = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+  const definition = defineApplication({ name: 'edit-accepted', admit: async () => {}, environments: [defineEnvironment({ id: 'work',
+    instructions: '编辑不唤醒执行，受理后持久化仍由原生会话完成。', program: implementProgram(program, { Component: () => null }) })] });
+  let models = 0, stop = () => {};
+  const app = await boot(join(root, 'home'), definition, async function* () {
+    models++; throw new Error('QUEUED_EDIT_MUST_NOT_CALL_MODEL');
+  });
+  try {
+    const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+    const agent = app.native.agents.get(SessionId(session.id))!;
+    const requestId = 'accepted-edit';
+    await session.submit({ requestId, intent: 'question', delivery: 'inject', scope: null, content: '原正文' });
+    const original = queued(agent.inbox.nextStep, requestId)!;
+    let paused = false;
+    stop = app.native.on('session/flush', async nativeSession => {
+      const part = queued(agent.inbox.nextStep, requestId)?.content[0];
+      if (nativeSession !== agent.session || paused
+        || part?.type !== 'text' || part.text !== '已替换的新正文') return;
+      paused = true; entered.resolve(); await release.promise;
+    }, { global: true });
+    const controller = new AbortController(), reason = new Error('EDIT_WAITER_CANCELLED_AFTER_REPLACE');
+    const rejected = assert.rejects(session.editQueuedInput(requestId, '已替换的新正文', { signal: controller.signal }), error => error === reason);
+    await entered.promise;
+    assert.equal(queued(agent.inbox.nextStep, requestId)?.id, original.id);
+    controller.abort(reason);
+    assert.equal(await Promise.race([rejected.then(() => 'cancelled'), immediate().then(() => 'pending')]), 'cancelled');
+    assert.equal(app.native.agents.get(SessionId(session.id)), agent);
+    assert.deepEqual(queued(agent.inbox.nextStep, requestId)?.content, [{ type: 'text', text: '已替换的新正文' }]);
+    let settled = false;
+    const completion = session.whenIdle().then(() => { settled = true; });
+    void completion.catch(() => {});
+    await immediate();
+    assert.equal(settled, false, '调用者退等后，whenIdle仍等待原Agent尚未完成的实际持久回执');
+    release.resolve(); await completion;
+    stop();
+    await app.native.sessionPersistence.flush();
+    const reader = await app.native.sessionPersistence.open(agent.id, 'read');
+    try {
+      const durable = await reader.read();
+      assert.deepEqual(durable.events.flatMap(event => event.type === 'agent/inbox/spliced'
+        ? event.data.inserted.filter(message => message.id === original.id).map(message => message.content) : []).at(-1),
+      [{ type: 'text', text: '已替换的新正文' }]);
+      assert.equal(durable.events.filter(event => {
+        const record = pluginRecordOf(event);
+        return record?.type === 'plugin:reactive/input-edit' && inputEditRecordSchema.parse(record.data).record.requestId === requestId;
+      }).length, 1);
+    } finally { await reader.close(); }
+    assert.equal(models, 0); assert.deepEqual(app.errors, []);
+    session.release();
+  } finally { release.resolve(); stop(); await app.dispose(); }
 });
 
 test('已持久编辑准备但替换前取消不改原队列，实际消费及冷读取都保留原正文', async () => {

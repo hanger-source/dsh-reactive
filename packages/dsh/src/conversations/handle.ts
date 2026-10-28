@@ -109,6 +109,12 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
             throw new Error('REACTIVE_CONVERSATION_HANDLE_RELEASED');
         this.#scope.assertActive();
     }
+    /** 仅结束本调用者的回执等待；共享受理与已开始的原生工作保留各自执行信号。 */
+    private wait<T>(run: (signal: AbortSignal) => PromiseLike<T> | T, options: CancellationOptions = {}): Promise<T> {
+        this.assertActive();
+        const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
+        return firstValueFrom(abortable(run, signal));
+    }
     private assertHuman() {
         this.assertActive();
         if (this.participant.participant !== 'human') throw new Error('REACTIVE_HUMAN_PARTICIPANT_REQUIRED');
@@ -233,13 +239,13 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
     submit(input: Submission<ProgramInput<P>>, options: SubmitOptions = {}) {
         this.assertActive();
         assertParticipantOptions(this.participant, options);
-        return this.inputs.submitSession(this.entry, input, options, this.participant);
+        return this.wait(() => this.inputs.submitSession(this.entry, input, options, this.participant), options);
     }
     /** 保留本请求来源与业务范围，重新准入仍未消费的正文；编辑本身不唤醒 Agent。 */
     editQueuedInput(requestId: string, content: Submission['content'], options: SubmitOptions = {}) {
         this.assertActive();
         assertParticipantOptions(this.participant, options);
-        return this.inputs.editSessionInput(this.entry, requestId, content, options, this.participant);
+        return this.wait(() => this.inputs.editSessionInput(this.entry, requestId, content, options, this.participant), options);
     }
     /** 显式上传至本会话；receipt 由原生 exact Session 持有，提交正文时使用它。 */
     async uploadFile(data: FileUploadSource, options: UploadFileOptions = {}): Promise<FileUploadValue> {
@@ -248,7 +254,8 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
         const { name, ...participationOptions } = options;
         const { signal } = participationOptions;
         signal?.throwIfAborted();
-        const bytes = data instanceof Uint8Array ? data : new Uint8Array(await data.arrayBuffer());
+        const bytes = data instanceof Uint8Array ? new Uint8Array(data)
+            : new Uint8Array(await this.wait(() => data.arrayBuffer(), participationOptions)).slice();
         this.assertActive();
         signal?.throwIfAborted();
         return this.uploadEncodedFile({ data: bytesToBase64(bytes), ...(name === undefined ? {} : { name }) }, participationOptions);
@@ -257,9 +264,9 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
     uploadEncodedFile(request: EncodedFileUploadRequest, options: SubmitOptions = {}): Promise<FileUploadValue> {
         this.assertActive();
         assertParticipantOptions(this.participant, options);
-        return this.inputs.uploadSessionFile(this.entry, request, options, this.participant);
+        return this.wait(() => this.inputs.uploadSessionFile(this.entry, request, options, this.participant), options);
     }
-    whenIdle() { this.assertActive(); return this.sessions.settle(this.sessions.live(this.entry).agent); }
+    whenIdle() { return this.wait(signal => this.sessions.settle(this.sessions.live(this.entry).agent, signal)); }
     attachOperation<D extends OperationContract>(definition: D, reference: OperationReference<D>, options: SubmitOptions = {}): Promise<OperationHandle<D>> {
         this.assertActive();
         assertParticipantOptions(this.participant, options);
@@ -300,29 +307,26 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
     }
     async pause(options: CancellationOptions = {}) {
         this.assertHuman();
-        const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
-        return firstValueFrom(abortable(() => this.sessions.pauseGoal(this.sessions.live(this.entry).agent), signal));
+        return this.wait(() => this.sessions.pauseGoal(this.sessions.live(this.entry).agent), options);
     }
     /** 停止模型处理；是否取消外部业务操作仍由业务能力决定。 */
     async cancel(options: CancellationOptions = {}): Promise<ProgramCancelResult> {
         this.assertHuman();
-        const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
-        return firstValueFrom(abortable(async (): Promise<ProgramCancelResult> => {
+        return this.wait(async (): Promise<ProgramCancelResult> => {
             await this.sessions.cancelAgent(this.sessions.live(this.entry).agent);
             return { canceled: true };
-        }, signal));
+        }, options);
     }
     /** 权威请求切面来自原生日志与投影；冷读取不激活 Agent，也不改写观察缓存。 */
     async requestStatus(requestId: string, options: CancellationOptions = {}): Promise<ProgramRequestStatus> {
         this.assertActive();
         assertParticipantOptions(this.participant, options);
-        const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
-        return firstValueFrom(abortable(async (readSignal): Promise<ProgramRequestStatus> => {
+        return this.wait(async (readSignal): Promise<ProgramRequestStatus> => {
             const inspection = await nativeSessionAccess(this).inspect(readSignal);
             readSignal.throwIfAborted();
             const current = this.facts.stateOf(inspection).state.activity;
             return { requestId, state: current.requests[requestId]?.state ?? 'absent' };
-        }, signal));
+        }, options);
     }
     /** 释放调用者的观察作用域；原生执行与已提交业务操作继续由各自 owner 管理。 */
     release() {

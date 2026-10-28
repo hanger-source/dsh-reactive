@@ -1,5 +1,6 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
+import { firstValueFrom } from 'rxjs';
 import { appendPluginRecord } from "@deepseek-ai/dsh-session";
 import { z } from "zod";
 import { type Continuation, type WaitReference, type SubmitOptions, type GoalReference } from "@hanger-source/dsh-reactive/kernel";
@@ -10,13 +11,14 @@ import { OperationFollows, operationFollowId } from "./follows.ts";
 import type { ActionOperationEvent } from "@hanger-source/dsh-reactive/kernel";
 import { attachOperation as attachOwnedOperation, locateOperation as locateOwnedOperation, operationBindingOwner, operationBindingCommand, bindOperation, type OperationAccessContext as OperationAccess, type OperationContract, type OperationHandle, type OperationReference, type OperationCommand, type OperationLocation, type OperationState, type OperationNotificationResult, type OperationBindingReference, type BoundOperation, type OperationFeedbackRead, type OperationFeedbackPayload } from "@hanger-source/dsh-reactive/kernel";
 import { actionOperationOwner } from "@hanger-source/dsh-reactive/kernel";
+import { abortable } from '@hanger-source/dsh-reactive';
 import { canonical, waitSchema } from "../conversations/records.ts";
 import { type AdmittedSubmission } from "@hanger-source/dsh-reactive/kernel";
 import type { ProgramImplementation } from "@hanger-source/dsh-reactive/kernel";
 import { surfaceSlotDefinition } from "@hanger-source/dsh-reactive/kernel";
 import { type NativeDelegations } from "../delegations.ts";
 import type { HostOptions } from '../applications/options.ts';
-import type { ConversationSession, LiveConversation } from '../conversations/session.ts';
+import { retainRecovery, type ConversationSession, type LiveConversation } from '../conversations/session.ts';
 import type { ConversationSessions } from '../conversations/sessions.ts';
 import type { ConversationObservations } from '../conversations/observations.ts';
 import type { ConversationInputs } from '../conversations/inputs.ts';
@@ -37,6 +39,11 @@ export class OperationParticipation {
                 const entry = this.sessions.forAgent(agent);
                 if (!entry) throw new Error('REACTIVE_AGENT_NOT_BOUND');
                 return this.operationRecoveryAccess(entry);
+            },
+            retainRecovery: (agent, work, signal) => {
+                const entry = this.sessions.forAgent(agent);
+                if (!entry) throw new Error('REACTIVE_AGENT_NOT_BOUND');
+                return retainRecovery(entry, work, 'reactive.operation.recovery.failed', {}, signal);
             },
             checkpoint: agent => this.facts.flush(agent),
             wait: (agent, continuation, wait) => this.registerWait(agent, continuation, wait),
@@ -222,25 +229,27 @@ export class OperationParticipation {
         const actorId = participantActor(identity, options, this.options.actorId);
         const callerSignal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
         callerSignal.throwIfAborted();
-        const session = await this.sessions.readSession(sessionId);
-        const live = session.live.value;
-        const signal = live ? AbortSignal.any([callerSignal, live.scope.signal]) : callerSignal;
-        signal.throwIfAborted();
-        const inspection = live ? undefined : await this.facts.inspect(sessionId);
-        const link = live ? this.#follows.link(live.agent, followId) : this.#follows.inspectedLink(inspection!, followId);
-        const notStarted = live ? this.#follows.isNotStarted(live.agent, followId) : this.#follows.inspectedNotStarted(inspection!, followId);
-        const access: OperationAccess = { sessionId, source: {
-                kind: 'participant', participant: identity.participant, actorId, entrypoint: 'operation-feedback',
-            }, signal };
-        // 冷会话在加载原生 Agent 前也须取得业务 follow 权限；纯读权不能触发激活。
-        await this.#follows.admit(link, access, notStarted);
-        signal.throwIfAborted();
-        if (notStarted)
-            return { status: 'not-started' };
-        await this.sessions.activate(sessionId);
-        const entry = this.sessions.live(this.sessions.get(sessionId)!);
-        return this.#follows.complete(entry.agent, followId, { ...access,
-            signal: AbortSignal.any([signal, entry.scope.signal]) });
+        return firstValueFrom(abortable(async (): Promise<OperationNotificationResult> => {
+            const session = await this.sessions.readSession(sessionId);
+            const live = session.live.value;
+            const signal = live ? AbortSignal.any([callerSignal, live.scope.signal]) : callerSignal;
+            signal.throwIfAborted();
+            const inspection = live ? undefined : await this.facts.inspect(sessionId);
+            const link = live ? this.#follows.link(live.agent, followId) : this.#follows.inspectedLink(inspection!, followId);
+            const notStarted = live ? this.#follows.isNotStarted(live.agent, followId) : this.#follows.inspectedNotStarted(inspection!, followId);
+            const access: OperationAccess = { sessionId, source: {
+                    kind: 'participant', participant: identity.participant, actorId, entrypoint: 'operation-feedback',
+                }, signal };
+            // 冷会话在加载原生 Agent 前也须取得业务 follow 权限；纯读权不能触发激活。
+            await this.#follows.admit(link, access, notStarted);
+            signal.throwIfAborted();
+            if (notStarted)
+                return { status: 'not-started' };
+            await this.sessions.activate(sessionId);
+            const entry = this.sessions.live(this.sessions.get(sessionId)!);
+            return this.#follows.complete(entry.agent, followId, { ...access,
+                signal: AbortSignal.any([signal, entry.scope.signal]) });
+        }, callerSignal));
     }
     async reconcileOperations(entry: LiveConversation) {
         const links = this.#follows.links(entry.agent);

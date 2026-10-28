@@ -1,4 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis";
+import { firstValueFrom } from 'rxjs';
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import { appendPluginRecord } from "@deepseek-ai/dsh-session";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
@@ -10,10 +11,10 @@ import { type Workspaces } from "../workspaces/workspaces.ts";
 import { admittedSubmissionSchema, type AdmittedSubmission, type NormalizedSubmission, type FileUploadValue, type EncodedFileUploadRequest, type FileUploadReceiptId, type InputReference } from "@hanger-source/dsh-reactive/kernel";
 import { admitInputContent, InputFileNotStagedError } from "../files/input-content.ts";
 import { editQueuedInput } from "./queued-input.ts";
-import type { Admission } from "@hanger-source/dsh-reactive";
+import { abortable, type Admission } from "@hanger-source/dsh-reactive";
 import { type NativeDelegations } from "../delegations.ts";
 import type { HostOptions } from '../applications/options.ts';
-import type { ConversationSession, LiveConversation } from './session.ts';
+import { retainRecovery, type ConversationSession, type LiveConversation } from './session.ts';
 import type { ConversationSessions } from './sessions.ts';
 import type { ConversationObservations } from './observations.ts';
 import type { OperationParticipation } from '../operations/participation.ts';
@@ -22,6 +23,7 @@ import { humanParticipant, serviceParticipant, participantActor, type Participan
 export class ConversationInputs {
     #pending = new Map<string, {
         sourceDigest: string;
+        signal: AbortSignal;
         promise: Promise<{
             sessionId: string;
             requestId: string;
@@ -31,7 +33,8 @@ export class ConversationInputs {
     constructor(private readonly ctx: Context, private readonly definition: ApplicationDefinition, private readonly workspaces: Workspaces, private readonly options: HostOptions, private readonly signal: AbortSignal, private readonly sessions: ConversationSessions, private readonly facts: ConversationObservations, private readonly delegations: NativeDelegations, private readonly operations: () => OperationParticipation) { }
     bindConversation(session: ConversationSession): void {
         session.conversation[conversationBindings]().setSubmit((input, options) => {
-            return this.submitSession(session, input, options, serviceParticipant(this.options.serviceActorId));
+            const signal = AbortSignal.any([session.program.signal, ...(options.signal ? [options.signal] : [])]);
+            return this.submitSession(session, input, { ...options, signal }, serviceParticipant(this.options.serviceActorId));
         });
     }
     async prepare(entry: LiveConversation, signal: AbortSignal) {
@@ -101,22 +104,25 @@ export class ConversationInputs {
         const actorId = participantActor(identity, options, this.options.actorId), participant = identity.participant;
         const signal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
         signal.throwIfAborted();
-        await this.sessions.activate(session.header.id);
-        const entry = this.sessions.live(session);
-        return editQueuedInput({ ctx: this.ctx, agent: entry.agent, requestId, content, actorId, participant, signal,
-            state: () => this.facts.liveState(entry.agent.session),
-            assertCurrent: () => { this.sessions.assertSessionWorkspace(session); if (session.live.value !== entry)
-                throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING'); },
-            admit: input => Promise.resolve(this.definition.admit(input, session.conversation.identity, { actorId, participant, signal })),
-            persist: () => this.facts.flush(entry.agent),
-        });
+        return firstValueFrom(abortable(async () => {
+            await this.sessions.activate(session.header.id);
+            signal.throwIfAborted();
+            const entry = this.sessions.live(session);
+            return editQueuedInput({ ctx: this.ctx, agent: entry.agent, requestId, content, actorId, participant, signal,
+                state: () => this.facts.liveState(entry.agent.session),
+                assertCurrent: () => this.assertCurrent(entry),
+                admit: input => Promise.resolve(this.definition.admit(input, session.conversation.identity, { actorId, participant, signal })),
+                persist: () => this.facts.flush(entry.agent),
+                persistAccepted: () => this.finishAccepted(entry, requestId),
+            });
+        }, signal));
     }
     async submitSession(session: ConversationSession, raw: unknown, options: SubmitOptions, identity: ParticipantIdentity = humanParticipant): Promise<{
         sessionId: string;
         requestId: string;
         accepted: true;
     }> {
-        const signal = options.signal ?? new AbortController().signal;
+        const signal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
         const actorId = participantActor(identity, options, this.options.actorId), participant = identity.participant;
         signal.throwIfAborted();
         this.sessions.assertSessionWorkspace(session);
@@ -124,36 +130,45 @@ export class ConversationInputs {
         session.implementation.definition.input.parse(input.scope);
         const sourceDigest = submissionSourceDigest(input, actorId, participant);
         const key = JSON.stringify([session.header.id, input.requestId]);
-        const pending = this.#pending.get(key);
-        if (pending) {
+        for (;;) {
+            const pending = this.#pending.get(key);
+            if (!pending) break;
             if (pending.sourceDigest !== sourceDigest)
                 throw new Error('REACTIVE_REQUEST_ID_CONFLICT');
-            return pending.promise;
+            if (!pending.signal.aborted)
+                return firstValueFrom(abortable(() => pending.promise, signal));
+            // 本次显式重提等待已取消发布者真正退出；不提前清表或重发仍在执行的命令。
+            await firstValueFrom(abortable(() => pending.promise.then(() => {}, () => {}), signal));
+            signal.throwIfAborted();
+            this.sessions.assertSessionWorkspace(session);
         }
         // 在任何附件存储或准入回调之前占住同一请求；并发重试不重复提升图片。
         const promise = Promise.resolve().then(() => this.prepareSubmission(session, input, actorId, participant, sourceDigest, signal));
-        this.#pending.set(key, { sourceDigest, promise });
-        try {
-            return await promise;
-        }
-        finally {
+        this.#pending.set(key, { sourceDigest, signal, promise });
+        const clear = () => {
             if (this.#pending.get(key)?.promise === promise)
                 this.#pending.delete(key);
-        }
+        };
+        // 清表跟随真实事务；即便首个等待在订阅前已取消，worker 拒绝仍有观察者。
+        void promise.then(clear, clear);
+        return firstValueFrom(abortable(() => promise, signal));
     }
     async uploadSessionFile(session: ConversationSession, request: EncodedFileUploadRequest, options: SubmitOptions, identity: ParticipantIdentity = humanParticipant): Promise<FileUploadValue> {
         participantActor(identity, options, this.options.actorId);
-        const signal = options.signal ?? new AbortController().signal;
+        const signal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
         const encoded = { data: request.data, ...(request.name === undefined ? {} : { name: request.name }) };
         signal.throwIfAborted();
         this.sessions.assertSessionWorkspace(session);
-        await this.sessions.activate(session.header.id);
-        signal.throwIfAborted();
-        this.sessions.assertSessionWorkspace(session);
-        const value = await this.ctx.fileUploads.upload(this.sessions.live(session).agent, encoded, signal);
-        signal.throwIfAborted();
-        this.sessions.assertSessionWorkspace(session);
-        return structuredClone(value);
+        return firstValueFrom(abortable(async () => {
+            await this.sessions.activate(session.header.id);
+            signal.throwIfAborted();
+            this.sessions.assertSessionWorkspace(session);
+            const entry = this.sessions.live(session);
+            // 正式 upload 在入口检查取消；存储与 receipt 登记仍由原生 exact Session 拥有。
+            const value = await this.ctx.fileUploads.upload(entry.agent, encoded, signal);
+            this.assertCurrent(entry);
+            return structuredClone(value);
+        }, signal));
     }
     async prepareSubmission(session: ConversationSession, input: NormalizedSubmission, actorId: string, participant: Admission['participant'], sourceDigest: string, signal: AbortSignal) {
         signal.throwIfAborted();
@@ -198,9 +213,7 @@ export class ConversationInputs {
     }
     async accept(entry: LiveConversation, record: SubmissionRecord, receiptIds: readonly FileUploadReceiptId[], signal: AbortSignal) {
         signal.throwIfAborted();
-        this.sessions.assertSessionWorkspace(entry.session);
-        if (entry.session.live.value !== entry)
-            throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
+        this.assertCurrent(entry);
         const input: AdmittedSubmission = record;
         const previous = entry.session.state.record(input.requestId);
         if (previous && canonical(previous) !== canonical(record))
@@ -211,15 +224,15 @@ export class ConversationInputs {
                 this.operations().validateContinuation(entry, input.result.continuation, input.result.wait);
             if (!previous)
                 appendPluginRecord(entry.agent.session, 'plugin:reactive/input', record);
+            // not-ready 在投影中已经结算，不经历 inbox；该事实的持久化同样不归等待者取消。
+            if (input.result?.ready === false) {
+                await this.finishAccepted(entry, input.requestId);
+                return { sessionId: entry.agent.id as string, requestId: input.requestId, accepted: true as const };
+            }
             // 关联先持久化；重试核对原生 inbox，不把关联记录当作已经受理。
             await this.facts.flush(entry.agent);
             signal.throwIfAborted();
-            this.sessions.assertSessionWorkspace(entry.session);
-            if (entry.session.live.value !== entry)
-                throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
-            // 未就绪是已受理的业务进度；它既不是模型输入，也不占用另一条待执行队列。
-            if (input.result?.ready === false)
-                return { sessionId: entry.agent.id as string, requestId: input.requestId, accepted: true as const };
+            this.assertCurrent(entry);
             const wake = this.operations().shouldWake(entry, input);
             signal.throwIfAborted();
             const target = input.intent === 'result' || input.delivery !== 'followup' ? 'next-step' : 'next-turn';
@@ -232,22 +245,28 @@ export class ConversationInputs {
                 binding?.[Symbol.dispose]();
             }
             if (wake) {
-                const recovery = followAdmittedInput(entry.agent, input.requestId, () => this.operations().shouldWake(entry, input)).catch(error => {
-                    entry.recoveryErrors.push(error);
-                    console.error('reactive.input.recovery.failed', { sessionId: entry.agent.id, requestId: input.requestId, error });
-                }).finally(() => { entry.recovery.delete(recovery); });
-                entry.recovery.add(recovery);
+                retainRecovery(entry, followAdmittedInput(entry.agent, input.requestId, () => this.operations().shouldWake(entry, input)),
+                    'reactive.input.recovery.failed', { requestId: input.requestId });
             }
         }
-        else if (accepted === 'accepted' && this.operations().shouldWake(entry, input)) {
-            signal.throwIfAborted();
-            await resumePendingInput(entry.agent, input.requestId, () => this.operations().shouldWake(entry, input));
-            signal.throwIfAborted();
-        }
-        signal.throwIfAborted();
-        await this.facts.flush(entry.agent);
-        signal.throwIfAborted();
+        await this.finishAccepted(entry, input.requestId, accepted === 'accepted' && this.operations().shouldWake(entry, input)
+            ? () => resumePendingInput(entry.agent, input.requestId, () => this.operations().shouldWake(entry, input)) : undefined);
         return { sessionId: entry.agent.id as string, requestId: input.requestId, accepted: true as const };
+    }
+    private assertCurrent(entry: LiveConversation) {
+        this.sessions.assertSessionWorkspace(entry.session);
+        if (entry.session.live.value !== entry || this.ctx.agents.get(entry.agent.id) !== entry.agent)
+            throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
+    }
+    private finishAccepted(entry: LiveConversation, requestId: string, resume?: () => Promise<void>): Promise<void> {
+        return retainRecovery(entry, (async () => {
+            if (resume) {
+                this.assertCurrent(entry);
+                await resume();
+            }
+            await this.facts.flush(entry.agent);
+            this.assertCurrent(entry);
+        })(), 'reactive.input.commit.failed', { requestId });
     }
     retainPausedResults(entry: LiveConversation): void {
         // 原生 pause 会取消活动 turn 并保留 inbox；已 claim 的结果须先回到同一 inbox。

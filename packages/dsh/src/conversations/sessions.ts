@@ -556,28 +556,41 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         await agent.whenIdle();
         await this.facts.flush(agent);
     }
-    async settle(agent: Agent) {
+    async settle(agent: Agent, signal?: AbortSignal) {
+        signal?.throwIfAborted();
         const entry = this.#entries.get(agent);
         const failures: unknown[] = [];
         try {
             for (;;) {
                 await agent.whenIdle();
-                if (!await this.ctx.get('subagents')?.waitForChildren(agent))
+                signal?.throwIfAborted();
+                const children = await this.ctx.get('subagents')?.waitForChildren(agent);
+                signal?.throwIfAborted();
+                if (!children)
                     break;
             }
             if (entry) {
-                while (entry.recovery.size)
+                while (entry.recovery.size) {
                     await Promise.all(entry.recovery);
-                if (entry.recoveryErrors.length)
-                    throw new AggregateError(entry.recoveryErrors.splice(0), 'REACTIVE_INPUT_RECOVERY_FAILED');
-                if (this.ctx.agents.get(agent.id) === agent)
+                    signal?.throwIfAborted();
+                }
+                signal?.throwIfAborted();
+                if (!entry.recoveryErrors.length && this.ctx.agents.get(agent.id) === agent) {
                     await this.facts.flush(agent);
+                    signal?.throwIfAborted();
+                }
             }
         }
         catch (error) { failures.push(error); }
+        signal?.throwIfAborted();
         if (entry?.scope.disposed) {
             try { await entry.closed; } catch (error) { failures.push(error); }
+            signal?.throwIfAborted();
         }
+        // 最后一个异步阶段之后才领取owner错误，退出的观察者不会消费仍需交付的失败。
+        signal?.throwIfAborted();
+        if (entry?.recoveryErrors.length)
+            failures.unshift(new AggregateError(entry.recoveryErrors.splice(0), 'REACTIVE_INPUT_RECOVERY_FAILED'));
         if (failures.length === 1) throw failures[0];
         if (failures.length) throw new AggregateError(failures, 'REACTIVE_CONVERSATION_SETTLE_FAILED');
     }

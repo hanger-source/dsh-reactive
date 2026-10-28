@@ -6,6 +6,7 @@ import { once } from 'node:events';
 import { mkdtemp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate as immediate } from 'node:timers/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { Fragment, createElement as h, useLayoutEffect } from 'react';
 import { BehaviorSubject, Observable, Subject, filter, firstValueFrom } from 'rxjs';
@@ -52,7 +53,7 @@ const finish = defineAction({ name: 'finish_original_goal', description: '核验
 
 /** 测试中的业务 owner 使用实际 SQLite 受理记录、状态和可靠 follow 关联；通知由测试显式投递。 */
 function business(database: string, onRegistered?: (link: OperationFollowLink) => Promise<void>,
-  onExistingAck?: (link: OperationFollowLink) => Promise<void>) {
+  onExistingAck?: (link: OperationFollowLink, access: OperationAccessContext) => Promise<void>) {
   const db = new DatabaseSync(database);
   db.exec(`PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS commands (command_id TEXT PRIMARY KEY, command_json TEXT NOT NULL,
@@ -113,7 +114,7 @@ function business(database: string, onRegistered?: (link: OperationFollowLink) =
       if (db.prepare('SELECT can_follow FROM authorization WHERE merchant_id = ?').get(command.merchantId)?.can_follow !== 1)
         throw new Error('BUSINESS_FOLLOW_DENIED');
       const previous = db.prepare('SELECT link_json FROM follows WHERE id = ?').get(link.id);
-      if (previous) { assert.deepEqual(JSON.parse(z.string().parse(previous.link_json)), link); await onExistingAck?.(link); return; }
+      if (previous) { assert.deepEqual(JSON.parse(z.string().parse(previous.link_json)), link); await onExistingAck?.(link, access); return; }
       if (link.after !== null && !db.prepare('SELECT node_id FROM feedbacks WHERE command_id = ? AND node_id = ?').get(command.commandId, link.after))
         throw new Error('BUSINESS_FEEDBACK_AFTER_UNKNOWN');
       db.exec('BEGIN IMMEDIATE');
@@ -183,7 +184,7 @@ function business(database: string, onRegistered?: (link: OperationFollowLink) =
 async function scenario(root: string, when: 'settled' | 'feedback', options: {
   recovering?: boolean;
   registered?: (link: OperationFollowLink) => Promise<void>;
-  existingAck?: (link: OperationFollowLink) => Promise<void>;
+  existingAck?: (link: OperationFollowLink, access: OperationAccessContext) => Promise<void>;
   beforeWaitAck?: () => Promise<void>;
   admitReady?: (signal: AbortSignal) => Promise<void>;
   parallel?: boolean;
@@ -704,15 +705,36 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
       assert.deepEqual(app.errors, []); cold.release(); resumed.release();
   });
 
-  test('同 Goal 两个 intent 先持久而 wait 未登记即 SIGKILL，恢复须等全组授权与 wait ACK，单个终态不能越过另一业务条件', async context => {
+  test('同Goal持久intent共用恢复barrier，通知者取消不终止整组，晚失败归owner且原结果不重投', async context => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-operation-barrier-'));
     const saved = await crashCheckpoint(root, context, 'multiple');
     assert.equal(saved.operations.length, 2);
-    const secondRegister = Promise.withResolvers<void>(), secondAck = Promise.withResolvers<void>();
-    const app = await scenario(root, 'settled', { recovering: true, parallel: true, async existingAck(link) {
-      if (commandSchema.parse(link.command).commandId === 'prepare-b') { secondRegister.resolve(); await secondAck.promise; }
+    const secondRegister = Promise.withResolvers<AbortSignal>(), secondAck = Promise.withResolvers<void>();
+    const peerEntered = Promise.withResolvers<void>(), failureEntered = Promise.withResolvers<AbortSignal>(), failureRelease = Promise.withResolvers<void>();
+    const lateFailure = new Error('RECOVERY_REGISTER_ACK_FAILED_WITHOUT_WAITER');
+    const recoveryRegistrations = new Map<AbortSignal, { links: string[]; deliveryDeclared: boolean }>();
+    let nativeEvents!: () => readonly SessionEvent[];
+    let peerRegistrations = 0, failRecovery = false;
+    const app = await scenario(root, 'settled', { recovering: true, parallel: true, async existingAck(link, access) {
+      if (access.source.kind !== 'participant') return;
+      if (access.source.actorId === 'notifier-alternative' && ++peerRegistrations === 2) peerEntered.resolve();
+      if (access.source.entrypoint !== 'operation-recovery') return;
+      assert.equal(access.source.participant, 'service'); assert.equal(access.source.actorId, 'operation-publisher');
+      const deliveryDeclared = nativeEvents().some(event => pluginRecordOf(event)?.type === 'plugin:reactive/operation-delivery');
+      const round = recoveryRegistrations.get(access.signal);
+      if (round) {
+        assert.equal(round.deliveryDeclared, deliveryDeclared);
+        round.links.push(link.id);
+      } else recoveryRegistrations.set(access.signal, { links: [link.id], deliveryDeclared });
+      if (commandSchema.parse(link.command).commandId === 'prepare-b') {
+        secondRegister.resolve(access.signal); await secondAck.promise;
+        if (failRecovery) {
+          failRecovery = false; failureEntered.resolve(access.signal); await failureRelease.promise; throw lateFailure;
+        }
+      }
     } });
     context.after(() => app.dispose());
+    nativeEvents = () => app.runtime.native.agents.get(SessionId(saved.sessionId))!.session.snapshotEvents();
     try {
       const cold = await app.runtime.application.open(saved.sessionId, app.program);
       assert.equal(cold.snapshot().waits.length, 0);
@@ -720,14 +742,36 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
       assert.deepEqual(app.store.read('prepare-a')?.state, { status: 'complete', artifactId: 'artifact-before-crash' });
       const first = saved.operations.find(item => item.command.commandId === 'prepare-a')!;
       const second = saved.operations.find(item => item.command.commandId === 'prepare-b')!;
-      const notifying = app.runtime.application.notifyOperation(saved.sessionId, first.followId, { actorId: 'notifier-one' });
-      void notifying.catch(() => {});
-      assert.equal(await Promise.race([secondRegister.promise.then(() => 'blocked'), notifying.then(() => 'delivered')]), 'blocked');
+      const controller = new AbortController(), reason = new Error('FIRST_NOTIFIER_CANCELLED_OWN_WAIT');
+      const notifying = app.runtime.application.notifyOperation(saved.sessionId, first.followId, { actorId: 'notifier-one', signal: controller.signal });
+      const cancelled = assert.rejects(notifying, error => error === reason);
+      const recoverySignal = await secondRegister.promise;
       assert.equal(app.store.reads().length, 0, '同 Goal 的另一可靠关联尚未 ACK，不能先 locate 第一个终态并回投');
       assert.equal(app.requests.length, 0);
       assert.equal(Object.keys(cold.snapshot().requests).length, 1);
+      let peerSettled = false;
+      const peer = app.runtime.application.notifyOperation(saved.sessionId, first.followId, { actorId: 'notifier-alternative' })
+        .then(value => { peerSettled = true; return value; });
+      void peer.catch(() => {});
+      await peerEntered.promise; await immediate();
+      controller.abort(reason);
+      assert.equal(await Promise.race([cancelled.then(() => 'cancelled'), immediate().then(() => 'pending')]), 'cancelled');
+      assert.equal(recoverySignal.aborted, false, '通知者不能取消配置publisher持有的整组恢复');
+      assert.equal(peerSettled, false);
+      assert.equal(recoveryRegistrations.size, 1, 'A与B在未完成的真实恢复signal上等待，不另起一组登记');
+      const blockedRound = recoveryRegistrations.get(recoverySignal)!;
+      assert.equal(blockedRound.deliveryDeclared, false);
+      assert.deepEqual([...blockedRound.links].sort(), [first.followId, second.followId].sort());
+      await assert.rejects(app.runtime.application.notifyOperation(saved.sessionId, second.followId, { actorId: 'notifier-one' }),
+        /BUSINESS_FOLLOW_NOTIFIER_SCOPE_DENIED/u, '共享barrier不能把另一命令的通知权限借给当前actor');
       secondAck.resolve();
-      assert.equal((await notifying).status, 'accepted');
+      assert.equal((await peer).status, 'accepted');
+      assert.deepEqual([...blockedRound.links].sort(), [first.followId, second.followId].sort(), '退等和并发通知未重复进入原阻塞恢复轮');
+      assert.equal(recoveryRegistrations.size, 2);
+      const [deliverySignal, deliveryRound] = [...recoveryRegistrations].find(([signal]) => signal !== recoverySignal)!;
+      assert.notEqual(deliverySignal, recoverySignal);
+      assert.equal(deliveryRound.deliveryDeclared, true, '独立恢复signal在真实delivery checkpoint之后重新核验整组');
+      assert.deepEqual([...deliveryRound.links].sort(), [first.followId, second.followId].sort(), '交付前重新核验每个关联一次，不复用先前授权');
       const session = await app.runtime.application.resume(saved.sessionId, app.program);
       await session.whenIdle();
       assert.equal(app.requests.length, 0, '第一个终态只解除自己的条件，不能提前进入下一模型步');
@@ -747,6 +791,18 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
       });
       assert.ok(ready);
       assert.ok(waits.every(event => event.seq < ready.seq), '整组 native wait 须先于任何恢复的 ready 完成事实');
+      failRecovery = true;
+      const stopped = new AbortController(), stoppedReason = new Error('LAST_NOTIFIER_CANCELLED_BEFORE_RECOVERY_FAILURE');
+      const stoppedNotification = assert.rejects(app.runtime.application.notifyOperation(saved.sessionId, second.followId,
+        { actorId: 'notifier-two', signal: stopped.signal }), error => error === stoppedReason);
+      const failingSignal = await failureEntered.promise;
+      stopped.abort(stoppedReason);
+      assert.equal(await Promise.race([stoppedNotification.then(() => 'cancelled'), immediate().then(() => 'pending')]), 'cancelled');
+      assert.equal(failingSignal.aborted, false);
+      const ownerFailure = assert.rejects(session.whenIdle(), error => error instanceof AggregateError && error.errors.includes(lateFailure));
+      failureRelease.resolve(); await ownerFailure;
+      assert.equal(session.snapshot().requests['operation:' + second.followId], undefined);
+      assert.equal(app.requests.length, 0, '无等待者的恢复失败仍由原owner报告，不追加模型或伪造完成结果');
       app.store.update('prepare-b', { status: 'complete', artifactId: 'artifact-after-peer' });
       assert.equal((await app.runtime.application.notifyOperation(saved.sessionId, second.followId, { actorId: 'notifier-two' })).status, 'accepted');
       await app.resumed.promise; await session.whenIdle();
@@ -766,7 +822,7 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
       }
       assert.equal(app.store.links().length, 2);
       assert.deepEqual(app.errors, []); cold.release(); session.release();
-    } finally { secondAck.resolve(); }
+    } finally { secondAck.resolve(); failureRelease.resolve(); }
   });
   test('原操作 F1 后由新工具登记 after；同正文 F2 按新参与交回，SIGKILL 恢复不重执行或重开旧等待', async context => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-operation-stages-'));

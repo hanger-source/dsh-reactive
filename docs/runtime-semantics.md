@@ -241,8 +241,12 @@ inject 本次投递不请求唤醒，可能错过已经 claim 输入的步骤；
 
 SDK 使用 `{ signal }` 选项表达取消。`readView` 只约束这一次等待；`attachOperation` 与 `operations.slot` 的信号限定所创建的只读观察句柄或 reader，停止其读取不等于取消业务 Operation。`resolveAction` 完成后，绑定连接属于 Session，解析时的临时信号不再持有它。远程 Action 的请求取消与已受理执行分别结算，不能把 transport 退出变成业务撤销。
 
-`snapshot()` 是明确的同步活动读取。`pause()` 暂停原生 Goal；`cancel()` 停止当前原生模型处理并等待相应持久化。它们不替业务 owner 决定取消外部业务操作。`whenIdle()` 等待当前原生活动、对应输入恢复和持久化，不代表未来 Goal 轮次或外部业务工作全部结束。
+同一会话与 requestId 的并发提交共享一份受理事务，各调用者分别等待。后加入者的取消不删除共享事务，也不替换首发的执行前取消信号；句柄 release 只结束自己的等待。首发已取消但原事务尚未退出时，新的显式重提先等待其真实结算，再核对当前共享事务与持久事实，不提前清表或并行重发。首次持久关联仍是 declared，编辑的持久准备也尚未替换队列正文，这两个阶段继续核验首发取消。输入已 send、编辑已 replace 或 not-ready 结果已经提交后，exact Agent 完成所属持久回执；回执等待取消不回滚输入、不自动重发。独立恢复的等待登记同样由原 owner 完成，通知者只退出对共享屏障的等待。已受理结算的迟到失败仍进入会话的结算与关闭错误链。
 
-句柄 `release()` 只停止观察；宿主 `close(sessionId)` 释放实际 Agent owner，沿原生 teardown 取消尚未消费的 inbox。通知与恢复读取绑定取得时的精确原生 owner；关闭期间迟到的准入或读取不能隐式重开该 owner。持久关联保留，新的显式通知可以按原引用重试。正常关闭与进程中断不同：已 checkpoint 后的进程中断可以从持久 inbox 恢复，不能用 close 模拟这个边界。宿主释放 owned Agent handles 后退休 Preset，再释放程序与工作区资源；原生 registry 负责已经 mount 的代际引用。Preset 装配为 broken 时启动失败，并释放失败登记。
+Program 的 conversation.submit 借用该 Program 的来源权限，Program 失败后不能沿捕获的对象开始新受理，进行中的等待也随其退出。上传的 Blob 转换可取消等待，转换退出后不再启动上传；已经进入正式上传服务的存储和 receipt 继续由原生 owner 处理，不因未取得回执而推断未上传。本地已知准入、格式和身份错误保留原错误；远程 submit/edit 在请求已启动后无法确认回执时保留对应的 AdmissionUnknown 错误及原请求身份，供显式查询核对。
+
+`snapshot()` 是明确的同步活动读取。`pause()` 暂停原生 Goal；`cancel()` 停止当前原生模型处理并等待相应持久化。它们不替业务 owner 决定取消外部业务操作。`whenIdle()` 等待当前原生活动、对应输入恢复和持久化，不代表未来 Goal 轮次或外部业务工作全部结束；句柄释放只结束本消费者的等待，原结算仍继续。
+
+句柄 `release()` 释放本消费者的观察与回执等待；宿主 `close(sessionId)` 释放实际 Agent owner，沿原生 teardown 取消尚未消费的 inbox。通知与恢复读取绑定取得时的精确原生 owner；关闭期间迟到的准入或读取不能隐式重开该 owner。持久关联保留，新的显式通知可以按原引用重试。正常关闭与进程中断不同：已 checkpoint 后的进程中断可以从持久 inbox 恢复，不能用 close 模拟这个边界。宿主释放 owned Agent handles 后退休 Preset，再释放程序与工作区资源；原生 registry 负责已经 mount 的代际引用。Preset 装配为 broken 时启动失败，并释放失败登记。
 
 每次 Operation 参与分别保留原调用、条件与一次固定投递；多阶段协作通过显式的新参与组合。[原生子程序委托](native-delegation.md) 复用这份 Operation 合同，子 Goal 正式完成、原生执行反馈及父 Goal 续接保留各自含义。长会话和完整运营服务接入还需要连续证据。原生依赖可用、编译通过及确定性模型边界都不等于真实业务或部署环境已经验收。

@@ -20,6 +20,7 @@ export interface QueuedInputEdit {
   readonly assertCurrent: () => void;
   readonly admit: (input: AdmittedSubmission) => Promise<void>;
   readonly persist: () => Promise<void>;
+  readonly persistAccepted: () => Promise<void>;
 }
 
 /** 替换仍在原生队列中的同一请求正文；不改变身份、目标、顺序或唤醒状态。 */
@@ -78,7 +79,6 @@ export async function editQueuedInput(edit: QueuedInputEdit): Promise<{
     binding?.commit();
   } finally { binding?.[Symbol.dispose](); }
   // ACK 与初次提交一致，只确认持久受理；取消或观察失败不撤销已发生的替换。
-  await edit.persist();
-  assertCurrent();
+  await edit.persistAccepted();
   return { sessionId: agent.id as string, requestId, accepted: true };
 }

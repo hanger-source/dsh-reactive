@@ -14,6 +14,8 @@
 
 调用级 signal、release 或所属 SDK dispose 拒绝尚未返回的回执等待，公共 Context 与其他 SDK 保持原寿命。已取消的调用不启动控制，Host 在取得句柄后、进入实际读取或控制前重新检查请求取消。已受理控制继续结算，Host 等待真正完成后才释放自己的短命句柄；取消等待不回滚已受理业务，也不因回执未知自动重发控制。openEvents 继续使用远程 SDK 的官方 carrier、分页与重连合同，不要求本地接口伪造传输状态。
 
+submit、editQueuedInput、uploadFile 也分别结束本调用者的回执等待。同一 requestId 的提交共享原事务，后加入者的取消不删除共享受理；首发 signal 仍约束入队或正文替换前的执行检查，已经 send/replace 的输入由原生 owner 完成持久回执。Program 失败后不能沿旧 conversation.submit 开始新受理。Blob 转换被取消后不启动上传，原生存储已经开始时不撤 receipt、不自动重传。本地已知准入错误保留原错误；远程 submit/edit 已发出而回执未知时保留各自的 AdmissionUnknown 错误，通过同 requestId 查询核对。三个远程入口释放 Session 都只结束本消费者等待，已启动的 HTTP 请求仍沿所属 SDK 与原 caller signal 结算。
+
 远程 SDK 从 `@hanger-source/dsh-reactive-client` 导入，不是 Gateway 包的 `/client`；`@hanger-source/dsh-reactive-remote` 只装在认证 Gateway 宿主。纯 Program 文件不能导后台组件/宿主，从而让 CLI、浏览器、UI 共用定义。
 
 ```ts

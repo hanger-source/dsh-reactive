@@ -4,9 +4,11 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import { appendPluginRecord, pluginRecordOf, SessionLogOffset } from '@deepseek-ai/dsh-session';
 import type { SessionInspection } from '@deepseek-ai/dsh-session-persistence';
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection';
+import { firstValueFrom } from 'rxjs';
 import { z } from 'zod';
 import { locateOperation, registerOperationFollow, settledOperation, readOperationFeedback, encodeOperationFeedback, assertOperationFollowSupported, isOperationOwner, operationFollowLinkSchema, type OperationAccessContext as OperationAccess, type OperationFollowLink, type OperationOwnerReference, type OperationOwner, type OperationContract, type OperationNotificationResult, type OperationFeedbackRead, type OperationReference, type OperationFeedbackPayload } from '@hanger-source/dsh-reactive/kernel';
 import type { Continuation, InputReceipt, Json, Submission, WaitReference } from '@hanger-source/dsh-reactive/kernel';
+import { abortable } from '@hanger-source/dsh-reactive';
 import { canonical, operationNotStartedSchema } from '../conversations/records.ts';
 
 const receiptSchema = z.object({ id: z.string().min(1), reference: z.json() }).strict();
@@ -79,6 +81,7 @@ const followsProjection: ProjectionDefinition<'reactiveOperations'> = {
 export interface FollowHost {
   publisherId(): string;
   recoveryAccess(agent: Agent): OperationAccess;
+  retainRecovery<T>(agent: Agent, work: Promise<T>, signal: AbortSignal): Promise<T>;
   checkpoint(agent: Agent): Promise<void>;
   wait(agent: Agent, continuation: Continuation, wait: WaitReference): Promise<void>;
   resolved(agent: Agent, link: OperationFollowLink): boolean;
@@ -245,11 +248,12 @@ export class OperationFollows {
   }
   /** 冷入口同样先验证真实通知者的关联权限，不能以 locator 的读取权限代替。 */
   async admit(link: OperationFollowLink, access: OperationAccess, notStarted = false) {
-    if (access.source.kind !== 'participant') throw new Error('REACTIVE_OPERATION_NOTIFIER_REQUIRED');
+    const source = access.source;
+    if (source.kind !== 'participant') throw new Error('REACTIVE_OPERATION_NOTIFIER_REQUIRED');
     access.signal.throwIfAborted();
     const owner = this.owner(link);
     this.validate(owner, link.when);
-    await this.host.admit(link, access.source, access.signal);
+    await firstValueFrom(abortable(() => this.host.admit(link, source, access.signal), access.signal));
     access.signal.throwIfAborted();
     // 已结案的框架关联只核本次通知准入；不能让旧 outbox 重新登记业务观察。
     if (notStarted) return;
@@ -266,7 +270,7 @@ export class OperationFollows {
         // 外部 outbox 只授权自己的 link；跨模块等待恢复由配置的框架 publisher 独立准入。
         const recovery = this.host.recoveryAccess(agent);
         const registered = new Set<string>();
-        barrier = (async () => {
+        barrier = this.host.retainRecovery(agent, Promise.resolve().then(async () => {
           while (true) {
             const pending = this.pending(agent, group);
             // 整组先取得可靠关联 ACK；一个未授权 intent 不能被伪装成等待登记成功。
@@ -284,11 +288,11 @@ export class OperationFollows {
             // register/flush 的 await 期间可能出现同组的新 native 调用。
             if (this.pending(agent, group).every(item => registered.has(item.id) && this.host.waiting(agent, item))) return registered;
           }
-        })();
+        }), recovery.signal);
         barriers.set(group, barrier);
         void barrier.finally(() => { if (barriers.get(group) === barrier) barriers.delete(group); }).catch(() => {});
       }
-      const established = await barrier;
+      const established = await firstValueFrom(abortable(() => barrier!, access.signal));
       access.signal.throwIfAborted();
       // 另一个完成回调也可能刚加入 intent；返回前再次核验当前组。
       if (this.pending(agent, group).every(item => established.has(item.id) && this.host.waiting(agent, item))) return;
