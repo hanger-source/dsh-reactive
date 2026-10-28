@@ -103,7 +103,7 @@ Action 受理 ACK 已确认后，即使 SDK 在构造观察时退出，仍保留
 - `nativeSource` 直接接已有 peek/subscribe；`observeNativeResource` 保 pending/error；NativeSession.resource/operation/invocation/view 将同一个对象交给原生观察。
 - Invocation 的 activity 资源可直接 read、peek 或交给业务 hook；activity$ 是其 values$；远程资源在 returned/failed 后继续保留 SDK 的有效性观察，result 独立等待业务完成。按 state 等待终态，不用 lastValueFrom 推断业务完成。native.invocation(invocation) 直接读取同一个 Observation，不在 UI 重新物化活动。业务 failed 是 ready.value 的调用事实，SDK 失效或观察错误不会伪装成业务失败。
 - 未终结的活动连接断开时，资源立即 pending，重连读取原调用的当前事实；取消单次 activity.read 只退出本次等待，不重发 Action 或关闭共享观察。已确认终态不被流清理错误撤销，清理失败保留日志。
-- `nativeHooks`、`nativeSessionInject` 复用原生 InjectFace；注入的 `program` 不覆盖原生 props.session。`provideNativeSources` 交原 UiSession.provide 持有注册/更新/退出，不再建 registry。
+- `nativeHooks`、`nativeSessionInject` 复用原生 InjectFace；注入的 `program` 不覆盖原生 props.session。名为 current 的来源成为 `useCurrent(selector, equality?)`，selector 必填；需要完整 Observation 时使用 `useCurrent(value => value)`，并显式处理 pending/error/ready。`provideNativeSources` 交原 UiSession.provide 持有注册/更新/退出，不再建 registry。
 - `registerNativeConversation` 组合原节点/视图/分组/渲染注册，部分失败回滚整组；所有解析与 replay 留给原 UiConversation。
 - `createNativeActionViews` 与 `readActionPresentation` 读取真实调用 metadata，不用当前 Action scope 解释历史结果，也不反向 encode 单向 transform。
 

@@ -85,7 +85,8 @@ export async function verify(path, source) {
   const location = await realpath(await mkdtemp(join(tmpdir(), 'dsh-reactive-' + source + '-consumer-')));
   const consumers = [];
   const tarballs = { host: resolve(directory, manifest.artifacts.find(item => item.name === '@hanger-source/dsh-reactive-dsh').file),
-    core: resolve(directory, manifest.artifacts.find(item => item.name === '@hanger-source/dsh-reactive').file) };
+    core: resolve(directory, manifest.artifacts.find(item => item.name === '@hanger-source/dsh-reactive').file),
+    nativeUi: resolve(directory, manifest.artifacts.find(item => item.name === '@hanger-source/dsh-reactive-native-ui').file) };
   for (const kind of consumerKinds) {
     const names = consumerPackages(config, kind);
     const cwd = join(location, kind); await mkdir(cwd); await independent(cwd);

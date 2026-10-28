@@ -1,6 +1,92 @@
-import { readFile, realpath } from 'node:fs/promises';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { build } from 'esbuild';
+
+const nativeModules = ['@deepseek-ai/dsh-client-modules', '@deepseek-ai/dsh-client-connection',
+  '@deepseek-ai/dsh-typert-registry', '@deepseek-ai/dsh-api-gateway', '@deepseek-ai/dsh-client-file-upload',
+  '@deepseek-ai/dsh-api-session-controller', '@deepseek-ai/dsh-client-ui-renderer',
+  '@deepseek-ai/dsh-api-remote-access', '@deepseek-ai/dsh-client-ui-session'];
+
+function contains(directory, file) {
+  const child = relative(directory, file);
+  return child !== '..' && !child.startsWith('../') && !child.startsWith('..\\') && !isAbsolute(child);
+}
+
+/** 以最近的 node_modules 成员识别实际 owner，嵌套安装也不能形成第二份 React/core。 */
+function packageOwner(file) {
+  const normalized = file.replaceAll('\\', '/');
+  const start = normalized.lastIndexOf('/node_modules/');
+  if (start === -1) return undefined;
+  const segments = normalized.slice(start + '/node_modules/'.length).split('/');
+  const name = segments[0].startsWith('@') ? segments.slice(0, 2).join('/') : segments[0];
+  return { name, directory: normalized.slice(0, start + '/node_modules/'.length) + name };
+}
+
+async function checkBrowserBundle(result, directory, expectedRoots) {
+  const inputs = Object.keys(result.metafile.inputs).map(input => resolve(directory, input));
+  const modules = new Map(Object.keys(expectedRoots).map(name => [name, 0]));
+  for (const input of inputs) {
+    const owner = packageOwner(await realpath(input));
+    if (owner?.name === 'react-reconciler') throw new Error('RELEASE_BROWSER_BACKEND_RENDERER');
+    if (!owner || !Object.hasOwn(expectedRoots, owner.name)) continue;
+    if (owner.directory !== expectedRoots[owner.name].replaceAll('\\', '/')) {
+      throw new Error('RELEASE_BROWSER_PACKAGE_IDENTITY_MISMATCH: ' + owner.name);
+    }
+    modules.set(owner.name, modules.get(owner.name) + 1);
+  }
+  for (const [name, count] of modules) {
+    if (!count) throw new Error('RELEASE_BROWSER_PACKAGE_NOT_CONSUMED: ' + name);
+  }
+  const emitted = Object.values(result.metafile.outputs);
+  if (emitted.some(file => file.imports.some(imported => imported.external))) throw new Error('RELEASE_BROWSER_EXTERNAL_IMPORT');
+  return { inputs, emitted, coreModules: modules.get('@hanger-source/dsh-reactive'), modules };
+}
+
+/** 原生 UI 的正式 client bundles 与试验入口共享同一个仓外安装；不借后台 workspace 的 React。 */
+async function buildNativeBrowser(directory, coreRoot) {
+  const require = createRequire(join(directory, 'package.json'));
+  const installed = async name => {
+    const manifest = await realpath(require.resolve(name + '/package.json'));
+    if (!contains(join(directory, 'node_modules'), manifest)) throw new Error('RELEASE_BROWSER_PACKAGE_OUTSIDE_CONSUMER: ' + name);
+    return { directory: dirname(manifest), manifest: JSON.parse(await readFile(manifest, 'utf8')) };
+  };
+  const [react, reactDom] = await Promise.all([installed('react'), installed('react-dom')]);
+  const publicEntry = (owner, key, condition) => {
+    const face = owner.manifest.exports?.[key];
+    const target = typeof face === 'string' ? face : face?.[condition];
+    if (typeof target !== 'string' || !contains(owner.directory, resolve(owner.directory, target))) {
+      throw new Error('RELEASE_BROWSER_PUBLIC_EXPORT_REQUIRED: ' + owner.manifest.name + key + ':' + condition);
+    }
+    return resolve(owner.directory, target);
+  };
+  const output = join(directory, 'browser/native');
+  await mkdir(output, { recursive: true });
+  const result = await build({ absWorkingDir: directory, entryPoints: { consumer: 'native/browser-native-consumer.mjs' },
+  outdir: output, entryNames: '[name]', chunkNames: 'chunks/[name]-[hash]',
+  platform: 'browser', format: 'esm', target: 'es2024', conditions: ['browser', 'import'], bundle: true,
+  splitting: true, metafile: true, logLevel: 'silent', define: { 'process.env.NODE_ENV': '"production"' },
+  logOverride: { 'import-is-undefined': 'error' } });
+  const checked = await checkBrowserBundle(result, directory, {
+    '@hanger-source/dsh-reactive': coreRoot, react: react.directory, 'react-dom': reactDom.directory,
+  });
+  const bootstrap = (await Promise.all(nativeModules.map(async name => {
+    const owner = await installed(name);
+    const condition = ['@deepseek-ai/dsh-client-connection', '@deepseek-ai/dsh-typert-registry', '@deepseek-ai/dsh-api-gateway']
+      .includes(name) ? 'browser' : 'default';
+    return readFile(publicEntry(owner, './client', condition), 'utf8');
+  }))).join('\n');
+  const bootstrapFile = 'native-bootstrap.js';
+  await writeFile(join(output, bootstrapFile), bootstrap);
+  const files = [...Object.keys(result.metafile.outputs).map(file => relative(output, resolve(directory, file)).replaceAll('\\', '/')),
+    bootstrapFile].sort();
+  const proof = { directory: output, entry: 'consumer.js', bootstrap: bootstrapFile, modules: nativeModules, files,
+    bytes: checked.emitted.reduce((sum, file) => sum + file.bytes, Buffer.byteLength(bootstrap)),
+    inputModules: checked.inputs.length, coreModules: checked.coreModules,
+    reactModules: checked.modules.get('react'), reactDomModules: checked.modules.get('react-dom') };
+  await writeFile(join(output, 'manifest.json'), JSON.stringify(proof, null, 2) + '\n');
+  return proof;
+}
 
 /** 最终安装包的正式browser导出及完整依赖闭包；不使用源码alias或工作区模块。 */
 export async function buildConsumerBrowser(directory) {
@@ -13,19 +99,9 @@ export async function buildConsumerBrowser(directory) {
   const result = await build({ absWorkingDir: directory, entryPoints: ['compiled/browser.js'], outfile: output,
     platform: 'browser', format: 'esm', target: 'es2024', conditions: ['browser', 'import'], bundle: true,
     metafile: true, logLevel: 'silent', logOverride: { 'import-is-undefined': 'error' } });
-  const inputs = Object.keys(result.metafile.inputs).map(input => resolve(directory, input));
-  if (inputs.some(input => input.replaceAll('\\', '/').includes('/node_modules/react-reconciler/')))
-    throw new Error('RELEASE_BROWSER_BACKEND_RENDERER');
+  const { inputs, emitted, coreModules } = await checkBrowserBundle(result, directory, { '@hanger-source/dsh-reactive': coreRoot });
   if (!inputs.includes(resolve(clientRoot, browserEntry))) throw new Error('RELEASE_BROWSER_EXPORT_NOT_CONSUMED');
-  const coreFiles = inputs.filter(input => input.replaceAll('\\', '/').includes('/node_modules/@hanger-source/dsh-reactive/'));
-  if (!coreFiles.length) throw new Error('RELEASE_BROWSER_CORE_NOT_CONSUMED');
-  for (const input of coreFiles) {
-    const child = relative(coreRoot, await realpath(input));
-    if (child === '..' || child.startsWith('../') || child.startsWith('..\\') || isAbsolute(child))
-      throw new Error('RELEASE_BROWSER_CORE_IDENTITY_MISMATCH');
-  }
-  const emitted = Object.values(result.metafile.outputs);
-  if (emitted.some(file => file.imports.some(imported => imported.external))) throw new Error('RELEASE_BROWSER_EXTERNAL_IMPORT');
   return { entry: relative(directory, resolve(clientRoot, browserEntry)), output: join(directory, output),
-    bytes: emitted.reduce((sum, file) => sum + file.bytes, 0), modules: inputs.length, coreModules: coreFiles.length };
+    bytes: emitted.reduce((sum, file) => sum + file.bytes, 0), modules: inputs.length, coreModules,
+    native: await buildNativeBrowser(directory, coreRoot) };
 }

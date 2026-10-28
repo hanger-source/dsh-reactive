@@ -56,13 +56,15 @@ npm run test:remote
 
 真实模型试验显式选择独立数据目录、provider 和预算，保留精确工作区、会话、输入、调用、操作及日志。模型调用、原生服务试验、包安装和外部业务验收分别说明证据，互不替代。
 
-[日常 GitHub CI](.github/workflows/ci.yml) 使用公开 npm 依赖，完成构建、边界检查、核心与 Gateway 试验、示例严格编译，并将实际 tgz 安装到仓外的默认后台、可选原生能力与原生 UI 消费者，以 `skipLibCheck:false` 编译并执行。原生 UI 使用 React 18；另将同一物理安装中的纯合同、SDK 和可选 UI 入口按浏览器条件完整打包，拒绝未打包的外部依赖、后台 renderer 和另一份 core。它保留六包产物供审阅。独立的 [npm 发行工作流](.github/workflows/release.yml) 对 main 上的 annotated 发行 tag 准备、验证并发布同一份产物，使用 GitHub OIDC Trusted Publishing，随后从 npm registry 重新安装验收。
+[日常 GitHub CI](.github/workflows/ci.yml) 使用公开 npm 依赖，完成构建、边界检查、核心与 Gateway 试验、示例严格编译，并将实际 tgz 安装到仓外的默认后台、可选原生能力与原生 UI 消费者，以 `skipLibCheck:false` 编译并执行。原生 UI 使用独立的 React 与 ReactDOM 18；同一物理安装中的纯合同、SDK、可选 UI 入口及正式 SlotRenderer 消费者按浏览器条件打包，拒绝未打包的外部依赖、后台 renderer、重复 React 或另一份 core。真实 DOM 行为通过这些产物启动浏览器试验，见[发行与消费验证](docs/releasing.md)。CI 保留六包产物供审阅。独立的 [npm 发行工作流](.github/workflows/release.yml) 对 main 上的 annotated 发行 tag 准备、验证并发布同一份产物，使用 GitHub OIDC Trusted Publishing，随后从 npm registry 重新安装验收。
 
 保留并发修改和有效日志。只暂存本批文件，完成一批有相称验证的变化后本地提交；不要混入其他应用、凭据、临时探针或运行数据。
 
 ## 公共 API 与版本
 
 公共合同、运行语义、exports、依赖闭包和开发 Skill 都属于发行接口。变更这些内容时运行 `npm run changeset`，写明用户可观察的行为及升级影响。六个发行包使用同一版本；包间依赖与开发指导适用版本一并更新。破坏性变化提供明确迁移用法，不在生产代码中维持默认兼容分支。
+
+阶段提交记录完整工作批次，版本准备统一消费已经收齐的 Changesets；完成一个局部批次不要求立即升版。同一设计持续出现归属、生命周期或消费边界补丁时，先共同重整相关入口、owner 和直接消费者，再确定发行边界。大版本表达确实不兼容的公共模型变化，不能用版本数字代替框架建设进度。
 
 源码版本不能据此声称公共 npm 已发布。GitHub 提交或推送与 npm 发行是独立操作，后者需要明确授权。
 

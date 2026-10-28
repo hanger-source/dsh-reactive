@@ -13,6 +13,12 @@ const config = JSON.parse(await readFile(join(root, 'scripts/release.config.json
 assert.equal(config.registry, 'https://registry.npmjs.org');
 if (!process.argv[2]) throw new Error('REACTIVE_PACK_REPORT_REQUIRED');
 const report = resolve(process.argv[2]);
+const selected = process.argv.slice(3).map(argument => {
+  const kind = argument.startsWith('--consumer=') ? argument.slice('--consumer='.length) : undefined;
+  if (!consumerKinds.includes(kind)) throw new Error('REACTIVE_PACK_CONSUMER_INVALID: ' + argument);
+  return kind;
+});
+const kinds = selected.length ? [...new Set(selected)] : consumerKinds;
 const artifacts = JSON.parse(await readFile(report, 'utf8'));
 assert.equal(artifacts.length, config.packages.length);
 const packed = new Map(artifacts.map(item => [item.name, item]));
@@ -36,10 +42,12 @@ async function run(command, args, cwd) {
 }
 const location = await realpath(await mkdtemp(join(tmpdir(), 'dsh-reactive-packed-types-')));
 const tarballs = { host: join(dirname(report), packed.get('@hanger-source/dsh-reactive-dsh').filename),
-  core: join(dirname(report), packed.get('@hanger-source/dsh-reactive').filename) };
-for (const kind of consumerKinds) {
+  core: join(dirname(report), packed.get('@hanger-source/dsh-reactive').filename),
+  nativeUi: join(dirname(report), packed.get('@hanger-source/dsh-reactive-native-ui').filename) };
+for (const kind of kinds) {
   const directory = join(location, kind);
   await mkdir(directory);
+  console.log(JSON.stringify({ consumer: kind, directory, phase: 'installing' }));
   const names = consumerPackages(config, kind);
   const dependencies = Object.fromEntries(names.map(name => [name, join(dirname(report), packed.get(name).filename)]));
   const environment = await consumerEnvironment(config, kind, tarballs);

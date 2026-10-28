@@ -1,5 +1,10 @@
 import * as Cordis from '@deepseek-ai/cordis';
 import * as Store from '@deepseek-ai/dsh-client-store';
+import * as React from 'react';
+import * as JSXRuntime from 'react/jsx-runtime';
+import * as ReactDOM from 'react-dom';
+import * as ReactDOMClient from 'react-dom/client';
+import * as Slots from '@deepseek-ai/dsh-client-ui-slots';
 import * as Zod from 'zod';
 import { filter, firstValueFrom, timeout } from 'rxjs';
 import commands from '@deepseek-ai/dsh-commands/remote';
@@ -9,29 +14,62 @@ import subagents from '@deepseek-ai/dsh-subagent/remote';
 import { SessionId } from '@deepseek-ai/dsh-session/types';
 import { bindProgramClient, createAuthenticatedTransport } from '@hanger-source/dsh-reactive-client';
 import remotes from '@hanger-source/dsh-reactive-client/remote';
-import { retainNativeSession } from '@hanger-source/dsh-reactive-native-ui';
+import { nativeHooks, retainNativeSession } from '@hanger-source/dsh-reactive-native-ui';
 import { program } from './browser-contracts.mjs';
 
 const output = document.querySelector('output');
+const container = document.querySelector('#native-renderer');
 const check = (condition, label) => { if (!condition) throw new Error(label); };
 const rejects = async (pending, predicate) => {
   try { await pending; } catch (error) { check(predicate(error), 'UNEXPECTED_FAILURE:' + error); return; }
   throw new Error('EXPECTED_FAILURE');
 };
+const rendered = (predicate, label) => new Promise((resolve, reject) => {
+  const accept = () => {
+    if (!predicate()) return false;
+    observer.disconnect(); clearTimeout(deadline); resolve(); return true;
+  };
+  const observer = new MutationObserver(accept);
+  const deadline = setTimeout(() => { observer.disconnect(); reject(new Error(label + ':' + container.textContent)); }, 8000);
+  observer.observe(container, { subtree: true, childList: true, characterData: true });
+  accept();
+});
 const modules = window.__ModuleLoader__.create({ boot: window.__DSH_BOOT__, staticModules: {
   '@deepseek-ai/cordis': Cordis, '@deepseek-ai/dsh-client-store': Store, zod: Zod,
+  react: React, 'react/jsx-runtime': JSXRuntime, 'react-dom': ReactDOM, 'react-dom/client': ReactDOMClient,
+  '@deepseek-ai/dsh-client-ui-slots': Slots,
 } });
 const Registry = await modules.import('@deepseek-ai/dsh-typert-registry/client', location.href, {});
 const Gateway = await modules.import('@deepseek-ai/dsh-api-gateway/client', location.href, {});
 const { installConnection } = await modules.import('@deepseek-ai/dsh-client-connection/client', location.href, {});
 const FileUpload = await modules.import('@deepseek-ai/dsh-client-file-upload/client', location.href, {});
 const ClientSessions = await modules.import('@deepseek-ai/dsh-api-session-controller/client', location.href, {});
+const Renderer = await modules.import('@deepseek-ai/dsh-client-ui-renderer/client', location.href, {});
+const RemoteAccess = await modules.import('@deepseek-ai/dsh-api-remote-access/client', location.href, {});
+const UiSession = await modules.import('@deepseek-ai/dsh-client-ui-session/client', location.href, {});
 document.querySelector('button').addEventListener('click', async event => {
   event.currentTarget.disabled = true;
   const ctx = new Cordis.Context(), leases = [];
-  let delayed, sendsAfterClose = 0;
+  let delayed, sendsAfterClose = 0, mounted = 0, unmounted = 0, releaseView, actionHeld = false;
   const delayNextOpen = () => delayed = { received: Promise.withResolvers(), release: Promise.withResolvers(), entered: false };
+  const mountView = session => ctx.effect(() => {
+    const remove = ctx.slots.register({ name: 'root', inject: () => nativeHooks({ current: session.view('current') }) }, function NativeCurrent({ useCurrent }) {
+      const current = useCurrent(value => value);
+      React.useLayoutEffect(() => { mounted++; return () => { unmounted++; }; }, []);
+      return React.createElement('section', { 'aria-label': '原生资源观察' },
+        React.createElement('time', { 'data-native-current': true }, current.status === 'ready' ? current.value.toISOString() : current.status));
+    });
+    try {
+      const unmount = ctx.uiRenderer.mount(container);
+      return () => { unmount(); remove(); };
+    } catch (error) { remove(); throw error; }
+  }, 'native fixture root Slot and renderer');
+  const nativeGate = async action => {
+    const response = await fetch('/native-action/' + action, { method: action === 'entered' ? 'GET' : 'POST', signal: AbortSignal.timeout(8000) });
+    check(response.ok, 'NATIVE_ACTION_GATE:' + action + ':' + response.status);
+  };
   try {
+    check(React.version === '18.3.1' && ReactDOM.version.startsWith('18.3.1'), 'NATIVE_REACT_18_PLATFORM_REQUIRED');
     await ctx.plugin(Registry);
     installConnection(ctx, { interactions: 'answer', transport: createAuthenticatedTransport({ baseUrl: location.origin,
       createWebSocket(url) {
@@ -57,6 +95,8 @@ document.querySelector('button').addEventListener('click', async event => {
     await ctx.plugin(Gateway);
     for (const contribution of [commands, controller, uploads, subagents, remotes]) await ctx.remote.$mount(contribution);
     await ctx.plugin(FileUpload); await ctx.plugin(ClientSessions);
+    await ctx.plugin(Renderer);
+    await ctx.plugin(RemoteAccess); await ctx.plugin(UiSession);
     const sdk = await bindProgramClient(program, ctx);
     const { workspaceId, sessionId } = await fetch('/setup').then(response => response.json());
     const created = await sdk.create('work', { workspaceId, sessionId }); await created.release();
@@ -80,6 +120,8 @@ document.querySelector('button').addEventListener('click', async event => {
     const frozen = notifications;
     check(counts(sessionId).referenceCount === 1, 'RELEASE_ONLY_THIS_REFERENCE');
     await rejects(Promise.resolve().then(() => first.session.readView('current')), error => String(error).includes('REACTIVE_SCOPE_DISPOSED'));
+    releaseView = mountView(second.session);
+    await rendered(() => container.querySelector('time')?.textContent === '2026-10-26T00:00:00.000Z', 'NATIVE_ROOT_RESOURCE_BASELINE');
     const action = await second.session.resolveAction('check', null);
     const invocation = await action({ amount: '7' });
     const nativeActivity = second.session.invocation(invocation);
@@ -87,8 +129,19 @@ document.querySelector('button').addEventListener('click', async event => {
     check((await firstValueFrom(invocation.activity$.pipe(filter(value => value.state === 'returned'), timeout(8000)))).state === 'returned', 'INVOCATION_ACTIVITY_TERMINAL_SNAPSHOT');
     check(nativeActivity.getSnapshot() === invocation.activity.peek(), 'NATIVE_INVOCATION_USES_THE_SAME_RESOURCE_FACT');
     check((await second.session.readView('current')).toISOString() === '2026-10-26T00:00:07.000Z', 'PEER_REMAINS_LIVE');
+    await rendered(() => container.querySelector('time')?.textContent === '2026-10-26T00:00:07.000Z', 'NATIVE_ROOT_RESOURCE_UPDATED');
     check(notifications === frozen, 'RELEASED_UI_OBSERVER_STOPPED');
     stop();
+
+    await nativeGate('hold');
+    actionHeld = true;
+    const accepted = await action({ amount: '7' });
+    await nativeGate('entered');
+    await releaseView(); releaseView = undefined;
+    check(container.childElementCount === 0 && mounted === 1 && unmounted === 1, 'NATIVE_RENDERER_UNMOUNTS_REAL_SLOT_TREE');
+    await nativeGate('release');
+    actionHeld = false;
+    check((await accepted.result).at.toISOString() === '2026-10-26T00:00:07.000Z', 'UI_UNMOUNT_PRESERVES_ACCEPTED_BUSINESS');
 
     const gate = delayNextOpen(), cancelled = new AbortController(), reason = new Error('CANCEL_NATIVE_ACQUISITION');
     const rejected = rejects(retainNativeSession(program, ctx, sessionId, { signal: cancelled.signal }), error => error === reason);
@@ -104,17 +157,26 @@ document.querySelector('button').addEventListener('click', async event => {
     const reopened = await retainNativeSession(program, ctx, sessionId); leases.push(reopened);
     check(reopened.session.native !== oldBinding, 'NEW_NATIVE_GENERATION');
     check(await reopened.session.readView('current') instanceof Date, 'REOPENED_HOST_FACT_REMAINS');
+    releaseView = mountView(reopened.session);
+    await rendered(() => container.querySelector('time')?.textContent === '2026-10-26T00:00:07.000Z', 'REOPENED_NATIVE_ROOT_RESOURCE');
     const finalGate = delayNextOpen();
     const ended = rejects(retainNativeSession(program, ctx, sessionId), error => String(error).includes('REFERENCE_RELEASED'));
     await finalGate.received.promise; await ctx.fiber.dispose(); await ended;
     finalGate.release.resolve(); delayed = undefined;
     check(reopened.session.scope.disposed, 'CONTEXT_RELEASES_OWNED_UI');
+    check(container.childElementCount === 0 && mounted === 2 && unmounted === 2, 'CONTEXT_UNMOUNTS_NATIVE_RENDERER');
     const proof = await fetch('/proof').then(response => response.json());
-    check(proof.executions === 1 && proof.models === 0, 'NO_EXTRA_BUSINESS_OR_MODEL_EXECUTION');
+    check(proof.executions === 2 && proof.models === 0, 'NO_EXTRA_BUSINESS_OR_MODEL_EXECUTION');
     check(sendsAfterClose === 0, 'NO_SEND_AFTER_PHYSICAL_SOCKET_CLOSE:' + sendsAfterClose);
     output.textContent = JSON.stringify({ passed: true, sessionId, models: proof.models, executions: proof.executions,
-      sameGeneration: true, independentRelease: true, cancelledAcquisition: true, failedAcquisition: true, reopenedGeneration: true, contextClosedPending: true, sendsAfterClose, invocationActivity: true });
+      sameGeneration: true, independentRelease: true, cancelledAcquisition: true, failedAcquisition: true, reopenedGeneration: true, contextClosedPending: true, sendsAfterClose, invocationActivity: true,
+      nativeRenderer: true, react: React.version, domUpdated: true, unmountPreservesBusiness: true, contextUnmounted: true });
   } catch (error) { output.textContent = JSON.stringify({ passed: false, error: String(error), stack: error.stack }); }
-  finally { delayed?.release.resolve(); await Promise.all(leases.map(lease => lease.release())); await ctx.fiber.dispose(); }
+  finally {
+    delayed?.release.resolve();
+    if (actionHeld) await fetch('/native-action/release', { method: 'POST' });
+    await releaseView?.();
+    await Promise.all(leases.map(lease => lease.release())); await ctx.fiber.dispose();
+  }
 });
-output.textContent = '已装配正式 rc.3 Client Sessions，可验证引用归属';
+output.textContent = '已装配正式 rc.3 Client Sessions 与 Slot renderer，可验证资源呈现及引用归属';

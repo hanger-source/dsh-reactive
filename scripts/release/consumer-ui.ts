@@ -1,7 +1,9 @@
 import { defineAction, defineProgram, defineSurface, resourceView, z, type OperationContract, type OperationHandle, type Invocation, type Json } from '@hanger-source/dsh-reactive';
 import { bindProgramClient, type RemoteProgramSession, type RemoteServiceProgramSession } from '@hanger-source/dsh-reactive-client';
 import { createNativeActionViews, defineNativeActionView, bindNativeSession, retainNativeSession,
-  type NativeSession, type NativeActionViewProps } from '@hanger-source/dsh-reactive-native-ui';
+  nativeHooks, type NativeSession, type NativeActionViewProps } from '@hanger-source/dsh-reactive-native-ui';
+import type { SlotCore } from '@deepseek-ai/dsh-client-ui-slots';
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
 import { ConsumerModuleProgram, sessionResources, sharedSessionFacts, sessionControls, readSessionView, readSelectedRevision, callPublishedAction } from './consumer-session.js';
 
@@ -24,6 +26,12 @@ export const view = defineNativeActionView(action, (_props: NativeActionViewProp
 export const publicEntries = [createNativeActionViews, bindNativeSession, getDeveloperSkill] as const;
 export const developerSkill = getDeveloperSkill();
 export const publicView = (native: NativeSession<typeof program>, session: Session) => native.resource(session.viewResource('version'));
+export const registerNativeResource = (slots: SlotCore, native: NativeSession<typeof program>) => slots.register({
+  name: 'root', inject: () => nativeHooks({ current: native.view('version') }),
+}, function NativeVersion({ useCurrent }) {
+  const current = useCurrent(value => value);
+  return current.status === 'ready' ? current.value : current.status;
+});
 export const publicSessionFacts = (native: NativeSession<typeof program>, session: Session, signal: AbortSignal) =>
   native.resource(sharedSessionFacts(session, signal));
 export function operationState<D extends OperationContract>(native: NativeSession<typeof program>, operation: OperationHandle<D>) {

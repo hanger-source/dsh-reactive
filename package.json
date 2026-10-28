@@ -25,7 +25,7 @@
     "test:remote": "npm run build && npm run test --workspace @hanger-source/dsh-reactive-remote",
     "test:release": "node --test --test-timeout=30000 test/release-versioning.test.mjs",
     "test": "npm run test:core && npm run test:remote && npm run test --workspace @hanger-source/dsh-reactive-native-ui && npm run test:release",
-    "browser:remote": "npm run build && npm run browser:serve --workspace @hanger-source/dsh-reactive-remote",
+    "browser:remote": "npm run build && npm run browser:serve --workspace @hanger-source/dsh-reactive-remote --",
     "build:dsh": "wireit",
     "build:native-ui": "wireit",
     "changeset": "changeset",

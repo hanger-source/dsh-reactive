@@ -17,7 +17,10 @@
     "backendReact": "19.3.1",
     "backendReactTypes": "19.3.0",
     "backendReconciler": "0.34.0",
-    "uiReact": "18.2.0",
-    "uiReactTypes": "18.3.28"
+    "uiReact": "18.3.1",
+    "uiReactTypes": "18.3.28",
+    "uiZustand": "4.5.7",
+    "uiImmer": "10.1.1",
+    "uiDsh": "0.2.1-rc.3"
   }
 }
