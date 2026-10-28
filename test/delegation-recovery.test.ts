@@ -10,9 +10,9 @@ import { SessionId, pluginRecordOf } from '@deepseek-ai/dsh-session';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { Context } from '@deepseek-ai/cordis';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
-import { NativeChildWork, nativeChildReceiptSchema, z, type NativeChildReceipt, type ActionInvocation } from '@hanger-source/dsh-reactive';
+import { NativeChildWork, nativeChildReceiptSchema, defineProgram, programIdentity, SessionProgramMismatchError, z, type NativeChildReceipt, type ActionInvocation } from '@hanger-source/dsh-reactive';
 import { ChildCreationIncompleteError } from '@hanger-source/dsh-reactive-dsh';
-import { bootDelegationFixture, DelegateWork, inspectDelegationSession } from './delegation-support.ts';
+import { bootDelegationFixture, ChildProgram, DelegateWork, inspectDelegationSession } from './delegation-support.ts';
 import { text, tool } from './native-support.ts';
 
 type Inspection = Awaited<ReturnType<typeof inspectDelegationSession>>;
@@ -39,7 +39,7 @@ const hasCall = (request: GenerateOptions, name: string) => request.messages.som
 
 /** 复用同一正式场景；注入点只在模型供应商与真实原生持久边界。 */
 async function bootRecovery(options: { root?: string; parentSessionId?: string; holdChild?: boolean; capacity?: number;
-  forbidStart?: boolean; denyFollow?: boolean; installNative?(native: Context): void | Promise<void> } = {}) {
+  childProgram?: typeof ChildProgram; forbidStart?: boolean; denyFollow?: boolean; installNative?(native: Context): void | Promise<void> } = {}) {
   const childEntered = Promise.withResolvers<void>(), childCompleted = Promise.withResolvers<void>();
   const releaseChild = Promise.withResolvers<void>();
   const returned = Promise.withResolvers<{ invocation: Invocation; receipt: NativeChildReceipt }>();
@@ -47,7 +47,7 @@ async function bootRecovery(options: { root?: string; parentSessionId?: string; 
   const state = { starts: 0, childCalls: 0, modelCalls: 0 };
   let fixture!: Awaited<ReturnType<typeof bootDelegationFixture>>;
   fixture = await bootDelegationFixture('spawn', {
-    root: options.root, parentSessionId: options.parentSessionId,
+    root: options.root, parentSessionId: options.parentSessionId, childProgram: options.childProgram,
     subagents: { maxActiveSubagents: options.capacity ?? 8 },
     async installNative(native) {
       native.subagents.startActivation = new Proxy(native.subagents.startActivation, {
@@ -151,6 +151,36 @@ else {
   test('子receipt持久而父ACK尚未持久时硬崩溃，父恢复失败与并发等待完整撤回后只恢复原消息和Goal', async context => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-child-crash-'));
     const checkpoint = await crashAtCheckpoint(root, context);
+    const incompatible = defineProgram({ ...ChildProgram, version: ChildProgram.version + 1 });
+    const childResumes: string[] = [];
+    const changed = await bootRecovery({ root, parentSessionId: checkpoint.parentId, childProgram: incompatible, forbidStart: true,
+      installNative(native) {
+        const resume = native.agents.resume;
+        native.agents.resume = new Proxy(resume, { apply(target, receiver, args) {
+          if (args[0].resumeSessionId === checkpoint.receipt.childSessionId) childResumes.push(args[0].resumeSessionId);
+          return Reflect.apply(target, receiver, args);
+        } });
+      },
+    });
+    try {
+      await assert.rejects(changed.runtime.application.resume(checkpoint.parentId, changed.parentProgram), error => error instanceof SessionProgramMismatchError
+        && error.sessionId === checkpoint.receipt.childSessionId);
+      assert.equal(changed.runtime.native.agents.get(SessionId(checkpoint.parentId)), undefined,
+        '父恢复在steer子会话之前拒绝换约，并完成父Agent回滚');
+      for (const method of ['open', 'resume'] as const) {
+        await assert.rejects(changed.runtime.application[method](checkpoint.receipt.childSessionId, incompatible), error => {
+          assert.ok(error instanceof SessionProgramMismatchError);
+          assert.equal(error.sessionId, checkpoint.receipt.childSessionId);
+          assert.deepEqual(error.recorded, programIdentity(ChildProgram));
+          assert.deepEqual(error.current, programIdentity(incompatible));
+          return true;
+        });
+      }
+      assert.equal(changed.runtime.native.agents.get(SessionId(checkpoint.receipt.childSessionId)), undefined);
+      assert.deepEqual(childResumes, [], 'Program拒绝发生在原生child resume之前，不能靠创建后回滚掩盖');
+      assert.equal(changed.state.modelCalls, 0); assert.equal(changed.state.starts, 0);
+      assert.deepEqual(changed.errors, []);
+    } finally { changed.releaseChild(); await changed.dispose(); }
     const restoreEntered = Promise.withResolvers<void>(), restoreReleased = Promise.withResolvers<void>();
     const failure = new Error('PARENT_CHILD_RESTORE_READ_FAILED');
     const resumedParents: Agent[] = [], closedParents = new Set<Agent>();

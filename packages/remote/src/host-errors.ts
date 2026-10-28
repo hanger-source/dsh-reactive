@@ -2,7 +2,7 @@ import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-proto
 import type { TypertGatewayWireStream } from '@deepseek-ai/dsh-api-gateway';
 import { ChildCreationIncompleteError, CreationIncompleteError, InputFileNotStagedError, InvocationUnavailableError } from '@hanger-source/dsh-reactive-dsh';
 import { isAttachmentError } from '@deepseek-ai/dsh-attachment';
-import { z, ConversationAccessRevokedError, ActionBindingUnavailableError, ActionTargetMismatchError, ActionContractMismatchError, InputEditRejectedError, ProgramContractMismatchError, SharedProgramRequiredError } from '@hanger-source/dsh-reactive';
+import { z, ConversationAccessRevokedError, SessionProgramMismatchError, ActionBindingUnavailableError, ActionTargetMismatchError, ActionContractMismatchError, InputEditRejectedError, ProgramContractMismatchError, SharedProgramRequiredError } from '@hanger-source/dsh-reactive';
 import '@hanger-source/dsh-reactive-client/errors';
 import type { ProgramFailure } from '@hanger-source/dsh-reactive-client/types';
 
@@ -14,6 +14,10 @@ export function createProgramFailureMapper(wireStream: Pick<TypertGatewayWireStr
       : error instanceof ConversationAccessRevokedError
       ? new RemoteError('reactive/conversation-access-revoked', error.message, {
         sessionId: error.sessionId, workspaceId: error.workspaceId, reason: error.reason,
+      })
+      : error instanceof SessionProgramMismatchError
+      ? new RemoteError('reactive/session-program-mismatch', error.message, {
+        sessionId: error.sessionId, recorded: error.recorded, current: error.current,
       })
       : error instanceof ProgramContractMismatchError
       ? new RemoteError('reactive/program-contract-mismatch', error.message, { expected: error.expected, actual: error.actual })

@@ -19,5 +19,7 @@ export type EnvironmentAt<E extends AnyEnvironment, Id extends string> = E exten
 export function defineEnvironment<const Id extends string, P extends ProgramContract>(
   definition: Omit<Environment<P>, typeof environmentDefinition> & { readonly id: Id },
 ): Readonly<Environment<P> & { readonly id: Id }> {
-  return Object.freeze({ ...definition, [environmentDefinition]: true as const });
+  return Object.freeze({ ...definition,
+    ...definition.skills === undefined ? {} : { skills: Object.freeze([...definition.skills]) },
+    [environmentDefinition]: true as const });
 }

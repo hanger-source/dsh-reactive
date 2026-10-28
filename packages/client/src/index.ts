@@ -31,7 +31,7 @@ export { createAuthenticatedTransport } from './transport.ts';
 export type { AuthenticatedTransport, AuthenticatedTransportOptions } from './transport.ts';
 export { Inbox } from './contracts/inbox.ts';
 export { decodeProgramFailure, ActionAdmissionUnknownError, CreationUnknownError, CreationIncompleteError,
-  ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError, ConversationAccessRevokedError } from './contracts/errors.ts';
+  ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError, ConversationAccessRevokedError, SessionProgramMismatchError } from './contracts/errors.ts';
 export { ProgramJournal } from './journal.ts';
 export type { ProgramJournalOptions, ProgramJournalRequest } from './journal.ts';
 

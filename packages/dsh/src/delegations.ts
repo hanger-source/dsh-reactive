@@ -18,6 +18,7 @@ import type { ProgramContract, ProgramInput } from '@hanger-source/dsh-reactive/
 import type { ProgramImplementation } from '@hanger-source/dsh-reactive/kernel';
 import { canonical, goalBindingSchema } from './conversations/records.ts';
 import { restoreChildInput } from './conversations/pending-input.ts';
+import { sessionProgramBindingSchema, captureProgramBinding, assertSessionProgram } from './conversations/program-binding.ts';
 
 const sourceSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('tool'), callId: z.string(), rootCallId: z.string(), parentCallId: z.string().nullable() }).strict(),
@@ -25,7 +26,7 @@ const sourceSchema = z.discriminatedUnion('kind', [
 ]);
 const parentIdentitySchema = z.object({ sessionId: z.string(), workspaceId: z.string(), environmentId: z.string(), directory: z.string(), parentSessionId: z.string().nullable() }).strict();
 export const delegationRecordSchema = z.object({ command: nativeChildCommandSchema, childSessionId: z.string(), action: z.string(), actionVersion: z.number().int().positive().safe(),
-  mode: z.enum(['spawn', 'fork']), input: z.json(), target: z.json(), childInput: z.json(), objective: z.string().trim().min(1),
+  mode: z.enum(['spawn', 'fork']), program: sessionProgramBindingSchema, input: z.json(), target: z.json(), childInput: z.json(), objective: z.string().trim().min(1),
   parent: parentIdentitySchema, executor: sourceSchema, causes: inputReferenceSchema.array().readonly() }).strict();
 const childBindingSchema = z.object({ command: nativeChildCommandSchema, childSessionId: z.string(), action: z.string(), actionVersion: z.number().int().positive().safe() }).strict();
 const childReceiptRecordSchema = z.object({ command: nativeChildCommandSchema, receipt: nativeChildReceiptSchema }).strict();
@@ -221,6 +222,7 @@ export class NativeDelegations {
   private descriptor(record: DelegationRecord): Descriptor {
     const descriptor = this.#descriptors.get(actionIdentityKey({ name: record.action, version: record.actionVersion }));
     if (!descriptor || descriptor.mode !== record.mode) throw new Error('REACTIVE_DELEGATION_IMPLEMENTATION_REQUIRED');
+    assertSessionProgram(record.childSessionId, record.program, descriptor.program.definition);
     descriptor.program.definition.input.parse(record.childInput);
     return descriptor;
   }
@@ -246,7 +248,7 @@ export class NativeDelegations {
     const original = actionInvocationArguments(call);
     const record = delegationRecordSchema.parse({ command: { parentSessionId: parent.id, invocationId: execution.invocationId },
       childSessionId: randomUUID(), action: descriptor.action.name, actionVersion: descriptor.action.version, mode: descriptor.mode,
-      input: original.input, target: original.scope, childInput,
+      program: captureProgramBinding(descriptor.program.definition), input: original.input, target: original.scope, childInput,
       objective: descriptor.objective(input, call), parent: identity, executor: execution.source, causes: execution.inputs });
     await this.authorize(record, 'create', execution.source, signal, { input, target: call.scope });
     signal.throwIfAborted();
@@ -485,6 +487,8 @@ export class NativeDelegations {
     }
   }
   async resume(record: DelegationRecord, parent: Agent, signal: AbortSignal) {
+    signal.throwIfAborted();
+    this.descriptor(record);
     const child = await readNativeInspection(this.ctx, record.childSessionId, signal);
     const confirmed = this.childReceipt(child);
     if (!confirmed) throw new ChildCreationIncompleteError(record.command, this.reference(record));

@@ -7,7 +7,7 @@ import { useLayoutEffect } from 'react';
 import { filter, firstValueFrom, from, timeout, type Subscription } from 'rxjs';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
-import { combineResources, defineApplication, defineEnvironment, defineProgram, defineSurface, z, type Observation } from '@hanger-source/dsh-reactive';
+import { combineResources, defineApplication, defineEnvironment, defineProgram, defineSurface, ScopeDisposedError, z, type Observation } from '@hanger-source/dsh-reactive';
 import { implementProgram, NativeTools, useResource } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeCapabilities, nativeModel, type ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeApproval, type ApprovalOutcome, type ApprovalPolicy, type ApprovalRequestEvent, type NativeApprovalEvent, type NativeSessionApproval } from '@hanger-source/dsh-reactive-dsh/approval';
@@ -73,6 +73,62 @@ test('Approval政策资源与原生日志、hooks和Tool组合同源，冷读恢
     const audit = await first.readAudit();
     assert.deepEqual(audit.filter(event => event.type === 'approval/policy').map(event => event.data.policy), ['never', 'ask']);
     assert.equal(audit.some(event => event.type === 'approval/asked' || event.type === 'approval/decided'), false);
+
+    const store = runtime.native.get('sessions')!, persistence = runtime.native.get('sessionPersistence')!;
+    const flush = store.flush, open = persistence.open;
+    type AuditOutcome = { readonly ok: true; readonly value: readonly NativeApprovalEvent[] }
+      | { readonly ok: false; readonly error: unknown };
+    let gate: { entered: ReturnType<typeof Promise.withResolvers<void>>; release: ReturnType<typeof Promise.withResolvers<void>>;
+      returned: ReturnType<typeof Promise.withResolvers<void>> } | undefined;
+    let reads = 0;
+    const wait = <T>(work: Promise<T>) => firstValueFrom(from(work).pipe(timeout(3_000)));
+    store.flush = new Proxy(flush, { async apply(target, receiver, args) {
+      const flushed: Awaited<ReturnType<typeof flush>> = await Reflect.apply(target, receiver, args);
+      if (args[0]?.id === one!.id && gate) {
+        const current = gate; gate = undefined;
+        current.entered.resolve(); await current.release.promise; current.returned.resolve();
+      }
+      return flushed;
+    } });
+    persistence.open = new Proxy(open, { apply(target, receiver, args) {
+      if (args[0] === one!.id && args[1] === 'read') reads++;
+      return Reflect.apply(target, receiver, args);
+    } });
+    try {
+      for (const exit of ['caller', 'source', 'sdk'] as const) {
+        const sdk: ConversationHandle<typeof program> | undefined = exit === 'sdk' ? await runtime.application.open(one.id, program) : undefined;
+        const source: NativeSessionApproval = sdk ? approval.forSession(sdk) : exit === 'caller' ? captured.get(one.id)! : first;
+        const current = { entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>(), returned: Promise.withResolvers<void>() };
+        const controller = new AbortController(), reason = new Error('APPROVAL_AUDIT_CALLER_LEFT');
+        gate = current;
+        const outcome: Promise<AuditOutcome> = source.readAudit({ signal: controller.signal })
+          .then<AuditOutcome, AuditOutcome>(value => ({ ok: true, value }), (error: unknown) => ({ ok: false, error }));
+        try {
+          await wait(Promise.race([current.entered.promise, outcome.then(value => {
+            throw new Error('AUDIT_READ_DID_NOT_REACH_REAL_FLUSH', { cause: value });
+          })]));
+          const beforeReads = reads;
+          if (exit === 'caller') controller.abort(reason);
+          else if (exit === 'source') source.dispose();
+          else sdk!.release();
+          const completed: AuditOutcome = await wait(outcome);
+          assert.equal(completed.ok, false, '真实flush回执未放行时，审计消费者已经退出');
+          if (completed.ok) assert.fail('已退出审计读取不应交付结果');
+          if (exit === 'caller') assert.equal(completed.error, reason);
+          else if (exit === 'sdk') assert.equal(completed.error, sdk!.signal.reason);
+          else {
+            assert.ok(completed.error instanceof ScopeDisposedError);
+            assert.throws(() => source.policy.peek(), error => error === completed.error, '保留同一读侧owner的原退出reason');
+          }
+          assert.deepEqual(await second.readAudit(), [], '一个来源退等不阻塞其他Session的正式审计读取');
+          current.release.resolve(); await wait(current.returned.promise);
+          await new Promise<void>(resolve => setImmediate(resolve));
+          assert.equal(reads, beforeReads, '迟到flush回执复核原signal，不再继续打开持久读取');
+          assert.equal(models, 0); assert.equal(answers, 0);
+        } finally { current.release.resolve(); sdk?.release(); }
+      }
+    } finally { gate?.release.resolve(); store.flush = flush; persistence.open = open; }
+
     first.dispose();
     assert.throws(() => first.policy.peek(), /REACTIVE_SCOPE_DISPOSED/);
     const replacement = approval.forSession(one);

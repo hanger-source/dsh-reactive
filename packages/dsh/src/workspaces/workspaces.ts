@@ -7,11 +7,13 @@ import { WorkspaceId, workspaceDomainSpec, workspaceRecord, type Workspace as Na
 import type {} from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
 import { Scope, ConversationAccessRevokedError, createWorkspace } from '@hanger-source/dsh-reactive/kernel';
-import type { AnyEnvironment } from '@hanger-source/dsh-reactive/kernel';
+import type { AnyEnvironment, ProgramContract } from '@hanger-source/dsh-reactive/kernel';
 import type { Workspace, WorkspaceInfo, WorkspaceRegistration } from '@hanger-source/dsh-reactive/kernel';
 import { environmentPresetId } from '../programs/presets.ts';
+import { sessionProgramBindingSchema, captureProgramBinding, assertSessionProgram } from '../conversations/program-binding.ts';
 
-const bindingSchema = z.object({ application: z.string(), environmentId: z.string(), workspaceId: z.string() }).strict();
+const bindingSchema = z.object({ application: z.string(), environmentId: z.string(), workspaceId: z.string(),
+  program: sessionProgramBindingSchema }).strict();
 const creationSchema = z.object({ workspaceId: z.string() }).strict();
 declare module '@deepseek-ai/dsh-session/types' {
   interface PluginRecordMap {
@@ -142,10 +144,20 @@ export class Workspaces {
     }
     return { workspaceId: native.id, directory: native.path, title: native.title, sessionIds };
   }
-  bind(session: Session, workspace: ManagedWorkspace, environment: AnyEnvironment) {
+  bind(session: Session, workspace: ManagedWorkspace, environment: AnyEnvironment, program: ProgramContract) {
     this.assertPresent(workspace);
     appendPluginRecord(session, 'plugin:reactive/workspace', { application: this.application,
-      environmentId: environment.id, workspaceId: workspace.native.id });
+      environmentId: environment.id, workspaceId: workspace.native.id, program: captureProgramBinding(program) });
+  }
+  /** 实际Program由Session装配选择；child不能被父Environment的根Program替代。 */
+  verifyProgram(session: Session | SessionInspection, definition: ProgramContract): void {
+    const inspection = 'snapshotEvents' in session ? { meta: session.header, events: session.snapshotEvents(),
+      inheritedEventCount: session.inheritedEventCount } : session;
+    const records = this.bindings(inspection);
+    if (records.length !== 1) throw new Error('REACTIVE_WORKSPACE_BINDING_MISMATCH');
+    const binding = bindingSchema.parse(records[0]);
+    if (binding.application !== this.application) throw new Error('REACTIVE_WORKSPACE_BINDING_MISMATCH');
+    assertSessionProgram(inspection.meta.id, binding.program, definition);
   }
   complete(session: Session, workspace: ManagedWorkspace, environment: AnyEnvironment) {
     this.verify(session, workspace, environment);

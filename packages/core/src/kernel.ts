@@ -7,6 +7,7 @@ export { type AssistantProgressFrame, type AssistantStream, type ConversationEve
 export type { ProgramSessionClient, HumanProgramSessionClient, ProgramGoalControl, ProgramCancelResult, ProgramRequestStatus } from './conversations/client.ts';
 export { InputEditRejectedError } from './conversations/input-edit.ts';
 export { ConversationAccessRevokedError } from './conversations/access.ts';
+export { SessionProgramMismatchError } from './conversations/program-identity.ts';
 export { admittedSubmissionSchema, continuationSchema, conversationCreateOptionsSchema, creationReferenceSchema, inputReferenceSchema, requestActivitySchema, submissionSchema, type AdmittedPromptContentPart, type AdmittedSubmission, type ConversationActivity, type CreationReference, type EncodedFileUploadRequest, type FileUploadReceiptId, type FileUploadSource, type FileUploadValue, type InputReference, type Json, type NormalizedSubmission, type PromptContentPart, type UploadFileOptions, waitSchema, workspaceRegistrationSchema } from './conversations/protocol.ts';
 export { createRequestHandle, type ConversationProgressSnapshot, type RequestHandle } from './conversations/request.ts';
 export { createFileUploadInvocation } from './files/invocation.ts';
@@ -17,7 +18,7 @@ export { humanAnswerSchema, type HumanAnswer, type HumanAskOptions, type HumanAs
 export { createHumanQuestionResolver, type HumanQuestionHandle, type HumanQuestionResolver } from './participation/questions.ts';
 export type { HumanSnapshot } from './participation/contract.ts';
 export { type HumanInputDeclaration, type SkillDeclaration } from './program/declarations.ts';
-export { assertExpectedProgram, captureProgramExpectation, assertSharedProgramDefinition, type ProgramContract, type SharedProgramContract, type ProgramExpectation, type ProgramImplementation, type ProgramInput, type ProgramParsedInput } from './program/definition.ts';
+export { assertExpectedProgram, assertProgramDefinition, captureProgramExpectation, assertSharedProgramDefinition, type ProgramContract, type SharedProgramContract, type ProgramExpectation, type ProgramImplementation, type ProgramInput, type ProgramParsedInput } from './program/definition.ts';
 export { programIdentity, assertProgramIdentity, ProgramContractMismatchError, SharedProgramRequiredError, type ProgramContractIdentity } from './program/identity.ts';
 export { ProgramInstance, type BoundFollow, type BoundOffer } from './program/instance.ts';
 export { connect } from './reactivity/observable.ts';

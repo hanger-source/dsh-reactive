@@ -103,6 +103,8 @@ renderer 在 React commit 后收集整棵树的声明，经过私有运行时品
 
 每个应用与环境共同确定稳定 Preset 身份。Loader 登记的环境插件在原生 standing scope 中持有静态指令、静态 filesystem Skill provider 和作用域内的 Agent 接入。创建与恢复均挂载精确的 Preset，session header 与工作区绑定共同核验身份。原生 registry 持有 standing scope 的代际引用，宿主先释放自己持有的 Agent handles，再退休声明。
 
+Environment 定义捕获自有 Skill 声明数组；Application 定义捕获环境声明及数组，保留 Program 实现对象。异步安装读取这份已校验声明，不借用调用者后续可改的配置。Session 的单条持久归属固定实际 Program 合同，共享定义记录 name/version，无名本地明确为 null；子委托受理意图在 child 出生前固定其目标。恢复在输入解析、Program 图构造及 Agent 激活之前核验原身份，不能以当前环境配置覆盖历史事实。
+
 动态 Context、Offer 和 Skill 接在具体 Agent 上。原生 loop 提取本步输入后先进行 `system-prompt/assemble`，再执行 `agent/pre-step`。宿主在 assemble 边界更新输入关联、核验应用准入、冲刷组件声明，等待当前上下文、步骤检查与选中 Skill，随后通过公开 API 重新装配。
 
 准备期间的帧替换、上下文失效或 Skill catalog 变化会使稳定性检查失败，宿主重新读取当前集合。Context 只把准备完成的文本交给原生 prompt provider；模型请求保留该步骤取得的装配，工具实际调用时再核验当前绑定与可用性。业务权限、数据修订和副作用条件仍由业务 owner 核验。

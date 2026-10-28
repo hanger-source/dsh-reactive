@@ -6,7 +6,11 @@
 
 纯合同 `defineProgram` → `/program` 的 `implementProgram` → `defineEnvironment({ id, instructions, program, skills? })` → `defineApplication({ name, environments, admit })`。admit 消费 `AdmittedSubmission`：正文已是宿主准入的 text/attachment refs，首次投递与模型消费前使用同形合同，并核真实 actor/participant。
 
+Environment 捕获自己的 skills 数组，Application 捕获环境声明及数组，Program 实现保原对象。定义后的调用者数组或环境副本变化不会改写异步装配；更换环境配置需要重新定义并挂载应用。
+
 允许远程消费的根定义必须使用具名 defineProgram 的 SharedProgramContract；纯本地 Program 可保持无名，Environment 和模块 Surface 不因此增加名称。Program name/version 是发布者的共享合同身份，version 默认 1、独立于 npm 包版本。Gateway 按请求中的预期身份核实际目标，create、completeCreation、resume 先核再进入副作用；本地 open/resume 传实际定义时仍要求 exact 对象，不按名称替换定义。
+
+持久 Session 保存实际 Program 的共享身份，无名本地明确为 null；子委托出生前的持久意图也固定目标。恢复先核原身份，再解码旧输入、构造 Program 或激活 Agent。SessionProgramMismatchError 从 core 导入，保 sessionId、recorded、current，远程 SDK 还原同一类型；当前宿主和SDK都换约也不能接管旧Session。null与共享身份转换拒绝，缺少program字段的旧记录直接拒绝，不猜测迁移或补成当前定义。
 
 原生 Workspace 移除 Session 成员时，旧 Program 图、本地和原生 SDK 的读取与准入资格永久失效，工作区共享资源及其他成员不受影响。重新加入后显式 open/resume 取得新句柄；已驻留的同一个 Agent 只更换退出的 Program 安装。ConversationAccessRevokedError 从 core 导入，保留 sessionId、workspaceId 和 membership-removed/workspace-deleted/access-expired 原因。句柄 signal/accessId 只描述借用资格，不能用于取消已受理执行；Invocation、Job、独立 Operation 和已提交输入继续沿原 owner 结算。
 
@@ -121,6 +125,8 @@ Schedule 创建与 Team spawn/send 尚无 Program 来源准入接点。它们与
 Approval 的 `capability.forSession(source).policy` 提供 ResourceReader，read(signal)、peek、subscribe、values$、observations$ 与 useResource 使用同一份政策观察；policy$ 直接是其 values$。首次观察读取正式会话切面，相关 approval/policy 日志和真实 Agent 代际变化先撤下旧 ready 再重读；读取错误保留为 error，后续正式通知可恢复。冷会话可以读取持久政策，不恢复 Agent；没有会话 override 时使用已确认切面对应的部署默认政策。
 
 政策值不是一次调用的 grant。setPolicy 仍要求真实活跃 Agent，由原生服务追加日志；SDK 退出只释放观察，不改变政策。audit$ 与 readAudit 保留原生 asked/decided/policy 事件的顺序与身份，历史 asked 不代表仍可批准。业务问答继续与原生权限批准分开，读取、组合或展示政策不会触发 answerer。Clock readings$ 保留原生日志的实际采样事件，不根据政策或工具资源合成批准或时间事件。
+
+readAudit({ signal }) 在调用者、能力来源或原SDK退出时及时结束本次等待，保留原取消原因。原生持久化flush和读取句柄的finally清理仍归原owner，退等不表示它们已经停止；迟到结果复核原资格，不再发布或授予批准。
 
 批准能力安装退出时，尚未决策的本安装请求沿官方 Approval.request 的取消路径结算，自有 answerer 和 provided 原生 UI answerer 的迟到批准都不能重新授予 grant。provided 只借用回答能力，不转移外部回答者的销毁责任；已经记录的原生决定不因随后退出而改写。answerer 应使用收到的请求 signal，不能把历史 asked 记录重新解释为活跃批准请求。
 

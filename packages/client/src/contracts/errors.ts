@@ -1,8 +1,8 @@
 import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-protocol';
 import { z } from 'zod';
-import { ActionContractMismatchError, ConversationAccessRevokedError, programIdentity, type ActionIdentity, type NativeChildCommand, type NativeChildReference, type ProgramContractIdentity } from '@hanger-source/dsh-reactive';
+import { ActionContractMismatchError, ConversationAccessRevokedError, SessionProgramMismatchError, programIdentity, type ActionIdentity, type NativeChildCommand, type NativeChildReference, type ProgramContractIdentity } from '@hanger-source/dsh-reactive';
 import type { ProgramCreationReference, ProgramFailure, ProgramIdentity } from './types.ts';
-export { ConversationAccessRevokedError } from '@hanger-source/dsh-reactive';
+export { ConversationAccessRevokedError, SessionProgramMismatchError } from '@hanger-source/dsh-reactive';
 
 /** 接受状态未被确认；此错误从不触发自动重发 Action。 */
 export class ActionAdmissionUnknownError extends Error {
@@ -46,6 +46,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'reactive/action-target-mismatch': { readonly name: string; readonly reason: 'target-mismatch' };
     'reactive/action-contract-mismatch': { readonly expected: ActionIdentity; readonly actual: ActionIdentity };
     'reactive/program-contract-mismatch': { readonly expected: ProgramContractIdentity; readonly actual: ProgramContractIdentity };
+    'reactive/session-program-mismatch': { readonly sessionId: string; readonly recorded: ProgramContractIdentity | null; readonly current: ProgramContractIdentity | null };
     'reactive/shared-program-required': Record<string, never>;
     'reactive/input-edit-rejected': { readonly requestId: string; readonly reason: 'unavailable' | 'actor-mismatch' | 'content-conflict' | 'changed' };
     'reactive/conversation-access-revoked': { readonly sessionId: string; readonly workspaceId: string; readonly reason: 'membership-removed' | 'workspace-deleted' | 'access-expired' };
@@ -55,7 +56,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
 const actionIdentitySchema = z.object({ name: z.string(), version: z.number().int().positive().safe() }).strict();
 
 /** 正式 failure 已由 Gateway/贡献合同核验，客户端保留完整公开 details。 */
-export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError | ConversationAccessRevokedError | ActionContractMismatchError {
+export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError | ConversationAccessRevokedError | SessionProgramMismatchError | ActionContractMismatchError {
   if (value.code === 'reactive/action-contract-mismatch') {
     const details = z.object({ expected: actionIdentitySchema, actual: actionIdentitySchema }).strict().parse(value.details);
     return new ActionContractMismatchError(details.expected, details.actual);
@@ -64,6 +65,11 @@ export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { 
     const details = z.object({ sessionId: z.string(), workspaceId: z.string(),
       reason: z.enum(['membership-removed', 'workspace-deleted', 'access-expired']) }).strict().parse(value.details);
     return new ConversationAccessRevokedError(details.sessionId, details.workspaceId, details.reason);
+  }
+  if (value.code === 'reactive/session-program-mismatch') {
+    const identity = z.object({ name: z.string(), version: z.number().int().positive().safe() }).strict().nullable();
+    const details = z.object({ sessionId: z.string(), recorded: identity, current: identity }).strict().parse(value.details);
+    return new SessionProgramMismatchError(details.sessionId, details.recorded, details.current);
   }
   const details = z.union([z.array(z.json()), z.record(z.string(), z.json())]).parse(value.details);
   return new RemoteError(value.code as RemoteErrorCode, value.message, details);

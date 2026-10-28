@@ -18,7 +18,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import { expandAssistantStream } from '@deepseek-ai/dsh-llm/assistant-stream';
 import { Context, Expose, useAction, useResource } from '@hanger-source/dsh-reactive/program';
 import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, implementResource,
-  defineReaction, implementReaction, observeResource, programIdentity, ProgramContractMismatchError, ConversationAccessRevokedError, resourceView, shareResource, Scope, z, type Observation, type ResourceReadable, type ProgramProps, type ProgramWorkspace,
+  defineReaction, implementReaction, observeResource, programIdentity, ProgramContractMismatchError, SessionProgramMismatchError, ConversationAccessRevokedError, resourceView, shareResource, Scope, z, type Observation, type ResourceReadable, type ProgramProps, type ProgramWorkspace,
   type LocalResourceOptions, type LocalReactionOptions, type AssistantProgressFrame } from '@hanger-source/dsh-reactive';
 import { CreationIncompleteError, mountApplication } from '@hanger-source/dsh-reactive-dsh';
 import { boot, text } from './native-support.ts';
@@ -346,6 +346,89 @@ test('真实存储拒写后沿原创建引用完成登记，原生工作区移�
     await assert.rejects(app.host.resume(reference!.sessionId), /REACTIVE_WORKSPACE_MEMBERSHIP_REQUIRED/);
     await assert.rejects(app.host.completeCreation(reference!), /REACTIVE_WORKSPACE_MEMBERSHIP_REQUIRED/);
     assert.equal(modelCalls, 0);
+    assert.deepEqual(app.errors, []);
+  } finally { await app.dispose(); }
+});
+
+test('持久Session及未完成创建先核原Program身份，共享换约和具名本地转换不能在恢复中接管旧会话', { timeout: 40_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-persisted-program-'));
+  const home = join(root, 'home'), medium = join(home, 'state');
+  const surface = defineSurface({ views: {}, actions: {} });
+  const shared = (version: number) => defineProgram({ name: 'persisted_owner', version, input: z.null(), surface });
+  const local = () => defineProgram({ input: z.null(), surface });
+  let renders = 0, models = 0;
+  const definition = (delivery: ReturnType<typeof shared> | ReturnType<typeof local>, paper: ReturnType<typeof shared> | ReturnType<typeof local>) =>
+    defineApplication({ name: 'persisted-program', admit: async () => {}, environments: [
+      defineEnvironment({ id: 'delivery', instructions: '交付', program: implementProgram(delivery, { Component() { renders++; return null; } }) }),
+      defineEnvironment({ id: 'paper', instructions: '本地', program: implementProgram(paper, { Component() { renders++; return null; } }) }),
+    ] });
+  const respond = async function* () { models++; yield* text('unused'); };
+  let app = await boot(home, definition(shared(1), local()), respond);
+  try {
+    const completed = await app.host.create('delivery', { workspaceId: app.workspace.workspaceId });
+    const localSession = await app.host.create('paper', { workspaceId: app.workspace.workspaceId });
+    const reference = { sessionId: completed.id, workspaceId: app.workspace.workspaceId, environmentId: 'delivery' };
+    const localReference = { sessionId: localSession.id, workspaceId: app.workspace.workspaceId, environmentId: 'paper' };
+    completed.release(); localSession.release();
+    let incomplete: CreationIncompleteError['reference'] | undefined;
+    const preserved = join(root, 'preserved-state');
+    await rename(medium, preserved);
+    await writeFile(medium, 'storage unavailable', { flag: 'wx' });
+    try {
+      await assert.rejects(app.host.create('delivery', { workspaceId: reference.workspaceId }), error => {
+        if (!(error instanceof CreationIncompleteError)) return false;
+        incomplete = error.reference; return true;
+      });
+    } finally {
+      await rename(medium, join(root, 'unavailable-medium-marker'));
+      await rename(preserved, medium);
+    }
+    assert.ok(incomplete);
+    await app.dispose();
+
+    // 当前部署和调用者都声明v2，仍不能把原v1持久会话解释为v2。
+    const changed = shared(2);
+    const changedExpectation = { contract: programIdentity(changed) };
+    app = await boot(home, definition(changed, local()), respond);
+    let before = renders;
+    for (const port of [app.host, app.host.service()]) {
+      for (const original of [reference, incomplete!]) {
+        const mismatch = (error: unknown) => error instanceof SessionProgramMismatchError
+          && error.sessionId === original.sessionId && error.recorded?.version === 1 && error.current?.version === 2;
+        if (original === reference) {
+          await assert.rejects(port.open(original.sessionId, changedExpectation), mismatch);
+          await assert.rejects(port.resume(original.sessionId, changedExpectation), mismatch);
+        }
+        await assert.rejects(port.completeCreation(original, changedExpectation), mismatch);
+        assert.equal(app.native.agents.get(SessionId(original.sessionId)), undefined);
+      }
+    }
+    assert.equal(renders, before, '换约在Program求值及补齐副作用之前拒绝');
+    await app.dispose();
+
+    app = await boot(home, definition(local(), shared(1)), respond);
+    before = renders;
+    for (const port of [app.host, app.host.service()]) {
+      for (const original of [reference, incomplete!, localReference]) {
+        await assert.rejects(port.completeCreation(original), SessionProgramMismatchError);
+        if (original !== incomplete) await assert.rejects(port.open(original.sessionId), SessionProgramMismatchError);
+        assert.equal(app.native.agents.get(SessionId(original.sessionId)), undefined);
+      }
+    }
+    assert.equal(renders, before, '具名与本地Program转换也不能接管已有Session');
+    await app.dispose();
+
+    // 新对象保相同共享身份可恢复；null只保原无名归属，不声称本地函数跨重启等价。
+    const sameShared = shared(1), sameLocal = local();
+    app = await boot(home, definition(sameShared, sameLocal), respond);
+    const restored = await app.host.open(reference.sessionId, sameShared);
+    const restoredLocal = await app.host.service().open(localReference.sessionId, sameLocal);
+    assert.equal(restored.definition, sameShared); assert.equal(restoredLocal.definition, sameLocal);
+    assert.equal(app.native.agents.get(SessionId(reference.sessionId)), undefined, '冷读不启动原生Agent');
+    restored.release(); restoredLocal.release();
+    const completedLater = await app.host.completeCreation(incomplete!, sameShared);
+    assert.equal(completedLater.id, incomplete!.sessionId); completedLater.release();
+    assert.equal(models, 0);
     assert.deepEqual(app.errors, []);
   } finally { await app.dispose(); }
 });

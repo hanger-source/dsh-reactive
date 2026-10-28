@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { symbols, type Context, type Fiber } from '@deepseek-ai/cordis';
@@ -12,6 +12,7 @@ import { defineApplication, defineEnvironment, defineOperation, defineProgram, d
 import { implementProgram } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, mountApplication, nativeModel, requireActivePlugin, type ApplicationAssembly, type ApplicationHost, type NativeCapability } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
+import { createNativeSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { boot } from './native-support.ts';
 
 function definition(name: string) {
@@ -46,6 +47,23 @@ function capability(name: string, beforeRelease?: () => void | Promise<void>, st
 
 test('应用模块只在factory选择原生能力与恢复owner，独立Runtime安装一次并从文件恢复业务结果', { timeout: 15_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-assembly-runtime-'));
+  const workMethod = join(directory, 'work-method'), analysisMethod = join(directory, 'analysis-method');
+  await Promise.all([workMethod, analysisMethod].map(path => mkdir(path, { recursive: true })));
+  await Promise.all([
+    writeFile(join(workMethod, 'SKILL.md'), '---\nname: assembly-work\ndescription: 工作方法\n---\n\nORIGINAL_WORK_METHOD\n'),
+    writeFile(join(analysisMethod, 'SKILL.md'), '---\nname: assembly-analysis\ndescription: 分析方法\n---\n\nORIGINAL_ANALYSIS_METHOD\n'),
+  ]);
+  const contract = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+  const program = implementProgram(contract, { Component: () => null });
+  const replacement = implementProgram(defineProgram({ input: contract.input, surface: contract.surface }), { Component: () => null });
+  const workSkills = [workMethod];
+  const work = defineEnvironment({ id: 'work', instructions: '使用已定义的工作方法', skills: workSkills, program });
+  // Environment必须已经捕获声明；后续Application构造不能替它延后取得Skill目录。
+  workSkills.splice(0, 1, analysisMethod);
+  const analysisSkills = [analysisMethod];
+  const analysis = { ...defineEnvironment({ id: 'analysis', instructions: '使用已定义的分析方法', program }), skills: analysisSkills };
+  const environments = [work, analysis];
+  const application = defineApplication({ name: 'assembly-runtime', admit: async () => {}, environments });
   const receiptFile = join(directory, 'accepted.json');
   const receipt = { command: 'accepted-a', reference: 'operation-a', state: { status: 'complete' as const, artifact: 'artifact-a' } };
   await writeFile(receiptFile, JSON.stringify(receipt));
@@ -65,36 +83,62 @@ test('应用模块只在factory选择原生能力与恢复owner，独立Runtime�
     },
   });
   const native = capability('assembly-runtime-selection');
+  const skills = createNativeSkills({ service: 'provided' });
   let assembly!: ApplicationAssembly;
   let modelCalls = 0;
-  const runtime = await createRuntime(selected => {
+  const model = nativeModel({ provider: 'assembly', model: 'unused', create: () => new class extends LlmAdapter {
+    async *stream() { modelCalls++; throw new Error('ASSEMBLY_QUERY_MUST_NOT_CALL_MODEL'); }
+  }() });
+  const providerEntered = Promise.withResolvers<void>(), providerReleased = Promise.withResolvers<void>();
+  const starting = createRuntime(selected => {
     assembly = selected;
     assert.equal(selected.native(native.selected), native.selected);
     selected.native(native.selected);
+    selected.native(skills);
     assert.equal(selected.operation(owner), owner);
     selected.operation(owner);
-    return definition('assembly-runtime');
+    return application;
   }, {
     home: join(directory, 'home'), actorId: 'assembly-reader',
-    model: nativeModel({ provider: 'assembly', model: 'unused', create: () => new class extends LlmAdapter {
-      async *stream() { modelCalls++; throw new Error('ASSEMBLY_QUERY_MUST_NOT_CALL_MODEL'); }
-    }() }),
+    model: { ...model, async install(ctx, home) {
+      await model.install(ctx, home);
+      providerEntered.resolve();
+      await providerReleased.promise;
+    } },
   });
+  let runtime: Awaited<typeof starting> | undefined;
   try {
+    await Promise.race([providerEntered.promise, starting]);
+    // 正式provider尚未完成安装，调用者仍可修改自己的配置；本次应用沿定义时的声明继续装配。
+    analysis.program = replacement;
+    analysisSkills.splice(0, 1, workMethod);
+    environments.splice(0, environments.length, analysis, analysis);
+    providerReleased.resolve();
+    runtime = await starting;
     assert.equal(native.installed, 1);
     assert.deepEqual(native.homes, [runtime.home]);
     assert.throws(() => assembly.native(native.selected), /REACTIVE_APPLICATION_ASSEMBLY_CLOSED/u);
     assert.throws(() => assembly.operation(owner), /REACTIVE_APPLICATION_ASSEMBLY_CLOSED/u);
     const workspace = await runtime.application.createWorkspace({ directory });
-    const session = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
+    const session = await runtime.application.create('work', { workspaceId: workspace.workspaceId }, contract);
     try {
+      assert.equal((await skills.forSession(session).definition('assembly-work').read())?.content.trim(), 'ORIGINAL_WORK_METHOD');
+      assert.equal(await skills.forSession(session).definition('assembly-analysis').read(), undefined);
       assert.deepEqual(await session.locateOperation(operation, receipt.command), { status: 'accepted', reference: receipt.reference, state: receipt.state });
       assert.deepEqual(await (await session.attachOperation(operation, receipt.reference)).settled(), receipt.state);
     } finally { session.release(); }
+    const other = await runtime.application.create('analysis', { workspaceId: workspace.workspaceId }, contract);
+    try {
+      assert.equal((await skills.forSession(other).definition('assembly-analysis').read())?.content.trim(), 'ORIGINAL_ANALYSIS_METHOD');
+      assert.equal(await skills.forSession(other).definition('assembly-work').read(), undefined);
+    } finally { other.release(); }
     assert.equal(modelCalls, 0);
-  } finally { await runtime.dispose(); }
+  } finally {
+    providerReleased.resolve();
+    await (runtime ?? await starting).dispose();
+  }
   assert.equal(native.released, 1);
-  await runtime.dispose();
+  await (await starting).dispose();
   assert.equal(native.released, 1);
 });
 

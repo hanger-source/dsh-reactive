@@ -29,6 +29,7 @@ export const ParentProgram = defineProgram({ name: 'delegation_parent', input: z
 export interface DelegationFixtureOptions {
   readonly root?: string;
   readonly parentSessionId?: string;
+  readonly childProgram?: typeof ChildProgram;
   readonly subagents?: RuntimeOptions['subagents'];
   readonly declaration$?: Observable<boolean>;
   respond(request: GenerateOptions): AsyncIterable<StreamChunk>;
@@ -41,6 +42,7 @@ export interface DelegationFixtureOptions {
 /** 正式 Runtime 与原生 provider；只在供应商模型边界注入确定性适配器。 */
 export async function bootDelegationFixture(mode: 'spawn' | 'fork', options: DelegationFixtureOptions) {
   const declaration$ = options.declaration$ ?? of(true);
+  const childProgram = options.childProgram ?? ChildProgram;
   const root = options.root ?? await mkdtemp(join(tmpdir(), 'dsh-reactive-delegation-' + mode + '-'));
   const directory = join(root, 'workspace');
   await mkdir(directory, { recursive: true });
@@ -51,7 +53,7 @@ export async function bootDelegationFixture(mode: 'spawn' | 'fork', options: Del
   const childComplete = implementAction(CompleteChild, { execute(_input, call) {
     call.completeGoal(); options.onChildComplete?.(call); return true;
   } });
-  const childImplementation = implementProgram(ChildProgram, { Component({ conversation }) {
+  const childImplementation = implementProgram(childProgram, { Component({ conversation }) {
     useRelation(() => conversation.inputs$.pipe(tap(inputs => {
       if (inputs.length) childInputs.set(conversation.identity.sessionId, inputs);
     })), [conversation]);
@@ -94,7 +96,7 @@ export async function bootDelegationFixture(mode: 'spawn' | 'fork', options: Del
   const workspace = await runtime.application.createWorkspace({ directory });
   const parent = options.parentSessionId ? await runtime.application.open(options.parentSessionId, ParentProgram)
     : await runtime.application.create('work', { workspaceId: workspace.workspaceId });
-  return { root, runtime, workspace, parent, parentProgram: ParentProgram, childProgram: ChildProgram, delegate: DelegateWork,
+  return { root, runtime, workspace, parent, parentProgram: ParentProgram, childProgram, delegate: DelegateWork,
     rawInput: { at: delegationDate, job: 'ai-job' }, rawScope: delegationScope, errors, invocations, admissions, childInputs,
     dispose: () => runtime.dispose() };
 }

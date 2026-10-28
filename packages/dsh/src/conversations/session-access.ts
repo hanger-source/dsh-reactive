@@ -15,6 +15,7 @@ export interface NativeSessionAccess {
   workspaceRoot(): string;
   readonly liveAgent$: Observable<Agent | undefined>;
   liveAgent(): Agent | undefined;
+  /** signal 结束本次借用读取的等待；原生 flush、持久句柄清理仍由原 owner 结算。 */
   inspect(signal?: AbortSignal): Promise<SessionInspection>;
 }
 

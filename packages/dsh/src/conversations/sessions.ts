@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { BehaviorSubject, map, distinctUntilChanged } from 'rxjs';
+import { BehaviorSubject, map, distinctUntilChanged, firstValueFrom } from 'rxjs';
 import { isAbsolute } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
@@ -13,6 +13,7 @@ import { canonical } from "./records.ts";
 import { type Workspaces, type ManagedWorkspace } from "../workspaces/workspaces.ts";
 import { conversationCreateOptionsSchema, creationReferenceSchema, workspaceRegistrationSchema, type CreationReference } from "@hanger-source/dsh-reactive/kernel";
 import { assertExpectedProgram, type ProgramExpectation } from "@hanger-source/dsh-reactive/kernel";
+import { abortable } from '@hanger-source/dsh-reactive';
 import type { ProgramImplementation } from "@hanger-source/dsh-reactive/kernel";
 import { type NativeDelegations, type DelegationRecord } from "../delegations.ts";
 import type { HostOptions } from '../applications/options.ts';
@@ -190,6 +191,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
     }
     async compose(inspection: SessionInspection, workspace: ManagedWorkspace, environment: AnyEnvironment, implementation: ProgramImplementation = environment.program, child?: DelegationRecord, agent?: Agent, previous?: LiveConversation): Promise<ConversationSession> {
         this.workspaces.verifyInspection(inspection, workspace, environment);
+        this.workspaces.verifyProgram(inspection, implementation.definition);
         this.workspaces.assertMemberHeader(inspection.meta, workspace, environment);
         if (!child && (inspection.meta.origin || inspection.meta.parentSession || inspection.meta.isSeeded))
             throw new Error('REACTIVE_ROOT_CONVERSATION_REQUIRED');
@@ -274,13 +276,14 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             workspace = parentWorkspace(child.record, parent);
             const own = agent.session.snapshotEvents().slice(agent.session.inheritedEventCount);
             if (!own.some(event => pluginRecordOf(event)?.type === 'plugin:reactive/workspace')) {
-                this.workspaces.bind(agent.session, workspace, environment);
+                this.workspaces.bind(agent.session, workspace, environment, child.implementation.definition);
                 await this.workspaces.attach(agent.session, workspace, environment);
                 this.workspaces.complete(agent.session, workspace, environment);
                 await this.facts.flush(agent);
             }
             else {
                 const inspection = { meta: agent.session.header, events: agent.session.snapshotEvents(), inheritedEventCount: agent.session.inheritedEventCount };
+                this.workspaces.verifyProgram(inspection, child.implementation.definition);
                 if (!this.workspaces.completed(inspection, workspace, environment))
                     throw new Error('REACTIVE_CHILD_WORKSPACE_CREATION_INCOMPLETE');
                 this.workspaces.assertMember(agent.session, workspace, environment);
@@ -295,6 +298,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             if (selected.environment !== environment || selected.workspace !== admission.workspace)
                 throw new Error('REACTIVE_WORKSPACE_BINDING_MISMATCH');
             workspace = selected.workspace;
+            this.workspaces.verifyProgram(agent.session, environment.program.definition);
             const inspection = { meta: agent.session.header, events: agent.session.snapshotEvents(), inheritedEventCount: agent.session.inheritedEventCount };
             if (this.workspaces.completed(inspection, workspace, environment)) {
                 // 恢复只核已有成员，不能重新授予已被原生 registry 撤销的关系。
@@ -358,25 +362,29 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             },
             liveAgent$: session.live.pipe(map(entry => entry?.agent), distinctUntilChanged()),
             liveAgent: () => session.live.value?.agent,
-            inspect: async (callerSignal?: AbortSignal) => {
+            inspect: (callerSignal?: AbortSignal) => {
                 const readSignal = callerSignal ? AbortSignal.any([signal, callerSignal]) : signal;
-                readSignal.throwIfAborted();
-                assertCurrent();
-                const live = session.live.value;
-                if (live) {
-                    await this.facts.flush(live.agent);
-                    readSignal.throwIfAborted();
+                return firstValueFrom(abortable(async reading => {
+                    reading.throwIfAborted();
                     assertCurrent();
-                    if (session.live.value !== live || this.ctx.agents.get(live.agent.id) !== live.agent)
+                    const live = session.live.value;
+                    if (live) {
+                        // flush 仍由原生持久 owner 完成；读取者取消只结束自己的等待。
+                        await this.facts.flush(live.agent);
+                        reading.throwIfAborted();
+                        assertCurrent();
+                        if (session.live.value !== live || this.ctx.agents.get(live.agent.id) !== live.agent)
+                            throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
+                    }
+                    const inspection = await this.facts.inspect(session.header.id, reading);
+                    reading.throwIfAborted();
+                    assertCurrent();
+                    if (session.live.value !== live || live && this.ctx.agents.get(live.agent.id) !== live.agent)
                         throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
-                }
-                const inspection = await this.facts.inspect(session.header.id, readSignal);
-                readSignal.throwIfAborted();
-                assertCurrent();
-                if (session.live.value !== live || live && this.ctx.agents.get(live.agent.id) !== live.agent)
-                    throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
-                this.workspaces.verifyInspection(inspection, session.workspace, session.environment);
-                return inspection;
+                    this.workspaces.verifyInspection(inspection, session.workspace, session.environment);
+                    this.workspaces.verifyProgram(inspection, session.implementation.definition);
+                    return inspection;
+                }, readSignal));
             },
         });
     }
@@ -448,7 +456,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         await this.createRegistered(workspace, environment, sessionId, () => this.ctx.agents.create({ sessionId: SessionId(sessionId),
             meta: { cwd: workspace.native.path, agentPreset: presetId }, agentOptions: this.options.model,
             setup: async (native, agent) => {
-                this.workspaces.bind(agent.session, workspace, environment);
+                this.workspaces.bind(agent.session, workspace, environment, environment.program.definition);
                 await this.mountRoot(native, agent, workspace, environment);
             } }));
         return this.#sessions.get(sessionId)!;
@@ -477,6 +485,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         this.assertActive();
         this.workspaces.assertAccess(inspection.meta, workspace, environment, expectedAccessId);
         const implementation = child?.implementation ?? environment.program;
+        this.workspaces.verifyProgram(inspection, implementation.definition);
         assertExpectedProgram(implementation.definition, expected);
         const resident = this.ctx.agents.get(SessionId(sessionId)), previous = resident && this.#entries.get(resident);
         if (previous?.session.scope.disposed) {
@@ -550,11 +559,13 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             return this.readSession(reference.sessionId, expected);
         }
         this.workspaces.assertCreation(inspection, workspace, environment);
+        this.workspaces.verifyProgram(inspection, environment.program.definition);
         assertExpectedProgram(environment.program.definition, expected);
         await this.createRegistered(workspace, environment, reference.sessionId, () => this.ctx.agents.resume({ resumeSessionId: SessionId(reference.sessionId),
             agentOptions: this.options.model, setup: async (native, agent) => {
                 this.workspaces.assertCreation({ meta: agent.session.header, events: agent.session.snapshotEvents(),
                     inheritedEventCount: agent.session.inheritedEventCount }, workspace, environment);
+                this.workspaces.verifyProgram(agent.session, environment.program.definition);
                 await this.mountRoot(native, agent, workspace, environment);
             } }));
         return this.require(reference.sessionId);
@@ -608,6 +619,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
                 handle = await this.ctx.agents.resume({ resumeSessionId: SessionId(sessionId), agentOptions: this.options.model,
                     setup: async (native, agent) => {
                         this.workspaces.assertMember(agent.session, session.workspace, session.environment);
+                        this.workspaces.verifyProgram(agent.session, session.implementation.definition);
                         await this.mountRoot(native, agent, session.workspace, session.environment);
                     } });
                 this.#owned.set(sessionId, handle);

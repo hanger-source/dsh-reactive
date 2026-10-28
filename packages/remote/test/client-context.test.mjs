@@ -12,7 +12,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import * as Registry from '@deepseek-ai/dsh-typert-registry/client';
 import * as Gateway from '@deepseek-ai/dsh-api-gateway/client';
 import { installConnection } from '@deepseek-ai/dsh-client-connection/client';
-import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, programIdentity, ProgramContractMismatchError, SharedProgramRequiredError, resourceView, z } from '@hanger-source/dsh-reactive';
+import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, programIdentity, ProgramContractMismatchError, SessionProgramMismatchError, SharedProgramRequiredError, resourceView, z } from '@hanger-source/dsh-reactive';
 import { Expose, implementProgram, useAction } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
 import { assertProgramSessionConnection, bindProgramClient, createAuthenticatedTransport, createProgramClient, CreationUnknownError,
@@ -23,7 +23,7 @@ import { mountProgramGateway, RemoteAuthenticationError } from '@hanger-source/d
 const next = (source, predicate) => firstValueFrom(source.pipe(filter(predicate), timeout(8_000)));
 const ready = value => ({ status: 'ready', generation: 1, observedAt: Date.now(), value });
 
-test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文，Context退出关闭其SDK而不停止Host', { timeout: 25_000 }, async t => {
+test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文，Context退出关闭其SDK而不停止Host', { timeout: 40_000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-client-context-'));
   const sessionId = crypto.randomUUID(), errors = [], calls = [], runtimes = [], gateways = [], contexts = [], clients = [], local = [];
   let models = 0;
@@ -37,7 +37,7 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
     await Promise.all(gateways.map(gateway => gateway.close()));
     await Promise.all(runtimes.map(runtime => runtime.dispose()));
   });
-  const host = async label => {
+  const host = async (label, selectedProgram = program, recordedWorkspace) => {
     const current = new BehaviorSubject(ready(label));
     const visible = new Set([sessionId]);
     const action = implementAction(mark, { execute(input, call) {
@@ -45,7 +45,7 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
       calls.push({ label, input }); return label + ':' + input;
     } });
     const application = defineApplication({ name: 'context-' + label, admit: async () => {}, environments: [defineEnvironment({
-      id: 'work', instructions: '读取和SDK调用不启动模型', program: implementProgram(program, { Component() {
+      id: 'work', instructions: '读取和SDK调用不启动模型', program: implementProgram(selectedProgram, { Component() {
         const bound = useAction(action, () => null, []);
         return h(Expose, { surface, value: { views: { owner: current }, actions: { mark: bound } } });
       } }),
@@ -58,8 +58,9 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
       }() }),
     }); runtimes.push(runtime);
     const directory = join(root, label, 'workspace'); await mkdir(directory, { recursive: true });
-    const workspace = await runtime.application.createWorkspace({ directory });
-    local.push(await runtime.application.create('work', { workspaceId: workspace.workspaceId, sessionId }));
+    const workspace = recordedWorkspace ?? await runtime.application.createWorkspace({ directory });
+    const held = recordedWorkspace ? undefined : await runtime.application.create('work', { workspaceId: workspace.workspaceId, sessionId });
+    if (held) local.push(held);
     const role = { name: 'context-user', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/resume', 'reactivePrograms/questions',
       'reactivePrograms/view', 'reactivePrograms/resolveAction', 'reactivePrograms/startAction', 'reactivePrograms/actionResult', 'reactivePrograms/observeAction',
       'reactivePrograms/requestStatus', 'reactivePrograms/pause', 'reactivePrograms/cancel', 'reactivePrograms/submit',
@@ -77,7 +78,7 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
         return { kind: 'context-user', id: 'context-operator' };
       } },
     }); gateways.push(gateway);
-    return { gateway, current, workspace, runtime, visible, role };
+    return { gateway, current, workspace, runtime, visible, role, held };
   };
   const transport = baseUrl => ({ baseUrl,
     fetch: (url, init) => fetch(url, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), authorization: 'Bearer context-test' } }),
@@ -555,6 +556,49 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
       assert.ok(wire.requests.some(({ pathname }) => pathname.endsWith('/reactivePrograms/requestStatus')));
       for (const { request } of wire.requests) assert.deepEqual(request.program, expected);
     } finally { subscription.unsubscribe(); }
+  });
+  await t.test('同一持久Session重启后只更换Program名称或版本，新合同SDK仍不能重绑旧会话', { timeout: 15_000 }, async () => {
+    const original = await host('persisted-program');
+    const workspace = original.workspace;
+    const reference = { sessionId, workspaceId: workspace.workspaceId, environmentId: 'work' };
+    const stop = async current => {
+      current.held?.release();
+      await current.gateway.close(); gateways.splice(gateways.indexOf(current.gateway), 1);
+      await current.runtime.dispose(); runtimes.splice(runtimes.indexOf(current.runtime), 1);
+    };
+    await stop(original);
+    const alternatives = [
+      defineProgram({ name: 'renamed_persisted_program', input: program.input, surface }),
+      defineProgram({ name: program.name, version: program.version + 1, input: program.input, surface }),
+    ];
+    for (const alternative of alternatives) {
+      const restarted = await host('persisted-program', alternative, workspace);
+      const selected = await createProgramClient(alternative, transport(restarted.gateway.url)); clients.push(selected);
+      try {
+        const mismatch = error => {
+          assert.ok(error instanceof SessionProgramMismatchError, '新SDK合同已匹配部署，拒绝来自原Session的持久身份');
+          assert.equal(error.sessionId, sessionId);
+          assert.deepEqual(error.recorded, programIdentity(program));
+          assert.deepEqual(error.current, programIdentity(alternative));
+          return true;
+        };
+        await assert.rejects(selected.open(sessionId), mismatch);
+        await assert.rejects(selected.resume(sessionId), mismatch);
+        await assert.rejects(selected.completeCreation(reference), mismatch);
+        assert.equal(restarted.runtime.native.agents.get(SessionId(sessionId)), undefined, '持久身份拒绝不能先恢复Agent再报错');
+        assert.equal(restarted.runtime.native.sessions.get(SessionId(sessionId)), undefined);
+      } finally { await selected.dispose(); await stop(restarted); }
+    }
+    const restored = await host('persisted-program', program, workspace);
+    const selected = await createProgramClient(program, transport(restored.gateway.url)); clients.push(selected);
+    try {
+      const recovered = await selected.open(sessionId);
+      try {
+        assert.equal(recovered.id, sessionId);
+        assert.equal(await recovered.readView('owner'), 'persisted-program');
+        assert.equal(restored.runtime.native.agents.get(SessionId(sessionId)), undefined, '恢复正确合同的冷读不启动Agent或模型');
+      } finally { await recovered.release(); }
+    } finally { await selected.dispose(); await stop(restored); }
   });
   assert.deepEqual(calls, [{ label: 'a', input: 'first' }, { label: 'b', input: 'still-b' }]);
   assert.equal(models, 0); assert.deepEqual(errors, []);

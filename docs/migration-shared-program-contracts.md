@@ -33,6 +33,10 @@ const session = await client.open(sessionId);
 
 ## 身份核验
 
+Session 的单条持久归属记录保存创建时实际 Program 的 name/version；子 Session 保存子实现，出生前的持久委托意图也固定其目标 Program。open、resume、completeCreation 和子委托恢复先核这份原身份，再构造 Program、解释旧输入或激活 Agent。当前宿主与 SDK 同时换成 v2，也不能据此接管原 v1 会话。持久身份与当前实现不同抛出 `SessionProgramMismatchError`，保留 sessionId、recorded 和 current；Gateway 使用 `reactive/session-program-mismatch`，客户端还原同一个 core 错误类型。
+
+无名本地 Program 在持久归属中明确记录 null，只表示它原本是无名程序，不证明业务函数跨重启等价。null 与共享身份之间的转换同样拒绝。缺少 program 字段的旧归属或委托记录不满足当前持久格式，读取直接失败；框架不从当前部署补写或猜测原合同。部署前应确认已有会话数据使用的格式及其实际业务归属，不能通过改包版本或增加 Program version 自动迁移旧数据。
+
 SDK 随 Program 请求发送预期 name/version，Gateway 核对实际环境或会话的定义。create、completeCreation 与 resume 先核合同再进入创建、补齐或恢复；open 和后续会话请求也核对实际目标。SDK 在建立句柄时复核取得回执的身份，随后按已核合同解码。createWorkspace、describe 继续表达应用级工作区登记与发现，不绑定某个 Program。
 
 自定义传输沿 `ProgramAddress.program` 携带这份身份；创建和补齐请求也各自包含 program。View、人工参与、进展、journal 与 Operation 的物理请求及重连都保留原 SDK 捕获的身份，不根据新 baseline 猜测合同。已受理 Action 的查询核对原调用记录的 Program，后续会话变化不撤销它的业务结果。
