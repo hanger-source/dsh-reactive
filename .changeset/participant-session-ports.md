@@ -3,6 +3,7 @@
 "@hanger-source/dsh-reactive-dsh": major
 "@hanger-source/dsh-reactive-client": major
 "@hanger-source/dsh-reactive-remote": major
+"@hanger-source/dsh-reactive-native-ui": major
 "@hanger-source/dsh-reactive-skills": major
 ---
 

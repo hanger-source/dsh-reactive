@@ -4,6 +4,8 @@
 
 本地服务先用 `host.service(actorId)` 取得固定身份的应用视图，再调用 open、create、resume 或 completeCreation。原来一次调用的 `host.service(sessionId, Program)` 改为 `host.service().open(sessionId, Program)`；不传 actorId 时使用宿主明确配置的 serviceActorId。这个视图复用同一工作区和会话取得链，没有独立 owner 或 dispose。服务的逐次调用选项只传取消等本次参数，不能含 actorId，连与固定身份相同的值也会拒绝。
 
+`host.attachOperation`、`host.locateOperation` 和 `host.readOperationFeedback` 不再接收末尾的 participant 参数。原服务调用改为先 `await host.service(actorId).open(sessionId, Program)`，再通过取得的服务句柄调用对应方法，并在使用结束后 release；actor 在取得服务端口时固定，逐次调用只传取消选项。会话句柄的 notifyOperation 同样保留本参与者角色；Host 顶层的 notifyOperation 继续表达明确的后台发布者入口，可靠投递始终沿原持久 publisher。
+
 Gateway 配置使用 `participant(principal)`，返回 `{ participant: 'human' | 'service', actorId }`，替换只返回 actor 字符串的配置。认证主体和参与者映射由宿主提供，客户端请求不带身份选择。输入、队列编辑、上传、Action 和 Operation 使用同一受信端口；Invocation 关联同时核对角色和 actor。部署仍需配置各 endpoint 的 RemoteAccess grant，参与者身份不替代资源授权。
 
 人工客户端使用 createProgramClient/bindProgramClient，服务客户端使用 createServiceProgramClient/bindServiceProgramClient。RemoteServiceProgramSession 的运行对象不包含人工控制方法；即使绕过 SDK 直接调用远程人工 endpoint，服务身份仍会被服务器拒绝。原生人工会话 UI 只绑定人工客户端，通用资源呈现可以独立借用服务资源。
