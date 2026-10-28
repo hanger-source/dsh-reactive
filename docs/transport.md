@@ -112,7 +112,13 @@ const receipt = await invocation.result;
 
 Node 使用同一入口，提供绝对 HTTP(S) baseUrl，并按应用认证方式提供 `fetch` 和 `createWebSocket`。浏览器默认使用同源 fetch/WebSocket；Cookie 或其他认证载体由应用配置，不能把只有 unary 的请求头认证误当成 socket 认证。
 
-`createProgramClient` 拥有独立的客户端 Context、Connection 和远程合同，dispose 释放这些装配。已存在 dsh 客户端 Context 的原生扩展使用 `bindProgramClient(program, ctx)`：由应用装配 owner 在该 Context 登记一次 `@hanger-source/dsh-reactive-client/remote` 贡献，SDK 借入现有 Connection 与 `reactivePrograms` 服务。Context 必须具备 `interactions:'answer'`；缺少装配时明确失败。
+`createProgramClient` 拥有独立的客户端 Context、Connection 和远程合同，dispose 释放这些装配。已存在 dsh 客户端 Context 的原生扩展使用 `await bindProgramClient(program, ctx)`：由应用装配 owner 在该 Context 登记一次 `@hanger-source/dsh-reactive-client/remote` 贡献，SDK 借入现有 Connection 与 `reactivePrograms` 服务。Context 必须具备 `interactions:'answer'`；缺少装配时明确失败。
+
+每个 SDK 安装独立的原生 Fiber，Session 句柄在该 SDK 下拥有自己的 Fiber。SDK 构造等待作用域真正活跃，不交付尚未安装完成的客户端。查询、绑定、journal 和前台 claim 在构造前交给正式 effect；手动退订后尚未完成的异步清理仍由原生 Fiber 持有，Session release 与并发 SDK dispose 都能等待它。框架只汇总这份 owner 的退出错误，不为各能力维护另一套退休队列。一次清理失败不提前结束 owner 的其他清理，全部静止后才向调用者报告失败。
+
+取消信号表达立即撤销使用权，原生 Fiber 的异步释放表达实际静止。Session 的视图、进展、只读 Operation 和人工等待归该句柄；已受理 Invocation 的观察归 SDK，业务执行及可靠 Operation 继续归原 owner。一个 SDK 退出不释放借入的公共 Context，也不停止其他 SDK 或原生 Host。core 的 Scope 负责同步响应图，不承担网络清理。
+
+Action 受理 ACK 已确认后，观察作用域退出不能抹掉原 Invocation 的 id、来源与合同。退出后的观察和 result 等待按原取消原因结算；调用方可以在另一个 SDK 使用该 id 恢复原结果，不重新执行 Action。构造观察期间发生重入退出时，已取得的资源仍由原生 effect 释放，已受理身份继续保留。
 
 同一 Context 可为多个 Program 或多个消费者建立独立 SDK。SDK dispose 释放自己的 Session、观察与等待，保留公共 Context 和远程合同；Context 退出会同时关闭其借用 SDK。`bindNativeSession` 核验 SDK 原对象所使用的实际 Connection、Program 与原生 Session generation。原生扩展取得的 SDK 应来自该客户端 Context 的 bindProgramClient；相同会话 ID、相同合同或相同服务器地址不能替代这份连接归属。
 

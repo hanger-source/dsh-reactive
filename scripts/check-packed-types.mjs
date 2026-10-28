@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { consumerKinds, consumerPackages, consumerEnvironment, prepareConsumerSources, checkConsumerDependencies } from './release/consumer-profiles.mjs';
 import { buildConsumerBrowser } from './release/consumer-browser.mjs';
+import { lintTarball } from './release/lint.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const config = JSON.parse(await readFile(join(root, 'scripts/release.config.json'), 'utf8'));
@@ -23,6 +24,7 @@ for (const entry of config.packages) {
   assert.equal(artifact.version, manifest.version);
   assert.equal(artifact.filename, basename(artifact.filename));
   await access(join(dirname(report), artifact.filename));
+  await lintTarball(join(dirname(report), artifact.filename));
 }
 
 async function run(command, args, cwd) {

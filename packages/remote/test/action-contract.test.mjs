@@ -89,7 +89,7 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
   await ctx.plugin(Gateway); await ctx.remote.$mount(contribution);
   const open = async contract => {
     const selected = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: { save: contract } }) });
-    const client = bindProgramClient(selected, ctx); clients.push(client);
+    const client = await bindProgramClient(selected, ctx); clients.push(client);
     return await client.open(local.id);
   };
   const wrongOutput = z.string().transform(value => { wrongDecodes++; return value; });

@@ -25,7 +25,7 @@
     "lib/**/*.js",
     "lib/**/*.map",
     "lib/**/*.d.ts",
-    "release.json"
+    "CHANGELOG.md", "release.json"
   ],
   "scripts": {
     "generate": "wireit",

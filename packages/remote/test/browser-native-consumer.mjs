@@ -57,7 +57,7 @@ document.querySelector('button').addEventListener('click', async event => {
     await ctx.plugin(Gateway);
     for (const contribution of [commands, controller, uploads, subagents, remotes]) await ctx.remote.$mount(contribution);
     await ctx.plugin(FileUpload); await ctx.plugin(ClientSessions);
-    const sdk = bindProgramClient(program, ctx);
+    const sdk = await bindProgramClient(program, ctx);
     const { workspaceId, sessionId } = await fetch('/setup').then(response => response.json());
     const created = await sdk.create('work', { workspaceId, sessionId }); await created.release();
     const counts = id => ctx.sessions.retainInfo(SessionId(id)).getSnapshot();

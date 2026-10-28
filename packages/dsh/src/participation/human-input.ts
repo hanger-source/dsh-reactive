@@ -211,9 +211,13 @@ export class HumanInputs {
     const controller = new AbortController();
     const claim: Claim = { policy, controller };
     this.#claims.add(claim);
+    const observing = AbortSignal.any([signal, controller.signal]);
+    const release = () => { this.#claims.delete(claim); controller.abort(); };
+    observing.addEventListener('abort', release, { once: true });
     try {
-      yield* this.ctx.userQuestions.attachWait(this.agent, callId, AbortSignal.any([signal, controller.signal]));
-    } finally { this.#claims.delete(claim); controller.abort(); }
+      observing.throwIfAborted();
+      yield* this.ctx.userQuestions.attachWait(this.agent, callId, observing);
+    } finally { observing.removeEventListener('abort', release); release(); }
   }
 
   /** 原生 Agent 的观察 owner 结束；组件退出仅改变当前声明，不调用此方法。 */

@@ -102,11 +102,18 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
   };
   const a = await host('a'), b = await host('b');
   const empty = new Context(); contexts.push(empty);
-  assert.throws(() => bindProgramClient(program, empty), /REACTIVE_PROGRAM_CLIENT_CONTEXT_REQUIRED/u);
+  await assert.rejects(bindProgramClient(program, empty), /REACTIVE_PROGRAM_CLIENT_CONTEXT_REQUIRED/u);
   const contextA = await connect(a.gateway.url), contextB = await connect(b.gateway.url), anotherA = await connect(a.gateway.url);
-  const first = bindProgramClient(program, contextA), peer = bindProgramClient(program, contextA);
-  const second = bindProgramClient(program, contextB), sameAddress = bindProgramClient(program, anotherA);
+  const first = await bindProgramClient(program, contextA), peer = await bindProgramClient(program, contextA);
+  const second = await bindProgramClient(program, contextB), sameAddress = await bindProgramClient(program, anotherA);
   clients.push(first, peer, second, sameAddress);
+  let nested;
+  await contextA.plugin({ name: 'program-sdk-app-consumer', async apply(child) {
+    const client = await bindProgramClient(program, child); clients.push(client);
+    nested = await client.open(sessionId);
+  } });
+  assert.equal(await nested.readView('owner'), 'a', '应用插件仍在LOADING时也能等待自己的SDK安装');
+  await nested.release();
   const [sa, pa, sb, duplicate] = await Promise.all([first.open(sessionId), peer.open(sessionId), second.open(sessionId), sameAddress.open(sessionId)]);
   assert.equal(sa.id, sb.id); assert.equal(sa.definition, sb.definition);
   assert.equal(await sa.readView('owner'), 'a'); assert.equal(await sb.readView('owner'), 'b');
@@ -147,7 +154,7 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
   ]) await t.test(endpoint + '回执被延迟时SDK退出结束等待，借用Context继续可用', { timeout: 1_000 }, async subject => {
     const delayed = { endpoint, received: Promise.withResolvers(), release: Promise.withResolvers(), entered: false };
     subject.signal.addEventListener('abort', () => delayed.release.resolve(), { once: true });
-    const ctx = await connect(a.gateway.url, delayed), pendingClient = bindProgramClient(program, ctx);
+    const ctx = await connect(a.gateway.url, delayed), pendingClient = await bindProgramClient(program, ctx);
     clients.push(pendingClient);
     const rejected = assert.rejects(invoke(pendingClient), error => {
       if (endpoint === 'create') {
@@ -159,7 +166,7 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
     try {
       await delayed.received.promise;
       await pendingClient.dispose(); await rejected;
-      const peer = bindProgramClient(program, ctx); clients.push(peer);
+      const peer = await bindProgramClient(program, ctx); clients.push(peer);
       const live = await peer.open(sessionId); assert.equal(await live.readView('owner'), 'a-after-context-exit');
       if (endpoint === 'create') {
         const preserved = await peer.completeCreation(reference);
@@ -174,7 +181,7 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
     const delayed = { endpoint, allowRemoteFailure: endpoint === 'pause',
       received: Promise.withResolvers(), release: Promise.withResolvers(), entered: false };
     subject.signal.addEventListener('abort', () => delayed.release.resolve(), { once: true });
-    const ctx = await connect(a.gateway.url, delayed), pendingClient = bindProgramClient(program, ctx);
+    const ctx = await connect(a.gateway.url, delayed), pendingClient = await bindProgramClient(program, ctx);
     clients.push(pendingClient);
     const session = await pendingClient.open(sessionId);
     const rejected = assert.rejects(invoke(session), error => {
@@ -187,7 +194,7 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
       if (owner === 'session') await session.release();
       else await pendingClient.dispose();
       await rejected;
-      const peer = bindProgramClient(program, ctx); clients.push(peer);
+      const peer = await bindProgramClient(program, ctx); clients.push(peer);
       const live = await peer.open(sessionId);
       assert.equal(await live.readView('owner'), 'a-after-context-exit');
       assert.deepEqual(await live.requestStatus('not-submitted'), { requestId: 'not-submitted', state: 'absent' });

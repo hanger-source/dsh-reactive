@@ -161,6 +161,8 @@ operations 槽的 resolver 从当前声明取得原 command，之后的查询保
 
 `packages/dsh` 作为独立的 `@hanger-source/dsh-reactive-dsh` 包装配原生服务、模型、关联、查询、投影和准备边界，Jobs、MCP、Approval、时区各有显式可选入口与配置实例。`packages/remote` 贡献认证 Gateway/Typert 宿主；`packages/client` 是独立客户端发行包，承载纯 wire 合同与官方生成的 remote contribution，不依赖原生宿主、模型 provider 或 React。`packages/native-ui` 将真实 Action manifest 接到 dsh 原生 keyed Tool slots，并读取原调用的持久结果；它由应用显式选择，不进入其他包的安装闭包。
 
+客户端以独立原生 Fiber 表达 SDK 与 Session 句柄的归属。作用域先安装完成再交付 SDK；每次物理连接在构造前交给正式 effect，手动退休的异步清理继续对 owner 可见。框架的取得／释放接点仅关联立即撤销信号、原生清理与退出错误，不复制原生执行或清理引擎。视图、Operation、进展、绑定、人工等待和 journal 不各自保存退出队列；Invocation 观察归 SDK，业务和可靠操作仍归其原 owner。core Scope 保留同步响应图的责任。
+
 宿主的 `conversations` 分别持有会话与 live Agent 的关联、输入受理事务、句柄和原生观察；`execution` 持有唯一执行身份签发、原生工具与政策；`programs` 持有声明与具体 Agent 的装配及稳定准备；`operations` 持有操作参与、结果投递与 Goal 续接条件；`participation` 持有答复和前台等待入口。`applications` 完成正式挂载与配置，ApplicationHost 组合这些责任及整体释放顺序。各域继续读取原生 inbox、Goal、日志与投影，不各自保存一份会话或工作状态。
 
 `createRuntime(assembly => definition, options)` 使用独立 Home 和显式模型配置，并持有原生附件存储、FileUploads 与所需 Connection、凭据服务；已有宿主从同样接收装配工厂的 `mountApplication` 接入，须明确提供官方 attachments、fileUploads 及其依赖。Gateway 沿用宿主这份服务，不另选 home 或建立第二个附件 owner。assembly 为本宿主创建实际委托实现和单一原生 Operation owner，业务模块仍消费普通 Action。组件层已有实现和聚焦试验不等于完整框架或真实业务验收。

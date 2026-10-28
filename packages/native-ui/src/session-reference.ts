@@ -24,7 +24,7 @@ export async function retainNativeSession<P extends ProgramContract>(
   const sessions = ctx.get('sessions');
   if (!sessions) throw new Error('REACTIVE_NATIVE_SESSIONS_REQUIRED');
   if (sessions.scopeOf(ctx) !== undefined) throw new Error('REACTIVE_NATIVE_SESSION_REFERENCE_OWNER_REQUIRED');
-  const client = bindProgramClient(program, ctx);
+  const client = await bindProgramClient(program, ctx);
   const controller = new AbortController();
   let reference: SessionReference | undefined;
   let session: NativeSession<P> | undefined;
@@ -51,6 +51,7 @@ export async function retainNativeSession<P extends ProgramContract>(
     forget = ctx.effect(() => close, 'reactive native Session reference');
     options.signal?.addEventListener('abort', abort, { once: true });
     if (options.signal?.aborted) abort();
+    controller.signal.throwIfAborted();
     const [binding, sdk] = await firstValueFrom(fromEvent(controller.signal, 'abort').pipe(
       mergeMap(() => throwError(() => controller.signal.reason)),
       raceWith(defer(async () => {

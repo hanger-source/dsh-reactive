@@ -13,7 +13,7 @@
     "./package.json": "./package.json"
   },
   "bin": { "dsh-reactive-skill": "./dist/cli.mjs" },
-  "files": ["dist", "skills", "release.json"],
+  "files": ["dist", "skills", "CHANGELOG.md", "release.json"],
   "scripts": {
     "build": "wireit",
     "prepack": "npm run build"

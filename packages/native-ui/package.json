@@ -18,7 +18,7 @@
     "lib/**/*.map",
     "lib/**/*.d.ts",
     "examples",
-    "release.json"
+    "CHANGELOG.md", "release.json"
   ],
   "scripts": {
     "build": "wireit",

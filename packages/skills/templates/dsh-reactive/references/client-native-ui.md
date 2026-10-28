@@ -71,7 +71,7 @@ intent 描述 question/goal/followup，不能代替 delivery；goal 必须有实
 
 安装 `@hanger-source/dsh-reactive-native-ui` 只用于 dsh 原生客户端扩展，不加载后台 renderer。原生 SlotCore、UiSession、UiConversation 仍拥有 slots、节点与会话状态，应用提供视觉组件。
 
-`bindNativeSession(Program, exactSessionBinding, remoteSession)` 同时核真实 Program 对象、SDK definition、实际 Connection 与 exact native 代际。原生扩展在其客户端 Context 使用 `bindProgramClient(Program, ctx)`，再通过该 SDK 的 open 取得 Session。Context 的装配 owner 负责登记一次 Program 远程贡献：
+`bindNativeSession(Program, exactSessionBinding, remoteSession)` 同时核真实 Program 对象、SDK definition、实际 Connection 与 exact native 代际。原生扩展在其客户端 Context 使用 `await bindProgramClient(Program, ctx)`，等待 SDK 安装后再通过 open 取得 Session。可以在异步扩展装配函数内直接等待，SDK 的依赖由其自身作用域声明。Context 的装配 owner 负责登记一次 Program 远程贡献：
 
 ```ts
 import { bindProgramClient } from '@hanger-source/dsh-reactive-client';
@@ -79,10 +79,14 @@ import programRemotes from '@hanger-source/dsh-reactive-client/remote';
 
 // 原生客户端装配阶段，ctx 已安装 Connection 与 Gateway。
 await ctx.remote.$mount(programRemotes);
-const client = bindProgramClient(InventoryProgram, ctx);
+const client = await bindProgramClient(InventoryProgram, ctx);
 const sdk = await client.open(exactSessionBinding.sessionId);
 const native = bindNativeSession(InventoryProgram, exactSessionBinding, sdk);
 ```
+
+SDK 与 Session 句柄各有独立原生 Fiber。构造物理查询前登记 effect，已经开始的清理继续归同一 owner；退出要等待全部实际清理，再汇总失败。`ProgramJournal` 通过 `session.openEvents` 取得，不直接构造；手动 dispose 也不会脱离 Session 的退出等待。core Scope 仍管理同步响应图。
+
+Action 受理 ACK 已确认后，即使 SDK 在构造观察时退出，仍保留原 Invocation id。观察及 result 等待按取消结算，可以在另一有效 SDK 用 `session.invocation(name, id)` 恢复原结果；不要重发 Action，也不要把观察退出解释为取消业务或 Operation。
 
 该 Context 必须允许 `interactions:'answer'`。多个 SDK 可以借用同一装配；SDK dispose 只退出自己的会话和观察，Context 退出关闭全部借用 SDK。独立 createProgramClient 拥有另一份 Connection，适用于独立客户端；原生 UI 按实际连接归属绑定，不能用相同 URL、sessionId 或复制出来的同形句柄代替。
 

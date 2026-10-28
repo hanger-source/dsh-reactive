@@ -4,6 +4,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { z, actionIdentity, assertActionIdentity, type ActionIdentity, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { ProgramActionBinding } from './types.ts';
 import './errors.ts';
+import type { ClientScope, ClientLease } from './scope.ts';
 
 export interface RemoteActionCapture {
   readonly descriptor: ProgramActionBinding;
@@ -13,7 +14,6 @@ export interface RemoteActionCapture {
 
 export interface RemoteActionBindings {
   resolve(name: string, contract: ActionIdentity, scope: JsonValue, options?: CancellationOptions): Promise<RemoteActionCapture>;
-  close(): Promise<void>;
 }
 
 type BindingConnection = {
@@ -88,35 +88,29 @@ function connectBinding(remote: ClientRemote, sessionId: string, name: string, c
 }
 
 /** 一次客户端 Session 只为每个槽保留一个已就绪连接；在途解析各自拥有自己的取消。 */
-export function createActionBindings(remote: ClientRemote, sessionId: string, lifetime: AbortSignal): RemoteActionBindings {
-  const current = new Map<string, BindingConnection>();
-  const opening = new Set<BindingConnection>();
-  const disposing = new Set<Promise<void>>();
-  let closed = false;
-  let closing: Promise<void> | undefined;
-  const assertActive = () => {
-    lifetime.throwIfAborted();
-    if (closed) throw new Error('REACTIVE_REMOTE_ACTION_BINDINGS_CLOSED');
-  };
-  const dispose = (connection: BindingConnection, reason: unknown): Promise<void> => {
-    const work = connection.close(reason);
-    disposing.add(work);
-    void work.then(() => disposing.delete(work), () => disposing.delete(work));
-    return work;
+export function createActionBindings(owner: ClientScope, sessionId: string): RemoteActionBindings {
+  const current = new Map<string, ClientLease<BindingConnection>>();
+  owner.acquire(() => current, current => { current.clear(); }, 'program-action-bindings:' + sessionId);
+  const assertActive = () => owner.assertActive();
+  const dispose = (connection: ClientLease<BindingConnection>, reason: unknown): Promise<void> => {
+    // 先撤准入；实际清理始终由原生effect持有，手动退休也能被Session退出加入。
+    void connection.value.close(reason).catch(() => {});
+    return connection.release();
   };
   return {
     async resolve(name, contract, scope, options = {}) {
       const signal = options.signal;
       assertActive(); signal?.throwIfAborted();
       // 取得自己的 raw JSON，避免调用方在官方物理重连前改写这次解析请求。
-      const connection = connectBinding(remote, sessionId, name, actionIdentity(contract), z.json().parse(scope), lifetime);
-      opening.add(connection);
+      const connection = owner.acquire(() => connectBinding(owner.context.remote, sessionId, name, actionIdentity(contract), z.json().parse(scope), owner.signal),
+        connection => connection.close(owner.signal.aborted ? owner.signal.reason : new Error('REACTIVE_REMOTE_ACTION_BINDINGS_CLOSED')),
+        'program-action-binding:' + name);
       const aborted = () => { void dispose(connection, signal?.reason); };
       signal?.addEventListener('abort', aborted, { once: true });
       try {
         signal?.throwIfAborted();
-        connection.start();
-        const descriptor = await connection.ready;
+        connection.value.start();
+        const descriptor = await connection.value.ready;
         assertActive(); signal?.throwIfAborted();
         // 首帧 ready 之后转归 Session，解析请求的取消不销毁已经移交的槽连接。
         signal?.removeEventListener('abort', aborted);
@@ -129,27 +123,15 @@ export function createActionBindings(remote: ClientRemote, sessionId: string, li
             assertActive();
             const held = current.get(name);
             if (!held) throw unavailable(name, 'connection-lost');
-            held.assertActive();
+            held.value.assertActive();
           },
         });
       } catch (error) {
         if (current.get(name) !== connection) await dispose(connection, error);
         throw error;
       } finally {
-        signal?.removeEventListener('abort', aborted); opening.delete(connection);
+        signal?.removeEventListener('abort', aborted);
       }
-    },
-    close() {
-      if (closing) return closing;
-      closed = true;
-      const connections = new Set([...current.values(), ...opening]);
-      current.clear(); opening.clear();
-      const reason = lifetime.aborted ? lifetime.reason : new Error('REACTIVE_REMOTE_ACTION_BINDINGS_CLOSED');
-      const work = [...connections].map(connection => dispose(connection, reason));
-      return closing = Promise.allSettled([...new Set([...work, ...disposing])]).then(results => {
-        const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
-        if (errors.length) throw new AggregateError(errors, 'REACTIVE_REMOTE_ACTION_BINDINGS_CLOSE_FAILED');
-      });
     },
   };
 }

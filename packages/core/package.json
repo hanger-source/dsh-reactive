@@ -86,7 +86,7 @@
     "examples/merchant-operations",
     "examples/capabilities",
     "examples/fleet-inspection",
-    "release.json"
+    "CHANGELOG.md", "release.json"
   ],
   "repository": {
     "type": "git",

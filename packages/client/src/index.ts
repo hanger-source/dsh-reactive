@@ -6,7 +6,7 @@ import { installConnection, type ConnectionHandle, type ConnectionInstallOptions
 import { type RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { bytesToBase64 } from '@deepseek-ai/dsh-util-crypto';
-import { BehaviorSubject, defer, firstValueFrom, from, fromEvent, map, mergeMap, raceWith, takeWhile, throwError, type Observable } from 'rxjs';
+import { BehaviorSubject, map, takeWhile, type Observable } from 'rxjs';
 import { z, assertProgramDefinition, surfaceSlotDefinition, createSurfaceCollectionClient, actionManifestSlot, type ToolActionBinding, type ActionInput, type ActionInvocation, type ActionContract, type ActionScope, type InvocationActivity, type Observation, type Surface, type SurfaceViews, type ViewValue, type OperationContract, type OperationReference, type OperationCommand, type OperationHandle, type BoundOperation, type ProgramContract, type ProgramSurface, type WorkspaceRegistration, type ConversationCreateOptions, type FileUploadSource, type FileUploadValue, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import { decodeProgramFailure } from './errors.ts';
 import './errors.ts';
@@ -18,8 +18,8 @@ import { ProgramJournal, type ProgramJournalOptions, type ProgramJournalRequest 
 import { connectProgress, type RemoteProgress } from './progress.ts';
 import { createActionBindings } from './action-bindings.ts';
 import { remoteView } from './views.ts';
-import { remoteHuman } from './human.ts';
-import type { RemoteResourceConnection } from './resource.ts';
+import { createHumanWaits, remoteHuman } from './human.ts';
+import { createClientScope, type ClientScope } from './scope.ts';
 import { ResourceReader } from '@hanger-source/dsh-reactive';
 import { actionIdentity, assertActionIdentity } from '@hanger-source/dsh-reactive';
 import { createHumanQuestionResolver } from '@hanger-source/dsh-reactive';
@@ -116,348 +116,339 @@ export async function createProgramClient<const P extends ProgramContract>(progr
     installConnection(ctx, { interactions: 'answer', transport: createAuthenticatedTransport(options), recovery: options.recovery });
     await ctx.plugin(Gateway);
     await ctx.remote.$mount(contribution);
-    const client = bindProgramClient(program, ctx);
-    return { ...client, async dispose() { await client.dispose(); await ctx.fiber.dispose(); } };
+    const client = await bindProgramClient(program, ctx);
+    return { ...client, async dispose() { try { await client.dispose(); } finally { await ctx.fiber.dispose(); } } };
   } catch (error) { await ctx.fiber.dispose(); throw error; }
 }
 
 /** 借用已安装Connection、Gateway和Program远程合同的客户端上下文；只释放本SDK的使用。 */
-export function bindProgramClient<const P extends ProgramContract>(program: P, ctx: Context): ProgramClient<P> {
+export async function bindProgramClient<const P extends ProgramContract>(program: P, parent: Context): Promise<ProgramClient<P>> {
   assertProgramDefinition(program);
   type S = ProgramSurface<P>;
   const surface: S = program.surface;
-  const connection = ctx.get('connection');
-  const gateway = ctx.get('remote');
-  if (!connection || !gateway?.reactivePrograms) throw new Error('REACTIVE_PROGRAM_CLIENT_CONTEXT_REQUIRED');
+  const connection = parent.get('connection');
+  if (!connection || !parent.get('remote') || !parent.get('remote.reactivePrograms')) throw new Error('REACTIVE_PROGRAM_CLIENT_CONTEXT_REQUIRED');
   if (connection.interactions !== 'answer') throw new Error('REACTIVE_PROGRAM_CLIENT_INTERACTIONS_REQUIRED');
-  const lifetime = new AbortController();
-  const sessions = new Set<RemoteProgramSession<P>>();
-  const observations = new Set<Promise<void>>();
-  // 已受理Invocation的Operation借用SDK寿命，不能由原Session句柄退出撤销。
-  const invocationQueries = createOperationQueries(ctx);
-  let closing: Promise<void> | undefined;
-  const close = (): Promise<void> => {
-    lifetime.abort(new Error('REACTIVE_REMOTE_CLIENT_DISPOSED'));
-    return closing ??= Promise.all([...observations, invocationQueries.close(), ...[...sessions].map(handle => handle.release())]).then(() => {});
-  };
-  const releaseContext = ctx.effect(() => close, 'reactive Program client');
-  const remote = gateway.reactivePrograms;
-  const active = (): void => {
-    lifetime.signal.throwIfAborted();
-    if (ctx.get('connection') !== connection) throw new Error('REACTIVE_REMOTE_CLIENT_CONNECTION_REPLACED');
-  };
-  active();
-  const callRemote = <T>(call: (signal: AbortSignal) => Promise<T>, signal = lifetime.signal): Promise<T> => {
+  const lifetime = createClientScope(parent, 'reactive-program-client', new Error('REACTIVE_REMOTE_CLIENT_DISPOSED'));
+  await lifetime.ready;
+  try {
+    const ctx = lifetime.context;
+    // 已受理Invocation的Operation借用SDK寿命，不能由原Session句柄退出撤销。
+    const invocationQueries = createOperationQueries(lifetime);
+    const remote = ctx.remote.reactivePrograms;
+    const active = (): void => {
+      lifetime.assertActive();
+      if (ctx.get('connection') !== connection) throw new Error('REACTIVE_REMOTE_CLIENT_CONNECTION_REPLACED');
+    };
     active();
-    signal.throwIfAborted();
-    return firstValueFrom(fromEvent(signal, 'abort').pipe(
-      mergeMap(() => throwError(() => signal.reason)),
-      raceWith(defer(() => from(call(signal)))),
-    ));
-  };
-
-  const session = async (identity: ProgramIdentity): Promise<RemoteProgramSession<P>> => {
-    const controller = new AbortController();
-    const scopeSignal = AbortSignal.any([lifetime.signal, controller.signal]);
-    const slots = new Map<string, RemoteResourceConnection<unknown>>();
-    const assertActive = (): void => { active(); scopeSignal.throwIfAborted(); };
-    const actionBindings = createActionBindings(ctx.remote, identity.sessionId, scopeSignal);
-    const operationQueries = createOperationQueries(ctx);
-    const accessSource = { kind: 'participant', participant: 'human', actorId: identity.actorId, entrypoint: 'operation-query' } as const;
-    const journals = new Set<ProgramJournal>();
-    let progress: RemoteProgress<P> | undefined;
-    const progressOwner = (): RemoteProgress<P> => {
-      assertActive(); return progress ??= connectProgress(ctx, identity.sessionId, program, scopeSignal);
-    };
-    const humanConnection = remoteHuman(ctx, identity.sessionId, scopeSignal);
-    const human = humanConnection.reader;
-    const question = createHumanQuestionResolver(human, {
-      answerQuestion: (id, answer, options) => handle.answerQuestion(id, answer, options),
-      attachWait: (id, options) => handle.attachWait(id, options),
-    }, { signal: scopeSignal });
-    const viewSlot = (name: string): RemoteResourceConnection<unknown> => {
-      assertActive();
-      const existing = slots.get(name);
-      if (existing) return existing;
-      const slot = remoteView(ctx, identity.sessionId, surface, name, scopeSignal);
-      slots.set(name, slot);
-      return slot;
-    };
-    for (const name of Object.keys(surface.views)) viewSlot(name);
-    // 每个槽来自原 Surface，并在交付前由同一 schema decode；动态映射在此恢复泛型。
-    const views = Object.freeze(Object.fromEntries([...slots].map(([name, slot]) => [name, slot.reader.values$]))) as SurfaceViews<S>;
-    const resolveOperation = async (name: string, options: CancellationOptions = {}): Promise<BoundOperation<OperationContract>> => {
-        assertActive();
-        const definition = surfaceSlotDefinition(surface, 'operations', name);
-        if (!definition) throw new Error('REACTIVE_OPERATION_SLOT_UNKNOWN');
-        const cancelled = options.signal;
-        const signal = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
-        signal.throwIfAborted();
-        const binding = result(await remote.resolveOperation({ sessionId: identity.sessionId, name }, signal));
-        signal.throwIfAborted();
-        if (binding.operation.kind !== definition.kind || binding.operation.version !== definition.version) {
-          throw new Error('REACTIVE_OPERATION_SLOT_CONTRACT_MISMATCH');
-        }
-        return bindRemoteOperation(operationQueries, identity.sessionId, definition, binding.command as OperationCommand<typeof definition>, accessSource, signal);
-      };
-    const operations = Object.freeze(Object.fromEntries(Object.keys(surface.operations).map(name => [name,
-      (options: CancellationOptions = {}) => resolveOperation(name, options),
-    ]))) as RemoteOperations<S>;
-    let released: Promise<void> | undefined;
-    const handle: RemoteProgramSession<P> = {
-      get definition() { assertActive(); return program; },
-      id: identity.sessionId, identity, surface, views, operations,
-      get actionManifest$() { return viewSlot(actionManifestSlot).reader.values$ as Observable<readonly ToolActionBinding[]>; },
-      collection(name) {
-        assertActive();
-        const untyped = handle as RemoteProgramSession<ProgramContract>;
-        return createSurfaceCollectionClient(surface, name, { asynchronous: true,
-          viewResource: address => viewSlot(address).reader,
-          resolveAction: (address, _definition, scope, options) => untyped.resolveAction(address, scope, options),
-          resolveOperation: (address, _definition, options) => resolveOperation(address, options),
-        });
-      },
-      async resolveAction<K extends keyof S['actions'] & string>(name: K, expectedScope: z.input<S['actions'][K]['scope']>,
-        options: CancellationOptions = {}): Promise<RemoteResolvedAction<S['actions'][K]>> {
-        assertActive();
-        const contract = surfaceSlotDefinition(surface, 'actions', name) as S['actions'][K];
-        if (!contract) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
-        const captured = await actionBindings.resolve(name, actionIdentity(contract), json(expectedScope), options);
-        const binding = captured.descriptor;
-        // 宿主已经用该合同解析原始目标并核对真实绑定。scope 是其 JSON 输出，不能再次运行单向 transform。
-        const invoke = async (input: ActionInput<S['actions'][K]>, options: CancellationOptions = {}): Promise<ActionInvocation<S['actions'][K]>> => {
-          assertActive(); captured.assertActive();
-          const signal = options.signal;
-          const starting = signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal;
-          starting.throwIfAborted();
-          // input 本来就是 z.input；客户端仅核验 JSON，唯一业务解析仍在 Host。
-          const started = await remote.startAction({ sessionId: identity.sessionId, name, contract: binding.contract, bindingId: binding.bindingId,
-            input: json(input) }, starting);
-          if (!started.ok) {
-            if (started.error.code === 'gateway/internal' || started.error.code === 'gateway/cancelled')
-              throw new ActionAdmissionUnknownError(identity.sessionId, name, started.error);
-            throw started.error;
-          }
-          // ACK 已可能受理业务；矛盾回执不能被描述成确定未执行，也不能自动重发。
-          try {
-            if (started.value.name !== name) throw new Error('REACTIVE_ACTION_INVOCATION_SLOT_MISMATCH');
-            assertActionIdentity(contract, started.value.contract);
-          } catch (error) { throw new ActionAdmissionUnknownError(identity.sessionId, name, error); }
-          return invocation(ctx.remote, identity.sessionId, started.value, contract, lifetime.signal, observations, invocationQueries);
-        };
-        // schema 输出只在明确合同的传输边界恢复类型；不要求 scope 支持反向 encode。
-        return Object.freeze(Object.assign(invoke, { definition: contract, bindingId: binding.bindingId,
-          scope: binding.scope as ActionScope<S['actions'][K]> }));
-      },
-      get progress() { return progressOwner().progress; },
-      get progress$() { return progressOwner().progress$; },
-      get progressFrames$() { return progressOwner().progressFrames$; },
-      get events$() { return progressOwner().events$; },
-      request: requestId => progressOwner().request(requestId),
-      async invocation<K extends keyof S['actions'] & string>(name: K, id: string): Promise<ActionInvocation<S['actions'][K]>> {
-        assertActive();
-        const contract = surfaceSlotDefinition(surface, 'actions', name);
-        if (!contract) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
-        const stored = result(await remote.actionInvocation({ sessionId: identity.sessionId, invocationId: id }, lifetime.signal));
-        if (stored.name !== name) throw new Error('REACTIVE_ACTION_INVOCATION_SLOT_MISMATCH');
-        return invocation(ctx.remote, identity.sessionId, stored, contract as S['actions'][K], lifetime.signal, observations, invocationQueries);
-      },
-      human, question,
-      human$: human.observations$,
-      questions$: human.values$.pipe(map(value => value.questions)),
-      foregroundQuestions$: human.values$.pipe(map(value => value.foreground)),
-      observeView(name) {
-        assertActive();
-        return handle.viewResource(name).observations$;
-      },
-      viewResource(name) { return viewSlot(name).reader as ResourceReader<ViewValue<S['views'][typeof name]>>; },
-      readView(name, options = {}) { return handle.viewResource(name).read(options.signal); },
-      async submit(input, options = {}): Promise<ProgramInputReceipt> {
-        assertActive();
-        const cancelled = options.signal;
-        const signal = cancelled ? AbortSignal.any([lifetime.signal, cancelled]) : lifetime.signal;
-        signal.throwIfAborted();
-        json(input);
-        const submitted: ProgramSubmission = input.intent === 'result'
-          ? { ...input, scope: json(input.scope), result: { ...input.result,
-            continuation: { ...input.result.continuation, inputs: input.result.continuation.inputs.map(reference => ({ ...reference, scope: json(reference.scope) })) },
-            wait: { ...input.result.wait, operation: json(input.result.wait.operation) } } }
-          : { ...input, scope: json(input.scope) };
-        const reply = await remote.submit({ sessionId: identity.sessionId, submission: submitted }, signal);
-        if (!reply.ok && (reply.error.code === 'gateway/internal' || reply.error.code === 'gateway/cancelled')) {
-          throw new SubmissionAdmissionUnknownError(identity.sessionId, submitted.requestId, reply.error);
-        }
-        return result(reply);
-      },
-      async editQueuedInput(requestId, content, options = {}): Promise<ProgramInputReceipt> {
-        assertActive();
-        const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
-        signal.throwIfAborted();
-        const reply = await remote.editQueuedInput({ sessionId: identity.sessionId, requestId, content }, signal);
-        if (!reply.ok && (reply.error.code === 'gateway/internal' || reply.error.code === 'gateway/cancelled'))
-          throw new InputEditAdmissionUnknownError(identity.sessionId, requestId, reply.error);
-        return result(reply);
-      },
-      async uploadFile(data, options = {}): Promise<FileUploadValue> {
-        assertActive();
-        const cancelled = options.signal;
-        const signal = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
-        signal.throwIfAborted();
-        const name = options.name;
-        const bytes = data instanceof Uint8Array ? data : new Uint8Array(await data.arrayBuffer());
-        signal.throwIfAborted();
-        const uploaded = await remote.uploadFile({ sessionId: identity.sessionId, data: bytesToBase64(bytes),
-          ...(name === undefined ? {} : { name }) }, signal);
-        signal.throwIfAborted();
-        return result(uploaded);
-      },
-      async requestStatus(requestId) {
-        assertActive();
-        return result(await callRemote(signal => remote.requestStatus({ sessionId: identity.sessionId, requestId }, signal), scopeSignal));
-      },
-      async pause() {
-        assertActive(); return result(await callRemote(signal => remote.pause({ sessionId: identity.sessionId }, signal), scopeSignal));
-      },
-      async cancel() {
-        assertActive(); return result(await callRemote(signal => remote.cancel({ sessionId: identity.sessionId }, signal), scopeSignal));
-      },
-      async answerQuestion(callId, answer, options = {}) {
-        assertActive();
-        const cancelled = options.signal;
-        const signal = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
-        signal.throwIfAborted();
-        return result(await remote.answerQuestion({ sessionId: identity.sessionId, callId, answer }, signal));
-      },
-      async *attachWait(callId, options = {}) {
-        assertActive();
-        const signal = options.signal;
-        const observing = signal ? AbortSignal.any([scopeSignal, signal]) : scopeSignal;
-        // claim 不跨断线自动重领；原生 owner 明确接收这一物理流的取消。
-        const opened = await remote.attachWait({ sessionId: identity.sessionId, callId }, observing);
-        yield* opened;
-      },
-      attachOperation(definition, reference, options = {}) {
-        assertActive();
-        const signal = options.signal;
-        return attachRemoteOperation(operationQueries, identity.sessionId, definition, reference, accessSource,
-          signal ? AbortSignal.any([scopeSignal, signal]) : scopeSignal);
-      },
-      locateOperation(definition, command, options = {}) {
-        assertActive();
-        const signal = options.signal;
-        return locateRemoteOperation(operationQueries, identity.sessionId, definition, command, accessSource,
-          signal ? AbortSignal.any([scopeSignal, signal]) : scopeSignal);
-      },
-      readOperationFeedback(definition, command, participationId, options = {}) {
-        const signal = options.signal;
-        assertActive(); return readRemoteOperationFeedback(operationQueries, identity.sessionId, definition, command, participationId,
-          signal ? AbortSignal.any([scopeSignal, signal]) : scopeSignal);
-      },
-      async notifyOperation(followId, options = {}) {
-        assertActive();
-        const cancelled = options.signal;
-        const signal = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
-        signal.throwIfAborted();
-        return result(await remote.notifyOperation({ sessionId: identity.sessionId, followId }, signal));
-      },
-      async openEvents(eventOptions, request = {}) {
-        assertActive();
-        const journal = new ProgramJournal(ctx.remote, identity.sessionId, eventOptions);
-        journals.add(journal);
-        try { await journal.open(request); assertActive(); return journal; }
-        catch (error) { journals.delete(journal); await journal.dispose(); throw error; }
-      },
-      release(): Promise<void> {
-        return released ??= (async (): Promise<void> => {
-          controller.abort(new Error('REACTIVE_CONVERSATION_HANDLE_RELEASED'));
-          // 释放中的句柄仍归SDK持有；并发dispose必须等待同一批异步查询退役。
-          try {
-            await Promise.all([actionBindings.close(), operationQueries.close(), humanConnection.close(), progress?.close(), ...[...journals].map(journal => journal.dispose()), ...[...slots.values()].map(slot => slot.close())]);
-          } finally { sessions.delete(handle); }
-        })();
-      },
-    };
-    sessionConnections.set(handle, connection);
-    sessions.add(handle);
-    try { assertActive(); return handle; }
-    catch (error) { await handle.release(); throw error; }
-  };
-  return {
-    async createWorkspace(registration) {
-      return result(await callRemote(signal => remote.createWorkspace(registration, signal)));
-    },
-    async create(environmentId, options): Promise<RemoteProgramSession<P>> {
+    const callRemote = <T>(call: (signal: AbortSignal) => Promise<T>, signal = lifetime.signal): Promise<T> => {
       active();
-      const reference = { environmentId, workspaceId: options.workspaceId, sessionId: options.sessionId ?? crypto.randomUUID() };
-      let dispatched = false;
+      return lifetime.run(call, signal);
+    };
+
+    const session = async (identity: ProgramIdentity): Promise<RemoteProgramSession<P>> => {
+      const lease = lifetime.acquire(() => createClientScope(ctx, 'reactive-program-session:' + identity.sessionId,
+        new Error('REACTIVE_CONVERSATION_HANDLE_RELEASED'), lifetime), owner => owner.close(), 'reactive Program session');
+      const owner = lease.value;
       try {
-        const reply = await callRemote(signal => {
-          dispatched = true;
-          return remote.create(reference, signal);
-        });
-        if (!reply.ok && (reply.error.code === 'gateway/internal' || reply.error.code === 'gateway/cancelled')) throw new CreationUnknownError(reference, reply.error);
-        const identity = creation(reply); active(); return await session(identity);
+        await owner.ready;
+        const scopeSignal = owner.signal;
+        const slots = new Map<string, ResourceReader<unknown>>();
+        owner.acquire(() => slots, slots => { slots.clear(); }, 'program-view-slots');
+        const assertActive = (): void => { active(); scopeSignal.throwIfAborted(); };
+        const actionBindings = createActionBindings(owner, identity.sessionId);
+        const operationQueries = createOperationQueries(owner);
+        const accessSource = { kind: 'participant', participant: 'human', actorId: identity.actorId, entrypoint: 'operation-query' } as const;
+        let progress: RemoteProgress<P> | undefined;
+        const progressOwner = (): RemoteProgress<P> => {
+          assertActive(); return progress ??= connectProgress(owner, identity.sessionId, program);
+        };
+        const human = remoteHuman(owner, identity.sessionId);
+        const humanWaits = createHumanWaits(owner, identity.sessionId);
+        const question = createHumanQuestionResolver(human, {
+          answerQuestion: (id, answer, options) => handle.answerQuestion(id, answer, options),
+          attachWait: (id, options) => handle.attachWait(id, options),
+        }, { signal: scopeSignal });
+        const viewSlot = (name: string): ResourceReader<unknown> => {
+          assertActive();
+          const existing = slots.get(name);
+          if (existing) return existing;
+          const slot = remoteView(owner, identity.sessionId, surface, name);
+          slots.set(name, slot);
+          return slot;
+        };
+        for (const name of Object.keys(surface.views)) viewSlot(name);
+        // 每个槽来自原 Surface，并在交付前由同一 schema decode；动态映射在此恢复泛型。
+        const views = Object.freeze(Object.fromEntries([...slots].map(([name, slot]) => [name, slot.values$]))) as SurfaceViews<S>;
+        const resolveOperation = async (name: string, options: CancellationOptions = {}): Promise<BoundOperation<OperationContract>> => {
+            assertActive();
+            const definition = surfaceSlotDefinition(surface, 'operations', name);
+            if (!definition) throw new Error('REACTIVE_OPERATION_SLOT_UNKNOWN');
+            const cancelled = options.signal;
+            const signal = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
+            signal.throwIfAborted();
+            const binding = result(await remote.resolveOperation({ sessionId: identity.sessionId, name }, signal));
+            signal.throwIfAborted();
+            if (binding.operation.kind !== definition.kind || binding.operation.version !== definition.version) {
+              throw new Error('REACTIVE_OPERATION_SLOT_CONTRACT_MISMATCH');
+            }
+            return bindRemoteOperation(operationQueries, identity.sessionId, definition, binding.command as OperationCommand<typeof definition>, accessSource, signal);
+          };
+        const operations = Object.freeze(Object.fromEntries(Object.keys(surface.operations).map(name => [name,
+          (options: CancellationOptions = {}) => resolveOperation(name, options),
+        ]))) as RemoteOperations<S>;
+        const handle: RemoteProgramSession<P> = {
+          get definition() { assertActive(); return program; },
+          id: identity.sessionId, identity, surface, views, operations,
+          get actionManifest$() { return viewSlot(actionManifestSlot).values$ as Observable<readonly ToolActionBinding[]>; },
+          collection(name) {
+            assertActive();
+            const untyped = handle as RemoteProgramSession<ProgramContract>;
+            return createSurfaceCollectionClient(surface, name, { asynchronous: true,
+              viewResource: address => viewSlot(address),
+              resolveAction: (address, _definition, scope, options) => untyped.resolveAction(address, scope, options),
+              resolveOperation: (address, _definition, options) => resolveOperation(address, options),
+            });
+          },
+          async resolveAction<K extends keyof S['actions'] & string>(name: K, expectedScope: z.input<S['actions'][K]['scope']>,
+            options: CancellationOptions = {}): Promise<RemoteResolvedAction<S['actions'][K]>> {
+            assertActive();
+            const contract = surfaceSlotDefinition(surface, 'actions', name) as S['actions'][K];
+            if (!contract) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
+            const captured = await actionBindings.resolve(name, actionIdentity(contract), json(expectedScope), options);
+            const binding = captured.descriptor;
+            // 宿主已经用该合同解析原始目标并核对真实绑定。scope 是其 JSON 输出，不能再次运行单向 transform。
+            const invoke = async (input: ActionInput<S['actions'][K]>, options: CancellationOptions = {}): Promise<ActionInvocation<S['actions'][K]>> => {
+              assertActive(); captured.assertActive();
+              const signal = options.signal;
+              const starting = signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal;
+              starting.throwIfAborted();
+              // input 本来就是 z.input；客户端仅核验 JSON，唯一业务解析仍在 Host。
+              const started = await remote.startAction({ sessionId: identity.sessionId, name, contract: binding.contract, bindingId: binding.bindingId,
+                input: json(input) }, starting);
+              if (!started.ok) {
+                if (started.error.code === 'gateway/internal' || started.error.code === 'gateway/cancelled')
+                  throw new ActionAdmissionUnknownError(identity.sessionId, name, started.error);
+                throw started.error;
+              }
+              // ACK 已可能受理业务；矛盾回执不能被描述成确定未执行，也不能自动重发。
+              try {
+                if (started.value.name !== name) throw new Error('REACTIVE_ACTION_INVOCATION_SLOT_MISMATCH');
+                assertActionIdentity(contract, started.value.contract);
+              } catch (error) { throw new ActionAdmissionUnknownError(identity.sessionId, name, error); }
+              return invocation(ctx.remote, identity.sessionId, started.value, contract, lifetime, invocationQueries, callRemote);
+            };
+            // schema 输出只在明确合同的传输边界恢复类型；不要求 scope 支持反向 encode。
+            return Object.freeze(Object.assign(invoke, { definition: contract, bindingId: binding.bindingId,
+              scope: binding.scope as ActionScope<S['actions'][K]> }));
+          },
+          get progress() { return progressOwner().progress; },
+          get progress$() { return progressOwner().progress$; },
+          get progressFrames$() { return progressOwner().progressFrames$; },
+          get events$() { return progressOwner().events$; },
+          request: requestId => progressOwner().request(requestId),
+          async invocation<K extends keyof S['actions'] & string>(name: K, id: string): Promise<ActionInvocation<S['actions'][K]>> {
+            assertActive();
+            const contract = surfaceSlotDefinition(surface, 'actions', name);
+            if (!contract) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
+            const stored = result(await remote.actionInvocation({ sessionId: identity.sessionId, invocationId: id }, lifetime.signal));
+            if (stored.name !== name) throw new Error('REACTIVE_ACTION_INVOCATION_SLOT_MISMATCH');
+            return invocation(ctx.remote, identity.sessionId, stored, contract as S['actions'][K], lifetime, invocationQueries, callRemote);
+          },
+          human, question,
+          human$: human.observations$,
+          questions$: human.values$.pipe(map(value => value.questions)),
+          foregroundQuestions$: human.values$.pipe(map(value => value.foreground)),
+          observeView(name) {
+            assertActive();
+            return handle.viewResource(name).observations$;
+          },
+          viewResource(name) { return viewSlot(name) as ResourceReader<ViewValue<S['views'][typeof name]>>; },
+          readView(name, options = {}) { return handle.viewResource(name).read(options.signal); },
+          async submit(input, options = {}): Promise<ProgramInputReceipt> {
+            assertActive();
+            const cancelled = options.signal;
+            const signal = cancelled ? AbortSignal.any([lifetime.signal, cancelled]) : lifetime.signal;
+            signal.throwIfAborted();
+            json(input);
+            const submitted: ProgramSubmission = input.intent === 'result'
+              ? { ...input, scope: json(input.scope), result: { ...input.result,
+                continuation: { ...input.result.continuation, inputs: input.result.continuation.inputs.map(reference => ({ ...reference, scope: json(reference.scope) })) },
+                wait: { ...input.result.wait, operation: json(input.result.wait.operation) } } }
+              : { ...input, scope: json(input.scope) };
+            const reply = await remote.submit({ sessionId: identity.sessionId, submission: submitted }, signal);
+            if (!reply.ok && (reply.error.code === 'gateway/internal' || reply.error.code === 'gateway/cancelled')) {
+              throw new SubmissionAdmissionUnknownError(identity.sessionId, submitted.requestId, reply.error);
+            }
+            return result(reply);
+          },
+          async editQueuedInput(requestId, content, options = {}): Promise<ProgramInputReceipt> {
+            assertActive();
+            const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
+            signal.throwIfAborted();
+            const reply = await remote.editQueuedInput({ sessionId: identity.sessionId, requestId, content }, signal);
+            if (!reply.ok && (reply.error.code === 'gateway/internal' || reply.error.code === 'gateway/cancelled'))
+              throw new InputEditAdmissionUnknownError(identity.sessionId, requestId, reply.error);
+            return result(reply);
+          },
+          async uploadFile(data, options = {}): Promise<FileUploadValue> {
+            assertActive();
+            const cancelled = options.signal;
+            const signal = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
+            signal.throwIfAborted();
+            const name = options.name;
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(await data.arrayBuffer());
+            signal.throwIfAborted();
+            const uploaded = await remote.uploadFile({ sessionId: identity.sessionId, data: bytesToBase64(bytes),
+              ...(name === undefined ? {} : { name }) }, signal);
+            signal.throwIfAborted();
+            return result(uploaded);
+          },
+          async requestStatus(requestId) {
+            assertActive();
+            return result(await callRemote(signal => remote.requestStatus({ sessionId: identity.sessionId, requestId }, signal), scopeSignal));
+          },
+          async pause() {
+            assertActive(); return result(await callRemote(signal => remote.pause({ sessionId: identity.sessionId }, signal), scopeSignal));
+          },
+          async cancel() {
+            assertActive(); return result(await callRemote(signal => remote.cancel({ sessionId: identity.sessionId }, signal), scopeSignal));
+          },
+          async answerQuestion(callId, answer, options = {}) {
+            assertActive();
+            const cancelled = options.signal;
+            const signal = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
+            signal.throwIfAborted();
+            return result(await callRemote(current => remote.answerQuestion({ sessionId: identity.sessionId, callId, answer }, current), signal));
+          },
+          async *attachWait(callId, options = {}) {
+            assertActive();
+            yield* humanWaits.attach(callId, options);
+          },
+          attachOperation(definition, reference, options = {}) {
+            assertActive();
+            const signal = options.signal;
+            return attachRemoteOperation(operationQueries, identity.sessionId, definition, reference, accessSource,
+              signal ? AbortSignal.any([scopeSignal, signal]) : scopeSignal);
+          },
+          locateOperation(definition, command, options = {}) {
+            assertActive();
+            const signal = options.signal;
+            return locateRemoteOperation(operationQueries, identity.sessionId, definition, command, accessSource,
+              signal ? AbortSignal.any([scopeSignal, signal]) : scopeSignal);
+          },
+          readOperationFeedback(definition, command, participationId, options = {}) {
+            const signal = options.signal;
+            assertActive(); return readRemoteOperationFeedback(operationQueries, identity.sessionId, definition, command, participationId,
+              signal ? AbortSignal.any([scopeSignal, signal]) : scopeSignal);
+          },
+          async notifyOperation(followId, options = {}) {
+            assertActive();
+            const cancelled = options.signal;
+            const signal = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
+            signal.throwIfAborted();
+            return result(await remote.notifyOperation({ sessionId: identity.sessionId, followId }, signal));
+          },
+          async openEvents(eventOptions, request = {}) {
+            assertActive();
+            return ProgramJournal.create(owner, identity.sessionId, eventOptions, request);
+          },
+          release(): Promise<void> {
+            return lease.release();
+          },
+        };
+        sessionConnections.set(handle, connection);
+        assertActive(); return handle;
       } catch (error) {
-        if (dispatched && lifetime.signal.aborted && error === lifetime.signal.reason) throw new CreationUnknownError(reference, error);
+        try { await lease.release(); }
+        catch (cleanup) { throw new AggregateError([error, cleanup], 'REACTIVE_PROGRAM_SESSION_STARTUP_FAILED'); }
         throw error;
       }
-    },
-    async completeCreation(reference): Promise<RemoteProgramSession<P>> {
-      const identity = creation(await callRemote(signal => remote.completeCreation(reference, signal))); active(); return session(identity);
-    },
-    async open(sessionId): Promise<RemoteProgramSession<P>> {
-      const identity = creation(await callRemote(signal => remote.open({ sessionId }, signal))); active(); return session(identity);
-    },
-    async resume(sessionId): Promise<RemoteProgramSession<P>> {
-      const identity = creation(await callRemote(signal => remote.resume({ sessionId }, signal))); active(); return session(identity);
-    },
-    async describe() { return result(await callRemote(signal => remote.describe(signal))); },
-    dispose: () => close().finally(() => releaseContext()),
-  };
+    };
+    return {
+      async createWorkspace(registration) {
+        return result(await callRemote(signal => remote.createWorkspace(registration, signal)));
+      },
+      async create(environmentId, options): Promise<RemoteProgramSession<P>> {
+        active();
+        const reference = { environmentId, workspaceId: options.workspaceId, sessionId: options.sessionId ?? crypto.randomUUID() };
+        let dispatched = false;
+        try {
+          const reply = await callRemote(signal => {
+            dispatched = true;
+            return remote.create(reference, signal);
+          });
+          if (!reply.ok && (reply.error.code === 'gateway/internal' || reply.error.code === 'gateway/cancelled')) throw new CreationUnknownError(reference, reply.error);
+          const identity = creation(reply); active(); return await session(identity);
+        } catch (error) {
+          if (dispatched && lifetime.signal.aborted && error === lifetime.signal.reason) throw new CreationUnknownError(reference, error);
+          throw error;
+        }
+      },
+      async completeCreation(reference): Promise<RemoteProgramSession<P>> {
+        const identity = creation(await callRemote(signal => remote.completeCreation(reference, signal))); active(); return session(identity);
+      },
+      async open(sessionId): Promise<RemoteProgramSession<P>> {
+        const identity = creation(await callRemote(signal => remote.open({ sessionId }, signal))); active(); return session(identity);
+      },
+      async resume(sessionId): Promise<RemoteProgramSession<P>> {
+        const identity = creation(await callRemote(signal => remote.resume({ sessionId }, signal))); active(); return session(identity);
+      },
+      async describe() { return result(await callRemote(signal => remote.describe(signal))); },
+      dispose: () => lifetime.close(),
+    };
+  } catch (error) {
+    try { await lifetime.close(); }
+    catch (cleanup) { throw new AggregateError([error, cleanup], 'REACTIVE_PROGRAM_CLIENT_STARTUP_FAILED'); }
+    throw error;
+  }
 }
 
-function invocation<D extends ActionContract>(remote: ClientRemote, sessionId: string, start: ProgramActionStart, contract: D, lifetime: AbortSignal,
-  observations: Set<Promise<void>>, queries: RemoteOperationQueries): ActionInvocation<D> {
+function invocation<D extends ActionContract>(remote: ClientRemote, sessionId: string, start: ProgramActionStart, contract: D, lifetime: ClientScope,
+  queries: RemoteOperationQueries, callRemote: <T>(call: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal) => Promise<T>): ActionInvocation<D> {
   assertActionIdentity(contract, start.contract);
-  const signal = lifetime;
+  const signal = lifetime.signal;
   const activityState = new BehaviorSubject<Observation<InvocationActivity>>({ status: 'pending', generation: 0 });
   const ongoing = (observation: Observation<InvocationActivity>): boolean => observation.status === 'pending'
     || (observation.status === 'ready' && (observation.value.state === 'pending' || observation.value.state === 'running'));
   const activity = new ResourceReader<InvocationActivity>({ peek: () => activityState.value,
     observations$: activityState.pipe(takeWhile(ongoing, true)),
-  }, { signal: lifetime });
+  }, { signal });
   const address = { sessionId, invocationId: start.id };
-  const watch = (async (): Promise<void> => {
-    try {
-      for await (const item of remote.$stream<ProgramInvocationFrame>({ name: 'program-invocation:' + start.id,
-        open: physicalSignal => remote.reactivePrograms.observeAction(address, AbortSignal.any([signal, physicalSignal])),
-        ended: () => new Error('REACTIVE_REMOTE_INVOCATION_OBSERVATION_ENDED'),
-        carrierFailed: () => {
-          if (!signal.aborted && ongoing(activityState.value))
-            activityState.next({ status: 'pending', generation: activityState.value.generation + 1 });
-        },
-      })) {
-        item.accept();
-        const value = item.value;
-        const decoded = value.state === 'failed' ? { ...value, error: decodeProgramFailure(value.error) }
-          : value.state === 'returned' ? { ...value, ...(value.observationError ? { observationError: decodeProgramFailure(value.observationError) } : {}) } : value;
-        activityState.next({ status: 'ready', generation: activityState.value.generation + 1, observedAt: Date.now(), value: decoded });
-        if (value.state === 'returned' || value.state === 'failed') return;
+  // 受理ACK是业务事实；观察owner已退出也保留原id，调用者可在另一SDK恢复它。
+  if (lifetime.active) {
+    const watch = lifetime.acquire(() => (async (): Promise<void> => {
+      try {
+        for await (const item of remote.$stream<ProgramInvocationFrame>({ name: 'program-invocation:' + start.id,
+          open: physicalSignal => remote.reactivePrograms.observeAction(address, AbortSignal.any([signal, physicalSignal])),
+          ended: () => new Error('REACTIVE_REMOTE_INVOCATION_OBSERVATION_ENDED'),
+          carrierFailed: () => {
+            if (!signal.aborted && ongoing(activityState.value))
+              activityState.next({ status: 'pending', generation: activityState.value.generation + 1 });
+          },
+        })) {
+          item.accept();
+          const value = item.value;
+          const decoded = value.state === 'failed' ? { ...value, error: decodeProgramFailure(value.error) }
+            : value.state === 'returned' ? { ...value, ...(value.observationError ? { observationError: decodeProgramFailure(value.observationError) } : {}) } : value;
+          activityState.next({ status: 'ready', generation: activityState.value.generation + 1, observedAt: Date.now(), value: decoded });
+          if (value.state === 'returned' || value.state === 'failed') return;
+        }
+      } catch (error) {
+        if (!signal.aborted) {
+          if (ongoing(activityState.value)) activityState.next({ status: 'error', generation: activityState.value.generation + 1, error });
+          else console.error('reactive.invocation.observation.cleanup.failed', error);
+        }
       }
-    } catch (error) {
-      if (!signal.aborted) {
-        if (ongoing(activityState.value)) activityState.next({ status: 'error', generation: activityState.value.generation + 1, error });
-        else console.error('reactive.invocation.observation.cleanup.failed', error);
-      }
-    }
-  })();
-  observations.add(watch);
-  void watch.then(() => observations.delete(watch), () => observations.delete(watch));
-  const settled = remote.reactivePrograms.actionResult(address, lifetime).then(reply => z.decode(contract.output, result(reply)));
+    })(), watch => watch, 'program-invocation:' + start.id);
+    void watch.value.then(() => watch.release(), () => watch.release()).catch(() => {});
+  }
+  const settled = Promise.resolve().then(() => callRemote(signal => remote.reactivePrograms.actionResult(address, signal)))
+    .then(reply => z.decode(contract.output, result(reply)));
   void settled.catch(() => {});
   const mapping = contract.operation;
   const operation = mapping ? settled.then(receipt => attachRemoteOperation(queries, sessionId, mapping.definition,
-    z.json().parse(mapping.reference(receipt as never)), start.source, lifetime)) : undefined;
+    z.json().parse(mapping.reference(receipt as never)), start.source, signal)) : undefined;
   void operation?.catch(() => {});
   // 动态 Surface 映射经对应原合同 decode；operation 也只在原合同声明时构造。
   return Object.freeze({ id: start.id, source: start.source, result: settled, activity, activity$: activity.values$,

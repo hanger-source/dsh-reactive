@@ -1,4 +1,4 @@
-import type { Context } from '@deepseek-ai/cordis';
+import type { ClientScope } from './scope.ts';
 import { RemoteSnapshotStream, type ClientRemote } from '@deepseek-ai/dsh-api-gateway/client';
 import { Observable, map } from 'rxjs';
 import { z, implementOperation, attachOperation, locateOperation, bindOperation, decodeOperationFeedback, type OperationContract, type OperationOwner, type OperationReference, type OperationCommand, type OperationHandle, type OperationLocation, type OperationState, type ActionSource, type Observation, type BoundOperation, type OperationFeedbackRead, type OperationFeedbackPayload } from '@hanger-source/dsh-reactive';
@@ -18,28 +18,16 @@ function wireInput<S extends z.ZodType>(_schema: S, value: JsonValue): z.input<S
 export interface RemoteOperationQueries {
   readonly remote: ClientRemote;
   observe(name: string, open: (signal: AbortSignal) => AsyncIterable<ProgramViewFrame>, signal: AbortSignal): Observable<Observation<JsonValue>>;
-  close(): Promise<void>;
 }
 
 /** 只拥有远程查询及其异步清理；Operation的唯一状态仍由core持有。 */
-export function createOperationQueries(ctx: Context): RemoteOperationQueries {
-  const streams = new Set<{ dispose(): Promise<void> }>();
-  const retiring = new Set<Promise<void>>();
-  const failures: unknown[] = [];
-  let closing: Promise<void> | undefined;
-  let closed = false;
-  const retire = (stream: { dispose(): Promise<void> }) => {
-    if (!streams.delete(stream)) return;
-    const work = stream.dispose().then(() => { retiring.delete(work); }, error => {
-      retiring.delete(work); failures.push(error);
-    });
-    retiring.add(work);
-  };
+export function createOperationQueries(owner: ClientScope): RemoteOperationQueries {
+  const ctx = owner.context;
   return {
     remote: ctx.remote,
     observe: (name, open, lifetime) => new Observable(subscriber => {
       lifetime.throwIfAborted();
-      if (closed) throw new Error('REACTIVE_REMOTE_OPERATION_QUERIES_CLOSED');
+      owner.assertActive();
       const controller = new AbortController();
       const signal = AbortSignal.any([lifetime, controller.signal]);
       let generation = 0;
@@ -56,35 +44,28 @@ export function createOperationQueries(ctx: Context): RemoteOperationQueries {
           : { ...observed, generation });
       };
       const normalEnd = new RemoteError('gateway/internal', 'REACTIVE_REMOTE_OPERATION_ENDED', {});
-      const stream = new RemoteSnapshotStream<Extract<ProgramViewFrame, { type: 'baseline' }>, Exclude<ProgramViewFrame, { type: 'baseline' }>>(
-        ctx.remote.$stream<ProgramViewFrame>({ name, open: physical => open(AbortSignal.any([signal, physical])),
-          ended: () => normalEnd, carrierFailed: invalidate }), {
-          name, isSnapshot: (frame): frame is Extract<ProgramViewFrame, { type: 'baseline' }> => frame.type === 'baseline',
-          replace: accept, update: accept,
-          failed(error) {
-            if (subscriber.closed) return;
-            // 有限查询只有实际交付ready/error后才正常结束；core继续判定业务终态。
-            if (!signal.aborted && !(error === normalEnd && (last === 'ready' || last === 'error'))) subscriber.error(error);
-            else subscriber.complete();
-          },
-        });
-      streams.add(stream);
-      const reset = ctx.on('connection/reset', () => { invalidate(); stream.restart(); });
+      const connection = owner.acquire(() => {
+        const stream = new RemoteSnapshotStream<Extract<ProgramViewFrame, { type: 'baseline' }>, Exclude<ProgramViewFrame, { type: 'baseline' }>>(
+          ctx.remote.$stream<ProgramViewFrame>({ name, open: physical => open(AbortSignal.any([signal, physical])),
+            ended: () => normalEnd, carrierFailed: invalidate }), {
+            name, isSnapshot: (frame): frame is Extract<ProgramViewFrame, { type: 'baseline' }> => frame.type === 'baseline',
+            replace: accept, update: accept,
+            failed(error) {
+              if (subscriber.closed) return;
+              // 有限查询只有实际交付ready/error后才正常结束；core继续判定业务终态。
+              if (!signal.aborted && !(error === normalEnd && (last === 'ready' || last === 'error'))) subscriber.error(error);
+              else subscriber.complete();
+            },
+          });
+        const reset = ctx.on('connection/reset', () => { invalidate(); stream.restart(); });
+        return { stream, reset };
+      }, async ({ stream, reset }) => { reset(); await stream.dispose(); }, name);
       subscriber.add(() => {
         controller.abort(new Error('REACTIVE_REMOTE_OPERATION_OBSERVATION_RELEASED'));
-        reset(); retire(stream);
+        void connection.release().catch(() => {});
       });
-      if (!subscriber.closed) stream.start();
+      if (owner.active && !subscriber.closed) connection.value.stream.start();
     }),
-    close() {
-      return closing ??= (async () => {
-        closed = true;
-        for (const stream of [...streams]) retire(stream);
-        await Promise.all([...retiring]);
-        if (failures.length === 1) throw failures[0];
-        if (failures.length) throw new AggregateError(failures, 'REACTIVE_REMOTE_OPERATION_QUERIES_CLOSE_FAILED');
-      })();
-    },
   };
 }
 

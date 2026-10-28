@@ -61,7 +61,9 @@ test('Operation查询按消费者共享连接，Session退出等待本次流退�
   RemoteStream.prototype[Symbol.asyncIterator] = function (...args) {
     const iterator = iterate.apply(this, args), delayed = capture;
     capture = undefined;
-    if (delayed?.kind === 'iterator') {
+    if (delayed?.kind === 'dispose-owner') {
+      delayed.disposal = delayed.close(); delayed.entered.resolve();
+    } else if (delayed?.kind === 'iterator') {
       const close = iterator.return;
       assert.equal(typeof close, 'function');
       iterator.return = async (...args) => {
@@ -74,7 +76,10 @@ test('Operation查询按消费者共享连接，Session退出等待本次流退�
   RemoteStream.prototype.dispose = async function (...args) {
     await dispose.apply(this, args);
     const delayed = delays.get(this);
-    if (delayed) { delayed.entered.resolve(); await delayed.release.promise; }
+    if (delayed) {
+      delayed.entered.resolve(); await delayed.release.promise;
+      if (delayed.error) { delayed.failed.resolve(); throw delayed.error; }
+    }
   };
   t.after(() => { RemoteStream.prototype[Symbol.asyncIterator] = iterate; RemoteStream.prototype.dispose = dispose; });
   let models = 0, gateway, local;
@@ -98,7 +103,7 @@ test('Operation查询按消费者共享连接，Session退出等待本次流退�
     model: { provider: 'operation-query', model: 'unused' }, actor: principal => principal.id,
     access: service => service.registerPolicy('reader', { bindings: () => [{ resource: { kind: 'session', id: local.id },
       role: { name: 'operation-reader', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/observeOperation',
-        'reactivePrograms/resolveAction', 'reactivePrograms/startAction', 'reactivePrograms/actionResult', 'reactivePrograms/observeAction',
+        'reactivePrograms/resolveAction', 'reactivePrograms/startAction', 'reactivePrograms/actionResult', 'reactivePrograms/actionInvocation', 'reactivePrograms/observeAction',
         'reactivePrograms/view', 'reactivePrograms/questions', 'reactivePrograms/progress'] },
       condition(request) {
         const endpoint = request.action.slice('reactivePrograms/'.length);
@@ -177,5 +182,52 @@ test('Operation查询按消费者共享连接，Session退出等待本次流退�
   await peer.release(); await next(counts, value => value.peer === 0);
   assert.deepEqual(counts.value, { first: 0, peer: 0, invocation: 0 });
   assert.deepEqual(await (await local.attachOperation(definition, 'first')).state.read(t.signal), { revision: 2, done: true });
-  assert.equal(bodies, 1); assert.equal(models, 0); assert.deepEqual(errors, []);
+
+  // View已经开始手动退休，人工问题查询仍停在异步清理；一个失败不能提前结束整个owner。
+  const exitFailure = new Error('EXPECTED_VIEW_CLEANUP_FAILURE');
+  const failedCleanup = { entered: Promise.withResolvers(), release: Promise.withResolvers(), failed: Promise.withResolvers(), error: exitFailure };
+  const heldCleanup = { entered: Promise.withResolvers(), release: Promise.withResolvers() };
+  const failing = await connect(), failingClient = clients.pop();
+  t.after(async () => {
+    failedCleanup.release.resolve(); heldCleanup.release.resolve();
+    await assert.rejects(failingClient.dispose(), error => error === exitFailure);
+  });
+  capture = failedCleanup;
+  const failingView = failing.viewResource('current');
+  const viewing = failingView.values$.subscribe();
+  await failingView.read(t.signal);
+  viewing.unsubscribe(); await failedCleanup.entered.promise;
+  capture = heldCleanup;
+  subscriptions.push(failing.human.values$.subscribe());
+  await failing.human.read(t.signal);
+  let releasedWithFailure = false, disposedWithFailure = false;
+  const failedRelease = failing.release();
+  void failedRelease.then(() => { releasedWithFailure = true; }, () => { releasedWithFailure = true; });
+  const failedDispose = failingClient.dispose();
+  void failedDispose.then(() => { disposedWithFailure = true; }, () => { disposedWithFailure = true; });
+  await heldCleanup.entered.promise;
+  failedCleanup.release.resolve(); await failedCleanup.failed.promise; await checkpoint();
+  assert.equal(releasedWithFailure, false, '退出错误要等另一能力的实际清理，不能提前拒绝');
+  assert.equal(disposedWithFailure, false, 'SDK加入同一个未完成的Session退出');
+  heldCleanup.release.resolve();
+  await assert.rejects(failedRelease, error => error === exitFailure);
+  await assert.rejects(failedDispose, error => error === exitFailure);
+  assert.deepEqual(await (await local.attachOperation(definition, 'first')).state.read(t.signal), { revision: 2, done: true });
+
+  // ACK已到达，在真实观察流的构造中同步退出；保留原Invocation身份供另一SDK恢复。
+  const interrupted = await connect(), interruptedClient = clients.at(-1);
+  const acceptedAction = await interrupted.resolveAction('start', null);
+  const reentrant = { kind: 'dispose-owner', entered: Promise.withResolvers(), close: () => interruptedClient.dispose(), disposal: undefined };
+  capture = reentrant;
+  const accepted = await acceptedAction('invocation');
+  await reentrant.entered.promise; await reentrant.disposal;
+  assert.equal(typeof accepted.id, 'string');
+  await assert.rejects(accepted.result, /REACTIVE_REMOTE_CLIENT_DISPOSED/u);
+  const restoring = await connect();
+  const restored = await restoring.invocation('start', accepted.id);
+  assert.equal(await restored.result, 'invocation');
+  assert.equal(restored.id, accepted.id);
+  await restoring.release();
+  assert.equal(bodies, 2, '只有两次明确Action受理；观察、恢复和退出均不重新执行业务');
+  assert.equal(models, 0); assert.deepEqual(errors, []);
 });
