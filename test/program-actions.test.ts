@@ -1,7 +1,7 @@
 import { implementProgram } from '@hanger-source/dsh-reactive/program';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionId } from '@deepseek-ai/dsh-session';
@@ -48,6 +48,7 @@ test('同一绑定同时供人和 AI 调用，真实来源及 Goal 权限分别�
       }
       call.signal.throwIfAborted();
       const result = { merchantId: call.scope.merchantId, revision: facts.value.revision + 1 };
+      await writeFile(join(root, input.operation + '.json'), JSON.stringify(result));
       facts.next(result);
       return result;
     }
@@ -88,17 +89,27 @@ test('同一绑定同时供人和 AI 调用，真实来源及 Goal 权限分别�
     const goal = observer.snapshot().goal;
     assert.ok(goal); assert.equal(goal.phase, 'active');
     const updated = firstValueFrom(observer.views.record.pipe(filter(value => value.revision === 1)));
-    const invocation = first.resolveAction('prepare', { merchantId: 'merchant-a' })({ operation: 'human' });
+    const caller = new AbortController(), waiting = new AbortController();
+    const invocation = first.resolveAction('prepare', { merchantId: 'merchant-a' })({ operation: 'human' }, { signal: caller.signal });
     await humanStarted.promise;
+    const reason = new Error('HUMAN_ACTION_WAIT_FINISHED');
+    const withdrawn = assert.rejects(invocation.wait({ signal: waiting.signal }), error => error === reason);
+    const retained = invocation.wait();
     assert.equal(invocation.source.kind, 'participant');
     if (invocation.source.kind === 'participant') {
       assert.equal(invocation.source.participant, 'human');
       assert.equal(invocation.source.actorId, 'operator-test');
       assert.equal(invocation.source.entrypoint, 'sdk');
     }
+    caller.abort(new Error('HUMAN_ACTION_CALLER_EXITED'));
+    waiting.abort(reason); await withdrawn;
     first.release();
     humanResult.resolve();
     assert.deepEqual(await invocation.result, { merchantId: 'merchant-a', revision: 1 });
+    assert.deepEqual(await retained, await invocation.result);
+    assert.deepEqual(JSON.parse(await readFile(join(root, 'human.json'), 'utf8')), await invocation.result);
+    assert.equal(observer.invocation('prepare', invocation.id), invocation);
+    assert.deepEqual(await observer.invocation('prepare', invocation.id).wait(), await invocation.result);
     assert.deepEqual(await updated, { merchantId: 'merchant-a', revision: 1 });
     assert.equal(observer.snapshot().goal?.phase, 'active');
     assert.equal(observer.snapshot().goal?.id, goal.id);
@@ -191,6 +202,13 @@ test('冷 SDK 按原始目标解析真实绑定，同 revision 换商家或同�
     assert.throws(() => currentA({ expectedRevision: 7 }), error => error instanceof ActionBindingUnavailableError && error.reason === 'not-exposed');
     selection.next({ merchantId: 'merchant-a', generation: 2, visible: true });
     assert.equal(session.resolveAction('prepare', 'merchant-a').bindingId, currentA.bindingId, '同一真实绑定重新公开仍是原owner');
+    const cancelled = new AbortController(), cancelledReason = new Error('ACTION_ADMISSION_CALLER_EXITED');
+    const notStarted = currentA({ expectedRevision: 7 }, { signal: cancelled.signal });
+    cancelled.abort(cancelledReason);
+    await assert.rejects(notStarted.result, error => error === cancelledReason);
+    assert.deepEqual(effects, [], '原生冷检查尚未准入时的caller取消不能开始execute');
+    assert.equal(app.native.agents.get(SessionId(session.id)), undefined);
+    assert.throws(() => currentA({ expectedRevision: 7 }, { signal: cancelled.signal }), error => error === cancelledReason);
     const admitting = currentA({ expectedRevision: 7 });
     selection.next({ merchantId: 'merchant-b', generation: 3, visible: true });
     await assert.rejects(admitting.result, changed, '准入await期间换绑不能执行旧调用或改指新商家');

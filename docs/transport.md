@@ -113,6 +113,8 @@ const receipt = await invocation.result;
 
 支持调用方取消的本地与远程 SDK 方法使用 `{ signal }` 选项，类型来自 core 的 `CancellationOptions`。远程身份始终来自认证载体，选项不携带 actor。`resolveAction` 的信号只取消尚未完成的解析等待，就绪连接随后由 Session 持有；远程 Action 调用的信号只取消开始回执的等待，已受理的业务和已取得 Invocation 的结果、观察继续归原 owner。受理尚未确认时仍按未知受理处理，不自动重发。已取消的调用在发送前明确拒绝。
 
+本地 SDK Action 的调用 signal 限制进入业务 execute 之前的准入，不能在业务已经开始后撤回其结果或 Operation 关联。取得 Invocation 后，使用 call.wait({ signal }) 取消某一次结果等待；此方法属于共同 Invocation 合同，模块与集合中的调用及查回同样适用。取消一个 waiter 不终止其他 waiter，不改写 call.result 或 activity，不向 Host 发送执行取消。远程 wait 另受其 SDK 读取 owner 约束，SDK 退出后的原 Host 回执可以在有效 SDK 中按精确地址和 id 查回。本地查回仍交付原 call 对象，首次调用者取消不会成为它之后所有等待的条件。用法见[调用回执等待](migration-invocation-waits.md)。
+
 本地与远程的 `requestStatus(requestId, { signal })` 属于共同的 ProgramSessionClient；`pause({ signal })`、`cancel({ signal })` 和问答控制属于 HumanProgramSessionClient。回执类型 ProgramRequestStatus、ProgramGoalControl 与 ProgramCancelResult 定义在 core。暂停返回原 Goal 的 id、revision、phase，本地具体句柄还保留完整原生 GoalView；canceled:true 只确认原生处理已 idle 并完成持久 flush，不代表外部业务已取消。服务参与者可以读取问题和请求状态，不能调用人工控制。
 
 Gateway 的 participant(principal) 从认证主体映射 `{ participant: 'human' | 'service', actorId }`。该身份不进入请求参数，由宿主在取得会话端口时固定；输入、Action、Operation 与上传沿同一身份准入，Invocation 回执还核对参与者类别和 actor。服务自动化通过 createServiceProgramClient 或 bindServiceProgramClient 使用共同能力，人工端使用 createProgramClient 或 bindProgramClient；各工厂核对宿主返回的身份，服务运行对象不包含回答、前台认领或 Goal 控制方法。即使单独授予了这些 endpoint 的访问 grant，服务身份仍会被服务器拒绝。

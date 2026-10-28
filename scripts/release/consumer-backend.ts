@@ -11,7 +11,7 @@ import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-r
 import { createProgramClient, createServiceProgramClient, type RemoteProgramSession, type RemoteServiceProgramSession } from '@hanger-source/dsh-reactive-client';
 import { mountProgramGateway } from '@hanger-source/dsh-reactive-remote';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
-import { ConsumerModuleProgram, sessionResources, sessionControls, sessionFileUpload, receiveFileUpload, readSessionView, readSelectedRevision } from './consumer-session.js';
+import { ConsumerModuleProgram, sessionResources, sessionControls, sessionFileUpload, receiveFileUpload, readSessionView, readSelectedRevision, invocationReceipt } from './consumer-session.js';
 import type { Workspace } from '@hanger-source/dsh-reactive/workspaces';
 
 const contract = defineProgram({ input: z.object({ subject: z.string() }).strict(), surface: defineSurface({ views: { revision: resourceView(z.number()) }, actions: {} }) });
@@ -49,6 +49,7 @@ export const publicEntries = [createProgramClient, createServiceProgramClient, m
 export const developerSkill = getDeveloperSkill();
 export const nativeProgramSource = (conversation: ProgramSession<typeof contract>): NativeSessionSource => conversation;
 export const invocationActivity = <T, O extends Json, Source>(invocation: Invocation<T, O, Source>) => invocation.activity;
+export const invocationResult = <T, O extends Json, Source>(invocation: Invocation<T, O, Source>, signal: AbortSignal) => invocationReceipt(invocation, signal);
 export const useInvocationActivity = <T, O extends Json, Source>(invocation: Invocation<T, O, Source>) => useResource(invocation.activity);
 export const readWithCancellation = <T>(read: (signal: AbortSignal) => T | PromiseLike<T>, signal: AbortSignal): Promise<T> =>
   firstValueFrom(abortable(read, signal));

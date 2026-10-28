@@ -12,7 +12,7 @@
 
 每帧包含完整的 Context、Offer、Skill、HumanInput 与 Surface 贡献。同名 Context 或 Offer、重复 Skill 来源及重复 Surface 槽均失败。子组件可以向同一 Surface 提供不同槽；调用方必须显式选择名称与出口，React key 不会自动生成另一套命名空间。
 
-同一模块处理多个对象时，可以由 props 传入各自的业务目标、Context/Offer 名称，以及应用定义的带类型 Outlet 组件。模块向 Outlet 提供领域 Observable 与绑定 Action，调用方再用 Expose 映射到根 Surface；模块自身不导入根 Surface。同会话双对象、跨工作环境复用、重名与 foreign Surface 拒绝已有原生试验证据，这项方式使用普通 React 组合与显式端口映射。
+复合程序用 composeSurface 组合各模块的局部 Surface，以其挂载点建立 Module 边界；动态对象集合用 collectionSurface 与 mount.instance(key)。模块接收业务目标，使用局部 Context、Offer、Follow 和 Expose，框架映射原生名称与完整公开地址。模块无需接收应用提供的名称或 Outlet，也不导入根 Surface；本地及远程消费者沿同一模块地址读取、调用和查回 Invocation。
 
 会话程序按名称及实际来源身份增量更新内部接点，并在 batch 后发布 revision。原生准备使用 revision 判断异步等待期间声明是否变化；保持不变的 Action、工具、目录和视图来源不会因无关 render 全部重建。
 
@@ -88,6 +88,10 @@ dsh 的实际顺序是：inbox 提取并报告本步输入，执行 `system-prom
 绑定在提交后激活，组件退出时失去后续受理资格。释放或撤下声明不取消已经进入业务 execute 的调用，调用继续沿实际信号与业务 owner 结算。目标、输入关联和 continuation 使用各自快照，调用过程中不把当前选中对象偷偷替换为另一个对象。
 
 每次显式调用立即创建 Invocation。读取其 `result` 或订阅 `activity$` 都观察同一次执行，订阅不会重做。输入解析、准入、Operation 接合、执行和输出解析的失败保留各自阶段；输出在成功解析后交付。观察投影错误记录在 Invocation 的返回活动中，不回滚已经执行的业务。原生工具的最终成功或失败仍以原生工具管线结算为准。
+
+`Invocation.wait({ signal })` 只等待原 result，取消只结束这一次等待；其他等待者、activity、result 和可选 operation 保留原身份与真实结算。本地 Action 不将首次 SDK 调用者信号捕获为永久等待条件，绑定、组件或查回句柄退出也不重新绑定原 call 的读取 owner。远程 Invocation 的等待仍受所属 SDK 的读取寿命约束；原生写入及上传继续使用原签发者的默认等待寿命。`call.wait(reference)` 是业务执行上下文中的原生续接登记，与 Invocation 的结果等待分别使用。
+
+本地 SDK Action 的 options.signal 只限制受理前准入和持久准备结束后进入 execute 的边界。业务开始后，其 result 和 Operation 关联由 Host 的真实执行信号及业务 owner 决定，取消消费者等待不会把已经成功的写入改成 failed。显式 ActionExecutionContext.signal、原生工具 signal 的真实执行权限与后置复核继续适用；Operation 的业务终态另用 handle.settled({ signal }) 读取。
 
 | 入口 | 身份、准入与因果 |
 | --- | --- |

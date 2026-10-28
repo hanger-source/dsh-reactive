@@ -13,10 +13,10 @@ import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh
 import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-reactive-dsh/tools';
 import { createNativeSubagents, SubagentError, type NativeSessionSubagents,
   type SubagentDescendantListEntry } from '@hanger-source/dsh-reactive-dsh/subagents';
-import { combineResources, mapResource, shareResource } from '@hanger-source/dsh-reactive';
+import { combineResources, mapResource, shareResource, type Invocation, type Json } from '@hanger-source/dsh-reactive';
 import { useResource } from '@hanger-source/dsh-reactive/program';
 import type { ConversationHandle, NativeInvocation } from '@hanger-source/dsh-reactive-dsh';
-import { ConsumerModuleProgram, readSelectedRevision, sessionControls } from './consumer-session.js';
+import { ConsumerModuleProgram, readSelectedRevision, sessionControls, invocationReceipt } from './consumer-session.js';
 
 export const nativeModuleRevision = (session: ConversationHandle<typeof ConsumerModuleProgram>, signal: AbortSignal) => readSelectedRevision(session, signal);
 export const nativeControls = (session: ConversationHandle<typeof ConsumerModuleProgram>, signal: AbortSignal) => sessionControls(session, signal);
@@ -34,11 +34,8 @@ export const scheduleTarget = (schedule: NativeSessionSchedule, storedId: string
 export const scheduleFailure = (error: unknown) =>
   error instanceof ScheduleInputError || error instanceof ScheduleLogError ? error.code : undefined;
 export const removeCollectedJob = (job: NativeJob, signal: AbortSignal): void => job.remove({ signal });
-export function observeNativeWrite<T>(invocation: NativeInvocation<T>, signal: AbortSignal) {
-  return { invocation, result: invocation.result, wait: () => invocation.wait({ signal }),
-    source: invocation.source, activity: invocation.activity, activity$: invocation.activity$ };
-}
-export const useNativeWrite = <T>(invocation: NativeInvocation<T>) => useResource(invocation.activity);
+export const observeNativeWrite = <T>(invocation: NativeInvocation<T>, signal: AbortSignal) => invocationReceipt(invocation, signal);
+export const useInvocationActivity = <T, O extends Json, Source>(invocation: Invocation<T, O, Source>) => useResource(invocation.activity);
 export const filePage = (files: NativeSessionFiles, path: string): NativeFileResource<WorkspaceFileText> => files.text(path);
 export const skillMaterial = (skills: NativeSessionSkills, files: NativeSessionFiles, name: string, path: string) =>
   combineResources({ catalog: skills.catalog, definition: skills.definition(name), file: files.text(path) });

@@ -10,6 +10,7 @@ import * as types from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramAddress } from '@hanger-source/dsh-reactive-client/types';
 import * as remote from '@hanger-source/dsh-reactive-client/remote';
 export { sessionResources, sessionFileUpload, receiveFileUpload, callPublishedAction } from './consumer-session.js';
+import { invocationReceipt } from './consumer-session.js';
 
 const date = z.codec(z.iso.datetime(), z.date(), { decode: value => new Date(value), encode: value => value.toISOString() });
 export const program = defineProgram({ name: 'release_browser', input: z.null(), surface: defineSurface({ actions: {}, views: { at: resourceView(date) } }) });
@@ -19,6 +20,7 @@ export const connectService = (options: ProgramClientOptions) => createServicePr
 export const bindService = (context: Parameters<typeof bindServiceProgramClient>[1]) => bindServiceProgramClient(program, context);
 export const composed = (source: ResourceSource<Date>, signal: AbortSignal) => shareResource(source, { signal });
 export const invocationActivity = <T, O extends Json, Source>(invocation: Invocation<T, O, Source>) => invocation.activity.read();
+export const invocationResult = <T, O extends Json, Source>(invocation: Invocation<T, O, Source>, signal: AbortSignal) => invocationReceipt(invocation, signal);
 // 同一个实包浏览器产物同时消费所有正式入口，运行消费者验证共享身份及实际字节/Socket行为。
 export const clientEntries = { client, errors, inbox, transport, types, remote };
 export const address: ProgramAddress = { sessionId: 'release-client-entries', program: { name: program.name, version: program.version } };

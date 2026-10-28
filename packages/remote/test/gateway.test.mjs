@@ -248,6 +248,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
   const implementation = implementAction(check, { operationOwner: owner, async execute(input, call) {
     executions++; assert.equal(input.amount, 7); assert.equal(call.source.actorId, 'alice');
     entered.resolve(); await finish.promise; call.signal.throwIfAborted();
+    await writeFile(join(root, 'accepted-check.json'), JSON.stringify({ operationId: 'op-7', actorId: call.source.actorId, amount: input.amount }));
     accepted.set('op-7', true);
     facts.next({ status: 'ready', generation: 3, observedAt: Date.now(), value: new Date('2026-10-26T00:00:07Z') });
     return { operation: { id: 'op-7' }, at: '2026-10-26T00:00:07Z' };
@@ -537,7 +538,15 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     facts.next({ status: 'error', generation: 2, error: new Error('QUERY_FAILED') });
     assert.deepEqual(failure((await broken).error), { code: 'gateway/internal', message: 'QUERY_FAILED', details: {} });
     const checkAction = await created.resolveAction('check', null);
-    const invocation = await checkAction({ amount: '7' }); await entered.promise;
+    const invoking = new AbortController(), waiting = new AbortController(), waitReason = new Error('ACTION_RECEIPT_WAIT_FINISHED');
+    const invocation = await checkAction({ amount: '7' }, { signal: invoking.signal }); await entered.promise;
+    const withdrawn = assert.rejects(invocation.wait({ signal: waiting.signal }), error => error === waitReason);
+    const retained = invocation.wait();
+    let retainedEnded = false;
+    void retained.then(() => { retainedEnded = true; }, () => { retainedEnded = true; });
+    invoking.abort(new Error('ACTION_START_CALLER_EXITED'));
+    waiting.abort(waitReason); await withdrawn;
+    assert.equal(retainedEnded, false, '退出一个等待不结束另一读取，也不取消原Host执行');
     const currentInvocation = await next(invocation.activity.observations$, value => value.status === 'ready' && value.value.state === 'running');
     assert.equal(currentInvocation.value.state, 'running');
     const activityDisconnected = next(invocation.activity.observations$,
@@ -554,13 +563,17 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     assert.equal(invocation.source.actorId, 'alice');
     const id = invocation.id, sessionId = created.id;
     const disconnected = assert.rejects(invocation.result);
-    await client.dispose(); await disconnected;
+    const endedWait = assert.rejects(retained, /REACTIVE_REMOTE_CLIENT_DISPOSED/u);
+    await client.dispose(); await disconnected; await endedWait;
     await assert.rejects(async () => invocation.activity.read(), /REACTIVE_REMOTE_CLIENT_DISPOSED/u);
     finish.resolve();
     const reconnected = await connect('alice'), session = await reconnected.open(sessionId);
     console.info('gateway.human.reconnected', { sessionId });
     const original = await session.invocation('check', id);
-    const receipt = await original.result;
+    const receipt = await original.wait();
+    assert.deepEqual(receipt, await original.result);
+    assert.deepEqual(JSON.parse(await readFile(join(root, 'accepted-check.json'), 'utf8')),
+      { operationId: 'op-7', actorId: 'alice', amount: 7 });
     assert.equal((await next(original.activity$, value => value.state === 'returned')).state, 'returned');
     assert.equal((await original.activity.read()).state, 'returned');
     const completedActivity = [];

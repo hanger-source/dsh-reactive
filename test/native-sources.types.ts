@@ -1,4 +1,4 @@
-import type { ProgramContract, ProgramSession, Invocation, InvocationActivity, Json } from '@hanger-source/dsh-reactive';
+import type { ProgramContract, ProgramSession, Invocation, InvocationActivity, Json, FileUploadInvocation, FileUploadValue } from '@hanger-source/dsh-reactive';
 import type { NativeSessionSource, NativeInvocation } from '@hanger-source/dsh-reactive-dsh';
 import type { NativeJob, NativeJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
 import type { NativeSchedule, NativeScheduleTask, NativeScheduleUpdate, ScheduleUpdateResult, ScheduleDeleteResult } from '@hanger-source/dsh-reactive-dsh/schedule';
@@ -44,13 +44,21 @@ void taskConsumer;
 
 function nativeInvocationConsumer<T>(call: NativeInvocation<T>, signal: AbortSignal) {
   const invocation: Invocation<T, Json, NativeInvocation<T>['source']> = call;
-  const result: Promise<T> = call.result;
-  const waiting: Promise<T> = call.wait({ signal });
+  const result: Promise<T> = invocation.result;
+  const waiting: Promise<T> = invocation.wait({ signal });
   const activity: ResourceReadable<InvocationActivity> = call.activity;
   const kind: 'native' = call.source.kind;
   return { invocation, result, waiting, activity, kind, source: call.source, stream: call.activity$ };
 }
 void nativeInvocationConsumer;
+
+function fileUploadInvocationConsumer(call: FileUploadInvocation, signal: AbortSignal) {
+  const invocation: Invocation<FileUploadValue, never, FileUploadInvocation['source']> = call;
+  const result: Promise<FileUploadValue> = invocation.result;
+  const waiting: Promise<FileUploadValue> = invocation.wait({ signal });
+  return { invocation, result, waiting, activity: invocation.activity, stream: invocation.activity$ };
+}
+void fileUploadInvocationConsumer;
 
 function teamConsumer(team: NativeSessionTeam, create: CreateTeamTaskRequest, update: UpdateTeamTaskRequest) {
   const roster: ResourceReadable<readonly TeamMemberView[]> = team.roster;

@@ -40,7 +40,7 @@ const options: CancellationOptions = { signal };
 const facts = await session.readView('facts', options);
 const save = await session.resolveAction('save', { sku }, options);
 const invocation = await save({ note: '交付前确认包装' }, options);
-const receipt = await invocation.result;
+const receipt = await invocation.wait({ signal: receiptWaitSignal });
 ```
 
 local resolveAction 同步，remote 异步；统一代码 `await` 两者。预期 scope 是调用者持有的**原始**目标，用同 schema 与当前绑定核验；不要把 scope 重复进业务 input，不按当前页面重定向。捕获后保 bindingId，撤下/替换/重挂硬拒旧句柄。接收 ActionAdmissionUnknownError 时不自动重发；定位已有 invocation/Operation 或按应用幂等合同处理。

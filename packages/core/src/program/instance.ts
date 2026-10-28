@@ -301,10 +301,11 @@ export class ProgramInstance<P extends ProgramContract> implements ProgramHookOw
     }
   }
   /** 工具与认证参与入口复用同一绑定；订阅 Invocation 不会重新调用业务。 */
-  invoke(action: ActionReference, input: unknown, execution: ActionExecutionContext, allowed: () => boolean): Invocation<unknown, Json> {
+  invoke(action: ActionReference, input: unknown, execution: ActionExecutionContext, allowed: () => boolean,
+    admissionSignal?: AbortSignal): Invocation<unknown, Json> {
     this.flush();
     this.#trusted.set(execution, { action, allowed });
-    return invokeBoundAction(action, input, execution);
+    return invokeBoundAction(action, input, execution, admissionSignal);
   }
 }
 

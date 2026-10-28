@@ -6,7 +6,7 @@ import { installConnection, type ConnectionHandle, type ConnectionInstallOptions
 import { type RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { bytesToBase64 } from '@deepseek-ai/dsh-util-crypto';
-import { BehaviorSubject, map, takeWhile, type Observable } from 'rxjs';
+import { BehaviorSubject, firstValueFrom, map, takeWhile, type Observable } from 'rxjs';
 import { z, assertSharedProgramDefinition, programIdentity, assertProgramIdentity, surfaceSlotDefinition, createSurfaceCollectionClient, actionManifestSlot, createFileUploadInvocation, type ToolActionBinding, type ActionInput, type ActionInvocation, type ActionContract, type ActionScope, type InvocationActivity, type Observation, type Surface, type SurfaceViews, type ViewValue, type OperationContract, type OperationReference, type OperationCommand, type OperationHandle, type BoundOperation, type ProgramContract, type SharedProgramContract, type ProgramSurface, type WorkspaceRegistration, type ConversationCreateOptions, type FileUploadSource, type FileUploadInvocation, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import { decodeProgramFailure, ActionAdmissionUnknownError, CreationUnknownError, CreationIncompleteError,
   ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError } from './contracts/errors.ts';
@@ -25,6 +25,7 @@ import { actionIdentity, assertActionIdentity } from '@hanger-source/dsh-reactiv
 import { createHumanQuestionResolver } from '@hanger-source/dsh-reactive';
 import type { CollectionResolvedAction, SurfaceClient, ProgramSessionClient, HumanProgramSessionClient } from '@hanger-source/dsh-reactive';
 import { createSurfaceModuleClient } from '@hanger-source/dsh-reactive';
+import { abortable } from '@hanger-source/dsh-reactive';
 
 export { createAuthenticatedTransport } from './transport.ts';
 export type { AuthenticatedTransport, AuthenticatedTransportOptions } from './transport.ts';
@@ -593,5 +594,9 @@ function invocation<D extends ActionContract>(remote: ClientRemote, sessionId: s
   void operation?.catch(() => {});
   // 动态 Surface 映射经对应原合同 decode；operation 也只在原合同声明时构造。
   return Object.freeze({ id: start.id, source: start.source, result: settled, activity, activity$: activity.values$,
+    wait(options: CancellationOptions = {}) {
+      const waiting = options.signal ? AbortSignal.any([signal, options.signal]) : signal;
+      return firstValueFrom(abortable(() => settled, waiting));
+    },
     ...(operation ? { operation } : {}) }) as ActionInvocation<D>;
 }

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { ResourceReader } from '../resources/reader.ts';
 import { abortable } from '../reactivity/observable.ts';
 import type { Observation } from '../resources/observation.ts';
-import type { Continuation, InputReference, Json, WaitReference } from '../conversations/protocol.ts';
+import type { CancellationOptions, Continuation, InputReference, Json, WaitReference } from '../conversations/protocol.ts';
 import { humanPromptsSchema, humanAskOptionsSchema, humanAskResultSchema, type HumanPrompt, type HumanAskOptions, type HumanAnswer, type HumanAskResult } from '../participation/contract.ts';
 import { attachOperation, isOperationOwner, locateOperation, operationCommand, type OperationContract, type OperationHandle, type OperationLocation, type OperationOwner, type OperationOwnerReference, type OperationReference, type OperationState } from '../operations/contract.ts';
 
@@ -170,6 +170,8 @@ export interface Invocation<Output, Observed extends Json = Json, Source = Actio
   readonly source: Source;
   /** 显式调用时即启动；读取或订阅不会重新执行。 */
   readonly result: Promise<Output>;
+  /** 只退出本消费者的结果等待；不改写result或调用事实，默认读取寿命由实际签发者决定。 */
+  wait(options?: CancellationOptions): Promise<Output>;
   /** 本次调用的同源当前事实；read 不等待业务完成，业务失败仍是 ready 的调用事实。 */
   readonly activity: ResourceReader<InvocationActivity<Observed>>;
   /** 同一次执行的最近状态与更新；晚订阅仍能取得终态，业务完成使用result。 */
@@ -253,7 +255,7 @@ type ArgumentCapture = { readonly input: InputCapture; readonly scope: InputCapt
 const implementationArgumentCaptures = new WeakMap<object, ArgumentCapture>();
 const invocationArguments = new WeakMap<ActionCallContext<unknown>, { readonly input: Json; readonly scope: Json }>();
 const executionGuards = new WeakMap<ActionExecutionContext, () => void>();
-type RawActionDispatcher = (raw: unknown, execution: ActionExecutionContext) => Invocation<unknown, Json>;
+type RawActionDispatcher = (raw: unknown, execution: ActionExecutionContext, admissionSignal?: AbortSignal) => Invocation<unknown, Json>;
 const boundDispatchers = new WeakMap<object, {
   readonly invoke: RawActionDispatcher;
   readonly operationOwner?: OperationOwnerReference;
@@ -267,10 +269,11 @@ export function isBoundAction(reference: unknown): reference is ActionReference 
 }
 
 /** @internal 供异构 Surface / 原生工具边界进入原绑定的唯一解析与执行入口。 */
-export function invokeBoundAction(reference: ActionReference, raw: unknown, execution: ActionExecutionContext): Invocation<unknown, Json> {
+export function invokeBoundAction(reference: ActionReference, raw: unknown, execution: ActionExecutionContext,
+  admissionSignal?: AbortSignal): Invocation<unknown, Json> {
   const dispatch = boundDispatchers.get(reference);
   if (!dispatch) throw new Error('REACTIVE_ACTION_BINDING_INVALID');
-  return dispatch.invoke(raw, execution);
+  return dispatch.invoke(raw, execution, admissionSignal);
 }
 
 /** @internal 原生最终结果的纯展示投影；不重执行行为，也不重新解析 output。 */
@@ -364,7 +367,8 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
       const execution = executionFor(explicitExecution);
       return locateOperation(owner, raw, execution, () => options.operation?.({ phase: 'access', owner }, execution));
     };
-    const invoke = (rawInput: z.input<I>, explicitExecution?: ActionExecutionContext): ActionInvocation<Definition> => {
+    const invoke = (rawInput: z.input<I>, explicitExecution?: ActionExecutionContext,
+      callerAdmissionSignal?: AbortSignal): ActionInvocation<Definition> => {
       const execution = executionFor(explicitExecution);
       const invocationId = execution.invocationId;
       const source = ownJson(execution.source, 'REACTIVE_ACTION_CONTEXT_NOT_JSON');
@@ -452,7 +456,8 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
           const input = definition.input.parse(inputSource);
           phase = 'admission';
           const declarationSignal = options.admissionSignal?.();
-          const admissionSignal = AbortSignal.any([signal, lifetime.signal, ...(declarationSignal ? [declarationSignal] : [])]);
+          const admissionSignal = AbortSignal.any([signal, lifetime.signal,
+            ...(declarationSignal ? [declarationSignal] : []), ...(callerAdmissionSignal ? [callerAdmissionSignal] : [])]);
           try {
             await firstValueFrom(abortable(() => options.admit(input, call, execution, admissionSignal), admissionSignal));
           } catch (error) {
@@ -478,6 +483,8 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
           }
           // 准入和持久准备的所有异步等待结束后，在副作用开始的同一同步边界核验宿主权威。
           executionGuards.get(execution)?.();
+          admissionSignal.throwIfAborted();
+          call.signal.throwIfAborted();
           phase = 'execute';
           let rawOutput: z.input<O>;
           try {
@@ -537,6 +544,7 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
       }) : undefined;
       void operation?.catch(() => {});
       invocation = Object.freeze({ id: invocationId, source, result, activity, activity$: activity.values$,
+        wait(options: CancellationOptions = {}) { return firstValueFrom(abortable(() => result, options.signal)); },
         ...(operation ? { operation } : {}) }) as ActionInvocation<Definition>;
       if (!finished) { active.add(invocation); publishActive(); }
       // 所有入口汇入同一 invoke；观察者取得调用方返回的同一个句柄。
@@ -568,9 +576,9 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
     // 此闭包仍捕获具体输入 schema；擦除的 raw 随即进入该 schema 的唯一 parse。
     boundDispatchers.set(bound, {
       operationOwner,
-      invoke: (raw, execution) => {
+      invoke: (raw, execution, admissionSignal) => {
         if (!execution) throw new Error('REACTIVE_ACTION_EXECUTION_REQUIRED');
-        return invoke(raw as z.input<I>, execution);
+        return invoke(raw as z.input<I>, execution, admissionSignal);
       },
       observe: output => observe(output as z.output<O>),
     });

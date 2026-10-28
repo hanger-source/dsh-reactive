@@ -21,11 +21,9 @@ export interface NativeInvocationSource {
   readonly operation: string;
 }
 
-/** 原生调用立即开始一次；result与有限调用事实独立于SDK等待，不能据running推断事务已受理。 */
-export interface NativeInvocation<T> extends Invocation<T, Json, NativeInvocationSource> {
-  /** 只等待本次回执；SDK或本次signal退出不改变result，也不回滚已经开始的原生写入。 */
-  wait(options?: CancellationOptions): Promise<T>;
-}
+/** 原生调用立即开始一次；result与有限调用事实独立于SDK等待，不能据running推断事务已受理。
+ * wait默认沿原SDK等待资格；退出不改变result，也不回滚已经开始的原生写入。 */
+export interface NativeInvocation<T> extends Invocation<T, Json, NativeInvocationSource> {}
 
 type NativeSetupResource = (Fiber & PromiseLike<Fiber>) | (() => unknown);
 

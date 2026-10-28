@@ -5,13 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { filter, firstValueFrom, lastValueFrom } from 'rxjs';
 import { bindAction, combineResources, defineAction, implementAction, z, type ActionExecutionContext } from '@hanger-source/dsh-reactive';
+import { invokeBoundAction } from '../packages/core/src/actions/contract.ts';
 
 test('绑定release与原调用取消在不合作准入返回前结案，迟到准入不能开始真实写入', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-action-admission-'));
-  for (const mode of ['release', 'cancel'] as const) {
+  for (const mode of ['release', 'cancel', 'caller'] as const) {
     const file = join(directory, mode);
     const entered = Promise.withResolvers<AbortSignal>(), gate = Promise.withResolvers<void>();
-    const controller = new AbortController(), reason = new Error('CALL_CANCELLED');
+    const controller = new AbortController(), caller = new AbortController(), reason = new Error('CALL_CANCELLED');
     const original: ActionExecutionContext = { invocationId: mode, sessionId: 'admission',
       source: { kind: 'participant', actorId: 'operator', participant: 'human', entrypoint: 'cli' },
       signal: controller.signal, inputs: [], continuation: null };
@@ -22,13 +23,16 @@ test('绑定release与原调用取消在不合作准入返回前结案，迟到�
         entered.resolve(signal); await gate.promise;
       },
     });
-    const invocation = action(null, original);
+    const invocation = mode === 'caller' ? invokeBoundAction(action, null, original, caller.signal) : action(null, original);
     const signal = await entered.promise;
-    const rejected = assert.rejects(invocation.result, mode === 'cancel' ? reason : /REACTIVE_ACTION_BINDING_RELEASED/u);
+    const rejected = assert.rejects(invocation.result, mode === 'release' ? /REACTIVE_ACTION_BINDING_RELEASED/u : reason);
     try {
-      if (mode === 'release') action.release(); else controller.abort(reason);
+      if (mode === 'release') action.release();
+      else if (mode === 'caller') caller.abort(reason);
+      else controller.abort(reason);
       await rejected;
       assert.equal(signal.aborted, true);
+      if (mode === 'caller') assert.equal(original.signal.aborted, false, '调用者退出准入不撤销宿主签发的执行身份');
       assert.deepEqual(await action.activeInvocations.read(), []);
       gate.resolve();
       await new Promise<void>(resolve => setImmediate(resolve));
@@ -57,12 +61,19 @@ test('绑定当前调用集合包含并发准入与执行，晚订和退订不�
   assert.deepEqual(await firstValueFrom(action.activeInvocations$), []);
   const first = action('first', execution('first'));
   await firstStarted.promise;
-  const second = action('second', execution('second'));
+  const caller = new AbortController(), secondExecution = execution('second');
+  const second = invokeBoundAction(action, 'second', secondExecution, caller.signal);
   const late = await action.activeInvocations.read();
   assert.deepEqual(late, [first, second]);
   assert.deepEqual(await firstValueFrom(second.activity$), { state: 'pending' });
   assert.deepEqual(await second.activity.read(), { state: 'pending' });
   assert.deepEqual(effects, ['first']);
+  const waiter = new AbortController(), reason = new Error('LEAVE_ONE_ACTION_WAIT');
+  const cancelledWait = assert.rejects(second.wait({ signal: waiter.signal }), error => error === reason);
+  const remainingWait = second.wait();
+  waiter.abort(reason);
+  await cancelledWait;
+  assert.deepEqual(await second.activity.read(), { state: 'pending' }, '等待者取消不撤准入，也不制造调用失败');
   const seen: string[][] = [];
   const subscription = action.activeInvocations$.subscribe(current => seen.push(current.map(invocation => invocation.id)));
   firstResult.resolve('first-recorded');
@@ -80,6 +91,8 @@ test('绑定当前调用集合包含并发准入与执行，晚订和退订不�
   ));
   secondAdmission.resolve();
   await secondStarted.promise;
+  caller.abort(new Error('CALLER_LEFT_AFTER_EXECUTE'));
+  assert.equal(secondExecution.signal.aborted, false, '进入业务后调用者signal不成为真正execution的取消authority');
   const current = await running;
   assert.equal(current.status, 'ready');
   if (current.status === 'ready') assert.deepEqual(current.value.active, [second]);
@@ -97,6 +110,9 @@ test('绑定当前调用集合包含并发准入与执行，晚订和退订不�
   subscription.unsubscribe();
   secondResult.resolve('second-recorded');
   assert.equal(await second.result, 'second-recorded');
+  assert.equal(await remainingWait, 'second-recorded');
+  assert.equal(await second.wait(), 'second-recorded', '原调用的后续等待不继承已退出消费者或绑定的signal');
+  await assert.rejects(second.wait({ signal: waiter.signal }), error => error === reason);
   assert.equal((await lastValueFrom(second.activity.observations$)).status, 'ready');
   assert.equal((await second.activity.read()).state, 'returned');
   assert.deepEqual(await drained, []);

@@ -34,6 +34,10 @@ Operation 代表业务 owner 持有的跨调用事实。局部 Action 若声明 
 
 显式调用返回唯一 Invocation：`const invocation = save({ note }); await invocation.result`。activity、result 与可选 operation 指向同次调用；`invocation.activity.read()` 读取当前事实，`useResource(invocation.activity)` 让业务 hook 借入它，activity$ 是同一资源的 values$。read 不等待业务完成，业务 pending/running/failed 是可有效读取的事实；资源 error 表达观察失败。返回活动达到 returned/failed 后，远程底层流释放，资源继续随 SDK owner 观察有效性；晚读取保留终态，多订阅不重执行。纯本地事实由 Invocation 持有，不随组件或绑定退出撤销；远程读取随所属 SDK 退出。invocations$ 是该绑定新调用的热流，不 replay；activeInvocations$ 是当前在途集合，适合晚挂载关系。结束观察或卸载不解释为取消已执行的业务。
 
+共同 Invocation.wait({ signal }) 借原 result 等待一次回执；signal 只撤该次等待，另一个 waiter 与原 result、activity、operation 不变。Action、NativeInvocation 和 FileUploadInvocation 可交给同一个泛型函数消费，无需按来源拆分。纯本地 Action 不捕获首次 SDK caller signal 作为永久等待条件，查回仍是原对象；原生、上传及远程读取继续受各自 SDK owner 约束。Action 执行上下文中的 call.wait(reference) 另用于原生业务续接，不用它实现 UI、CLI 或自动化的结果退等。
+
+本地 SDK Action 的调用 options.signal 只限制进入 execute 前的准入与持久准备；业务已经开始后，取消这个 signal 不撤回回执，也不破坏 Operation 关联。显式 execution.signal 和原生工具 signal 仍有真实执行取消权，不能为了退等而复用它们。权威业务终态继续用 operation.settled({ signal }) 等待，不把 Invocation returned 当作业务完成。
+
 ## 组件只贡献当前声明
 
 一个业务模块通常将同一资源接到三处：

@@ -224,8 +224,11 @@ export class ActionAuthority {
             return true;
         };
         check();
-        const execution = this.participantExecution(session, options, identity, identity.participant === 'service' ? 'service-sdk' : 'sdk', () => { program.flush(); check(); });
-        const invocation = program.invoke(action, input, execution, check);
+        // SDK调用者只撤销本次准入；真正执行权限仍归Host，Operation查询继续保原读侧signal。
+        const { signal: admissionSignal, ...executionOptions } = options;
+        const execution = this.participantExecution(session, executionOptions, identity, identity.participant === 'service' ? 'service-sdk' : 'sdk', () => { program.flush(); check(); });
+        admissionSignal?.throwIfAborted();
+        const invocation = program.invoke(action, input, execution, check, admissionSignal);
         this.retainInvocation(session, name, action.definition, invocation, identity, execution.source.actorId);
         return invocation;
     }

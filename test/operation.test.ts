@@ -57,12 +57,19 @@ test('同次受理回执派生操作观察，持久准备被等待，声明退�
     },
   });
   const invocation = action({ commandId: 'prepare-a' });
+  const waiter = new AbortController(), waitReason = new Error('LEAVE_ONE_RECEIPT_WAIT');
+  const cancelledWait = assert.rejects(invocation.wait({ signal: waiter.signal }), error => error === waitReason);
+  const receiptWait = invocation.wait();
   await preparing.promise;
   assert.equal(executions, 0);
+  waiter.abort(waitReason);
+  await cancelledWait;
+  assert.equal(execution.signal.aborted, false);
   prepared.resolve(); await executing.promise;
   action.release();
   returned.resolve({ operation: { merchantId: 'merchant-a', operationId: 'operation-a' } });
   const receipt = await invocation.result;
+  assert.equal(await receiptWait, receipt);
   const handle = await invocation.operation;
   assert.equal(handle.observations$, handle.state.observations$);
   assert.deepEqual(handle.reference, receipt.operation);
@@ -170,8 +177,15 @@ test('execute已持久受理而原调用中断时保留unknown语义，可按原
   const action = bindAction(implementation, null, { admit() {} });
   const invocation = action('stable-business-command', original);
   await bodyEntered.promise;
+  const waiting = new AbortController(), waitingReason = new Error('LEAVE_COMMITTED_RECEIPT_WAIT');
+  const cancelledWait = assert.rejects(invocation.wait({ signal: waiting.signal }), error => error === waitingReason);
+  const remainingWait = invocation.wait();
+  waiting.abort(waitingReason); await cancelledWait;
+  assert.equal(original.signal.aborted, false);
+  assert.deepEqual(await readReceipt(), { command: 'stable-business-command', operationId: 'operation:stable-business-command', value: 7 });
   const reason = new Error('调用连接已中断'); controller.abort(reason); bodyReturned.resolve('returned');
   await assert.rejects(invocation.result, error => error === reason);
+  await assert.rejects(remainingWait, error => error === reason);
   await assert.rejects(invocation.operation, error => error === reason);
   // 新 owner 从业务存储重建查询能力，不依赖前一次 execute 的闭包保存受理结果。
   const restoredOwner = implementOperation(definition, { locate, observe });

@@ -1,4 +1,4 @@
-import type { ActionInput, CancellationOptions, FileUploadInvocation, FileUploadSource, FileUploadValue, ProgramContract, ProgramSessionClient, HumanProgramSessionClient, Surface, SurfaceClient, SurfaceMount, ViewValue } from '@hanger-source/dsh-reactive';
+import type { ActionInput, CancellationOptions, FileUploadInvocation, FileUploadSource, FileUploadValue, Invocation, Json, ProgramContract, ProgramSessionClient, HumanProgramSessionClient, Surface, SurfaceClient, SurfaceMount, ViewValue } from '@hanger-source/dsh-reactive';
 import { combineResources, composeSurface, defineProgram, defineSurface, resourceView, selectSurface, shareResource, z } from '@hanger-source/dsh-reactive';
 
 export function sessionControls<P extends ProgramContract>(session: HumanProgramSessionClient<P>, signal: AbortSignal) {
@@ -36,11 +36,17 @@ export function sharedSessionFacts<P extends ProgramContract>(session: ProgramSe
   return shareResource(combineResources({ progress: session.progress, human: session.human }), { signal });
 }
 
+// 退等只针对回执；原Invocation、结果Promise和有限活动保持同一身份与owner。
+export function invocationReceipt<T, Observed extends Json, Source>(invocation: Invocation<T, Observed, Source>, signal: AbortSignal) {
+  return { invocation, source: invocation.source, result: invocation.result,
+    wait: (): Promise<T> => invocation.wait({ signal }), activity: invocation.activity, activity$: invocation.activity$ };
+}
+
 export function sessionFileUpload<P extends ProgramContract>(session: ProgramSessionClient<P>, data: FileUploadSource,
   options?: CancellationOptions & { readonly name?: string }) {
   const call: FileUploadInvocation = session.uploadFile(data, options);
-  return { call, source: call.source, activity: call.activity, activity$: call.activity$,
-    wait: (signal: AbortSignal): Promise<FileUploadValue> => call.wait({ signal }) };
+  return { call, source: call.source, result: call.result, activity: call.activity, activity$: call.activity$,
+    wait: (signal: AbortSignal) => invocationReceipt(call, signal).wait() };
 }
 
 export async function receiveFileUpload(call: FileUploadInvocation): Promise<FileUploadValue> {
