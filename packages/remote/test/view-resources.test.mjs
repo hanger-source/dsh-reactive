@@ -7,7 +7,7 @@ import { createElement as h, Fragment } from 'react';
 import { BehaviorSubject, Observable, filter, firstValueFrom, timeout } from 'rxjs';
 import WebSocket from 'ws';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
-import { collectionSurface, composeSurface, defineApplication, defineEnvironment, defineProgram, defineSurface, resourceView, z } from '@hanger-source/dsh-reactive';
+import { collectionSurface, combineResources, mapResource, composeSurface, defineApplication, defineEnvironment, defineProgram, defineSurface, resourceView, z } from '@hanger-source/dsh-reactive';
 import { Expose, Module, implementProgram, useObservable, useResource } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
 import { createProgramClient } from '@hanger-source/dsh-reactive-client';
@@ -32,10 +32,12 @@ test('同一View资源贯通本地、远程和hooks，动态重挂及真实断�
   const leaf = defineSurface({ actions: {}, views: { at: resourceView(date) } });
   const composed = composeSurface({ main: leaf, items: collectionSurface(leaf) });
   const program = defineProgram({ input: z.null(), surface: composed.surface });
-  const mirrorProgram = defineProgram({ input: z.null(), surface: leaf });
+  const mirrorSurface = defineSurface({ actions: {}, views: { at: leaf.views.at,
+    discovery: resourceView(z.object({ members: z.string().array().readonly(), actions: z.number().int() })) } });
+  const mirrorProgram = defineProgram({ input: z.null(), surface: mirrorSurface });
   const main = source({ status: 'pending', generation: 0 }), original = source(ready(new Date('2026-10-27T00:00:00Z')));
   const items = new Map([['a/b', original]]), layout = new BehaviorSubject(['a/b']);
-  let borrowed, models = 0;
+  let borrowed, borrowedDirectory, borrowedManifest, models = 0;
   const errors = [], subscriptions = [], sockets = [], reconnected = Promise.withResolvers();
   const expose = value => h(Expose, { surface: leaf, value: { views: { at: value }, actions: {} } });
   const definition = defineApplication({ name: 'view-resources', admit: async () => {}, environments: [
@@ -45,7 +47,12 @@ test('同一View资源贯通本地、远程和hooks，动态重挂及真实断�
         members.status === 'ready' ? members.value.map(key => h(Module, { key, mount: composed.mounts.items.instance(key) }, expose(items.get(key).values))) : null);
     } }) }),
     defineEnvironment({ id: 'mirror', instructions: '直接组合已有远程资源', program: implementProgram(mirrorProgram, { Component() {
-      return expose(useResource(borrowed).observations$);
+      const current = useResource(borrowed);
+      const discovery = useResource(() => combineResources({ members: borrowedDirectory, actions: borrowedManifest })
+        .pipe(mapResource(({ members, actions }) => ({ members, actions: actions.length }))), []);
+      return h(Expose, { surface: mirrorSurface, value: { views: {
+        at: current.observations$, discovery: discovery.observations$,
+      }, actions: {} } });
     } }) }),
   ] });
   const runtime = await createRuntime(() => definition, { home: join(root, 'home'), actorId: 'view-owner', onError: event => errors.push(event.error),
@@ -78,10 +85,12 @@ test('同一View资源贯通本地、远程和hooks，动态重挂及真实断�
     remote = await client.open(local.id);
     console.info('view-resources.connected', { sessionId: local.id });
     const localResource = local.viewResource('main.at'), resource = remote.viewResource('main.at');
-    borrowed = resource;
+    borrowed = resource; borrowedDirectory = remote.collection('items').instances; borrowedManifest = remote.actionManifest;
     assert.equal(local.viewResource('main.at'), localResource); assert.equal(remote.viewResource('main.at'), resource);
     assert.equal(local.views['main.at'], localResource.values$); assert.equal(remote.views['main.at'], resource.values$);
     mirror = await runtime.application.create('mirror', { workspaceId: workspace.workspaceId });
+    assert.deepEqual(await mirror.readView('discovery', { signal: t.signal }), { members: ['a/b'], actions: 0 });
+    assert.deepEqual(await local.collection('items').instances.read(), ['a/b']);
     const abort = new AbortController(), reason = new Error('ONLY_THIS_READ');
     const cancelled = resource.read(abort.signal), continued = remote.readView('main.at', { signal: t.signal });
     abort.abort(reason); await assert.rejects(cancelled, error => error === reason);
@@ -98,13 +107,19 @@ test('同一View资源贯通本地、远程和hooks，动态重挂及真实断�
     subscriptions.push(item.observations$.subscribe());
     await item.read(t.signal);
     const removed = first(item.observations$, value => value.status === 'error');
-    layout.next([]); await removed;
+    const directoryRemoved = first(borrowedDirectory.observations$, value => value.status === 'ready' && value.value.length === 0);
+    const mirrorRemoved = first(mirror.viewResource('discovery').observations$, value => value.status === 'ready' && value.value.members.length === 0);
+    layout.next([]); await Promise.all([removed, directoryRemoved, mirrorRemoved]);
+    assert.deepEqual(await borrowedDirectory.read(), []);
+    assert.deepEqual(await mirror.readView('discovery'), { members: [], actions: 0 });
     assert.equal(original.connections, 0);
     await assert.rejects(localItem.read(), /REACTIVE_MODULE_INSTANCE_NOT_FOUND/);
     await assert.rejects(item.read());
     const replacement = source(ready(new Date('2026-10-28T02:00:00Z'))); items.set('a/b', replacement);
     const restored = first(item.observations$, value => value.status === 'ready');
-    layout.next(['a/b']); await restored;
+    const mirrorRestored = first(mirror.viewResource('discovery').observations$, value => value.status === 'ready' && value.value.members.includes('a/b'));
+    layout.next(['a/b']); await Promise.all([restored, mirrorRestored]);
+    assert.deepEqual(await mirror.readView('discovery'), { members: ['a/b'], actions: 0 });
     assert.deepEqual(await instance.readView('at'), replacement.state.value.value);
     assert.equal(local.collection('items').instance('a/b').viewResource('at'), localItem);
     original.state.next(ready(new Date('2000-01-01T00:00:00Z')));
@@ -128,7 +143,9 @@ test('同一View资源贯通本地、远程和hooks，动态重挂及真实断�
     const stopped = assert.rejects(resource.read(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/);
     let completed = false;
     subscriptions.push(resource.observations$.subscribe({ complete: () => { completed = true; } }));
-    await remote.release(); await stopped; assert.equal(completed, true);
+    const discoveryEnded = first(mirror.viewResource('discovery').observations$, value => value.status === 'error');
+    await remote.release(); await stopped; await discoveryEnded; assert.equal(completed, true);
+    await assert.rejects(mirror.readView('discovery'), /REACTIVE_CONVERSATION_HANDLE_RELEASED/);
     assert.throws(() => resource.peek(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/);
     assert.equal(main.connections, 1, 'SDK释放不撤掉Program来源');
     assert.equal(models, 0); assert.deepEqual(errors, []);

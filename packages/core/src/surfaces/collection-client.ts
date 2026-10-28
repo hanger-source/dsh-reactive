@@ -31,6 +31,8 @@ export interface SurfaceInstanceClient<S extends Surface, Options extends Cancel
   readonly key: string;
 }
 export interface SurfaceCollectionClient<C extends SurfaceCollectionDefinition, Options extends CancellationOptions = CancellationOptions, Async extends boolean = false> {
+  /** 同一成员目录的有效性与快照；不注册成员或取得其执行owner。 */
+  readonly instances: ResourceReader<readonly string[]>;
   readonly instances$: Observable<readonly string[]>;
   instance(key: string): SurfaceInstanceClient<C['surface'], Options, Async>;
 }
@@ -52,7 +54,8 @@ export function createSurfaceCollectionClient<S extends Surface, K extends keyof
   const directoryDefinition = surfaceSlotDefinition(surface, 'views', directory)!;
   const instances = new Map<string, SurfaceInstanceClient<Surface, Options, Async>>();
   return Object.freeze({
-    instances$: defer(() => transport.viewResource(directory, directoryDefinition).values$) as Observable<readonly string[]>,
+    get instances() { return transport.viewResource(directory, directoryDefinition) as ResourceReader<readonly string[]>; },
+    get instances$() { return this.instances.values$; },
     instance(key: string) {
       // 编码同时核验非空 key；不把 key 截断、sanitize 或变成业务 Action input。
       surfaceInstanceSlot(name, key, 'instance');

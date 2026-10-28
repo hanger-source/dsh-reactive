@@ -15,7 +15,9 @@ const program = defineProgram({ input: z.null(), surface: composed.surface });
 declare const session: ConversationHandle<typeof program>;
 declare const options: CancellationOptions;
 async function consume(key: string) {
+  const instances: ResourceReadable<readonly string[]> = session.collection('merchants').instances;
   const instance = session.collection('merchants').instance(key);
+  const nested: readonly string[] = await instance.collection('reviews').instances.read();
   const resource: ResourceReadable<Date> = instance.viewResource('knowledge.loadedAt');
   const loadedAt: Date = await instance.readView('knowledge.loadedAt', options);
   const reviewDate: Date = await instance.collection('reviews').instance('review-a').readView('loadedAt', options);
@@ -25,7 +27,7 @@ async function consume(key: string) {
   const recorded: boolean = (await invocation.result).recorded;
   const existing = await instance.operations['knowledge.work'](options);
   const operationMerchant: string = existing.command.merchantId;
-  void resource; void loadedAt; void reviewDate; void merchantId; void recorded; void operationMerchant;
+  void instances; void nested; void resource; void loadedAt; void reviewDate; void merchantId; void recorded; void operationMerchant;
   // @ts-expect-error 资源地址仍由局部合同决定。
   instance.viewResource('unknown');
   // @ts-expect-error collection名仍由稳定纯合同决定。

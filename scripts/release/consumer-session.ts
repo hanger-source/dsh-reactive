@@ -1,4 +1,11 @@
 import type { ActionInput, CancellationOptions, ProgramContract, ProgramSessionClient, Surface, SurfaceClient, ViewValue, z } from '@hanger-source/dsh-reactive';
+import { combineResources } from '@hanger-source/dsh-reactive';
+
+export function observePublishedCapabilities<P extends ProgramContract, K extends keyof P['surface']['collections'] & string>(
+  session: ProgramSessionClient<P>, collection: K,
+) {
+  return combineResources({ instances: session.collection(collection).instances, actions: session.actionManifest });
+}
 
 // 同一模块仅依赖共享合同，本地、远程和浏览器消费者直接传入原对象。
 export function sessionResources<P extends ProgramContract>(session: ProgramSessionClient<P>) {

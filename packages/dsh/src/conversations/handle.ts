@@ -34,7 +34,7 @@ export type EnvironmentOperationReaders<E extends AnyEnvironment> = {
 };
 export type ProgramOperationReaders<P extends ProgramContract> = SurfaceClient<P['surface'], SubmitOptions, false>['operations'];
 type ProgramViews<P extends ProgramContract> = SurfaceViews<P['surface']>;
-export type ServiceConversation<P extends ProgramContract> = Pick<ConversationHandle<P>, 'id' | 'definition' | 'identity' | 'surface' | 'activity$' | 'progress' | 'progress$' | 'progressFrames$' | 'events$' | 'rawEvents$' | 'actionManifest$' | 'views' | 'view' | 'viewResource' | 'observeView' | 'readView' | 'collection' | 'request' | 'resolveAction' | 'invokeAction' | 'operations' | 'resolveOperation' | 'attachOperation' | 'locateOperation' | 'readOperationFeedback' | 'snapshot' | 'progressSnapshot' | 'release'> & {
+export type ServiceConversation<P extends ProgramContract> = Pick<ConversationHandle<P>, 'id' | 'definition' | 'identity' | 'surface' | 'activity$' | 'progress' | 'progress$' | 'progressFrames$' | 'events$' | 'rawEvents$' | 'actionManifest' | 'actionManifest$' | 'views' | 'view' | 'viewResource' | 'observeView' | 'readView' | 'collection' | 'request' | 'resolveAction' | 'invokeAction' | 'operations' | 'resolveOperation' | 'attachOperation' | 'locateOperation' | 'readOperationFeedback' | 'snapshot' | 'progressSnapshot' | 'release'> & {
     submit(input: Submission<ProgramInput<P>>, options?: CancellationOptions): Promise<InputReceipt>;
     editQueuedInput(requestId: string, content: Submission['content'], options?: CancellationOptions): Promise<InputReceipt>;
 };
@@ -111,10 +111,11 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
     get identity() { return this.entry.conversation.identity; }
     /** 当前环境的纯 Surface 合同；远程宿主复用其 schema，不读取业务实现。 */
     get surface(): P['surface'] { this.assertActive(); return this.entry.implementation.definition.surface; }
-    get actionManifest$(): Observable<readonly ToolActionBinding[]> {
+    get actionManifest(): ResourceReader<readonly ToolActionBinding[]> {
         this.assertActive();
-        return this.resource(actionManifestSlot).values$ as Observable<readonly ToolActionBinding[]>;
+        return this.resource(actionManifestSlot) as ResourceReader<readonly ToolActionBinding[]>;
     }
+    get actionManifest$(): Observable<readonly ToolActionBinding[]> { return this.actionManifest.values$; }
     collection<K extends keyof P['surface']['collections'] & string>(name: K): SurfaceCollectionClient<P['surface']['collections'][K], SubmitOptions, false> {
         this.assertActive();
         // factory 已由同一根 Surface 查得叶合同；此处恢复擦除后的统一传输签名。

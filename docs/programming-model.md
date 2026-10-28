@@ -12,6 +12,8 @@
 
 `ProgramSession` 是后台组件收到的会话事实与输入接口，`ProgramSessionClient` 是外部消费者的能力接口。两者不互相伪造执行身份。消费者释放观察后，已受理的调用和业务 Operation 仍由原 owner 持有。
 
+公开发现也使用同一资源模型：`session.actionManifest` 是当前 Action 绑定目录，`session.collection(name).instances` 是实际成员 key 目录，嵌套集合提供相同入口。两者可 read、peek、观察 observations$、参与 combineResources 或交给 useResource；actionManifest$/instances$ 是对应值流。它们借用原有查询与 SDK owner，不产生另一张目录表。父模块撤下时嵌套目录进入 error，同地址恢复后继续更新；SDK 退出撤销读侧。目录只描述当前声明，调用仍必须经过原绑定与权限核验。
+
 merchantService 是应用已有的业务 owner，负责权限、修订、真实副作用与正式回执。共享合同可以由宿主、CLI 和远程消费者共同导入；实现只在宿主装配。
 
 ```ts

@@ -200,7 +200,8 @@ export async function bindProgramClient<const P extends ProgramContract>(program
         const handle: RemoteProgramSession<P> = {
           get definition() { assertActive(); return program; },
           id: identity.sessionId, identity, surface, views, operations,
-          get actionManifest$() { return viewSlot(actionManifestSlot).values$ as Observable<readonly ToolActionBinding[]>; },
+          get actionManifest() { return viewSlot(actionManifestSlot) as ResourceReader<readonly ToolActionBinding[]>; },
+          get actionManifest$() { return this.actionManifest.values$; },
           collection(name) {
             assertActive();
             const untyped = handle as RemoteProgramSession<ProgramContract>;

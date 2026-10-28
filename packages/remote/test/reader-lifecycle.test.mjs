@@ -87,6 +87,9 @@ test('View与人工查询按消费者连接，独立endpoint授权与真实Gatew
     return { session: await client.open(local.id), calls: calls.get(kind) };
   };
   const views = await connect('views-only'), resource = views.session.viewResource('current');
+  const manifest = views.session.actionManifest;
+  assert.equal(manifest.peek().status, 'pending');
+  assert.deepEqual(views.calls, { view: 0, questions: 0 }, '取得公开目录对象不打开远程查询');
   assert.equal(views.session.views.current, resource.values$);
   assert.equal(resource.peek().status, 'pending');
   assert.equal(views.session.human.peek().status, 'pending');
@@ -110,6 +113,13 @@ test('View与人工查询按消费者连接，独立endpoint授权与真实Gatew
   await assert.rejects(resource.read(t.signal)); await next(leases, value => value === 0);
   current.next(ready('recovered'));
   assert.equal(await resource.read(t.signal), 'recovered'); await next(leases, value => value === 0);
+
+  const beforeManifest = views.calls.view;
+  const manifestResource = manifest.observations$.subscribe(), manifestValues = views.session.actionManifest$.subscribe();
+  subscriptions.push(manifestResource, manifestValues);
+  assert.deepEqual(await manifest.read(t.signal), []);
+  assert.equal(views.calls.view, beforeManifest + 1, '目录资源、值流与Promise共享一个真实远程查询');
+  manifestResource.unsubscribe(); manifestValues.unsubscribe(); await next(leases, value => value === 0);
 
   const human = await connect('human-only');
   assert.equal(human.session.viewResource('unused').peek().status, 'pending');

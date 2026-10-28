@@ -88,8 +88,11 @@ test('动态商家集合沿嵌套模块公开同一合同，新增与重排保�
     const collection = session.collection('merchants');
     const instanceA = collection.instance(a), instanceB = collection.instance(b);
     assert.equal(session.surface, composed.surface);
-    assert.deepEqual(await firstValueFrom(collection.instances$), [a]);
-    assert.deepEqual(await firstValueFrom(instanceA.collection('reviews').instances$), ['current']);
+    assert.deepEqual(await collection.instances.read(), [a]);
+    const reviews = instanceA.collection('reviews').instances;
+    const reviewStates: Observation<readonly string[]>[] = [];
+    const stopReviews = reviews.subscribe(value => reviewStates.push(value));
+    assert.deepEqual(await reviews.read(), ['current']);
     assert.deepEqual(await instanceA.collection('reviews').instance('current').readView('facts'), { merchantId: a, revision: 1 });
     await assert.rejects(instanceB.readView('knowledge.facts'), /REACTIVE_MODULE_INSTANCE_NOT_FOUND/u);
     const originalA = instanceA.resolveAction('knowledge.record', a);
@@ -100,7 +103,7 @@ test('动态商家集合沿嵌套模块公开同一合同，新增与重排保�
     layout.next([b, a]);
     assert.equal(instanceA.resolveAction('knowledge.record', a).bindingId, originalA.bindingId);
     assert.equal(instanceB.resolveAction('knowledge.record', b).bindingId, originalB.bindingId);
-    const manifest = await firstValueFrom(session.actionManifest$);
+    const manifest = await session.actionManifest.read();
     const offeredB = manifest.find(item => item.modulePath.length === 3 && item.modulePath[0] === 'merchants'
       && item.modulePath[1] === b && item.modulePath[2] === 'knowledge');
     assert.ok(offeredB);
@@ -118,12 +121,15 @@ test('动态商家集合沿嵌套模块公开同一合同，新增与重排保�
     assert.deepEqual(await firstValueFrom(collection.instances$), [b]);
     await assert.rejects(instanceA.readView('knowledge.facts'), /REACTIVE_MODULE_INSTANCE_NOT_FOUND/u);
     await assert.rejects(firstValueFrom(instanceA.collection('reviews').instances$), /REACTIVE_MODULE_INSTANCE_NOT_FOUND/u);
+    assert.equal(reviewStates.at(-1)!.status, 'error', '嵌套成员目录失效仍保留资源观察，不能把旧成员当作当前成员');
     assert.deepEqual(await originalB({ note: 'sdk-b' }).result, { merchantId: b, note: 'sdk-b' });
     finish.resolve();
     assert.deepEqual(await running.result, { merchantId: a, note: 'accepted-a' });
     facts.get(a)!.next({ status: 'ready', generation: 2, observedAt: Date.now(), value: { merchantId: a, revision: 2 } });
     layout.next([a, b]);
     await firstValueFrom(collection.instances$.pipe(filter(keys => keys.includes(a))));
+    assert.deepEqual(await reviews.read(), ['current'], '原嵌套目录资源随父模块恢复，调用者不重建缓存或来源');
+    assert.equal(reviewStates.at(-1)!.status, 'ready');
     assert.deepEqual(await instanceA.readView('knowledge.facts'), { merchantId: a, revision: 2 });
     assert.notEqual(instanceA.resolveAction('knowledge.record', a).bindingId, originalA.bindingId);
     assert.throws(() => originalA({ note: 'stale-a' }), ActionBindingUnavailableError);
@@ -132,7 +138,7 @@ test('动态商家集合沿嵌套模块公开同一合同，新增与重排保�
       { merchantId: b, source: 'participant', note: 'sdk-b' }, { merchantId: a, source: 'participant', note: 'accepted-a' }]);
     assert.equal(requests.length, 2);
     assert.deepEqual(app.errors, []);
-    session.release();
+    stopReviews(); session.release();
   } finally {
     finish.resolve(); layout.complete(); for (const source of facts.values()) source.complete(); await app.dispose();
   }
