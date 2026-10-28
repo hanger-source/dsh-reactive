@@ -1,7 +1,7 @@
 import { RemoteSnapshotStream, type ClientRemote } from '@deepseek-ai/dsh-api-gateway/client';
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
-import { z, type CancellationOptions } from '@hanger-source/dsh-reactive';
+import { z, actionIdentity, assertActionIdentity, type ActionIdentity, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { ProgramActionBinding } from './types.ts';
 import './errors.ts';
 
@@ -12,7 +12,7 @@ export interface RemoteActionCapture {
 }
 
 export interface RemoteActionBindings {
-  resolve(name: string, scope: JsonValue, options?: CancellationOptions): Promise<RemoteActionCapture>;
+  resolve(name: string, contract: ActionIdentity, scope: JsonValue, options?: CancellationOptions): Promise<RemoteActionCapture>;
   close(): Promise<void>;
 }
 
@@ -35,7 +35,7 @@ function freezeJson(value: JsonValue): void {
 }
 
 /** Gateway 的真实流持有远端 Handle；首帧以后只核身份，不自动改指另一个绑定。 */
-function connectBinding(remote: ClientRemote, sessionId: string, name: string, scope: JsonValue,
+function connectBinding(remote: ClientRemote, sessionId: string, name: string, contract: ActionIdentity, scope: JsonValue,
   lifetime: AbortSignal): BindingConnection {
   const first = Promise.withResolvers<ProgramActionBinding>();
   void first.promise.catch(() => {});
@@ -46,7 +46,7 @@ function connectBinding(remote: ClientRemote, sessionId: string, name: string, s
   let closing: Promise<void> | undefined;
   const stream = new RemoteSnapshotStream<ProgramActionBinding, never>(remote.$stream<ProgramActionBinding>({
     name: 'program-action-binding:' + sessionId + ':' + name,
-    open: physical => remote.reactivePrograms.resolveAction({ sessionId, name, scope },
+    open: physical => remote.reactivePrograms.resolveAction({ sessionId, name, contract, scope },
       AbortSignal.any([lifetime, controller.signal, physical])),
     ended: () => unavailable(name, 'connection-lost'),
     carrierFailed: error => {
@@ -58,11 +58,12 @@ function connectBinding(remote: ClientRemote, sessionId: string, name: string, s
     isSnapshot: (value): value is ProgramActionBinding => true,
     replace: value => {
       if (closed) return;
+      assertActionIdentity(contract, value.contract);
       if (descriptor && descriptor.bindingId !== value.bindingId) throw unavailable(name, 'binding-changed');
       if (!descriptor) {
         const scope = z.json().parse(value.scope);
         freezeJson(scope);
-        descriptor = Object.freeze({ bindingId: value.bindingId, scope });
+        descriptor = Object.freeze({ bindingId: value.bindingId, contract: actionIdentity(value.contract), scope });
       }
       active = true;
       first.resolve(descriptor);
@@ -104,11 +105,11 @@ export function createActionBindings(remote: ClientRemote, sessionId: string, li
     return work;
   };
   return {
-    async resolve(name, scope, options = {}) {
+    async resolve(name, contract, scope, options = {}) {
       const signal = options.signal;
       assertActive(); signal?.throwIfAborted();
       // 取得自己的 raw JSON，避免调用方在官方物理重连前改写这次解析请求。
-      const connection = connectBinding(remote, sessionId, name, z.json().parse(scope), lifetime);
+      const connection = connectBinding(remote, sessionId, name, actionIdentity(contract), z.json().parse(scope), lifetime);
       opening.add(connection);
       const aborted = () => { void dispose(connection, signal?.reason); };
       signal?.addEventListener('abort', aborted, { once: true });

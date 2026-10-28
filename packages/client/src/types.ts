@@ -1,4 +1,4 @@
-import type { ActionSource, Continuation, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue } from '@hanger-source/dsh-reactive';
+import type { ActionIdentity, ActionSource, Continuation, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue } from '@hanger-source/dsh-reactive';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { RemoteStreamFailure } from '@deepseek-ai/dsh-api-gateway/stream-protocol';
 
@@ -78,10 +78,10 @@ export type ProgramProgressFrame =
   | { readonly type: 'event'; readonly event: ProgramConversationEvent };
 export interface ProgramViewRequest extends ProgramAddress { readonly name: string; }
 /** scope 是调用方明确期望的原始业务目标，只在宿主的合同边界解析。 */
-export interface ProgramActionBindingRequest extends ProgramAddress { readonly name: string; readonly scope: JsonValue; }
+export interface ProgramActionBindingRequest extends ProgramAddress { readonly name: string; readonly contract: ActionIdentity; readonly scope: JsonValue; }
 /** 进程内真实绑定的身份；它不是权限凭据，也不承诺跨重启仍然有效。 */
-export interface ProgramActionBinding { readonly bindingId: string; readonly scope: JsonValue; }
-export interface ProgramActionRequest extends ProgramAddress { readonly name: string; readonly bindingId: string; readonly input: JsonValue; }
+export interface ProgramActionBinding { readonly bindingId: string; readonly contract: ActionIdentity; readonly scope: JsonValue; }
+export interface ProgramActionRequest extends ProgramAddress { readonly name: string; readonly contract: ActionIdentity; readonly bindingId: string; readonly input: JsonValue; }
 export interface ProgramInvocationAddress extends ProgramAddress { readonly invocationId: string; }
 export interface ProgramOperationIdentity { readonly kind: string; readonly version: number; }
 export interface ProgramOperationRequest extends ProgramAddress { readonly operation: ProgramOperationIdentity; readonly reference: JsonValue; }
@@ -119,7 +119,7 @@ export interface ProgramQuestionRequest extends ProgramAddress { readonly callId
 export interface ProgramAnswerRequest extends ProgramQuestionRequest { readonly answer: HumanAnswer; }
 export type ProgramWaitFrame = HumanWaitFrame;
 /** id/source 由宿主真实受理入口签发，不是客户端生成的任务或幂等键。 */
-export interface ProgramActionStart { readonly id: string; readonly name: string; readonly source: ActionSource; }
+export interface ProgramActionStart { readonly id: string; readonly name: string; readonly contract: ActionIdentity; readonly source: ActionSource; }
 export type ProgramInvocationFrame =
   | { readonly state: 'pending' | 'running' }
   | { readonly state: 'returned'; readonly observation?: JsonValue; readonly observationError?: ProgramFailure }

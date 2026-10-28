@@ -21,6 +21,7 @@ import { remoteView } from './views.ts';
 import { remoteHuman } from './human.ts';
 import type { RemoteResourceConnection } from './resource.ts';
 import { ResourceReader } from '@hanger-source/dsh-reactive';
+import { actionIdentity, assertActionIdentity } from '@hanger-source/dsh-reactive';
 import { createHumanQuestionResolver, type HumanQuestionHandle } from '@hanger-source/dsh-reactive';
 
 export { createAuthenticatedTransport } from './transport.ts';
@@ -250,7 +251,7 @@ export function bindProgramClient<const P extends ProgramContract>(program: P, c
         assertActive();
         const contract = surfaceSlotDefinition(surface, 'actions', name) as S['actions'][K];
         if (!contract) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
-        const captured = await actionBindings.resolve(name, json(expectedScope), options);
+        const captured = await actionBindings.resolve(name, actionIdentity(contract), json(expectedScope), options);
         const binding = captured.descriptor;
         // 宿主已经用该合同解析原始目标并核对真实绑定。scope 是其 JSON 输出，不能再次运行单向 transform。
         const invoke = async (input: ActionInput<S['actions'][K]>, options: CancellationOptions = {}): Promise<ActionInvocation<S['actions'][K]>> => {
@@ -259,13 +260,18 @@ export function bindProgramClient<const P extends ProgramContract>(program: P, c
           const starting = signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal;
           starting.throwIfAborted();
           // input 本来就是 z.input；客户端仅核验 JSON，唯一业务解析仍在 Host。
-          const started = await remote.startAction({ sessionId: identity.sessionId, name, bindingId: binding.bindingId,
+          const started = await remote.startAction({ sessionId: identity.sessionId, name, contract: binding.contract, bindingId: binding.bindingId,
             input: json(input) }, starting);
           if (!started.ok) {
             if (started.error.code === 'gateway/internal' || started.error.code === 'gateway/cancelled')
               throw new ActionAdmissionUnknownError(identity.sessionId, name, started.error);
             throw started.error;
           }
+          // ACK 已可能受理业务；矛盾回执不能被描述成确定未执行，也不能自动重发。
+          try {
+            if (started.value.name !== name) throw new Error('REACTIVE_ACTION_INVOCATION_SLOT_MISMATCH');
+            assertActionIdentity(contract, started.value.contract);
+          } catch (error) { throw new ActionAdmissionUnknownError(identity.sessionId, name, error); }
           return invocation(ctx.remote, identity.sessionId, started.value, contract, lifetime.signal, observations);
         };
         // schema 输出只在明确合同的传输边界恢复类型；不要求 scope 支持反向 encode。
@@ -441,6 +447,7 @@ export function bindProgramClient<const P extends ProgramContract>(program: P, c
 
 function invocation<D extends ActionContract>(remote: ClientRemote, sessionId: string, start: ProgramActionStart, contract: D, lifetime: AbortSignal,
   observations: Set<AbortController>): ActionInvocation<D> {
+  assertActionIdentity(contract, start.contract);
   const controller = new AbortController();
   observations.add(controller);
   const signal = AbortSignal.any([lifetime, controller.signal]);

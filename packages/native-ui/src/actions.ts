@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import type { SlotCore, SlotComponent } from '@deepseek-ai/dsh-client-ui-slots';
 import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client';
-import { readActionPresentation, type ActionContract, type ActionPresentation, type ToolActionBinding } from '@hanger-source/dsh-reactive';
+import { actionIdentityKey, readActionPresentation, type ActionContract, type ActionPresentation, type ToolActionBinding } from '@hanger-source/dsh-reactive';
 import { Subject, type Observable } from 'rxjs';
 
 export interface NativeActionViewProps<D extends ActionContract> {
@@ -41,15 +41,16 @@ export function createNativeActionViews(
 ): NativeActionViews {
   const views = new Map<string, NativeActionView<any>>();
   for (const definition of definitions) {
-    if (views.has(definition.action.name)) throw new Error('REACTIVE_NATIVE_VIEW_ACTION_DUPLICATE');
-    views.set(definition.action.name, definition);
+    const key = actionIdentityKey(definition.action);
+    if (views.has(key)) throw new Error('REACTIVE_NATIVE_VIEW_ACTION_DUPLICATE');
+    views.set(key, definition);
   }
   const registrations = new Map<string, { action: ActionContract; users: Set<object>; release(): void }>();
   const consumers = new Set<() => void>();
   const errors = new Subject<{ readonly sessionId: string; readonly error: unknown }>();
   let disposed = false;
   const acquire = (owner: object, binding: ToolActionBinding) => {
-    const definition = views.get(binding.action);
+    const definition = views.get(actionIdentityKey({ name: binding.action, version: binding.actionVersion }));
     if (!definition) return;
     const existing = registrations.get(binding.toolName);
     if (existing) {

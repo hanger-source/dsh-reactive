@@ -40,7 +40,9 @@ Workspace 由原生 registry 持有目录、稳定身份与成员。`createWorks
 
 `NativeTools` 声明宿主已经安装的原生能力及业务政策。框架不重新注册同名工具，仍由原生实现和所有 guard 执行；异步政策返回后核验当前声明，模型可见性与生成的 PTC SDK 使用同一原生限制。业务文件系统的只读材料、草稿范围和路径准入继续由真实宿主实施。
 
-`actionManifest$` 提供工具名与 Action、模块完整路径、绑定和公开槽的关联；原生与 PTC 的持久结果 metadata 提供同源 canonical 输出。原生 UI slot 可以按实际工具名挂业务呈现，通过 `readActionPresentation` 读取合同结果，不反解命名编码或解析模型正文。它不定义业务卡片组件或视觉布局。
+`actionManifest$` 提供工具名与 Action 名称、合同版本、模块完整路径、绑定和公开槽的关联；原生与 PTC 的持久结果 metadata 提供同源 canonical 输出。原生 UI slot 可以按实际工具名挂业务呈现，通过 `readActionPresentation` 读取相应名称与版本的合同结果，不反解命名编码或解析模型正文。它不定义业务卡片组件或视觉布局。
+
+Action 定义拥有显式 `version`，省略时建立初始版本 1，必须为正安全整数。本地继续核验真实定义对象；远程解析与执行前核对发布者声明的名称和版本，Invocation 回执保存受理时的合同身份。名称和版本不能证明两个 schema 或函数等价，也不是权限或幂等键；合同发布者负责为输入、目标、输出或业务语义的不兼容变化增加版本。原生展示和委托恢复同样按名称与版本寻找对应消费者，不以当前同名合同解释历史结果。
 
 固定 dsh `0.2.1-rc.3` 的 SessionController 内部直接创建私有 Agent、命令和历史控制器，并持有文件上传 resolver，尚无统一公开宿主接点。原生创建、历史 promote、预上传、composer 和队列 mutation 需要上游在执行前委托同一 Program Host；post-commit 观察无法替代准入。当前本地与 Gateway SDK 已使用框架受理入口，原生 UI 直接调用 Controller 的完整接入仍待该上游能力，不通过私有替换或放宽身份核验完成。
 

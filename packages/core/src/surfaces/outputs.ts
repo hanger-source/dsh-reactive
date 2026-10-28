@@ -255,7 +255,7 @@ export function createProgramOutputs<const S extends Surface>(scope: Scope, surf
         if (operationNames.length !== Object.keys(previousOperations).length
           || operationNames.some(name => previousOperations[name] !== nextOperations[name])) operations.set(nextOperations);
         actionManifest.set(Object.freeze(Object.values(frame.offers).map(offer => toolActionBindingSchema.parse({
-          toolName: offer.name, action: offer.action.definition.name, bindingId: offer.action.bindingId, scope: offer.action.scope,
+          toolName: offer.name, action: offer.action.definition.name, actionVersion: offer.action.definition.version, bindingId: offer.action.bindingId, scope: offer.action.scope,
           modulePath: offer.modulePath ?? [], enabled: offer.enabled,
           surfaceNames: Object.entries(nextActions).filter(([, action]) => action === offer.action).map(([name]) => name),
         }))));

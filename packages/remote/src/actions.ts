@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import { RemoteError, type Principal } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { ApplicationHost } from '@hanger-source/dsh-reactive-dsh';
-import { z, surfaceSlotDefinition, type AnyEnvironment, type Invocation, type Json } from '@hanger-source/dsh-reactive';
+import { z, surfaceSlotDefinition, actionIdentity, assertActionIdentity, type ActionIdentity, type AnyEnvironment, type Invocation, type Json } from '@hanger-source/dsh-reactive';
 import { Inbox } from '@hanger-source/dsh-reactive-client/transport';
 import type { ProgramActionRequest, ProgramActionStart, ProgramInvocationAddress, ProgramInvocationFrame } from '@hanger-source/dsh-reactive-client/types';
 import { decodeProgramFailure } from '@hanger-source/dsh-reactive-client/errors';
@@ -38,6 +38,7 @@ type Entry = {
   readonly sessionId: string;
   readonly actorId: string;
   readonly name: string;
+  readonly contract: ActionIdentity;
   readonly invocation: Invocation<unknown, Json>;
   readonly wireResult: Promise<JsonValue>;
   completed?: ReturnType<typeof setTimeout>;
@@ -101,12 +102,13 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
         signal.throwIfAborted(); querySignal.throwIfAborted();
         const definition = surfaceSlotDefinition(handle.surface, 'actions', request.name);
         if (!definition) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
+        assertActionIdentity(request.contract, definition);
         // 不向 execute 传 transport signal。Host 在同一公开入口核验当前 Expose/准入。
         // 动态句柄不声称拥有某个静态 Program；唯一的合同 parse 由这个真实 Host 入口执行。
         const invocation = handle.invokeAction(request.name, request.bindingId, request.input, { actorId });
         const wireResult = invocation.result.then(value => z.json().parse(z.encode(definition.output, value)))
           .catch(rethrow);
-        const entry: Entry = { sessionId: request.sessionId, actorId, name: request.name, invocation, wireResult };
+        const entry: Entry = { sessionId: request.sessionId, actorId, name: request.name, contract: actionIdentity(definition), invocation, wireResult };
         entries.set(invocation.id, entry); retained = true;
         const settle = (): void => {
           handle.release();
@@ -121,14 +123,14 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
         };
         // 同时安装 reject handler；结果查询次数不决定是否处理业务失败。
         wireResult.then(settle, settle);
-        return { id: invocation.id, name: request.name, source: invocation.source };
+        return { id: invocation.id, name: request.name, contract: entry.contract, source: invocation.source };
       } catch (error) { return rethrow(error); }
       finally { if (!retained) handle.release(); }
     },
     async get(request, principal, querySignal) {
       querySignal.throwIfAborted();
       const entry = lookup(request, principal);
-      return { id: entry.invocation.id, name: entry.name, source: entry.invocation.source };
+      return { id: entry.invocation.id, name: entry.name, contract: entry.contract, source: entry.invocation.source };
     },
     result(request, principal, querySignal) {
       return read(lookup(request, principal).wireResult, AbortSignal.any([signal, querySignal]));

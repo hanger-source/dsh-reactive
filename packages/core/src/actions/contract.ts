@@ -53,9 +53,13 @@ export type ReadonlyActionJson = string | number | boolean | null | readonly Rea
 export type ActionTarget<T> = Json extends T ? ReadonlyActionJson
   : T extends object ? { readonly [K in keyof T]: ActionTarget<T[K]> } : T;
 
-/** 可跨消费者共享的纯合同；不携带宿主业务实现。 */
-export interface ActionContract {
+/** 合同发布者声明的跨边界身份；不替代本地定义对象或绑定身份。 */
+export interface ActionIdentity {
   readonly name: string;
+  readonly version: number;
+}
+/** 可跨消费者共享的纯合同；不携带宿主业务实现。 */
+export interface ActionContract extends ActionIdentity {
   readonly description: string;
   readonly scope: z.ZodType<Json>;
   readonly input: z.ZodType;
@@ -93,6 +97,8 @@ export type ActionObserved<D extends ActionContract> = ReturnType<NonNullable<D[
 export interface ActionOptions<I extends z.ZodType, O extends z.ZodType, S extends z.ZodType<Json>, Observed extends Json = never,
   P extends OperationContract = never> {
   readonly name: string;
+  /** 跨进程和持久结果的合同版本；新定义省略时为 1。 */
+  readonly version?: number;
   readonly description: string;
   readonly scope: S;
   readonly input: I;
@@ -540,10 +546,13 @@ export function defineAction<I extends z.ZodType, O extends z.ZodType, S extends
   options: ActionOptions<I, O, S, Observed, P>,
 ): ActionDefinition<I, O, S, Observed, P> {
   if (!/^[a-z][a-z0-9_]{0,79}$/u.test(options.name)) throw new Error('REACTIVE_ACTION_NAME_INVALID');
+  const version = options.version === undefined ? 1 : options.version;
+  if (!Number.isSafeInteger(version) || version < 1) throw new Error('REACTIVE_ACTION_VERSION_INVALID');
   const operation = options.operation ? Object.freeze({ definition: options.operation.definition,
     command: options.operation.command, reference: options.operation.reference }) : undefined;
   const definition: ActionDefinition<I, O, S, Observed, P> = Object.freeze({
     name: options.name,
+    version,
     description: options.description,
     scope: options.scope,
     input: options.input,

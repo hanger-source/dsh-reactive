@@ -34,10 +34,11 @@ jobs:
           node scripts/prepare-test.mjs reset
           npx --no-install tsc -p tsconfig.test.json
           node scripts/prepare-test.mjs link
-      - name: 核心行为与 Gateway 网络
+      - name: 核心、Gateway 网络与原生 Slot 行为
         run: |
           node --test --test-timeout=15000 .tmp/test/test/*.test.js
           npm run test --workspace @hanger-source/dsh-reactive-remote
+          npm run test --workspace @hanger-source/dsh-reactive-native-ui
       - name: 严格编译业务和原生 UI 示例
         run: npm run typecheck:examples
       - name: 打包并检查仓外依赖、类型与运行入口

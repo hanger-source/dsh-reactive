@@ -20,6 +20,8 @@ export const ItemProgram = defineProgram({ input: Target, surface: ItemSurface }
 
 `implementAction(Save, { execute(input, call) { ... } })` 在宿主固定真实服务依赖。`call.scope` 是本次绑定已解析目标；业务不得读取当前页面或当前选择来代替它。宿主逐调用核验来源与权限；Offer.enabled 是当前可用性声明，不能代替权威授权。
 
+`defineAction` 的 `version` 省略时为 1，也可显式指定正安全整数。名称与版本是合同发布者声明的跨进程、原生结果和委托恢复身份；输入、目标、输出或业务语义发生不兼容变化时增加版本，并同步消费同一纯合同。本地绑定仍核对定义对象，不以同名同版本替代对象身份。`actionIdentity`、`assertActionIdentity` 与 `ActionContractMismatchError` 可用于自己的明确合同边界；`actionIdentityKey` 供同名多版本目录使用。它们不推断函数等价、不授予权限、不承担业务幂等。
+
 在模块中用 `useAction(saveImplementation, () => target, [target.sku])` 取得绑定。target factory 只构造数据，deps 表达身份；未列依赖会错误保留旧目标，不能把每次 render 当新绑定修补它。
 
 显式调用返回唯一 Invocation：`const invocation = save({ note }); await invocation.result`。activity、result 与可选 operation 指向同次调用；`invocation.activity.read()` 读取当前事实，`useResource(invocation.activity)` 让业务 hook 借入它，activity$ 是同一资源的 values$。read 不等待业务完成，业务 pending/running/failed 是可有效读取的事实；资源 error 表达观察失败。returned/failed 后流结束，晚读取保留终态，多订阅不重执行。纯本地事实由 Invocation 持有，不随组件或绑定退出撤销；远程读取随所属 SDK 退出。invocations$ 是该绑定新调用的热流，不 replay；activeInvocations$ 是当前在途集合，适合晚挂载关系。结束观察或卸载不解释为取消已执行的业务。

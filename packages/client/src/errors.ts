@@ -1,5 +1,5 @@
 import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-protocol';
-import type { NativeChildCommand, NativeChildReference } from '@hanger-source/dsh-reactive';
+import type { ActionIdentity, NativeChildCommand, NativeChildReference } from '@hanger-source/dsh-reactive';
 import type { ProgramCreationReference, ProgramFailure } from './types.ts';
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
@@ -8,6 +8,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'reactive/child-creation-incomplete': { readonly command: NativeChildCommand; readonly reference: NativeChildReference };
     'reactive/action-binding-unavailable': { readonly name: string; readonly reason: 'not-exposed' | 'binding-changed' | 'connection-lost' };
     'reactive/action-target-mismatch': { readonly name: string; readonly reason: 'target-mismatch' };
+    'reactive/action-contract-mismatch': { readonly expected: ActionIdentity; readonly actual: ActionIdentity };
     'reactive/input-edit-rejected': { readonly requestId: string; readonly reason: 'unavailable' | 'actor-mismatch' | 'content-conflict' | 'changed' };
   }
 }

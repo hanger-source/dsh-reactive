@@ -7,7 +7,7 @@ import { type ApplicationHost, type ConversationHandle } from '@hanger-source/ds
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import { decodeProgramFailure } from '@hanger-source/dsh-reactive-client/errors';
 import { createProgramFailureMapper } from './host-errors.ts';
-import { z, encodeOperationFeedback, type AnyEnvironment, type InputReference, type ConversationEvent, type HumanQuestionOrigin } from '@hanger-source/dsh-reactive';
+import { z, actionIdentity, assertActionIdentity, surfaceSlotDefinition, encodeOperationFeedback, type AnyEnvironment, type InputReference, type ConversationEvent, type HumanQuestionOrigin } from '@hanger-source/dsh-reactive';
 import { endWith, firstValueFrom, fromEvent, ignoreElements, merge, take, type Observable, type Subscription } from 'rxjs';
 import type { ProgramActionRequest, ProgramActionStart, ProgramAddress, ProgramCreateRequest, ProgramCreationReference, ProgramIdentity, ProgramInputReceipt, ProgramInvocationAddress, ProgramInvocationFrame, ProgramSubmitRequest, ProgramWorkspaceRegistration, ProgramViewFrame, ProgramViewRequest, WireObservation, ProgramFailure, ProgramActionBindingRequest, ProgramActionBinding, ProgramUploadFileRequest, ProgramFileUploadValue, ProgramInputEditRequest } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramOperationRequest, ProgramOperationLocateRequest, ProgramOperationLocation, ProgramOperationNotification, ProgramOperationNotificationResult, ProgramAnswerRequest, ProgramQuestionRequest, ProgramQuestionsFrame, ProgramWaitFrame, ProgramOperationBindingRequest, ProgramOperationBinding, ProgramOperationFeedbackRequest, ProgramOperationFeedbackRead } from '@hanger-source/dsh-reactive-client/types';
@@ -330,8 +330,11 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
     try {
       signal.throwIfAborted();
+      const definition = surfaceSlotDefinition(handle.surface, 'actions', request.name);
+      if (!definition) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
+      assertActionIdentity(request.contract, definition);
       const binding = handle.resolveAction(request.name, request.scope);
-      yield { bindingId: binding.bindingId, scope: z.json().parse(binding.scope) };
+      yield { bindingId: binding.bindingId, contract: actionIdentity(definition), scope: z.json().parse(binding.scope) };
       if (!signal.aborted) await firstValueFrom(merge(
         handle.activity$.pipe(ignoreElements(), endWith(undefined)), fromEvent(signal, 'abort'),
       ).pipe(take(1)));

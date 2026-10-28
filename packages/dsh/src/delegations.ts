@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { actionIdentityKey } from '@hanger-source/dsh-reactive';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { SessionId, appendPluginRecord, pluginRecordOf, type Session, type UserMessage } from '@deepseek-ai/dsh-session';
@@ -23,10 +24,10 @@ const sourceSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('participant'), actorId: z.string().min(1), participant: z.enum(['human', 'service']), entrypoint: z.string() }).strict(),
 ]);
 const parentIdentitySchema = z.object({ sessionId: z.string(), workspaceId: z.string(), environmentId: z.string(), directory: z.string(), parentSessionId: z.string().nullable() }).strict();
-export const delegationRecordSchema = z.object({ command: nativeChildCommandSchema, childSessionId: z.string(), action: z.string(),
+export const delegationRecordSchema = z.object({ command: nativeChildCommandSchema, childSessionId: z.string(), action: z.string(), actionVersion: z.number().int().positive().safe(),
   mode: z.enum(['spawn', 'fork']), input: z.json(), target: z.json(), childInput: z.json(), objective: z.string().trim().min(1),
   parent: parentIdentitySchema, executor: sourceSchema, causes: inputReferenceSchema.array().readonly() }).strict();
-const childBindingSchema = z.object({ command: nativeChildCommandSchema, childSessionId: z.string(), action: z.string() }).strict();
+const childBindingSchema = z.object({ command: nativeChildCommandSchema, childSessionId: z.string(), action: z.string(), actionVersion: z.number().int().positive().safe() }).strict();
 const childReceiptRecordSchema = z.object({ command: nativeChildCommandSchema, receipt: nativeChildReceiptSchema }).strict();
 const failureSchema = z.object({ command: nativeChildCommandSchema, childSessionId: z.string(), reason: z.string() }).strict();
 export type DelegationRecord = z.infer<typeof delegationRecordSchema>;
@@ -183,9 +184,10 @@ export class NativeDelegations {
   }
   implementation<D extends ActionContract, P extends ProgramContract>(action: D, options: DelegationOptions<D, P>): ActionImplementation<D> {
     if (action.operation?.definition !== NativeChildWork || action.output !== nativeChildReceiptSchema) throw new Error('REACTIVE_CHILD_ACTION_CONTRACT_REQUIRED');
-    if (this.#descriptors.has(action.name)) throw new Error('REACTIVE_DELEGATION_ACTION_DUPLICATE');
+    const key = actionIdentityKey(action);
+    if (this.#descriptors.has(key)) throw new Error('REACTIVE_DELEGATION_ACTION_DUPLICATE');
     const descriptor = { action, ...options } as unknown as Descriptor;
-    this.#descriptors.set(action.name, descriptor); this.#definitions.set(action, descriptor);
+    this.#descriptors.set(key, descriptor); this.#definitions.set(action, descriptor);
     const implementation = implementAction(action as never, { operationOwner: this.owner, execute: async (_input: unknown, call: ActionCallContext<unknown>) => {
       const prepared = this.#prepared.get(call);
       if (!prepared) throw new Error('REACTIVE_DELEGATION_EXECUTION_UNTRUSTED');
@@ -220,7 +222,7 @@ export class NativeDelegations {
   owns(action: ActionReference) { return this.#definitions.has(action.definition) && actionOperationOwner(action) === this.owner; }
   programs() { return [...this.#descriptors.values()].map(descriptor => descriptor.program); }
   private descriptor(record: DelegationRecord): Descriptor {
-    const descriptor = this.#descriptors.get(record.action);
+    const descriptor = this.#descriptors.get(actionIdentityKey({ name: record.action, version: record.actionVersion }));
     if (!descriptor || descriptor.mode !== record.mode) throw new Error('REACTIVE_DELEGATION_IMPLEMENTATION_REQUIRED');
     descriptor.program.definition.input.parse(record.childInput);
     return descriptor;
@@ -244,7 +246,7 @@ export class NativeDelegations {
     descriptor.program.definition.input.parse(childInput);
     const original = actionInvocationArguments(call);
     const record = delegationRecordSchema.parse({ command: { parentSessionId: parent.id, invocationId: execution.invocationId },
-      childSessionId: randomUUID(), action: descriptor.action.name, mode: descriptor.mode,
+      childSessionId: randomUUID(), action: descriptor.action.name, actionVersion: descriptor.action.version, mode: descriptor.mode,
       input: original.input, target: original.scope, childInput,
       objective: descriptor.objective(input, call), parent: identity, executor: execution.source, causes: execution.inputs });
     await this.authorize(record, 'create', execution.source, execution.signal, { input, target: call.scope });
@@ -297,7 +299,7 @@ export class NativeDelegations {
     if (!binding || binding.childSessionId !== inspection.meta.id || binding.command.parentSessionId !== inspection.meta.parentSession
       || inspection.meta.origin !== 'subagent') throw new Error('REACTIVE_CHILD_BINDING_REQUIRED');
     const record = await this.locateRecord(binding.command);
-    if (!record || canonical(binding) !== canonical({ command: record.command, childSessionId: record.childSessionId, action: record.action }))
+    if (!record || canonical(binding) !== canonical({ command: record.command, childSessionId: record.childSessionId, action: record.action, actionVersion: record.actionVersion }))
       throw new Error('REACTIVE_CHILD_BINDING_MISMATCH');
     return { record, implementation: this.descriptor(record).program };
   }
@@ -315,7 +317,7 @@ export class NativeDelegations {
     const inspection = snapshot(agent.session);
     const existing = this.childBinding(inspection);
     if (existing) await this.authorize(record, 'resume', { kind: 'parent', sessionId: parent.id }, signal);
-    const binding = { command: record.command, childSessionId: record.childSessionId, action: record.action };
+    const binding = { command: record.command, childSessionId: record.childSessionId, action: record.action, actionVersion: record.actionVersion };
     if (existing && canonical(existing) !== canonical(binding)) throw new Error('REACTIVE_CHILD_BINDING_MISMATCH');
     const receipt = this.childReceipt(inspection);
     if (!existing) {
@@ -367,7 +369,7 @@ export class NativeDelegations {
       if (!record || record.command.parentSessionId !== parent.id) throw new Error('REACTIVE_CHILD_SETTLEMENT_ASSOCIATION_REQUIRED');
       const child = await readNativeInspection(this.ctx, record.childSessionId, signal), confirmation = this.childReceipt(child);
       if (!confirmation) throw new ChildCreationIncompleteError(record.command, this.reference(record));
-      if (canonical(this.childBinding(child)) !== canonical({ command: record.command, childSessionId: record.childSessionId, action: record.action }))
+      if (canonical(this.childBinding(child)) !== canonical({ command: record.command, childSessionId: record.childSessionId, action: record.action, actionVersion: record.actionVersion }))
         throw new Error('REACTIVE_CHILD_BINDING_MISMATCH');
       await this.verifyReceipt(record, confirmation.receipt);
       signal.throwIfAborted();

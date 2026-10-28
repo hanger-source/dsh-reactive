@@ -23,7 +23,7 @@
     "build:test": "node scripts/prepare-test.mjs reset && npm run build:dsh && tsc -p tsconfig.test.json && node scripts/prepare-test.mjs link",
     "test:core": "npm run build:test && node --test --test-timeout=15000 .tmp/test/test/*.test.js",
     "test:remote": "npm run build && npm run test --workspace @hanger-source/dsh-reactive-remote",
-    "test": "npm run test:core && npm run test:remote",
+    "test": "npm run test:core && npm run test:remote && npm run test --workspace @hanger-source/dsh-reactive-native-ui",
     "browser:remote": "npm run build && npm run browser:serve --workspace @hanger-source/dsh-reactive-remote",
     "build:dsh": "npm run build --workspace @hanger-source/dsh-reactive-dsh",
     "build:native-ui": "npm run build --workspace @hanger-source/dsh-reactive-native-ui",

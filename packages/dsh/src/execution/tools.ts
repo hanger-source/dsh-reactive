@@ -56,7 +56,7 @@ export class ProgramTools {
             output: { schema: toolSchema(contract.output, 'output'),
                 render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }],
                 presentationMeta: (_args, result) => ({
-                    reactiveAction: { version: 1, action: contract.name, bindingId: offer.action.bindingId, modulePath: [...offer.modulePath],
+                    reactiveAction: { version: 2, action: contract.name, actionVersion: contract.version, bindingId: offer.action.bindingId, modulePath: [...offer.modulePath],
                         scope: z.json().parse(offer.action.scope), output: z.json().parse(result),
                         ...contract.operation ? { operation: { kind: contract.operation.definition.kind, version: contract.operation.definition.version,
                                 reference: z.json().parse(z.encode(contract.operation.definition.reference, z.decode(contract.operation.definition.reference, contract.operation.reference(result as never)))) } } : {},

@@ -24,6 +24,10 @@ const receipt = await invocation.result;
 
 local resolveAction 同步，remote 异步；统一代码 `await` 两者。预期 scope 是调用者持有的**原始**目标，用同 schema 与当前绑定核验；不要把 scope 重复进业务 input，不按当前页面重定向。捕获后保 bindingId，撤下/替换/重挂硬拒旧句柄。接收 ActionAdmissionUnknownError 时不自动重发；定位已有 invocation/Operation 或按应用幂等合同处理。
 
+远程 SDK 自动从共享 Action 定义发送名称与版本，无需调用者重复装配。宿主在解析目标及受理业务前拒绝不匹配合同；`session.invocation(name, id)` 也先核对原回执身份，再连接活动和解码结果。确定的宿主拒绝使用 `reactive/action-contract-mismatch`，包含 expected/actual；如果收到自相矛盾的受理 ACK，返回 ActionAdmissionUnknownError，不能声称业务未执行。
+
+原生 Action 视图按名称与版本注册，同名不同版本可并存；同一真实工具名仍不得指向两个不同合同。manifest 的 `actionVersion` 与持久 `reactiveAction.actionVersion` 表达业务合同版本，`reactiveAction.version = 2` 表达 metadata 格式版本。缺少合同版本的旧网络数据或持久记录不会被猜成版本 1。
+
 创建尚未完成时，create、completeCreation、open、resume 都可能返回 `CreationIncompleteError`，reference 保留原 environmentId、workspaceId、sessionId。原生已有成员或内存中已有完成事件仍不能证明创建已 ACK。沿原引用显式 completeCreation，不把 open/resume 写成隐式创建恢复，也不换一个会话重试。
 
 client.dispose 或借入的 Context 退出时，在途的 createWorkspace、describe、create、completeCreation、open、resume 回执等待都会结算。SDK 向 transport 传递取消信号，也独立结束自己的等待；这不撤销 Host 已受理的工作。create 已发出而尚未确认时返回 CreationUnknownError，保留原创建引用，之后用有效 SDK 显式 completeCreation。已经退出的 SDK 拒绝新调用；借用 SDK 退出不关闭公共 Context 或其他 SDK。
