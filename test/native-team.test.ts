@@ -7,6 +7,7 @@ import { setImmediate as immediate } from 'node:timers/promises';
 import { useLayoutEffect } from 'react';
 import { ReplaySubject, filter, firstValueFrom, timeout, type Subscription } from 'rxjs';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
+import { symbols } from '@deepseek-ai/cordis';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, z, type Observation } from '@hanger-source/dsh-reactive';
 import { implementProgram, useResource } from '@hanger-source/dsh-reactive/program';
@@ -127,6 +128,22 @@ test('Team固定任务沿真实任务板执行CAS和依赖派生，关闭恢复�
     assert.deepEqual(await cold.read(), completed);
     assert.equal(runtime.native.agents.get(SessionId(session.id)), undefined);
     await assert.rejects(cold.update({ expectedRevision: completed.revision, action: 'reopen' }), /REACTIVE_NATIVE_TEAM_LIVE_MEMBER_REQUIRED/);
+    await immediate();
+    const persistence = Reflect.get(runtime.native.sessionPersistence, symbols.original) as typeof runtime.native.sessionPersistence;
+    const open = persistence.open;
+    const enteredRead = Promise.withResolvers<void>(), continueRead = Promise.withResolvers<void>();
+    let reading: Promise<void> | undefined;
+    persistence.open = async function (...args) {
+      const handle = await open.apply(this, args);
+      enteredRead.resolve(); await continueRead.promise; return handle;
+    };
+    try {
+      const cancellation = new AbortController(), reason = new Error('CANCEL_ONLY_THIS_TEAM_READ');
+      let outcome: unknown;
+      reading = team.readProjection({ signal: cancellation.signal }).then(value => { outcome = value; }, error => { outcome = error; });
+      await enteredRead.promise; cancellation.abort(reason); await immediate();
+      assert.equal(outcome, reason, '冷Team只读等待不被不配合取消的原生open阻塞');
+    } finally { continueRead.resolve(); await reading; persistence.open = open; }
     const again = await runtime.application.resume(session.id, program);
     resumed.release(); resumed = again;
     team.dispose();

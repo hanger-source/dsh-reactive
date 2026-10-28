@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis';
-import { defer, firstValueFrom, from, fromEvent, mergeMap, raceWith, throwError } from 'rxjs';
+import { firstValueFrom } from 'rxjs';
+import { abortable } from '@hanger-source/dsh-reactive';
 
 export interface ClientLease<T> {
   readonly value: T;
@@ -53,10 +54,7 @@ export function createClientScope(parent: Context, name: string, reason: Error, 
       const pending = cancellation === signal ? signal : AbortSignal.any([signal, cancellation]);
       pending.throwIfAborted();
       // 只结束消费者的等待，不将已受理业务纳入SDK的清理责任。
-      return firstValueFrom(fromEvent(pending, 'abort').pipe(
-        mergeMap(() => throwError(() => pending.reason)),
-        raceWith(defer(() => from(call(pending)))),
-      ));
+      return firstValueFrom(abortable(call, pending));
     },
     acquire(create, cleanup, label) {
       scope.assertActive();

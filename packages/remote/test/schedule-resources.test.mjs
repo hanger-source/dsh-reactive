@@ -99,7 +99,27 @@ test('Schedule真实CAS和持久变更驱动资源失效，迟到切面不回写
     subscriptions.forEach(subscription => subscription.unsubscribe());
     assert.equal(sdk.state.peek().status, 'pending');
     assert.equal(task.state.peek().status, 'pending');
-    sdk.dispose(); assert.throws(() => task.state.peek(), /REACTIVE_SCOPE_DISPOSED/);
+    await immediate();
+    const nativeList = ScheduleService.prototype.list;
+    for (const mode of ['caller', 'sdk']) {
+      const read = Promise.withResolvers(), finish = Promise.withResolvers();
+      ScheduleService.prototype.list = async function (...args) {
+        const rows = await nativeList.apply(this, args);
+        read.resolve(); await finish.promise; return rows;
+      };
+      let waiting;
+      try {
+        const cancellation = new AbortController(), reason = new Error('CANCEL_ONLY_THIS_SCHEDULE_READ');
+        let outcome;
+        waiting = sdk.active({ signal: cancellation.signal }).then(value => { outcome = value; }, error => { outcome = error; });
+        await read.promise;
+        if (mode === 'caller') cancellation.abort(reason); else sdk.dispose();
+        await immediate();
+        if (mode === 'caller') assert.equal(outcome, reason, '调用者取消不等原生list回执');
+        else { assert.ok(outcome instanceof Error); assert.match(outcome.message, /REACTIVE_SCOPE_DISPOSED/); }
+      } finally { finish.resolve(); await waiting; ScheduleService.prototype.list = nativeList; }
+    }
+    assert.throws(() => task.state.peek(), /REACTIVE_SCOPE_DISPOSED/);
     assert.equal(models, 0); assert.deepEqual(errors, []);
   } finally {
     release.resolve(); subscriptions.forEach(subscription => subscription.unsubscribe());

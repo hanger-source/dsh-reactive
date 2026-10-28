@@ -1,7 +1,7 @@
-import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction, combineResources, mapResource, switchResource,
+import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction, combineResources, mapResource, switchResource, abortable,
   resourceView, shareResource, type Scope, type Observation, type OperationContract, type OperationHandle,
   type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, z } from '@hanger-source/dsh-reactive';
-import { concatMap, type Observable } from 'rxjs';
+import { concatMap, firstValueFrom, type Observable } from 'rxjs';
 import { implementProgram, useAction, useResource, useResourceInstance, useReaction, useBeforeStep } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, type ConversationHandle, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
@@ -26,6 +26,8 @@ export const publicEntries = [createProgramClient, mountProgramGateway, getDevel
 export const developerSkill = getDeveloperSkill();
 export const nativeProgramSource = (conversation: ProgramSession<typeof contract>): NativeSessionSource => conversation;
 export const invocationActivity = <T, O extends Json>(invocation: Invocation<T, O>) => invocation.activity;
+export const readWithCancellation = <T>(read: (signal: AbortSignal) => T | PromiseLike<T>, signal: AbortSignal): Promise<T> =>
+  firstValueFrom(abortable(read, signal));
 
 const current = defineResource({ name: 'consumer-current', params: z.null(), value: z.object({ revision: z.number() }) });
 const changes = defineReaction({ name: 'consumer-changes', params: z.null(), event: z.number(), result: z.string() });

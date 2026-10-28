@@ -3,8 +3,8 @@ import type WorkspaceFiles from '@deepseek-ai/dsh-api-workspace-files';
 import type { WorkspaceFileScope, WorkspaceFileRange, WorkspaceByteReadOptions, WorkspaceFileText,
   WorkspaceFileBytes, WorkspaceFileStat, WorkspaceDirectoryListing, WorkspaceFileWatchFrame } from '@deepseek-ai/dsh-api-workspace-files';
 import { FsError, type FileSystem } from '@deepseek-ai/dsh-fs';
-import { Observable, ReplaySubject } from 'rxjs';
-import type { CancellationOptions } from '@hanger-source/dsh-reactive';
+import { Observable, ReplaySubject, firstValueFrom } from 'rxjs';
+import { abortable, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { NativeCapabilityOwner, nativeObservationScope, ownNativeValue,
   type NativeCapability, type NativeSessionSource } from './native-capability.ts';
@@ -143,7 +143,8 @@ class SessionFiles implements NativeSessionFiles {
     }, error => { throw cancelledRead(error, signal) ? signal.reason : error; });
     this.#reads.add(reading);
     void reading.then(() => this.#reads.delete(reading), () => this.#reads.delete(reading));
-    return reading;
+    // 只结束消费者的等待；dispose仍通过原reading等待真实I/O完成。
+    return firstValueFrom(abortable(() => reading, signal));
   }
   text(path: string, range: WorkspaceFileRange = {}): NativeFileResource<WorkspaceFileText> {
     this.assertCurrent(); return this.#resources.text(path, range);

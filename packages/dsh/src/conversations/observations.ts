@@ -64,9 +64,9 @@ export class ConversationObservations {
         return { state: new NativeState(state, goal.current, restored.snapshot.asOfSeq),
             questions: humanInputSnapshot(restored.snapshot, state) };
     }
-    async inspect(sessionId: string): Promise<SessionInspection> {
+    async inspect(sessionId: string, signal?: AbortSignal): Promise<SessionInspection> {
         try {
-            return await readNativeInspection(this.ctx, sessionId);
+            return await readNativeInspection(this.ctx, sessionId, signal);
         }
         catch (cause) {
             if (cause instanceof SessionPersistenceNotFoundError)
@@ -99,7 +99,7 @@ export class ConversationObservations {
                     if (session.live.value !== live || this.ctx.agents.get(live.agent.id) !== live.agent)
                         throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
                 }
-                const inspection = await this.inspect(session.header.id);
+                const inspection = await this.inspect(session.header.id, readSignal);
                 readSignal.throwIfAborted();
                 assertHandle();
                 this.sessions().assertSessionWorkspace(session);

@@ -2,8 +2,8 @@ import ScheduleService, { type Config, type ScheduleCatalogEntry, type ScheduleR
   type ScheduleUpdateRequest, type ScheduleUpdateResult, type ScheduleDeleteResult,
   type ScheduleDeliveryHistoryRequest, type ScheduleDeliveryHistoryResult } from '@deepseek-ai/dsh-schedule';
 import type { ScheduleId } from '@deepseek-ai/dsh-schedule/client';
-import { Observable, map } from 'rxjs';
-import { observeResource, mapResource, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
+import { Observable, firstValueFrom, map } from 'rxjs';
+import { abortable, observeResource, mapResource, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin } from './native-installation.ts';
 import { NativeCapabilityOwner, nativeResource, nativeObservationScope, ownNativeValue,
@@ -87,13 +87,13 @@ class SessionSchedule implements NativeSessionSchedule {
   }
   async active(options: CancellationOptions = {}): Promise<readonly ScheduleRecord[]> {
     const signal = this.signal(options);
-    const records = await this.service().list({ sessionId: this.access.sessionId });
+    const records = await firstValueFrom(abortable(() => this.service().list({ sessionId: this.access.sessionId }), signal));
     signal.throwIfAborted(); this.context();
     return ownNativeValue(records);
   }
   async catalog(options: CancellationOptions = {}): Promise<readonly ScheduleCatalogEntry[]> {
     const signal = this.signal(options);
-    const records = await this.service().catalog();
+    const records = await firstValueFrom(abortable(() => this.service().catalog(), signal));
     signal.throwIfAborted(); this.context();
     return ownNativeValue(records.filter(record => record.sessionId === this.access.sessionId));
   }
@@ -111,7 +111,7 @@ class SessionSchedule implements NativeSessionSchedule {
         },
         history: async (page: NativeScheduleHistory, opts: CancellationOptions = {}) => {
           const signal = this.signal(opts);
-          const result = await this.service().history({ ...structuredClone(page), id, sessionId: this.access.sessionId });
+          const result = await firstValueFrom(abortable(() => this.service().history({ ...structuredClone(page), id, sessionId: this.access.sessionId }), signal));
           signal.throwIfAborted(); this.context();
           return ownNativeValue(result);
         },

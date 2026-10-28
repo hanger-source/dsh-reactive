@@ -36,6 +36,8 @@ createWorkspace 注册原生 existing 目录，不隐式 mkdir。Environment 不
 
 ## 嵌入与可选能力
 
+Schedule 管理读取、冷 Team 投影及 Files 的显式读取使用所属 SDK 与调用者的取消信号；等待立即结算，不被迟到的原生查询回执拖住。Files 仍独立跟踪真实 I/O，实例退出等待这些读取与 unwatch 完成。只读等待的取消不改变原生 CAS、任务、提醒投递或成员执行的 owner。
+
 能力实例的 `dispose()` 撤销观察并等待本次安装范围真正退出，即使外层 Context 已开始卸载或同步清理中再次调用退出。观察清理失败在实际原生资源静止后报告。实例自行安装的服务由原生 owner 执行 drain；选择 provided 的服务继续归外部宿主。`forSession(source)` 返回的会话 SDK 只释放自己的观察，不借此停止原生执行。
 
 各子入口的原生依赖是版本固定为 `0.2.1-rc.3` 的 optional peers。应用选择某个域时，显式安装该行依赖；import 不等于安装原生服务，服务装配仍经 installNative 或已有宿主完成。默认后台和原生 UI 消费不因这些入口自动装入所有原生集成。

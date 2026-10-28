@@ -4,8 +4,8 @@ import { SessionLogOffset } from '@deepseek-ai/dsh-session/types';
 import type { SessionId } from '@deepseek-ai/dsh-session';
 import type { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection';
 import { foldSubagentDescriptor } from '@deepseek-ai/dsh-subagent';
-import { Observable, map, merge } from 'rxjs';
-import { observeResource, mapResource, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
+import { Observable, firstValueFrom, map, merge } from 'rxjs';
+import { abortable, observeResource, mapResource, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin } from './native-installation.ts';
 import { NativeCapabilityOwner, nativeResource, nativeObservationScope, ownNativeValue,
@@ -122,7 +122,7 @@ class SessionTeam implements NativeSessionTeam {
       const member = this.service().membership(agent);
       projection = projections.snapshot(member.root.session, ['agentTeam']).values.agentTeam;
     } else {
-      const inspection = await this.access.inspect(signal);
+      const inspection = await firstValueFrom(abortable(signal => this.access.inspect(signal), signal));
       signal.throwIfAborted(); this.context();
       if (foldSubagentDescriptor(inspection.events.slice(inspection.inheritedEventCount)) !== undefined) {
         throw new Error('REACTIVE_NATIVE_TEAM_LIVE_MEMBER_REQUIRED');

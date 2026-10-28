@@ -36,6 +36,7 @@ test('真实文件资源共享watch并先监听后读，失效取消旧页，冷
   let models = 0, flushes = 0, reads = 0, delayed = false, holdClose = false;
   const errors = [], watches = [], subscriptions = [];
   const entered = Promise.withResolvers(), releaseRead = Promise.withResolvers(), closing = Promise.withResolvers(), releaseClose = Promise.withResolvers();
+  const releaseBytes = Promise.withResolvers();
   const runtime = await createRuntime(() => definition, { home: join(root, 'home'), actorId: 'file-owner', onError: event => errors.push(event.error),
     installNative: ctx => requireActivePlugin(ctx.plugin(SandboxPolicy, { mode: 'read-only', workspaceRoot: directory })).then(() => {}),
     model: nativeModel({ provider: 'file-resources', model: 'unused', create: () => new class extends LlmAdapter {
@@ -138,14 +139,28 @@ test('真实文件资源共享watch并先监听后读，失效取消旧页，冷
     await rename(path, join(directory, 'previous-artifact.txt')); await unavailable;
     const restored = firstValueFrom(remote.observeView('artifact').pipe(filter(value => value.status === 'ready' && value.value.text === 'title\nrestored'), timeout(8_000)));
     await writeFile(path, 'title\nrestored\n'); await restored;
+    const readBytes = native.readBytes, bytesEntered = Promise.withResolvers();
+    native.readBytes = async function (...args) {
+      const result = await readBytes.apply(this, args);
+      bytesEntered.resolve(); await releaseBytes.promise; return result;
+    };
+    const cancellation = new AbortController(), reason = new Error('CANCEL_ONLY_THIS_FILE_READ');
+    const pending = files.readBytes('artifact.txt', {}, { signal: cancellation.signal });
+    let stopped = false;
+    const rejected = assert.rejects(pending, error => error === reason).then(() => { stopped = true; });
+    await bytesEntered.promise; cancellation.abort(reason); await immediate();
+    assert.equal(stopped, true, '取消读取先结束消费者等待，实际提供者仍归SDK清理');
+    await rejected;
     holdClose = true;
     let disposed = false;
     const disposing = files.dispose().then(() => { disposed = true; });
     await closing.promise; await immediate(); assert.equal(disposed, false, 'SDK释放等待原生异步unwatch');
-    releaseClose.resolve(); await disposing;
+    releaseClose.resolve(); await immediate();
+    assert.equal(disposed, false, 'unwatch完成后仍等待真实读取提供者退出');
+    releaseBytes.resolve(); await disposing;
     assert.equal(models, 0); assert.deepEqual(errors, []);
   } finally {
-    releaseRead.resolve(); releaseClose.resolve(); subscriptions.forEach(subscription => subscription.unsubscribe());
+    releaseRead.resolve(); releaseClose.resolve(); releaseBytes.resolve(); subscriptions.forEach(subscription => subscription.unsubscribe());
     await files?.dispose(); await remote?.release(); await client?.dispose(); local?.release();
     await gateway?.close(); await runtime.dispose();
   }

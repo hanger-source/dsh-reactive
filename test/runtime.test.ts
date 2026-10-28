@@ -1,14 +1,35 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Observable, Subject, BehaviorSubject, EMPTY, of, mergeMap, take } from 'rxjs';
+import { Observable, Subject, BehaviorSubject, EMPTY, of, firstValueFrom, mergeMap, take } from 'rxjs';
 import { Scope } from '@hanger-source/dsh-reactive/kernel';
-import { ScopeDisposedError } from '../packages/core/src/reactivity/scope.ts';
-import { type Observation } from '@hanger-source/dsh-reactive';
+import { ScopeDisposedError, type Observation } from '@hanger-source/dsh-reactive';
 import { connect } from '@hanger-source/dsh-reactive/kernel';
 import { fromSnapshot, abortable } from '@hanger-source/dsh-reactive';
 import { observeResource } from '@hanger-source/dsh-reactive';
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
+
+test('外部signal结束本次Promise等待并保留原因，其他消费者、已完成结果及迟到拒绝各自结算', async () => {
+  const source = Promise.withResolvers<number>();
+  const first = new AbortController(), second = new AbortController();
+  let firstSignal: AbortSignal | undefined, secondSignal: AbortSignal | undefined;
+  const cancelled = firstValueFrom(abortable(signal => { firstSignal = signal; return source.promise; }, first.signal));
+  const continued = firstValueFrom(abortable(signal => { secondSignal = signal; return source.promise; }, second.signal));
+  const reason = new Error('ONLY_THIS_CONSUMER');
+  const rejected = assert.rejects(cancelled, error => error === reason);
+  first.abort(reason); await rejected;
+  assert.equal(firstSignal?.reason, reason); assert.equal(secondSignal?.aborted, false);
+  source.resolve(7); assert.equal(await continued, 7);
+  second.abort(new Error('AFTER_COMPLETION')); assert.equal(secondSignal?.aborted, false);
+
+  let calls = 0;
+  await assert.rejects(firstValueFrom(abortable(() => { calls++; return 1; }, first.signal)), error => error === reason);
+  assert.equal(calls, 0, '已取消的消费不进入提供者');
+  const late = Promise.withResolvers<number>(), synchronous = new AbortController();
+  const ended = firstValueFrom(abortable(() => { synchronous.abort(reason); return late.promise; }, synchronous.signal));
+  await assert.rejects(ended, error => error === reason);
+  late.reject(new Error('LATE_PROVIDER_FAILURE')); await flush();
+});
 
 test('snapshot 先监听再读取，登记期间的变化不会遗失，同步完成也释放监听', () => {
   let value = 1;

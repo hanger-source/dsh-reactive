@@ -35,6 +35,8 @@ export function inventory(scope: Scope, service: {
 
 ## 派生仍使用标准 Observable
 
+已有 Promise API 使用 `abortable(signal => read(signal), ownerSignal)` 接入 RxJS，也可用 `firstValueFrom` 取得同一次等待的 Promise。外部取消以原 reason 结束等待，已经取消时不进入 read；退订只撤销本订阅，迟到结果和拒绝不再交付。它不承担底层提供者的清理等待，也不取消其他消费者或已受理业务。
+
 `combineResources({ stock, quote: quote.observations$ })` 可以混合正式资源对象与观察流，只有所有依赖 ready 才产生派生 ready。对象和它的 observations$ 使用同一个来源与原 owner，不调用 read/peek、不重复解析或额外持有连接。`mapResource(project)` 保留 pending/error，并将投影异常表示为 error。
 
 需要把完整派生关系作为对象传给普通函数、Promise、其他 hooks 或公开 View 时，用 `shareResource(combineResources(...), { signal: scope.signal })`。read、peek、subscribe、values$、observations$ 共用 RxJS 的唯一当前快照；已经解析的领域值不再重复 schema parse，不需要另建 Scope、合同或绑定表。构造不连接，有限来源的最终观察保留至最后消费者退出，之后显式读取再连接；signal 固定读侧寿命，取消不重新执行任何命令。

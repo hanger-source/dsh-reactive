@@ -52,13 +52,20 @@ export function fromSnapshot<T>(source: SnapshotSource<T>): Observable<T> {
   }).pipe(distinctUntilChanged());
 }
 
-/** Promise API 与标准退订的取消互操作；组合、并发和重试均使用 RxJS 本身。 */
-export function abortable<T>(run: (signal: AbortSignal) => PromiseLike<T> | T): Observable<T> {
+/** Promise API、外部signal与标准退订的取消互操作；取消等待不宣称提供者已经静止。 */
+export function abortable<T>(run: (signal: AbortSignal) => PromiseLike<T> | T, signal?: AbortSignal): Observable<T> {
   return new Observable(subscriber => {
     const controller = new AbortController();
     let settled = false;
     // run 可以同步失效当前读取；进入业务代码前就把取消交给真实订阅。
     subscriber.add(() => { if (!settled) controller.abort(); });
+    const cancel = () => {
+      controller.abort(signal!.reason);
+      subscriber.error(signal!.reason);
+    };
+    signal?.addEventListener('abort', cancel, { once: true });
+    subscriber.add(() => signal?.removeEventListener('abort', cancel));
+    if (signal?.aborted) { cancel(); return; }
     if (subscriber.closed) return;
     defer(() => from(Promise.resolve(run(controller.signal)))).pipe(
       tap({ next: () => { settled = true; }, error: () => { settled = true; } }),
