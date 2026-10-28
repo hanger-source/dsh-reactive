@@ -79,7 +79,7 @@ export function connectProgress<P extends ProgramContract>(ctx: Context, session
       events.error(error); progressFrames.error(error);
     },
   });
-  const reset = ctx.on('connection/reset', invalidate);
+  const reset = ctx.on('connection/reset', () => { invalidate(); stream.restart(); });
   stream.start();
   return {
     progress, progress$: progress.observations$, progressFrames$: progressFrames.asObservable(), events$: events.asObservable(),

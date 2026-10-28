@@ -103,6 +103,8 @@ renderer 在 React commit 后收集整棵树的声明，经过私有运行时品
 
 Operation 是业务系统已有操作的类型化观察对象。Action Invocation 返回受理回执后，Operation 继续由业务 owner 持有；组件、页面和当前函数退出不改变其寿命。共享合同中的 settled 描述操作终态，feedback schema 描述协作节点 payload；owner 按确切登记读取带稳定 id 的反馈。
 
+远程 Operation 的状态仍由 core 的同一个 ResourceReader 解析和共享，客户端只持有原生流连接及其异步清理。Session 的显式查询随该句柄退出；由已受理 Invocation 取得的 Operation 观察沿整个 SDK 寿命，Session release 不撤销它。release 与 dispose 等待各自原生迭代器及回调静止，连接重置先令观察失效，重连须重新接收 baseline。该等待不等于远端逐流关闭 ACK；服务器收到原生取消后自行释放观察，业务操作及其他 SDK 的查询保持各自归属。
+
 Offer.follow 接合原调用、原工作、命令、正式引用和等待。原生 reactiveOperations 投影只保存这份因果关联及固定投递，不保存或调度业务任务。业务 owner 使用已有可靠设施登记关联和投递通知，框架按真实 owner 事实与精确 Goal 修订决定是否能够继续。
 
 后续工具调用通过 Follow 为同一原 command 登记新参与，after 指出业务节点边界。新参与使用本次调用的输入和 Goal 修订，原投递保持不变。owner 可为新登记建立新的观察尝试；同节点重放不再观察，进程恢复也不重新执行业务动作。原任务的正式结果与某次观察产生的调查要求分别保存。

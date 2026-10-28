@@ -42,7 +42,7 @@ export function remoteResource<T, Snapshot, Delta>(ctx: Context, owner: AbortSig
         subscriber.complete();
       },
     });
-    const reset = ctx.on('connection/reset', invalidate);
+    const reset = ctx.on('connection/reset', () => { invalidate(); stream.restart(); });
     subscriber.add(() => {
       reset();
       const retirement = stream.dispose().then(() => { retiring.delete(retirement); }, error => {

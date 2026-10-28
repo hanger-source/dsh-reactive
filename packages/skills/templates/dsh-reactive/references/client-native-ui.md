@@ -24,6 +24,8 @@ const receipt = await invocation.result;
 
 local resolveAction 同步，remote 异步；统一代码 `await` 两者。预期 scope 是调用者持有的**原始**目标，用同 schema 与当前绑定核验；不要把 scope 重复进业务 input，不按当前页面重定向。捕获后保 bindingId，撤下/替换/重挂硬拒旧句柄。接收 ActionAdmissionUnknownError 时不自动重发；定位已有 invocation/Operation 或按应用幂等合同处理。
 
+Session 显式 attach 或绑定的 Operation 观察随该 Session 退出；`await invocation.operation` 取得的操作句柄沿所属客户端寿命，原 Session release 不撤销已经受理调用的独立观察。最后消费者退出会取消查询，release/dispose 还会等待各自本地原生流及回调完成异步清理，包括已退订但仍在清理中的流；SDK dispose 也等待原 Invocation 活动流退出。原生协议不提供逐流远端关闭 ACK，不把该等待解释为服务端已确认退订，更不把查询退出当作取消业务任务。事件连接重置时，Operation、View、人工资源和进展先失效，再通过原生 restart 重新取得 baseline；查询复用原生 baseline/delta 管线，core 仍持有唯一 Operation 状态。
+
 远程 SDK 自动从共享 Action 定义发送名称与版本，无需调用者重复装配。宿主在解析目标及受理业务前拒绝不匹配合同；`session.invocation(name, id)` 也先核对原回执身份，再连接活动和解码结果。确定的宿主拒绝使用 `reactive/action-contract-mismatch`，包含 expected/actual；如果收到自相矛盾的受理 ACK，返回 ActionAdmissionUnknownError，不能声称业务未执行。
 
 原生 Action 视图按名称与版本注册，同名不同版本可并存；同一真实工具名仍不得指向两个不同合同。manifest 的 `actionVersion` 与持久 `reactiveAction.actionVersion` 表达业务合同版本，`reactiveAction.version = 2` 表达 metadata 格式版本。缺少合同版本的旧网络数据或持久记录不会被猜成版本 1。
