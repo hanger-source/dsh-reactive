@@ -274,18 +274,37 @@ test('Blob来源取消结束当前上传等待，迟到字节不激活冷Agent�
   try {
     await app.host.close(session.id);
     assert.equal(app.native.agents.get(SessionId(session.id)), undefined);
+    const preCancelled = new AbortController(), preReason = new Error('UPLOAD_CANCELLED_BEFORE_CALL');
+    preCancelled.abort(preReason);
+    assert.throws(() => session.uploadFile(new Uint8Array([1]), { signal: preCancelled.signal }), error => error === preReason);
     const abort = new AbortController(), reason = new Error('BLOB_SOURCE_WAIT_CANCELLED');
     const pending = session.uploadFile(new DelayedBlob(['等待外部字节']), { name: 'cancelled.txt', signal: abort.signal });
-    const cancelled = assert.rejects(pending, error => error === reason);
+    const cancelled = assert.rejects(pending.wait(), error => error === reason);
+    const failed = assert.rejects(pending.result, error => error === reason);
     await wait(entered.promise);
-    abort.abort(reason); await wait(cancelled);
+    abort.abort(reason); await wait(cancelled); await wait(failed);
     bytes.resolve(await new Blob(['不应进入上传的迟到字节']).arrayBuffer());
     await immediate();
     assert.equal(app.native.agents.get(SessionId(session.id)), undefined, '取消后的Blob完成不得继续调用原生upload并恢复Agent');
+    const activeReading = Promise.withResolvers<void>(), activeBytes = Promise.withResolvers<ArrayBuffer>();
+    const retained = peer.uploadFile(new class extends Blob {
+      override arrayBuffer(): Promise<ArrayBuffer> { activeReading.resolve(); return activeBytes.promise; }
+    }(['单独读者等待']), { name: 'retained-source.txt' });
+    const readAbort = new AbortController(), readReason = new Error('ONLY_THIS_UPLOAD_READER_LEFT');
+    const readerLeft = assert.rejects(retained.wait({ signal: readAbort.signal }), error => error === readReason);
+    await wait(activeReading.promise);
+    readAbort.abort(readReason); await wait(readerLeft);
+    activeBytes.resolve(await new Blob(['读者退出后仍继续准备的实际字节']).arrayBuffer());
+    const retainedValue = await wait(retained.result), retainedPath = app.native.attachments.fileHostPath(retainedValue.file);
+    assert.ok(retainedPath);
+    assert.equal(await readFile(retainedPath, 'utf8'), '读者退出后仍继续准备的实际字节');
     const original = new TextEncoder().encode('首次取得的正式文件字节');
-    const uploading = peer.uploadFile(original, { name: 'snapshot.txt' });
+    const options = { name: 'snapshot.txt' };
+    const uploading = peer.uploadFile(original, options);
     original.fill(0);
-    const file = await wait(uploading);
+    options.name = 'changed-after-call.txt';
+    const file = await wait(uploading.result);
+    assert.equal(file.file.name, 'snapshot.txt');
     const path = app.native.attachments.fileHostPath(file.file);
     assert.ok(path);
     assert.equal(await readFile(path, 'utf8'), '首次取得的正式文件字节');
@@ -294,3 +313,145 @@ test('Blob来源取消结束当前上传等待，迟到字节不激活冷Agent�
     assert.equal(models, 0); assert.deepEqual(app.errors, []);
   } finally { bytes.resolve(new ArrayBuffer(0)); session.release(); peer.release(); await app.dispose(); }
 });
+
+for (const cancellation of ['call', 'handle', 'activity'] as const) {
+  test(`真实文件存储开始后${cancellation}退出只结束等待，同次调用仍取得原生receipt`, { timeout: 15_000 }, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-upload-result-'));
+    let models = 0, stores = 0;
+    const app = await boot(join(directory, 'home'), definition(), async function* () {
+      models++; throw new Error('UPLOAD_RESULT_MUST_NOT_CALL_MODEL');
+    });
+    const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+    const entered = Promise.withResolvers<void>(), proceed = Promise.withResolvers<void>();
+    const attachments = app.native.attachments, admit = attachments.admitEncodedFile;
+    let stop = () => {};
+    attachments.admitEncodedFile = async input => {
+      stores++;
+      const file = await admit.call(attachments, input);
+      entered.resolve(); await proceed.promise;
+      return file;
+    };
+    try {
+      const agent = app.native.agents.get(SessionId(session.id))!;
+      const abort = new AbortController(), reason = new Error('UPLOAD_CALLER_LEFT');
+      const invocation = session.uploadFile(new TextEncoder().encode('迟到但仍属于同次调用的原始资料'),
+        { name: 'late-receipt.txt', signal: abort.signal });
+      if (cancellation === 'activity') {
+        const subscription = invocation.activity$.subscribe(value => {
+          if (value.state === 'running') abort.abort(reason);
+        });
+        stop = () => subscription.unsubscribe();
+      }
+      const cancelled = assert.rejects(invocation.wait(), cancellation === 'handle'
+        ? /REACTIVE_SCOPE_DISPOSED/u : error => error === reason);
+      await wait(entered.promise);
+      if (cancellation === 'call') abort.abort(reason);
+      else if (cancellation === 'handle') session.release();
+      await wait(cancelled);
+      proceed.resolve();
+      const value = await wait(invocation.result);
+      assert.deepEqual(app.native.fileUploads.resolve(agent, value.receiptId), value.file);
+      const path = app.native.attachments.fileHostPath(value.file);
+      assert.ok(path);
+      assert.equal(await readFile(path, 'utf8'), '迟到但仍属于同次调用的原始资料');
+      assert.deepEqual(invocation.source, { kind: 'file-upload', sessionId: session.id });
+      assert.equal(invocation.activity.peek().status, 'ready');
+      assert.deepEqual(await invocation.activity.read(), { state: 'returned' });
+      assert.equal(stores, 1); assert.equal(models, 0); assert.deepEqual(app.errors, []);
+    } finally {
+      proceed.resolve(); stop(); attachments.admitEncodedFile = admit;
+      session.release(); await app.dispose();
+    }
+  });
+}
+
+test('上传退等后的真实存储异常归同次result和failed事实，不变成Host清理失败', { timeout: 15_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-upload-late-failure-'));
+  let models = 0, stores = 0;
+  const app = await boot(join(directory, 'home'), definition(), async function* () {
+    models++; throw new Error('UPLOAD_FAILURE_MUST_NOT_CALL_MODEL');
+  });
+  const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+  const entered = Promise.withResolvers<void>(), proceed = Promise.withResolvers<void>();
+  const failure = new Error('ATTACHMENT_STORAGE_FAILED_AFTER_CALLER_LEFT');
+  const attachments = app.native.attachments, admit = attachments.admitEncodedFile;
+  attachments.admitEncodedFile = async input => {
+    stores++;
+    await admit.call(attachments, input);
+    entered.resolve(); await proceed.promise;
+    throw failure;
+  };
+  try {
+    const abort = new AbortController(), reason = new Error('STOP_WAITING_FOR_FILE');
+    const invocation = session.uploadFile(new TextEncoder().encode('真实存储错误的资料'), { signal: abort.signal });
+    const cancelled = assert.rejects(invocation.wait(), error => error === reason);
+    let actual: unknown;
+    const failed = assert.rejects(invocation.result, error => {
+      actual = error;
+      return error instanceof Error && error.cause === failure;
+    });
+    await wait(entered.promise);
+    abort.abort(reason); await wait(cancelled);
+    session.release();
+    const disposing = app.dispose();
+    proceed.resolve(); await wait(failed); await wait(disposing);
+    assert.deepEqual(await invocation.activity.read(), { state: 'failed', phase: 'execute', error: actual });
+    assert.equal(stores, 1); assert.equal(models, 0); assert.deepEqual(app.errors, []);
+  } finally {
+    proceed.resolve(); attachments.admitEncodedFile = admit;
+    session.release(); await app.dispose();
+  }
+});
+
+for (const owner of ['session', 'host'] as const) {
+  test(`${owner}关闭取消Blob准备并等真实存储签发receipt后才释放Agent`, { timeout: 15_000 }, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-upload-drain-'));
+    let models = 0, stores = 0;
+    const app = await boot(join(directory, 'home'), definition(), async function* () {
+      models++; throw new Error('UPLOAD_DRAIN_MUST_NOT_CALL_MODEL');
+    });
+    const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+    const entered = Promise.withResolvers<void>(), proceed = Promise.withResolvers<void>();
+    const reading = Promise.withResolvers<void>(), bytes = Promise.withResolvers<ArrayBuffer>();
+    class DelayedBlob extends Blob {
+      override arrayBuffer(): Promise<ArrayBuffer> { reading.resolve(); return bytes.promise; }
+    }
+    const attachments = app.native.attachments, admit = attachments.admitEncodedFile;
+    attachments.admitEncodedFile = async input => {
+      stores++;
+      const file = await admit.call(attachments, input);
+      entered.resolve(); await proceed.promise;
+      return file;
+    };
+    try {
+      const agents = app.native.agents, agent = agents.get(SessionId(session.id))!;
+      const preparing = session.uploadFile(new DelayedBlob(['不能分派的迟到来源']), { name: 'preparing.txt' });
+      const preparationFailed = assert.rejects(preparing.result, /REACTIVE_(?:FILE_UPLOAD_CLOSING|HOST_DISPOSED)/u);
+      await wait(reading.promise);
+      const writing = session.uploadFile(new TextEncoder().encode('关闭前已开始的实际文件'), { name: 'drained.txt' });
+      const receipted = writing.result.then(value => {
+        assert.deepEqual(app.native.fileUploads.resolve(agent, value.receiptId), value.file);
+        return { value, path: attachments.fileHostPath(value.file) };
+      });
+      await wait(entered.promise);
+      let closed = false;
+      const closing = (owner === 'session' ? app.host.close(session.id) : app.dispose()).then(() => { closed = true; });
+      await wait(preparationFailed); await immediate();
+      assert.equal(closed, false);
+      assert.equal(agents.get(SessionId(session.id)), agent);
+      assert.throws(() => session.uploadFile(new Uint8Array([1])), /REACTIVE_(?:CONVERSATION_CLOSING|HOST_DISPOSED)/u);
+      bytes.resolve(await new Blob(['关闭后才取得的字节']).arrayBuffer());
+      proceed.resolve();
+      const { value, path } = await wait(receipted);
+      assert.ok(value.receiptId); assert.ok(path);
+      await wait(closing);
+      assert.equal(agents.get(SessionId(session.id)), undefined);
+      assert.equal(await readFile(path, 'utf8'), '关闭前已开始的实际文件');
+      assert.deepEqual(await writing.activity.read(), { state: 'returned' });
+      assert.equal(stores, 1); assert.equal(models, 0); assert.deepEqual(app.errors, []);
+    } finally {
+      bytes.resolve(new ArrayBuffer(0)); proceed.resolve(); attachments.admitEncodedFile = admit;
+      session.release(); await app.dispose();
+    }
+  });
+}

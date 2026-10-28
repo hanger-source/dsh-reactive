@@ -12,7 +12,7 @@ import { type OperationContract, type OperationHandle, type OperationReference, 
 import { type ActionInvocation } from "@hanger-source/dsh-reactive/kernel";
 import { type HumanAnswer, type HumanForegroundQuestion, type HumanInputState, type HumanWaitFrame } from "@hanger-source/dsh-reactive/kernel";
 import { type ConversationActivity } from "@hanger-source/dsh-reactive/kernel";
-import { type FileUploadSource, type FileUploadValue, type EncodedFileUploadRequest, type UploadFileOptions, type Json } from "@hanger-source/dsh-reactive/kernel";
+import { type FileUploadSource, type FileUploadInvocation, type EncodedFileUploadRequest, type UploadFileOptions, type Json } from "@hanger-source/dsh-reactive/kernel";
 import type { AssistantProgressFrame, ConversationEvent } from "@hanger-source/dsh-reactive/kernel";
 import { createRequestHandle, type ConversationProgressSnapshot, type RequestHandle } from "@hanger-source/dsh-reactive/kernel";
 import type { ProgramContract, ProgramInput, ProgramParsedInput } from "@hanger-source/dsh-reactive/kernel";
@@ -40,7 +40,7 @@ export interface ServiceConversation<P extends ProgramContract = ProgramContract
     readonly activity$: Observable<ConversationActivity>;
     readonly rawEvents$: Observable<ConversationEvent>;
     observeWireView(name: string): Observable<Observation<Json>>;
-    uploadEncodedFile(request: EncodedFileUploadRequest, options?: CancellationOptions): Promise<FileUploadValue>;
+    uploadEncodedFile(request: EncodedFileUploadRequest, options?: CancellationOptions): FileUploadInvocation;
     invokeAction<K extends keyof P['surface']['actions'] & string>(name: K, bindingId: string, input: ActionInput<P['surface']['actions'][K]>, options?: CancellationOptions): ActionInvocation<P['surface']['actions'][K]>;
     resolveOperation<K extends keyof P['surface']['operations'] & string>(name: K, options?: CancellationOptions): BoundOperation<P['surface']['operations'][K]>;
     snapshot(): ConversationActivity;
@@ -248,23 +248,25 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
         return this.wait(() => this.inputs.editSessionInput(this.entry, requestId, content, options, this.participant), options);
     }
     /** 显式上传至本会话；receipt 由原生 exact Session 持有，提交正文时使用它。 */
-    async uploadFile(data: FileUploadSource, options: UploadFileOptions = {}): Promise<FileUploadValue> {
+    uploadFile(data: FileUploadSource, options: UploadFileOptions = {}): FileUploadInvocation {
         this.assertActive();
         assertParticipantOptions(this.participant, options);
         const { name, ...participationOptions } = options;
-        const { signal } = participationOptions;
-        signal?.throwIfAborted();
-        const bytes = data instanceof Uint8Array ? new Uint8Array(data)
-            : new Uint8Array(await this.wait(() => data.arrayBuffer(), participationOptions)).slice();
-        this.assertActive();
-        signal?.throwIfAborted();
-        return this.uploadEncodedFile({ data: bytesToBase64(bytes), ...(name === undefined ? {} : { name }) }, participationOptions);
+        const captured = data instanceof Uint8Array ? new Uint8Array(data) : data;
+        return this.inputs.uploadSessionFile(this.entry, async signal => {
+            signal.throwIfAborted();
+            const bytes = captured instanceof Uint8Array ? captured
+                : new Uint8Array(await firstValueFrom(abortable(() => captured.arrayBuffer(), signal))).slice();
+            signal.throwIfAborted();
+            return { data: bytesToBase64(bytes), ...(name === undefined ? {} : { name }) };
+        }, participationOptions, this.participant, this.#scope.signal);
     }
     /** 已认证 transport 接入官方 canonical base64；不解码重编码而洗掉非法输入。 */
-    uploadEncodedFile(request: EncodedFileUploadRequest, options: SubmitOptions = {}): Promise<FileUploadValue> {
+    uploadEncodedFile(request: EncodedFileUploadRequest, options: SubmitOptions = {}): FileUploadInvocation {
         this.assertActive();
         assertParticipantOptions(this.participant, options);
-        return this.wait(() => this.inputs.uploadSessionFile(this.entry, request, options, this.participant), options);
+        const encoded = { data: request.data, ...(request.name === undefined ? {} : { name: request.name }) };
+        return this.inputs.uploadSessionFile(this.entry, () => encoded, { ...options }, this.participant, this.#scope.signal);
     }
     whenIdle() { return this.wait(signal => this.sessions.settle(this.sessions.live(this.entry).agent, signal)); }
     attachOperation<D extends OperationContract>(definition: D, reference: OperationReference<D>, options: SubmitOptions = {}): Promise<OperationHandle<D>> {

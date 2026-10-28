@@ -8,7 +8,7 @@ import { type ApplicationDefinition } from "@hanger-source/dsh-reactive/kernel";
 import { contentDigest, submissionSourceDigest, canonical, recordSchema, submissionSchema, type SubmissionRecord } from "./records.ts";
 import { admitPendingRecovery, followAdmittedInput, isRecoveryControl, resumePendingInput, retainClaimedInputs } from "./pending-input.ts";
 import { type Workspaces } from "../workspaces/workspaces.ts";
-import { admittedSubmissionSchema, type AdmittedSubmission, type NormalizedSubmission, type FileUploadValue, type EncodedFileUploadRequest, type FileUploadReceiptId, type InputReference } from "@hanger-source/dsh-reactive/kernel";
+import { admittedSubmissionSchema, createFileUploadInvocation, type AdmittedSubmission, type NormalizedSubmission, type FileUploadInvocation, type EncodedFileUploadRequest, type FileUploadReceiptId, type InputReference } from "@hanger-source/dsh-reactive/kernel";
 import { admitInputContent, InputFileNotStagedError } from "../files/input-content.ts";
 import { editQueuedInput } from "./queued-input.ts";
 import { abortable, type Admission } from "@hanger-source/dsh-reactive";
@@ -21,6 +21,8 @@ import type { OperationParticipation } from '../operations/participation.ts';
 import { humanParticipant, serviceParticipant, participantActor, type ParticipantIdentity } from '../participation/identity.ts';
 /** 受理正文与来源的唯一事务入口；实际队列和附件仍由原生服务持有。 */
 export class ConversationInputs {
+    // 每项只拥有准备取消与真实结算；存储与 receipt 仍归原生 exact Session。
+    #uploads = new Map<ConversationSession, Map<AbortController, Promise<void>>>();
     #pending = new Map<string, {
         sourceDigest: string;
         signal: AbortSignal;
@@ -153,22 +155,46 @@ export class ConversationInputs {
         void promise.then(clear, clear);
         return firstValueFrom(abortable(() => promise, signal));
     }
-    async uploadSessionFile(session: ConversationSession, request: EncodedFileUploadRequest, options: SubmitOptions, identity: ParticipantIdentity = humanParticipant): Promise<FileUploadValue> {
+    uploadSessionFile(session: ConversationSession, prepare: (signal: AbortSignal) => EncodedFileUploadRequest | PromiseLike<EncodedFileUploadRequest>, options: SubmitOptions, identity: ParticipantIdentity = humanParticipant, waitSignal: AbortSignal = this.signal): FileUploadInvocation {
         participantActor(identity, options, this.options.actorId);
-        const signal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
-        const encoded = { data: request.data, ...(request.name === undefined ? {} : { name: request.name }) };
-        signal.throwIfAborted();
-        this.sessions.assertSessionWorkspace(session);
-        return firstValueFrom(abortable(async () => {
-            await this.sessions.activate(session.header.id);
-            signal.throwIfAborted();
-            this.sessions.assertSessionWorkspace(session);
-            const entry = this.sessions.live(session);
-            // 正式 upload 在入口检查取消；存储与 receipt 登记仍由原生 exact Session 拥有。
-            const value = await this.ctx.fileUploads.upload(entry.agent, encoded, signal);
-            this.assertCurrent(entry);
-            return structuredClone(value);
-        }, signal));
+        this.sessions.assertUploadOpen(session);
+        const preparation = new AbortController(), callerSignal = options.signal;
+        const preparationSignal = AbortSignal.any([this.signal, session.scope.signal, waitSignal, preparation.signal,
+            ...(callerSignal ? [callerSignal] : [])]);
+        preparationSignal.throwIfAborted();
+        const invocation = createFileUploadInvocation({ sessionId: session.header.id, preparationSignal,
+            waitSignal: AbortSignal.any([this.signal, waitSignal, ...(callerSignal ? [callerSignal] : [])]),
+            prepare: async signal => {
+                signal.throwIfAborted();
+                const encoded = await prepare(signal);
+                signal.throwIfAborted();
+                this.sessions.assertUploadOpen(session);
+                await this.sessions.activate(session.header.id);
+                signal.throwIfAborted();
+                this.sessions.assertUploadOpen(session);
+                return { entry: this.sessions.live(session), encoded };
+            },
+            execute: async ({ entry, encoded }) => {
+                // 原生入口之后保留实际结算；调用者退等不能覆盖已签发的 receipt。
+                return structuredClone(await this.ctx.fileUploads.upload(entry.agent, encoded, preparationSignal));
+            },
+        });
+        let uploads = this.#uploads.get(session);
+        if (!uploads) this.#uploads.set(session, uploads = new Map());
+        const pending = uploads;
+        const settled = invocation.result.then(() => {}, () => {}).finally(() => {
+            pending.delete(preparation);
+            if (!pending.size && this.#uploads.get(session) === pending) this.#uploads.delete(session);
+        });
+        pending.set(preparation, settled);
+        return invocation;
+    }
+    /** 调用方先截新准入；准备立即退出，已分派存储按真实 Promise 结算。 */
+    async drainUploads(session?: ConversationSession): Promise<void> {
+        const pending = session ? [this.#uploads.get(session)].filter(value => value !== undefined) : [...this.#uploads.values()];
+        for (const uploads of pending)
+            for (const preparation of uploads.keys()) preparation.abort(new Error('REACTIVE_FILE_UPLOAD_CLOSING'));
+        await Promise.all(pending.flatMap(uploads => [...uploads.values()]));
     }
     async prepareSubmission(session: ConversationSession, input: NormalizedSubmission, actorId: string, participant: Admission['participant'], sourceDigest: string, signal: AbortSignal) {
         signal.throwIfAborted();

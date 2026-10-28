@@ -9,7 +9,8 @@ import type { HumanQuestionControls, HumanQuestionHandle } from '../participatio
 import type { OperationContract, OperationHandle, OperationReference, OperationCommand,
   OperationLocation, OperationState, OperationFeedbackRead, OperationFeedbackPayload, OperationNotificationResult } from '../operations/contract.ts';
 import type { ConversationIdentity, InputReceipt } from './conversation.ts';
-import type { CancellationOptions, Submission, FileUploadSource, FileUploadValue } from './protocol.ts';
+import type { CancellationOptions, Submission, FileUploadSource } from './protocol.ts';
+import type { FileUploadInvocation } from '../files/contract.ts';
 import type { AssistantProgressFrame, ConversationEvent } from './events.ts';
 import type { ConversationProgressSnapshot, RequestHandle } from './request.ts';
 
@@ -53,7 +54,8 @@ export interface ProgramSessionClient<P extends ProgramContract,
   readonly foregroundQuestions$: Observable<readonly HumanForegroundQuestion[]>;
   submit(input: Submission<ProgramInput<P>>, options?: Options): Promise<InputReceipt>;
   editQueuedInput(requestId: string, content: Submission['content'], options?: Options): Promise<InputReceipt>;
-  uploadFile(data: FileUploadSource, options?: Options & { readonly name?: string }): Promise<FileUploadValue>;
+  /** 同步取得同一次上传；signal 在分派前取消准备，分派后只退出默认 wait。 */
+  uploadFile(data: FileUploadSource, options?: Options & { readonly name?: string }): FileUploadInvocation;
   attachOperation<D extends OperationContract>(definition: D, reference: OperationReference<D>, options?: Options): OperationHandle<D> | Promise<OperationHandle<D>>;
   locateOperation<D extends OperationContract>(definition: D, command: OperationCommand<D>, options?: Options): Promise<OperationLocation<OperationReference<D>, OperationState<D>>>;
   readOperationFeedback<D extends OperationContract>(definition: D, command: OperationCommand<D>, participationId: string,

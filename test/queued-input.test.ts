@@ -28,7 +28,7 @@ test('队列编辑沿原请求重新准入，保留位置及身份且不唤醒�
   try {
     const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
     const agent = app.native.agents.get(SessionId(session.id))!;
-    const oldFile = await session.uploadFile(new TextEncoder().encode('旧资料'), { name: 'old.txt' });
+    const oldFile = await session.uploadFile(new TextEncoder().encode('旧资料'), { name: 'old.txt' }).result;
     const input = { requestId: 'merchant-facts', intent: 'question', delivery: 'inject', scope: { merchantId: 'merchant-a' },
       content: [{ type: 'text', text: '旧资料正文' }, { type: 'file', receiptId: oldFile.receiptId }] } satisfies Submission<{ merchantId: string }>;
     await session.submit(input);
@@ -47,7 +47,7 @@ test('队列编辑沿原请求重新准入，保留位置及身份且不唤醒�
       error => error instanceof InputEditRejectedError && error.requestId === input.requestId && error.reason === 'actor-mismatch');
     await assert.rejects(session.editQueuedInput(input.requestId, '拒绝这次编辑'), /EDIT_POLICY_DENIED/u);
     assert.deepEqual(queued(agent.inbox.nextStep, input.requestId), original);
-    const newFile = await session.uploadFile(new TextEncoder().encode('新资料'), { name: 'new.txt' });
+    const newFile = await session.uploadFile(new TextEncoder().encode('新资料'), { name: 'new.txt' }).result;
     const next = [{ type: 'text' as const, text: '修订资料正文' }, { type: 'file' as const, receiptId: newFile.receiptId }];
     assert.deepEqual(await session.editQueuedInput(input.requestId, next), { sessionId: session.id, requestId: input.requestId, accepted: true });
     const expected = [{ type: 'text', text: '修订资料正文' }, { type: 'file', attachment: newFile.file }];

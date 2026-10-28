@@ -366,7 +366,8 @@ const receipt = await invocation.result;
 `Submission.content` 接受字符串或有序 `PromptContentPart[]`。字符串只归一为一个 text part，保留原文；空白判定不会 trim 正文。普通输入必须显式选择 delivery：followup 在下一轮处理并唤醒，steer 在最近后续步骤处理并唤醒，inject 在最近后续步骤补充上下文，本次投递不请求唤醒。冷会话提交需要加载原生实例，已受理子工作仍可沿原授权恢复并产生模型活动；inject 不暂停或撤销既有 Goal 和业务工作。业务 intent 与投递方式分别保存，goal 输入还须有真实的非空文本目标。
 
 ```ts
-const uploaded = await conversation.uploadFile(fileBytes, { name: 'merchant-details.pdf' });
+const upload = conversation.uploadFile(fileBytes, { name: 'merchant-details.pdf' });
+const uploaded = await upload.result;
 await conversation.submit({
   requestId: 'merchant-details',
   intent: 'followup',
@@ -379,7 +380,11 @@ await conversation.submit({
 });
 ```
 
-`uploadFile` 接受 `Uint8Array | Blob` 和可选 name、signal，返回官方 `FileUploadValue`。上传不投递模型输入。receipt 只属于接收它的真实原生 Session 实例，不能用于另一会话；未提交的 receipt 在原 Agent 关闭或进程退出后失效。`release()` 只释放观察句柄，不等于关闭 Agent。客户端不能把持久 FileAttachmentRef 直接塞入 Submission；已有 canonical base64 的正式 transport 使用 Handle 的 `uploadEncodedFile(request, options)`，仍由原生服务验证编码及签发 receipt。
+`uploadFile` 接受 `Uint8Array | Blob` 和可选 name、signal，同步返回 `FileUploadInvocation`。它不是 thenable；`await upload.result` 取得官方 `FileUploadValue`，`await upload.wait({ signal })` 只等待本消费者所需的同一次回执。Uint8Array 在调用时复制，之后修改原数组不改变上传；Blob 异步读取被取消后，迟到字节不会再激活会话或开始上传。
+
+方法的 options.signal 约束字节准备与分派前检查，同时作为 wait 的默认信号；分派后取消它或释放 Session、原生 UI 只结束 wait，不改写 result。原生 UI 退出也可以阻止尚未分派的准备。upload.activity 是同源有限 ResourceReader，activity$ 是其值流，可 read、peek、组合 observations$ 或交给 useResource；running 只表示已经分派，不证明存储已受理。调用失败仍是 ready 中的 failed 事实，终态可在 Session 或 UI 退出后晚读。source 为 `{ kind: 'file-upload', sessionId }`，id 只关联本次内存调用，不承担持久恢复或幂等去重。
+
+上传不投递模型输入。receipt 只属于接收它的真实原生 Session 实例，不能用于另一会话；未提交的 receipt 在原 Agent 关闭或进程退出后失效。`release()` 不等于关闭 Agent。客户端不能把持久 FileAttachmentRef 直接塞入 Submission；已有 canonical base64 的正式 transport 使用 Handle 的 `uploadEncodedFile(request, options)`，仍由原生服务验证编码及签发 receipt。远程 SDK 或 Connection 物理退出导致回执无法确认时，result 可以拒绝为 `FileUploadReceiptUnknownError`；这不证明服务器没有文件，框架不自动重传。[上传调用迁移说明](migration-file-upload-invocations.md) 给出完整消费方式。
 
 应用的 `admit` 接受 `AdmittedSubmission`：text 保持原文，图片与文件已经提升为原生持久附件引用。首次投递和模型消费前复核使用这份相同形状，策略不从持久引用猜回图片字节或上传 receipt。scope 仍是原始 JSON，不是 Program input 的领域输出；actor 由可信宿主或远程认证签发。
 
@@ -391,7 +396,7 @@ await conversation.submit({
 
 本地与远程 SDK 统一以 `CancellationOptions` 接收 `{ signal }`，例如 `readView(name, options)`、`resolveAction(name, scope, options)`、`submit(input, options)` 和 `prepare(input, options)`。共享消费者可以对两端统一使用 `await`。本地的可信参与入口还接受 `SubmitOptions.actorId`；远程身份由认证载体决定，调用选项不提供 actor。远程解析和受理等待的取消不会撤销已经受理的业务；直接调用中的信号交由执行 owner 处理，长期 Operation 的取消仍由业务合同决定。
 
-Invocation 的 activity 资源提供本次调用当前有效事实，read 不等待业务完成；可直接交给 useResource 或组合 observations$，activity$ 引用同一对象的 values$。本地 pending/running 是已经知道的调用状态；业务 failed 也是 ready 的调用事实，观察来源不可用才进入资源 error。纯本地不可变事实沿原来源有限结束，晚读取仍取得终态，组件和绑定退出不撤销它。远程来源在 returned/failed 后释放连接，资源的有效性观察仍由 SDK 持有；SDK 退出撤销资源，不重新调用或取消 Host 业务。
+Action Invocation 的 activity 资源提供本次调用当前有效事实，read 不等待业务完成；可直接交给 useResource 或组合 observations$，activity$ 引用同一对象的 values$。本地 pending/running 是已经知道的调用状态；业务 failed 也是 ready 的调用事实，观察来源不可用才进入资源 error。纯本地不可变事实沿原来源有限结束，晚读取仍取得终态，组件和绑定退出不撤销它。远程 Action 来源在 returned/failed 后释放连接，资源的有效性观察仍由 SDK 持有；SDK 退出撤销资源，不重新调用或取消 Host 业务。
 
 Invocation 的 returned 是业务函数返回；原生工具后置策略的最终结果由原生事件表达。observe 是纯投影，原生最终展示可能再次对最终结果投影，不会重新解析或执行业务。
 

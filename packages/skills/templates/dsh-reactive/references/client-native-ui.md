@@ -14,7 +14,9 @@
 
 调用级 signal、release 或所属 SDK dispose 拒绝尚未返回的回执等待，公共 Context 与其他 SDK 保持原寿命。已取消的调用不启动控制，Host 在取得句柄后、进入实际读取或控制前重新检查请求取消。已受理控制继续结算，Host 等待真正完成后才释放自己的短命句柄；取消等待不回滚已受理业务，也不因回执未知自动重发控制。openEvents 继续使用远程 SDK 的官方 carrier、分页与重连合同，不要求本地接口伪造传输状态。
 
-submit、editQueuedInput、uploadFile 也分别结束本调用者的回执等待。同一 requestId 的提交共享原事务，后加入者的取消不删除共享受理；首发 signal 仍约束入队或正文替换前的执行检查，已经 send/replace 的输入由原生 owner 完成持久回执。Program 失败后不能沿旧 conversation.submit 开始新受理。Blob 转换被取消后不启动上传，原生存储已经开始时不撤 receipt、不自动重传。本地已知准入错误保留原错误；远程 submit/edit 已发出而回执未知时保留各自的 AdmissionUnknown 错误，通过同 requestId 查询核对。三个远程入口释放 Session 都只结束本消费者等待，已启动的 HTTP 请求仍沿所属 SDK 与原 caller signal 结算。
+submit、editQueuedInput 分别结束本调用者的回执等待。同一 requestId 的提交共享原事务，后加入者的取消不删除共享受理；首发 signal 仍约束入队或正文替换前的执行检查，已经 send/replace 的输入由原生 owner 完成持久回执。Program 失败后不能沿旧 conversation.submit 开始新受理。本地已知准入错误保留原错误；远程 submit/edit 已发出而回执未知时保留各自的 AdmissionUnknown 错误，通过同 requestId 查询核对。释放 Session 只结束本消费者等待，已启动的 submit/edit HTTP 请求仍沿所属 SDK 与原 caller signal 结算。
+
+uploadFile 在本地、远程与原生 UI 都同步返回 FileUploadInvocation，不提供 thenable。result 保留真实上传回执，wait({ signal }) 只等待同一结果；方法 options.signal 同时约束准备、分派前检查及默认 wait。Uint8Array 在调用时复制；Blob 读取被取消后，迟到字节不再激活会话或开始 HTTP。Session 或 UI 退出可阻止尚未分派的准备；分派后这些取消只结束 wait，不改写 result。所属 SDK 或 Connection 物理退出可能使远程 result 拒绝为客户端公开的 FileUploadReceiptUnknownError，不证明服务器没有文件；调用 id 不能找回 receipt，框架不自动重传。
 
 远程 SDK 从 `@hanger-source/dsh-reactive-client` 导入，不是 Gateway 包的 `/client`；`@hanger-source/dsh-reactive-remote` 只装在认证 Gateway 宿主。纯 Program 文件不能导后台组件/宿主，从而让 CLI、浏览器、UI 共用定义。
 
@@ -71,7 +73,17 @@ await session.submit({ requestId: stableRequestId, intent: 'question',
 
 intent 描述 question/goal/followup，不能代替 delivery；goal 必须有实际非空文字作为目标。result 分支禁止 delivery，只由可信关联核验沿原 Goal 续接，不给调用者自报 Goal 权限。
 
-附件先 `const upload = await session.uploadFile(bytesOrBlob, { name, signal })`，再将其 receiptId 放入 `{ type:'file', receiptId }` 正文。receipt 绑定 exact 会话实例，未提交而关闭会失效，不接任意持久 file ref。首次提升后的正文持久保存；同 requestId、同请求内容可复用 prepared 事实，重试不能先重新消费已退役 receipt。正文、scope、来源或 delivery 不同不能重用原幂等身份。
+附件先取得同步调用，再等真实回执：
+
+```ts
+const call = session.uploadFile(bytesOrBlob, { name, signal });
+const upload = await call.result;
+// 需要随本消费者退出等待时，使用 await call.wait({ signal })。
+await session.submit({ requestId: stableRequestId, intent: 'followup', delivery: 'inject',
+  scope: { sku }, content: [{ type: 'file', receiptId: upload.receiptId }] });
+```
+
+receipt 绑定 exact 会话实例，未提交而关闭会失效，不接任意持久 file ref。首次提升后的正文持久保存；同 requestId、同请求内容可复用 prepared 事实，重试不能先重新消费已退役 receipt。正文、scope、来源或 delivery 不同不能重用原幂等身份。
 
 `editQueuedInput(requestId, content, options)` 只编辑同操作者尚未消费的原请求，保初次目标/来源/顺序，不唤醒模型。`InputEditAdmissionUnknownError` 不触发自动重投。
 
@@ -103,8 +115,9 @@ Action 受理 ACK 已确认后，即使 SDK 在构造观察时退出，仍保留
 需要整体取得并拥有引用时，使用 `const reference = await retainNativeSession(Program, clientContext, sessionId, { signal })`，消费 `reference.session`，退出时 `await reference.release()`，也支持 await using。Context 由客户端根或应用插件拥有，须已有官方 Client Sessions 与上述 Program 远程贡献；不要用目标 Agent generation 的 Context 保留其自身寿命。框架通过官方目录刷新、精确代际 retain 和 SDK open 完成装配，权限仍由原生目录及 Program 读取入口分别核验。取得失败或取消释放部分成果，成功后的 signal 不释放已返回引用；显式 release 或所属 Context 退出释放本次 UI、SDK 和原生引用，不影响其他引用或 Host 工作。已有 binding 和 SDK 时用 bindNativeSession，原对象仍由调用者释放。
 
 - `nativeSource` 直接接已有 peek/subscribe；`observeNativeResource` 保 pending/error；NativeSession.resource/operation/invocation/view 将同一个对象交给原生观察。
-- Invocation 的 activity 资源可直接 read、peek 或交给业务 hook；activity$ 是其 values$；远程资源在 returned/failed 后继续保留 SDK 的有效性观察，result 独立等待业务完成。按 state 等待终态，不用 lastValueFrom 推断业务完成。native.invocation(invocation) 直接读取同一个 Observation，不在 UI 重新物化活动。业务 failed 是 ready.value 的调用事实，SDK 失效或观察错误不会伪装成业务失败。
-- 未终结的活动连接断开时，资源立即 pending，重连读取原调用的当前事实；取消单次 activity.read 只退出本次等待，不重发 Action 或关闭共享观察。已确认终态不被流清理错误撤销，清理失败保留日志。
+- Invocation 的 activity 资源可直接 read、peek 或交给业务 hook；activity$ 是其 values$。native.invocation(invocation) 保留调用的 source 类型，直接读取同一个 Observation，不在 UI 重新物化活动。Action 的远程资源在 returned/failed 后继续保留 SDK 的有效性观察，result 独立等待业务完成。按 state 等待终态，不用 lastValueFrom 推断业务完成。业务 failed 是 ready.value 的调用事实，SDK 失效或观察错误不会伪装成业务失败。
+- FileUploadInvocation 的 source 是 `{ kind: 'file-upload', sessionId }`，id 只关联本次内存调用，不授予 Action、Goal、幂等或持久恢复身份。上传活动是有限事实，running 只表示已分派，不证明存储受理；Session 或 UI 退出不改写真实终态，晚读仍有效。原生 UI 的 uploadFile 返回 SDK 原调用对象，可直接传给 native.invocation(call)、useResource(call.activity) 或组合 observations$。
+- 未终结的远程 Action 活动连接断开时，资源立即 pending，重连读取原调用的当前事实；取消单次 activity.read 只退出本次等待，不重发 Action 或关闭共享观察。已确认终态不被流清理错误撤销，清理失败保留日志。
 - `nativeHooks`、`nativeSessionInject` 复用原生 InjectFace；注入的 `program` 不覆盖原生 props.session。名为 current 的来源成为 `useCurrent(selector, equality?)`，selector 必填；需要完整 Observation 时使用 `useCurrent(value => value)`，并显式处理 pending/error/ready。`provideNativeSources` 交原 UiSession.provide 持有注册/更新/退出，不再建 registry。
 - `registerNativeConversation` 组合原节点/视图/分组/渲染注册，部分失败回滚整组；所有解析与 replay 留给原 UiConversation。
 - `createNativeActionViews` 与 `readActionPresentation` 读取真实调用 metadata，不用当前 Action scope 解释历史结果，也不反向 encode 单向 transform。

@@ -3,6 +3,8 @@ export { Scope, ScopeDisposedError, Cell, Value, batch } from './reactivity/scop
 export type { ScopeOptions } from './reactivity/scope.ts';
 export * from './resources/index.ts';
 export * from './reactions/index.ts';
+export type { FileUploadInvocation, FileUploadInvocationSource } from './files/contract.ts';
+export { createFileUploadInvocation } from './files/invocation.ts';
 export type { Workspace } from './workspaces/context.ts';
 export type { SnapshotSource } from './reactivity/observable.ts';
 export type { ProgramSessionClient, HumanProgramSessionClient, ProgramGoalControl, ProgramCancelResult, ProgramRequestStatus } from './conversations/client.ts';

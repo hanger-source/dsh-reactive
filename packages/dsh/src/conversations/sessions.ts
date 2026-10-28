@@ -31,6 +31,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
     #entries = new Map<Agent, LiveConversation>();
     #sessions = new Map<string, ConversationSession>();
     #starting = new Map<string, { readonly kind: 'create' | 'activate'; readonly completion: Promise<void> }>();
+    #closing = new Map<string, Promise<void>>();
     #owned = new Map<string, AgentHandle>();
     #cleanupFailures = new Set<unknown>();
     #rootAdmissions = new WeakMap<Agent, {
@@ -104,8 +105,12 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         if (failures.length) throw new AggregateError(failures, 'REACTIVE_NATIVE_RELEASE_FAILED');
     }
     async shutdownNative(): Promise<unknown[]> {
+        const failures: unknown[] = [];
+        await this.inputs().drainUploads();
         await Promise.allSettled([...this.#starting.values()].map(starting => starting.completion));
-        const owned = [...this.#owned.values()].map(handle => ({ handle, entry: this.#entries.get(handle.agent) })), failures: unknown[] = [];
+        const closing = await Promise.allSettled(this.#closing.values());
+        failures.push(...closing.flatMap(result => result.status === 'rejected' ? [result.reason] : []));
+        const owned = [...this.#owned.values()].map(handle => ({ handle, entry: this.#entries.get(handle.agent) }));
         try {
             await this.ctx.get('subagents')?.drainDescendants(owned.map(({ handle }) => handle.agent));
         }
@@ -308,6 +313,10 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             this.workspaces.assertMember(session.live.value.agent.session, session.workspace, session.environment);
         else
             this.workspaces.assertMemberHeader(session.header, session.workspace, session.environment);
+    }
+    assertUploadOpen(session: ConversationSession) {
+        this.assertSessionWorkspace(session);
+        if (this.#closing.has(session.header.id)) throw new Error('REACTIVE_CONVERSATION_CLOSING');
     }
     registerSessionAccess(handle: object, session: ConversationSession, signal: AbortSignal, assertHandle: () => void) {
         const assertCurrent = () => {
@@ -594,8 +603,22 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         if (failures.length === 1) throw failures[0];
         if (failures.length) throw new AggregateError(failures, 'REACTIVE_CONVERSATION_SETTLE_FAILED');
     }
-    async close(sessionId: string) {
+    close(sessionId: string): Promise<void> {
+        const closing = this.#closing.get(sessionId);
+        if (closing) return closing;
+        // 先占住关闭边界，再运行任何可重入的取消或原生释放回调。
+        const completion = Promise.withResolvers<void>();
+        this.#closing.set(sessionId, completion.promise);
+        const clear = () => { if (this.#closing.get(sessionId) === completion.promise) this.#closing.delete(sessionId); };
+        void completion.promise.then(clear, clear);
+        void this.closeSession(sessionId).then(completion.resolve, completion.reject);
+        return completion.promise;
+    }
+    private async closeSession(sessionId: string): Promise<void> {
         const session = this.#sessions.get(sessionId);
+        if (session) await this.inputs().drainUploads(session);
+        const starting = this.#starting.get(sessionId);
+        if (starting) await Promise.allSettled([starting.completion]);
         if (session?.child) {
             const entry = session.live.value;
             const parent = this.ctx.agents.get(SessionId(session.child.command.parentSessionId));

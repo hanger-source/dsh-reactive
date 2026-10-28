@@ -47,8 +47,8 @@ test('原生混合正文保留次序，receipt只属于上传Session，消费后
     const foreign = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
     const agent = app.native.agents.get(SessionId(session.id))!;
     const firstBytes = new TextEncoder().encode('merchant-a\nrevision,amount\n7,23\n');
-    const first = await session.uploadFile(firstBytes, { name: 'merchant-a.csv', actorId: 'file-author' });
-    const second = await session.uploadFile(new Blob(['说明正文\n保留原始字节']), { name: 'notes.txt', actorId: 'file-author' });
+    const first = await session.uploadFile(firstBytes, { name: 'merchant-a.csv', actorId: 'file-author' }).result;
+    const second = await session.uploadFile(new Blob(['说明正文\n保留原始字节']), { name: 'notes.txt', actorId: 'file-author' }).result;
     const firstPath = app.native.attachments.fileHostPath(first.file);
     assert.ok(firstPath);
     assert.deepEqual(new Uint8Array(await readFile(firstPath)), firstBytes);
@@ -132,7 +132,7 @@ test('同进程prepared重试、排队取消与已claim未消费取消都退役�
   try {
     const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
     const agent = app.native.agents.get(SessionId(session.id))!;
-    const file = await session.uploadFile(new TextEncoder().encode('same-process original'), { name: 'original.txt' });
+    const file = await session.uploadFile(new TextEncoder().encode('same-process original'), { name: 'original.txt' }).result;
     const input = { requestId: 'prepared-before-abort', intent: 'question', delivery: 'followup', scope: null,
       content: [{ type: 'file', receiptId: file.receiptId }] } satisfies Submission<null>;
     const controller = new AbortController(), cancelled = new Error('INPUT_ABORTED_AFTER_DURABLE_PREPARE');
@@ -167,7 +167,7 @@ test('同进程prepared重试、排队取消与已claim未消费取消都退役�
     assert.equal(requests, 1);
     assert.equal(received(agent, input.requestId).length, 1);
     assert.equal(app.native.fileUploads.resolve(agent, file.receiptId), undefined);
-    const injected = await session.uploadFile(new TextEncoder().encode('queued but cancelled'), { name: 'queued.txt' });
+    const injected = await session.uploadFile(new TextEncoder().encode('queued but cancelled'), { name: 'queued.txt' }).result;
     const queued = { requestId: 'cancel-injected-file', intent: 'question', delivery: 'inject', scope: null,
       content: [{ type: 'file', receiptId: injected.receiptId }] } satisfies Submission<null>;
     await session.submit(queued);
@@ -181,7 +181,7 @@ test('同进程prepared重试、排队取消与已claim未消费取消都退役�
     assert.equal(app.native.fileUploads.resolve(agent, injected.receiptId), undefined);
     assert.equal(received(agent, queued.requestId).length, 0);
     assert.equal(requests, 1);
-    const beforeConsumption = await session.uploadFile(new TextEncoder().encode('claimed but never consumed'), { name: 'claimed.txt' });
+    const beforeConsumption = await session.uploadFile(new TextEncoder().encode('claimed but never consumed'), { name: 'claimed.txt' }).result;
     const preparing = { requestId: 'cancel-claimed-file', intent: 'question', delivery: 'followup', scope: null,
       content: [{ type: 'file', receiptId: beforeConsumption.receiptId }] } satisfies Submission<null>;
     holdClaimed = true;
@@ -218,7 +218,7 @@ test('首次文件准入等待期间关闭原Agent不能将失效receipt洗入�
   try {
     const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
     const original = app.native.agents.get(SessionId(session.id))!;
-    const file = await session.uploadFile(new TextEncoder().encode('original owner bytes'), { name: 'original-owner.txt' });
+    const file = await session.uploadFile(new TextEncoder().encode('original owner bytes'), { name: 'original-owner.txt' }).result;
     const input = { requestId: 'owner-switched', intent: 'question', delivery: 'followup', scope: null,
       content: [{ type: 'file', receiptId: file.receiptId }] } satisfies Submission<null>;
     const refused = assert.rejects(session.submit(input), InputFileNotStagedError);
@@ -238,7 +238,7 @@ test('首次文件准入等待期间关闭原Agent不能将失效receipt洗入�
     assert.equal(received(current, input.requestId).length, 0);
     await assert.rejects(replacement.submit(input), InputFileNotStagedError);
     assert.equal(requests, 0);
-    const fresh = await replacement.uploadFile(new TextEncoder().encode('fresh replacement owner bytes'), { name: 'replacement.txt' });
+    const fresh = await replacement.uploadFile(new TextEncoder().encode('fresh replacement owner bytes'), { name: 'replacement.txt' }).result;
     await replacement.submit({ ...input, content: [{ type: 'file', receiptId: fresh.receiptId }] });
     await replacement.whenIdle();
     assert.equal(requests, 1);
@@ -262,8 +262,8 @@ test('prepared附件正文跨重启按原requestId显式受理，未提交receip
   let app = await boot(home, definition, respond);
   try {
     const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
-    const file = await session.uploadFile(new TextEncoder().encode('prepared original bytes'), { name: 'prepared.txt' });
-    const unused = await session.uploadFile(new TextEncoder().encode('not submitted'), { name: 'unused.txt' });
+    const file = await session.uploadFile(new TextEncoder().encode('prepared original bytes'), { name: 'prepared.txt' }).result;
+    const unused = await session.uploadFile(new TextEncoder().encode('not submitted'), { name: 'unused.txt' }).result;
     const input = { requestId: 'prepared-file', intent: 'question', delivery: 'followup', scope: null,
       content: [{ type: 'text', text: '  核对已准入资料\n' }, { type: 'file', receiptId: file.receiptId },
         { type: 'image', mediaType: 'image/gif', data: gif }] } satisfies Submission<null>;

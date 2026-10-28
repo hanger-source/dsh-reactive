@@ -148,7 +148,7 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
     return this.resource(operation.state);
   }
 
-  invocation<T, O extends Json>(invocation: Invocation<T, O>): HostObservable<Observation<InvocationActivity<O>>> {
+  invocation<T, O extends Json, Source>(invocation: Invocation<T, O, Source>): HostObservable<Observation<InvocationActivity<O>>> {
     this.assertActive();
     return this.resource(invocation.activity);
   }
@@ -165,6 +165,7 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
 
   readonly submit: RemoteProgramSession<P>['submit'] = (input, options) => this.sdk.submit(input, this.options(options));
   readonly editQueuedInput: RemoteProgramSession<P>['editQueuedInput'] = (id, content, options) => this.sdk.editQueuedInput(id, content, this.options(options));
+  /** UI 退出可阻止尚未分派的准备；分派后只结束等待，返回 SDK 的原调用对象。 */
   readonly uploadFile: RemoteProgramSession<P>['uploadFile'] = (data, options) => this.sdk.uploadFile(data, { ...options, ...this.options(options) });
   readonly readView: RemoteProgramSession<P>['readView'] = (name, options) => this.sdk.readView(name, this.options(options));
   readonly attachOperation: RemoteProgramSession<P>['attachOperation'] = (definition, reference, options) => this.sdk.attachOperation(definition, reference, this.options(options));

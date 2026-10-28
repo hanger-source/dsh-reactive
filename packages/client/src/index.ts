@@ -7,7 +7,7 @@ import { type RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { bytesToBase64 } from '@deepseek-ai/dsh-util-crypto';
 import { BehaviorSubject, map, takeWhile, type Observable } from 'rxjs';
-import { z, assertProgramDefinition, surfaceSlotDefinition, createSurfaceCollectionClient, actionManifestSlot, type ToolActionBinding, type ActionInput, type ActionInvocation, type ActionContract, type ActionScope, type InvocationActivity, type Observation, type Surface, type SurfaceViews, type ViewValue, type OperationContract, type OperationReference, type OperationCommand, type OperationHandle, type BoundOperation, type ProgramContract, type ProgramSurface, type WorkspaceRegistration, type ConversationCreateOptions, type FileUploadSource, type FileUploadValue, type CancellationOptions } from '@hanger-source/dsh-reactive';
+import { z, assertProgramDefinition, surfaceSlotDefinition, createSurfaceCollectionClient, actionManifestSlot, createFileUploadInvocation, type ToolActionBinding, type ActionInput, type ActionInvocation, type ActionContract, type ActionScope, type InvocationActivity, type Observation, type Surface, type SurfaceViews, type ViewValue, type OperationContract, type OperationReference, type OperationCommand, type OperationHandle, type BoundOperation, type ProgramContract, type ProgramSurface, type WorkspaceRegistration, type ConversationCreateOptions, type FileUploadSource, type FileUploadInvocation, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import { decodeProgramFailure } from './errors.ts';
 import './errors.ts';
 import contribution from '@hanger-source/dsh-reactive-client/remote';
@@ -46,7 +46,7 @@ interface RemoteSession<P extends ProgramContract> extends ProgramSessionClient<
   invocation<K extends keyof ProgramSurface<P>['actions'] & string>(name: K, id: string): Promise<ActionInvocation<ProgramSurface<P>['actions'][K]>>;
   readonly human$: Observable<Observation<ProgramQuestions>>;
   readonly human: ResourceReader<ProgramQuestions>;
-  uploadFile(data: FileUploadSource, options?: RemoteUploadFileOptions): Promise<FileUploadValue>;
+  uploadFile(data: FileUploadSource, options?: RemoteUploadFileOptions): FileUploadInvocation;
   attachOperation<D extends OperationContract>(definition: D, reference: OperationReference<D>, options?: CancellationOptions): OperationHandle<D>;
   notifyOperation(followId: string, options?: CancellationOptions): Promise<ProgramOperationNotificationResult>;
   /** 原生可靠 journal；调用者消费完整 change，不另造事件 cursor 或重放引擎。 */
@@ -60,7 +60,7 @@ export interface RemoteProgramSession<P extends ProgramContract> extends HumanPr
   invocation<K extends keyof ProgramSurface<P>['actions'] & string>(name: K, id: string): Promise<ActionInvocation<ProgramSurface<P>['actions'][K]>>;
   readonly human$: Observable<Observation<ProgramQuestions>>;
   readonly human: ResourceReader<ProgramQuestions>;
-  uploadFile(data: FileUploadSource, options?: RemoteUploadFileOptions): Promise<FileUploadValue>;
+  uploadFile(data: FileUploadSource, options?: RemoteUploadFileOptions): FileUploadInvocation;
   attachOperation<D extends OperationContract>(definition: D, reference: OperationReference<D>, options?: CancellationOptions): OperationHandle<D>;
   notifyOperation(followId: string, options?: CancellationOptions): Promise<ProgramOperationNotificationResult>;
   openEvents(options: ProgramJournalOptions, request?: ProgramJournalRequest): Promise<ProgramJournal>;
@@ -114,6 +114,11 @@ export class SubmissionAdmissionUnknownError extends Error {
 /** 编辑可能已经持久生效；保留同一请求身份供显式读取核对，不自动重投。 */
 export class InputEditAdmissionUnknownError extends Error {
   constructor(readonly sessionId: string, readonly requestId: string, cause: unknown) { super('REACTIVE_INPUT_EDIT_ADMISSION_UNKNOWN', { cause }); }
+}
+/** 本次传输没有取得正式上传回执；内存调用身份不能用于恢复未知的原生 receipt。 */
+export class FileUploadReceiptUnknownError extends Error {
+  override readonly name = 'FileUploadReceiptUnknownError';
+  constructor(readonly sessionId: string, cause: unknown) { super('REACTIVE_FILE_UPLOAD_RECEIPT_UNKNOWN', { cause }); }
 }
 
 function result<T>(value: RemoteResult<T>): T { if (!value.ok) throw value.error; return value.value; }
@@ -178,7 +183,7 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
   assertProgramDefinition(program);
   type S = ProgramSurface<P>;
   const surface: S = program.surface;
-  const connection = parent.get('connection');
+  const connection: ConnectionHandle | undefined = parent.get('connection');
   if (!connection || !parent.get('remote') || !parent.get('remote.reactivePrograms')) throw new Error('REACTIVE_PROGRAM_CLIENT_CONTEXT_REQUIRED');
   if (connection.interactions !== 'answer') throw new Error('REACTIVE_PROGRAM_CLIENT_INTERACTIONS_REQUIRED');
   const lifetime = createClientScope(parent, 'reactive-program-client', new Error('REACTIVE_REMOTE_CLIENT_DISPOSED'));
@@ -374,20 +379,37 @@ async function bindParticipantProgramClient<const P extends ProgramContract, Par
               throw new InputEditAdmissionUnknownError(identity.sessionId, requestId, reply.error);
             return result(reply);
           },
-          async uploadFile(data, options = {}): Promise<FileUploadValue> {
+          uploadFile(data, options = {}): FileUploadInvocation {
             assertActive();
             const cancelled = options.signal;
-            const signal = cancelled ? AbortSignal.any([lifetime.signal, cancelled]) : lifetime.signal;
-            const waiting = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
-            signal.throwIfAborted();
-            waiting.throwIfAborted();
+            const preparationSignal = cancelled ? AbortSignal.any([scopeSignal, cancelled]) : scopeSignal;
+            preparationSignal.throwIfAborted();
             const name = options.name;
-            const bytes = data instanceof Uint8Array ? new Uint8Array(data) : new Uint8Array(await owner.run(() => data.arrayBuffer(), waiting)).slice();
-            waiting.throwIfAborted();
-            const uploaded = await owner.run(() => remote.uploadFile({ sessionId: identity.sessionId, data: bytesToBase64(bytes),
-              ...(name === undefined ? {} : { name }) }, signal), waiting);
-            waiting.throwIfAborted();
-            return result(uploaded);
+            const source = data instanceof Uint8Array ? new Uint8Array(data) : data;
+            const descriptor = contribution.methods['reactivePrograms/uploadFile'];
+            return createFileUploadInvocation({
+              sessionId: identity.sessionId, preparationSignal, waitSignal: preparationSignal,
+              async prepare() {
+                const bytes = source instanceof Uint8Array ? source : new Uint8Array(await source.arrayBuffer()).slice();
+                return descriptor.input({ strict: true }).create().parse({ request: {
+                  sessionId: identity.sessionId, data: bytesToBase64(bytes), ...(name === undefined ? {} : { name }),
+                } });
+              },
+              async execute(input) {
+                // 沿原SDK依赖准入；已派发的HTTP只归SDK/Connection，不再随Session或caller退等取消。
+                active();
+                preparationSignal.throwIfAborted();
+                // Typert unary会把transport throw与明确Host internal折成同一RemoteResult。
+                // 公开RPC保留此区别，参数与成功值仍使用同一生成贡献的正式codec。
+                const reply = await connection.rpc.call('/api', descriptor.namespace + '/' + descriptor.method,
+                  { args: input }, lifetime.signal).catch((cause: unknown) => {
+                  throw new FileUploadReceiptUnknownError(identity.sessionId, cause);
+                });
+                if (!reply.ok) throw decodeProgramFailure(reply.error);
+                try { return descriptor.result.create().parse(reply.value); }
+                catch (cause) { throw new FileUploadReceiptUnknownError(identity.sessionId, cause); }
+              },
+            });
           },
           async requestStatus(requestId, options = {}) {
             assertActive();

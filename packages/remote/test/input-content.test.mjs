@@ -5,6 +5,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
+import { firstValueFrom } from 'rxjs';
 import { symbols } from '@deepseek-ai/cordis';
 import { AttachmentId, isAttachmentError } from '@deepseek-ai/dsh-attachment';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
@@ -14,7 +15,7 @@ import { defineApplication, defineEnvironment, defineProgram, defineSurface, z }
 import { implementProgram } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
 import { mountProgramGateway, RemoteAuthenticationError } from '@hanger-source/dsh-reactive-remote';
-import { createProgramClient } from '@hanger-source/dsh-reactive-client';
+import { createProgramClient, FileUploadReceiptUnknownError } from '@hanger-source/dsh-reactive-client';
 
 const image = 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 const fileBytes = new TextEncoder().encode('商家原始资料\n保留换行\n');
@@ -90,7 +91,7 @@ test('认证content保留正文附件与原请求身份，排队编辑重新准�
         if (uploading) {
           const envelope = JSON.parse(body);
           uploads.push(structuredClone(envelope.payload.args.request));
-          if (corruptUpload) {
+          if (corruptUpload === 'request') {
             corruptUpload = false;
             envelope.payload.args.request.data += '\n';
             body = JSON.stringify(envelope);
@@ -98,6 +99,13 @@ test('认证content保留正文附件与原请求身份，排队编辑重新准�
         }
         const response = await fetch(url, { ...init, body,
           headers: { ...Object.fromEntries(new Headers(init?.headers)), authorization: 'Bearer ' + actor } });
+        if (uploading && corruptUpload === 'response') {
+          corruptUpload = false;
+          const envelope = await response.json();
+          assert.equal(envelope.result.ok, true);
+          envelope.result.value.receiptId = 42;
+          return new Response(JSON.stringify(envelope), { status: response.status, headers: { 'content-type': 'application/json' } });
+        }
         return response;
       },
       createWebSocket: url => new WebSocket(url, { headers: { authorization: 'Bearer ' + actor } }),
@@ -106,11 +114,14 @@ test('认证content保留正文附件与原请求身份，排队编辑重新准�
   };
   const alice = await connect('alice'), bob = await connect('bob');
   const session = await alice.open(original.id), foreign = await alice.open(other.id), reader = await bob.open(original.id);
-  const uploaded = await session.uploadFile(fileBytes, { name: 'merchant-notes.txt' });
+  const originalBytes = fileBytes.slice(), uploadOptions = { name: 'merchant-notes.txt' };
+  const uploading = session.uploadFile(originalBytes, uploadOptions);
+  originalBytes.fill(0); uploadOptions.name = 'caller-replaced-name.txt';
+  const uploaded = await uploading.result;
   assert.equal(uploaded.file.attachmentId, digest(fileBytes));
   assert.equal(uploaded.file.bytes, fileBytes.byteLength); assert.equal(uploaded.file.name, 'merchant-notes.txt');
   assert.ok(uploaded.receiptId);
-  const blob = await session.uploadFile(new Blob([blobBytes]), { name: 'binary.bin' });
+  const blob = await session.uploadFile(new Blob([blobBytes]), { name: 'binary.bin' }).result;
   assert.equal(blob.file.attachmentId, digest(blobBytes)); assert.equal(blob.file.bytes, 6);
   assert.notEqual(blob.receiptId, uploaded.receiptId);
   assert.equal(uploads[0].sessionId, original.id); assert.equal(uploads[0].data, bytesToBase64(fileBytes));
@@ -121,19 +132,63 @@ test('认证content保留正文附件与原请求身份，排队编辑重新准�
   for await (const chunk of runtime.native.attachments.readFileStream(uploaded.file)) chunks.push(chunk);
   assert.deepEqual(Buffer.concat(chunks), Buffer.from(fileBytes));
 
-  await assert.rejects(reader.uploadFile(fileBytes), error => error.code === 'remote-access/denied');
-  await assert.rejects(foreign.uploadFile(fileBytes), error => error.code === 'remote-access/denied');
+  await assert.rejects(reader.uploadFile(fileBytes).result, error => error.code === 'remote-access/denied');
+  await assert.rejects(foreign.uploadFile(fileBytes).result, error => error.code === 'remote-access/denied');
   const stopped = new AbortController(); stopped.abort(new Error('UPLOAD_NOT_ACCEPTED'));
   const beforeAbort = uploads.length;
-  await assert.rejects(session.uploadFile(fileBytes, { signal: stopped.signal }), /UPLOAD_NOT_ACCEPTED/u);
+  assert.throws(() => session.uploadFile(fileBytes, { signal: stopped.signal }), /UPLOAD_NOT_ACCEPTED/u);
   assert.equal(uploads.length, beforeAbort);
-  corruptUpload = true;
-  await assert.rejects(session.uploadFile(fileBytes), error => error.code === 'session/attachment-invalid'
+  corruptUpload = 'request';
+  await assert.rejects(session.uploadFile(fileBytes).result, error => error.code === 'session/attachment-invalid'
     && error.details.reason === 'INVALID_FILE_BASE64');
+  corruptUpload = 'response';
+  const malformed = session.uploadFile(fileBytes, { name: 'invalid-receipt.txt' });
+  let malformedFailure;
+  await assert.rejects(malformed.result, error => {
+    malformedFailure = error;
+    assert.ok(error instanceof FileUploadReceiptUnknownError);
+    assert.ok(error.cause instanceof z.ZodError);
+    return true;
+  });
+  assert.deepEqual(await firstValueFrom(malformed.activity$), { state: 'failed', phase: 'execute', error: malformedFailure });
+
+  const attachments = runtime.native.attachments[symbols.original], store = attachments.admitEncodedFile;
+  const stored = Promise.withResolvers(), fail = Promise.withResolvers();
+  context.signal.addEventListener('abort', () => fail.resolve(), { once: true });
+  const lateBytes = new TextEncoder().encode('真实存储成功后由Host明确拒绝的字节');
+  const lateError = new Error('STORED_UPLOAD_HOST_FAILURE'), stoppedWait = new AbortController(), waitReason = new Error('HOST_FAILURE_ACK_NOT_NEEDED');
+  let storedFile;
+  attachments.admitEncodedFile = async function (request) {
+    storedFile = await store.call(this, request);
+    stored.resolve(); await fail.promise;
+    throw lateError;
+  };
+  try {
+    const beforeLate = uploads.length;
+    const call = session.uploadFile(lateBytes, { name: 'stored-before-host-failure.txt' });
+    const rejectedWait = assert.rejects(call.wait({ signal: stoppedWait.signal }), error => error === waitReason);
+    await stored.promise;
+    stoppedWait.abort(waitReason); await rejectedWait;
+    assert.equal((await call.activity.read()).state, 'running');
+    fail.resolve();
+    let hostFailure;
+    await assert.rejects(call.result, error => {
+      hostFailure = error;
+      assert.equal(error instanceof FileUploadReceiptUnknownError, false, '明确Host internal不能误报运输未知');
+      assert.equal(error.code, 'gateway/internal'); assert.match(error.message, /STORED_UPLOAD_HOST_FAILURE/u);
+      return true;
+    });
+    assert.deepEqual(await firstValueFrom(call.activity$), { state: 'failed', phase: 'execute', error: hostFailure });
+    const persisted = [];
+    for await (const chunk of attachments.readFileStream(storedFile)) persisted.push(chunk);
+    assert.deepEqual(Buffer.concat(persisted), Buffer.from(lateBytes), '明确拒绝也不声称已经存储的字节被回滚');
+    assert.equal(uploads.length, beforeLate + 1, '迟到Host拒绝不自动重发');
+  } finally { fail.resolve(); attachments.admitEncodedFile = store; }
+
   const largeBytes = Uint8Array.from({ length: 16_384 }, (_, index) => (index * 17 + 3) % 256);
   const largeName = 'oversize-proof.bin';
   const beforeLarge = uploads.length;
-  await assert.rejects(session.uploadFile(largeBytes, { name: largeName }));
+  await assert.rejects(session.uploadFile(largeBytes, { name: largeName }).result, FileUploadReceiptUnknownError);
   assert.equal(uploads.length, beforeLarge + 1, '上传失败不隐式重试');
   const largeReference = { attachmentId: AttachmentId(digest(largeBytes)), name: largeName, bytes: largeBytes.byteLength };
   await assert.rejects(async () => {

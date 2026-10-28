@@ -1,4 +1,4 @@
-import type { ActionInput, CancellationOptions, ProgramContract, ProgramSessionClient, HumanProgramSessionClient, Surface, SurfaceClient, SurfaceMount, ViewValue } from '@hanger-source/dsh-reactive';
+import type { ActionInput, CancellationOptions, FileUploadInvocation, FileUploadSource, FileUploadValue, ProgramContract, ProgramSessionClient, HumanProgramSessionClient, Surface, SurfaceClient, SurfaceMount, ViewValue } from '@hanger-source/dsh-reactive';
 import { combineResources, composeSurface, defineProgram, defineSurface, resourceView, selectSurface, shareResource, z } from '@hanger-source/dsh-reactive';
 
 export function sessionControls<P extends ProgramContract>(session: HumanProgramSessionClient<P>, signal: AbortSignal) {
@@ -34,6 +34,17 @@ export function sessionResources<P extends ProgramContract>(session: ProgramSess
 
 export function sharedSessionFacts<P extends ProgramContract>(session: ProgramSessionClient<P>, signal: AbortSignal) {
   return shareResource(combineResources({ progress: session.progress, human: session.human }), { signal });
+}
+
+export function sessionFileUpload<P extends ProgramContract>(session: ProgramSessionClient<P>, data: FileUploadSource,
+  options?: CancellationOptions & { readonly name?: string }) {
+  const call: FileUploadInvocation = session.uploadFile(data, options);
+  return { call, source: call.source, activity: call.activity, activity$: call.activity$,
+    wait: (signal: AbortSignal): Promise<FileUploadValue> => call.wait({ signal }) };
+}
+
+export async function receiveFileUpload(call: FileUploadInvocation): Promise<FileUploadValue> {
+  return await call.result;
 }
 
 export async function readSessionView<P extends ProgramContract, K extends keyof P['surface']['views'] & string>(

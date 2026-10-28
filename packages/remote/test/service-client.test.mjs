@@ -160,7 +160,7 @@ test('服务SDK贯通真实认证Gateway；身份来自宿主、人工控制隔�
   assert.equal(resumed.identity.participant, 'service');
   const agent = runtime.native.agents.get(SessionId(sessionId)); assert.ok(agent); assert.notEqual(agent, initialAgent);
   const bytes = new TextEncoder().encode('由服务上传并作为同一请求注入的原始资料');
-  const uploaded = await session.uploadFile(bytes, { name: 'service.txt' });
+  const uploaded = await session.uploadFile(bytes, { name: 'service.txt' }).result;
   assert.ok(runtime.native.fileUploads.resolve(agent, uploaded.receiptId));
   const chunks = [];
   for await (const chunk of runtime.native.attachments.readFileStream(uploaded.file)) chunks.push(chunk);

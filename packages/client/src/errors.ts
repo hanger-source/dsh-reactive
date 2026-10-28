@@ -1,4 +1,5 @@
 import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-protocol';
+import { z } from 'zod';
 import type { ActionIdentity, NativeChildCommand, NativeChildReference } from '@hanger-source/dsh-reactive';
 import type { ProgramCreationReference, ProgramFailure } from './types.ts';
 
@@ -13,6 +14,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
   }
 }
 /** 正式 failure 已由 Gateway/贡献合同核验，客户端保留完整公开 details。 */
-export function decodeProgramFailure(value: ProgramFailure): RemoteError {
-  return new RemoteError(value.code as RemoteErrorCode, value.message, value.details);
+export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError {
+  const details = z.union([z.array(z.json()), z.record(z.string(), z.json())]).parse(value.details);
+  return new RemoteError(value.code as RemoteErrorCode, value.message, details);
 }

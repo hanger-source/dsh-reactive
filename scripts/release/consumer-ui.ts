@@ -5,7 +5,7 @@ import { createNativeActionViews, defineNativeActionView, bindNativeSession, ret
 import type { SlotCore } from '@deepseek-ai/dsh-client-ui-slots';
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
-import { ConsumerModuleProgram, sessionResources, sharedSessionFacts, sessionControls, readSessionView, readSelectedRevision, callPublishedAction } from './consumer-session.js';
+import { ConsumerModuleProgram, sessionResources, sharedSessionFacts, sessionControls, sessionFileUpload, receiveFileUpload, readSessionView, readSelectedRevision, callPublishedAction } from './consumer-session.js';
 
 const action = defineAction({ name: 'release_consumer_read', description: '公开 UI 类型消费',
   scope: z.object({ subject: z.string() }).strict(), input: z.null(), output: z.object({ version: z.string() }).strict() });
@@ -16,6 +16,11 @@ export const portableControls = (session: Session, signal: AbortSignal) => sessi
 export const portableModuleRevision = (session: RemoteProgramSession<typeof ConsumerModuleProgram>, signal: AbortSignal) => readSelectedRevision(session, signal);
 export const portableCall = (session: Session) => callPublishedAction(session, 'read', { subject: 'release' }, null);
 export const portableView = (session: Session): Promise<string> => readSessionView(session, 'version');
+export const portableUpload = (session: Session, bytes: Uint8Array, signal: AbortSignal) => sessionFileUpload(session, bytes, { signal });
+export const nativeUpload = (native: NativeSession<typeof program>, bytes: Uint8Array, signal: AbortSignal) => {
+  const call = native.uploadFile(bytes, { signal });
+  return { call, activity: native.invocation(call), receipt: receiveFileUpload(call) };
+};
 export const nativeClient = (ctx: Parameters<typeof bindProgramClient>[1]) => bindProgramClient(program, ctx);
 export const nativeReference = (ctx: Parameters<typeof retainNativeSession>[1], sessionId: string) => retainNativeSession(program, ctx, sessionId);
 export function rejectServiceSession(native: Parameters<typeof bindNativeSession>[1], service: RemoteServiceProgramSession<typeof program>) {
@@ -38,7 +43,7 @@ export function operationState<D extends OperationContract>(native: NativeSessio
   return native.resource(operation.state);
 }
 export const humanQuestion = (native: NativeSession<typeof program>, callId: string) => native.question(callId);
-export const invocationActivity = <T, O extends Json>(native: NativeSession<typeof program>, invocation: Invocation<T, O>) => ({
+export const invocationActivity = <T, O extends Json, Source>(native: NativeSession<typeof program>, invocation: Invocation<T, O, Source>) => ({
   resource: invocation.activity, native: native.invocation(invocation),
 });
 export const requestProgress = (native: NativeSession<typeof program>, requestId: string) => ({

@@ -126,7 +126,7 @@ test('固定服务端口贯穿会话取得、正文与业务参与，消费者�
         () => service.operations.current(forged),
       ]) await assert.rejects(async () => invoke(), /REACTIVE_SERVICE_ACTOR_IMMUTABLE/u);
     }
-    const file = await service.uploadFile(new TextEncoder().encode('固定服务上传的实际资料'), { name: 'service.txt' });
+    const file = await service.uploadFile(new TextEncoder().encode('固定服务上传的实际资料'), { name: 'service.txt' }).result;
     assert.ok(runtime.native.fileUploads.resolve(agent, file.receiptId));
     assert.deepEqual(await service.submit({ ...input, content: [{ type: 'file', receiptId: file.receiptId }] }),
       { sessionId: service.id, requestId: input.requestId, accepted: true });

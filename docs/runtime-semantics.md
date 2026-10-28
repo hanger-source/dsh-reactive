@@ -209,7 +209,13 @@ continued 答复按原问题的 callId 恢复工具调用保存的输入集合�
 
 inject 本次投递不请求唤醒，可能错过已经 claim 输入的步骤；驱动空闲时保留在原生 inbox，等待已有工作或后续显式唤醒开启步骤。冷会话提交仍需加载原生实例，已受理子工作可以沿原授权恢复，因此调用期间仍可能有原工作的模型活动。inject 不暂停或撤销既有 Goal 和业务工作，重试也不为这条输入增加唤醒资格。三种投递都不打断或另建模型执行器；claim、取消和队列寿命继续由原生 Agent 持有。
 
-上传使用 `uploadFile(Uint8Array | Blob, options)`；已有 canonical base64 的 transport 使用 `uploadEncodedFile(request, options)`，原生服务检查编码，不先 decode 再重编码洗掉非法输入。receipt 由 exact 原生 Session 持有，未提交时不能跨 Agent 关闭或进程重启恢复。首次提交先解析 receipt、提升附件，再把 `AdmittedSubmission` 交应用准入；消费前以同一持久正文和原 actor 复核，不重建原始 receipt 或字节。
+上传使用 `uploadFile(Uint8Array | Blob, options)`，同步取得非 thenable 的 `FileUploadInvocation`。result 保留这一次真实上传的成功回执或错误；wait(options?) 只结束本消费者对同一 result 的等待。Uint8Array 在调用时快照，Blob 在异步准备阶段读取；准备取消后迟到字节不能再触发激活或 HTTP。options.signal 约束准备与分派前检查，并作为 wait 的默认信号。Session 或原生 UI 退出也可阻止尚未分派的准备；分派后这些取消只结束 wait，不撤回上传或改写 result。
+
+activity 是同源有限调用事实，activity$ 是其 values$。pending 表达准备中的调用，running 只表示已分派，不证明存储受理；returned 表达 result 成功，failed 保留原错误及失败阶段。失败仍是 ready.value，Session 或 UI 退出不撤销终态，晚读和晚订阅仍取得同一次事实。source 固定为 `{ kind: 'file-upload', sessionId }`，不继承 Action 或 Goal；id 只标识本次内存调用，不是幂等键、receipt 或持久恢复身份。
+
+远程 SDK 或 Connection 物理退出可能使 result 拒绝为 `FileUploadReceiptUnknownError`。这是正式回执未知，不证明服务器没有文件；框架不重传，也不凭调用 id 恢复 receipt。Gateway 只传官方 `FileUploadValue`，调用对象及其活动由本次 SDK 调用持有。
+
+已有 canonical base64 的 transport 使用 `uploadEncodedFile(request, options)`，原生服务检查编码，不先 decode 再重编码洗掉非法输入。receipt 由 exact 原生 Session 持有，未提交时不能跨 Agent 关闭或进程重启恢复。首次提交先解析 receipt、提升附件，再把 `AdmittedSubmission` 交应用准入；消费前以同一持久正文和原 actor 复核，不重建原始 receipt 或字节。
 
 组件输入及 typed 事件消费 schema 的 output；raw 事件、进展、等待及 journal 保留原始事实。单向 transform 允许输出 Date 等领域值，不将它重新编码为提交输入。actorId 来自可信宿主或认证所得调用选项，保持原身份值，业务正文不能授予操作者身份。常规输入进入原生队列并完成持久化后取得 ACK；ACK 不等待模型回复或业务完成。
 
@@ -243,7 +249,7 @@ SDK 使用 `{ signal }` 选项表达取消。`readView` 只约束这一次等待
 
 同一会话与 requestId 的并发提交共享一份受理事务，各调用者分别等待。后加入者的取消不删除共享事务，也不替换首发的执行前取消信号；句柄 release 只结束自己的等待。首发已取消但原事务尚未退出时，新的显式重提先等待其真实结算，再核对当前共享事务与持久事实，不提前清表或并行重发。首次持久关联仍是 declared，编辑的持久准备也尚未替换队列正文，这两个阶段继续核验首发取消。输入已 send、编辑已 replace 或 not-ready 结果已经提交后，exact Agent 完成所属持久回执；回执等待取消不回滚输入、不自动重发。独立恢复的等待登记同样由原 owner 完成，通知者只退出对共享屏障的等待。已受理结算的迟到失败仍进入会话的结算与关闭错误链。
 
-Program 的 conversation.submit 借用该 Program 的来源权限，Program 失败后不能沿捕获的对象开始新受理，进行中的等待也随其退出。上传的 Blob 转换可取消等待，转换退出后不再启动上传；已经进入正式上传服务的存储和 receipt 继续由原生 owner 处理，不因未取得回执而推断未上传。本地已知准入、格式和身份错误保留原错误；远程 submit/edit 在请求已启动后无法确认回执时保留对应的 AdmissionUnknown 错误及原请求身份，供显式查询核对。
+Program 的 conversation.submit 借用该 Program 的来源权限，Program 失败后不能沿捕获的对象开始新受理，进行中的等待也随其退出。本地已知准入、格式和身份错误保留原错误；远程 submit/edit 在请求已启动后无法确认回执时保留对应的 AdmissionUnknown 错误及原请求身份，供显式查询核对。上传已分派后的存储与 receipt 继续由原生 owner 处理，消费者退出不改写其 result；回执未知仍不能推断未上传。
 
 `snapshot()` 是明确的同步活动读取。`pause()` 暂停原生 Goal；`cancel()` 停止当前原生模型处理并等待相应持久化。它们不替业务 owner 决定取消外部业务操作。`whenIdle()` 等待当前原生活动、对应输入恢复和持久化，不代表未来 Goal 轮次或外部业务工作全部结束；句柄释放只结束本消费者的等待，原结算仍继续。
 

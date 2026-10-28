@@ -1,1 +1,2 @@
-export type { FileUploadReceiptId, FileUploadValue, EncodedFileUploadRequest } from './contract.ts';
+export type { FileUploadReceiptId, FileUploadValue, EncodedFileUploadRequest, FileUploadInvocation, FileUploadInvocationSource } from './contract.ts';
+export { createFileUploadInvocation } from './invocation.ts';

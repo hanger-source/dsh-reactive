@@ -11,7 +11,7 @@ import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-r
 import { createProgramClient, createServiceProgramClient, type RemoteProgramSession, type RemoteServiceProgramSession } from '@hanger-source/dsh-reactive-client';
 import { mountProgramGateway } from '@hanger-source/dsh-reactive-remote';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
-import { ConsumerModuleProgram, sessionResources, sessionControls, readSessionView, readSelectedRevision } from './consumer-session.js';
+import { ConsumerModuleProgram, sessionResources, sessionControls, sessionFileUpload, receiveFileUpload, readSessionView, readSelectedRevision } from './consumer-session.js';
 import type { Workspace } from '@hanger-source/dsh-reactive/workspaces';
 
 const contract = defineProgram({ input: z.object({ subject: z.string() }).strict(), surface: defineSurface({ views: { revision: resourceView(z.number()) }, actions: {} }) });
@@ -38,6 +38,9 @@ export const portableLocalService = (session: ServiceConversation<typeof contrac
 export const portableRemoteService = (session: RemoteServiceProgramSession<typeof contract>) => sessionResources(session);
 export const localControls = (session: ConversationHandle<typeof contract>, signal: AbortSignal) => sessionControls(session, signal);
 export const remoteControls = (session: RemoteProgramSession<typeof contract>, signal: AbortSignal) => sessionControls(session, signal);
+export const localUpload = (session: ConversationHandle<typeof contract>, bytes: Uint8Array, signal: AbortSignal) => sessionFileUpload(session, bytes, { signal });
+export const remoteUpload = (session: RemoteProgramSession<typeof contract>, bytes: Uint8Array, signal: AbortSignal) => sessionFileUpload(session, bytes, { signal });
+export const uploadReceipt = receiveFileUpload;
 export const localModuleRevision = (session: ConversationHandle<typeof ConsumerModuleProgram>, signal: AbortSignal) => readSelectedRevision(session, signal);
 export const remoteModuleRevision = (session: RemoteProgramSession<typeof ConsumerModuleProgram>, signal: AbortSignal) => readSelectedRevision(session, signal);
 export const localRevision = (session: ConversationHandle<typeof contract>): Promise<number> => readSessionView(session, 'revision');
@@ -45,7 +48,8 @@ export const remoteRevision = (session: RemoteProgramSession<typeof contract>): 
 export const publicEntries = [createProgramClient, createServiceProgramClient, mountProgramGateway, getDeveloperSkill, createNativeSkills, createNativeTools] as const;
 export const developerSkill = getDeveloperSkill();
 export const nativeProgramSource = (conversation: ProgramSession<typeof contract>): NativeSessionSource => conversation;
-export const invocationActivity = <T, O extends Json>(invocation: Invocation<T, O>) => invocation.activity;
+export const invocationActivity = <T, O extends Json, Source>(invocation: Invocation<T, O, Source>) => invocation.activity;
+export const useInvocationActivity = <T, O extends Json, Source>(invocation: Invocation<T, O, Source>) => useResource(invocation.activity);
 export const readWithCancellation = <T>(read: (signal: AbortSignal) => T | PromiseLike<T>, signal: AbortSignal): Promise<T> =>
   firstValueFrom(abortable(read, signal));
 

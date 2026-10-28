@@ -204,7 +204,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     const handle = await this.openSession(request.sessionId, identity);
     try {
       return await handle.uploadEncodedFile({ data: request.data, ...(request.name === undefined ? {} : { name: request.name }) },
-        this.callOptions(identity, signal)).catch(this.rethrow);
+        this.callOptions(identity, signal)).result.catch(this.rethrow);
     } finally { handle.release(); }
   }
 

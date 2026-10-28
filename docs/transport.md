@@ -156,7 +156,8 @@ await session.submit({
 content 接受字符串或有序 prompt parts，字符串只归一为一个 text part，不 trim。普通提交必须显式选择 delivery：followup 进入下一轮并唤醒；steer 在最近后续步骤参与并唤醒；inject 在最近后续步骤补充现场，本次投递不请求唤醒。已有步骤可能已经 claim 输入，因此 inject 不承诺赶上正在进行的模型请求。冷会话提交需要加载原生实例，已受理子工作仍可沿原授权恢复并产生模型活动；inject 不暂停或撤销既有 Goal 和业务工作。业务 intent 不授予原生 Goal 权限，`intent: 'result'` 必须携原 continuation/wait，禁止提供 delivery，继续由框架核对原工作的续接条件。
 
 ```ts
-const uploaded = await session.uploadFile(fileBytes, { name: 'order-details.pdf' });
+const upload = session.uploadFile(fileBytes, { name: 'order-details.pdf' });
+const uploaded = await upload.result;
 await session.submit({
   requestId: 'order-details', intent: 'followup', delivery: 'inject',
   scope: { orderId: 'order-7', asOf: '2026-10-27T00:00:07.000Z' },
@@ -167,7 +168,13 @@ await session.submit({
 });
 ```
 
-`uploadFile` 接受 `Uint8Array | Blob`，返回官方 `FileUploadValue`；图片也可以在 content 中提供官方 image part 的 mediaType、canonical base64 data 和可选 name。文件输入只允许 receiptId，不接受客户端自报持久文件引用。receipt 属于实际接收上传的原生 Session 实例，未提交时不能跨 Agent 关闭或进程重启存活；单纯释放 SDK 观察句柄不关闭 Agent。上传本身不投递模型输入。Program SDK 的上传使用有界 unary endpoint，服务端通过 Handle.uploadEncodedFile 接原生 FileUploads，保留 canonical base64 校验，不通过先解码再编码接受非法输入。
+`uploadFile` 接受 `Uint8Array | Blob`，在本地和远程均同步返回 `FileUploadInvocation`，不提供 thenable。result 等待同一次上传的官方 `FileUploadValue`，wait(options?) 额外限定本消费者的等待。调用对象的 source 为 `{ kind: 'file-upload', sessionId }`，id 只关联本次内存调用，不能作为跨重启恢复或重传去重的凭据。Program SDK 使用有界 unary endpoint；Gateway wire 只传 `FileUploadValue`，不传 Invocation 或客户端活动流。服务端通过 Handle.uploadEncodedFile 接原生 FileUploads，保留 canonical base64 校验，不通过先解码再编码接受非法输入。
+
+Uint8Array 在调用时复制，Blob 的异步转换在准备阶段响应取消；转换退出后的迟到字节不再触发 HTTP 或激活会话。options.signal 约束准备及分派前检查，也作为 wait 的默认信号；分派后该 signal、Session release 或 UI dispose 只拒绝 wait，已启动 HTTP 的真实回执继续结算 result。UI 退出在分派前仍可取消准备。所属 SDK 或 Connection 物理退出可能使远程 result 拒绝为客户端公开的 `FileUploadReceiptUnknownError`；它保留 sessionId 与 cause，表示未取得正式回执，不证明服务器没有文件，也不能通过调用 id 查回原 receipt。框架不自动重传。
+
+上传活动是本次内存调用的有限事实，activity 与 activity$ 同源，可 read、peek、组合或交给 hooks。running 只表示 SDK 已分派，不证明 Gateway 或存储已受理；失败保留为 ready.value 的 failed 事实，晚读仍能取得终态，不由 Session 或 UI 的观察退出改写。
+
+图片也可以在 content 中提供官方 image part 的 mediaType、canonical base64 data 和可选 name。文件输入只允许 receiptId，不接受客户端自报持久文件引用。receipt 属于实际接收上传的原生 Session 实例，未提交时不能跨 Agent 关闭或进程重启存活；单纯释放 SDK 观察句柄不关闭 Agent。上传本身不投递模型输入。
 
 组件 `inputs$`、本地 typed 句柄的 `events$` 和远程 `events$` 使用同一 Program 合同解析各自的读侧，得到 `ProgramParsedInput`，即 `z.output`。上述事件的 `scope.asOf` 是 Date。`decodeProgramInputs(program, sessionId, inputs)` 与 `decodeProgramEvent(program, event)` 是共享解码接点；每条输入必须带真实 `sourceSessionId`，本会话输入中混入 foreign 来源会明确失败。本地 `create(environmentId, { workspaceId, sessionId? })` 从已装配环境推导 Program；动态 `open` / `resume` 要取得领域类型时，显式传入预期的纯 Program，由 Host 核对定义身份。
 
@@ -203,7 +210,7 @@ execution 表示会话活动，不代表某个请求独占执行。一个步骤�
 
 ## 命令身份与未知受理
 
-本地和远程 Invocation 的 `activity` 都是 `ResourceReader<InvocationActivity>`；`activity$` 直接引用它的 values$，result 继续表达业务返回。`activity.read()` 读取当前事实，可能是业务 pending/running，并不等待业务完成；业务 failed 保持为 ready.value，观察错误保留为资源 error。远程 activity 的原生来源在 returned/failed 后释放连接，但资源观察继续归 SDK owner；SDK 有效期间晚读取仍取得终态，SDK 退出会撤销这些终态的可用性。本地不可变调用事实未额外指定读取 owner，沿原事实来源有限完成。等待业务完成使用 result；需要等活动终态时按 state 选择 returned/failed，不以流 EOF 作判断。远程资源初次等待真实活动帧时保留 pending，不从调用回执猜业务阶段；SDK 退出结束资源读取与订阅，不撤销 Host 已执行工作。原生 UI 的 invocation 入口直接借用同一资源和 Observation，不另存一份活动状态。
+本地和远程 Action Invocation 的 `activity` 都是 `ResourceReader<InvocationActivity>`；`activity$` 直接引用它的 values$，result 继续表达业务返回。`activity.read()` 读取当前事实，可能是业务 pending/running，并不等待业务完成；业务 failed 保持为 ready.value，观察错误保留为资源 error。远程 Action activity 的原生来源在 returned/failed 后释放连接，但资源观察继续归 SDK owner；SDK 有效期间晚读取仍取得终态，SDK 退出会撤销这些终态的可用性。本地不可变调用事实未额外指定读取 owner，沿原事实来源有限完成。等待业务完成使用 result；需要等活动终态时按 state 选择 returned/failed，不以流 EOF 作判断。远程 Action 资源初次等待真实活动帧时保留 pending，不从调用回执猜业务阶段；SDK 退出结束资源读取与订阅，不撤销 Host 已执行工作。原生 UI 的 invocation 入口接受不同 source 类型，直接借用同一资源和 Observation，不另存一份活动状态。
 
 尚未取得终态的活动连接断开时，资源立即进入 pending，重连后从同一调用取得真实当前帧；取消某一次 activity.read 不关闭共享观察，也不重发 Action。已确认的 returned/failed 不因观察流清理失败改写，清理错误保留诊断日志；业务结果、观察可用性和连接退出分别表达。
 

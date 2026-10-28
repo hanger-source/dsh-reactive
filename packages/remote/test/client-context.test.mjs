@@ -16,7 +16,7 @@ import { defineAction, implementAction, defineApplication, defineEnvironment, de
 import { Expose, implementProgram, useAction } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
 import { assertProgramSessionConnection, bindProgramClient, createAuthenticatedTransport, createProgramClient, CreationUnknownError,
-  SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError } from '@hanger-source/dsh-reactive-client';
+  SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError } from '@hanger-source/dsh-reactive-client';
 import contribution from '@hanger-source/dsh-reactive-client/remote';
 import { mountProgramGateway, RemoteAuthenticationError } from '@hanger-source/dsh-reactive-remote';
 
@@ -98,6 +98,7 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
         if (!delayed.allowRemoteFailure) assert.equal(reply.result.ok, true, JSON.stringify(reply));
         delayed.reply = reply.result;
         delayed.received.resolve(); await delayed.release.promise;
+        if (delayed.transportError) throw delayed.transportError;
       }
       return response;
     };
@@ -271,34 +272,70 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
       assert.deepEqual(agent.inbox.nextStep.filter(message => message.source.rpcId === input.requestId), [{ ...queued, content }]);
     } finally { delayed.release.resolve(); }
   });
-  for (const cancelledBy of ['session', 'sdk']) await t.test(`上传已存储而回执延迟时${cancelledBy}退出，peer仍能使用原生receipt`, { timeout: 3_000 }, async subject => {
+  for (const cancelledBy of ['wait', 'caller', 'running', 'session', 'sdk', 'context', 'transport']) await t.test(`上传已存储而回执延迟时${cancelledBy}退出，同一调用保存回执或明确未知`, { timeout: 3_000 }, async subject => {
     const delayed = { endpoint: 'uploadFile', received: Promise.withResolvers(), release: Promise.withResolvers(), entered: false }, requests = [];
+    if (cancelledBy === 'transport') delayed.transportError = new Error('UPLOAD_RESPONSE_CONNECTION_LOST');
     subject.signal.addEventListener('abort', () => delayed.release.resolve(), { once: true });
     const ctx = await connect(a.gateway.url, delayed, requests), sdk = await bindProgramClient(program, ctx), peer = await bindProgramClient(program, ctx);
     clients.push(sdk, peer);
     const session = await sdk.open(sessionId), observer = await peer.open(sessionId);
     const bytes = new TextEncoder().encode('消费者退出不能撤回已存储字节');
-    const rejected = assert.rejects(session.uploadFile(bytes, { name: 'ack-delayed.txt' }),
-      cancelledBy === 'sdk' ? /REACTIVE_REMOTE_CLIENT_DISPOSED/u : /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
+    const controller = new AbortController(), reason = new Error('UPLOAD_ACK_NOT_NEEDED');
+    const call = session.uploadFile(bytes, { name: 'ack-delayed.txt',
+      ...(cancelledBy === 'caller' || cancelledBy === 'running' ? { signal: controller.signal } : {}) });
+    const rejected = assert.rejects(call.wait(cancelledBy === 'wait' || cancelledBy === 'transport' ? { signal: controller.signal } : undefined),
+      error => {
+        if (cancelledBy === 'wait' || cancelledBy === 'caller' || cancelledBy === 'running' || cancelledBy === 'transport') assert.equal(error, reason);
+        else assert.match(String(error), cancelledBy === 'session' ? /REACTIVE_CONVERSATION_HANDLE_RELEASED/u : /REACTIVE_REMOTE_CLIENT_DISPOSED/u);
+        return true;
+      });
+    const runningObserver = cancelledBy === 'running' ? call.activity$.subscribe(activity => {
+      if (activity.state === 'running') controller.abort(reason);
+    }) : undefined;
     try {
       await delayed.received.promise;
       const uploaded = delayed.reply.value, agent = a.runtime.native.agents.get(SessionId(sessionId)); assert.ok(agent);
       assert.ok(a.runtime.native.fileUploads.resolve(agent, uploaded.receiptId));
+      assert.deepEqual(call.source, { kind: 'file-upload', sessionId });
+      assert.equal((await call.activity.read()).state, 'running');
       if (cancelledBy === 'sdk') await sdk.dispose();
-      else await session.release();
+      else if (cancelledBy === 'context') await ctx.fiber.dispose();
+      else if (cancelledBy === 'session') await session.release();
+      else if (cancelledBy === 'running') assert.equal(controller.signal.aborted, true, 'running观察者已同步取消默认wait');
+      else controller.abort(reason);
       await rejected;
-      assert.equal(delayed.signal.aborted, cancelledBy === 'sdk', 'Session退出保留发布，SDK退出结束所属HTTP');
-      assert.equal(await observer.readView('owner'), 'a-after-context-exit');
+      const transportEnded = cancelledBy === 'sdk' || cancelledBy === 'context';
+      assert.equal(delayed.signal.aborted, transportEnded, 'caller与Session只退wait，SDK/Connection退出结束所属HTTP');
+      assert.equal((await call.activity.read()).state, 'running', '退等本身不结算调用事实');
+      delayed.release.resolve();
+      if (transportEnded || cancelledBy === 'transport') {
+        let failure;
+        await assert.rejects(call.result, error => {
+          failure = error;
+          assert.ok(error instanceof FileUploadReceiptUnknownError);
+          assert.equal(error.name, 'FileUploadReceiptUnknownError'); assert.equal(error.sessionId, sessionId);
+          if (cancelledBy === 'transport') assert.equal(error.cause, delayed.transportError);
+          else assert.ok(error.cause instanceof Error);
+          return true;
+        });
+        assert.deepEqual(await firstValueFrom(call.activity$), { state: 'failed', phase: 'execute', error: failure });
+      } else {
+        assert.deepEqual(await call.result, uploaded);
+        assert.deepEqual(await firstValueFrom(call.activity$), { state: 'returned' });
+      }
+      const verifier = cancelledBy === 'context' ? duplicate : observer;
+      assert.equal(await verifier.readView('owner'), 'a-after-context-exit');
       const chunks = [];
       for await (const chunk of a.runtime.native.attachments.readFileStream(uploaded.file)) chunks.push(chunk);
       assert.deepEqual(Buffer.concat(chunks), Buffer.from(bytes));
+      // 仅fixture在真实响应门闩处取得receipt；未知结果的SDK不能按call.id找回它。
       const input = { requestId: 'use-unobserved-upload-' + cancelledBy, content: [{ type: 'file', receiptId: uploaded.receiptId }],
         intent: 'followup', delivery: 'inject', scope: null };
-      assert.deepEqual(await observer.submit(input), { sessionId, requestId: input.requestId, accepted: true });
+      assert.deepEqual(await verifier.submit(input), { sessionId, requestId: input.requestId, accepted: true });
       assert.deepEqual(agent.inbox.nextStep.find(message => message.source.rpcId === input.requestId)?.content,
         [{ type: 'file', attachment: uploaded.file }]);
       assert.equal(requests.filter(path => path.endsWith('/reactivePrograms/uploadFile')).length, 1, '退出不自动重传上传');
-    } finally { delayed.release.resolve(); }
+    } finally { delayed.release.resolve(); runningObserver?.unsubscribe(); }
   });
   await t.test('Blob取消与转换失败不发HTTP，确定的Host拒绝与本地JSON错误保留原语义', { timeout: 3_000 }, async subject => {
     const requests = [], ctx = await connect(a.gateway.url, undefined, requests), sdk = await bindProgramClient(program, ctx);
@@ -311,18 +348,21 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
       try { return await arrayBuffer(); } finally { converted.resolve(); }
     };
     const controller = new AbortController(), reason = new Error('BLOB_WAIT_NOT_NEEDED');
-    const rejected = assert.rejects(session.uploadFile(blob, { signal: controller.signal }), error => error === reason);
+    const call = session.uploadFile(blob, { signal: controller.signal });
+    const rejected = assert.rejects(call.wait(), error => error === reason);
     try {
       await entered.promise;
       controller.abort(reason); await rejected;
+      await assert.rejects(call.result, error => error === reason);
+      assert.deepEqual(await firstValueFrom(call.activity$), { state: 'failed', phase: 'input', error: reason });
       proceed.resolve(); await converted.promise;
       const failure = new Error('BLOB_CONVERSION_FAILED'), invalid = new Blob(['转换失败']);
       invalid.arrayBuffer = async () => { throw failure; };
-      await assert.rejects(session.uploadFile(invalid), error => error === failure);
+      await assert.rejects(session.uploadFile(invalid).result, error => error === failure);
       const stopped = new AbortController(), stoppedReason = new Error('UPLOAD_PRECHECK_CANCELLED'); stopped.abort(stoppedReason);
       let conversions = 0;
       invalid.arrayBuffer = async () => { conversions++; return arrayBuffer(); };
-      await assert.rejects(session.uploadFile(invalid, { signal: stopped.signal }), error => error === stoppedReason);
+      assert.throws(() => session.uploadFile(invalid, { signal: stopped.signal }), error => error === stoppedReason);
       assert.equal(conversions, 0);
       assert.equal(requests.filter(path => path.endsWith('/reactivePrograms/uploadFile')).length, 0);
       const submission = { requestId: 'local-json-rejected', content: '不能序列化的scope', intent: 'followup', delivery: 'inject', scope: () => null };
