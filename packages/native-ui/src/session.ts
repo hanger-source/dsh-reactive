@@ -68,6 +68,8 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
       throw new Error('REACTIVE_NATIVE_SESSION_GENERATION_INACTIVE');
     if (this.sdk.id !== this.id || this.sdk.definition !== this.definition)
       throw new Error('REACTIVE_NATIVE_SESSION_CONTRACT_MISMATCH');
+    if (this.sdk.identity.participant !== 'human')
+      throw new Error('REACTIVE_NATIVE_HUMAN_PARTICIPANT_REQUIRED');
     assertProgramSessionConnection(this.sdk, this.native.ctx.get('connection'));
   }
 

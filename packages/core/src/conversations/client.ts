@@ -7,7 +7,7 @@ import type { Observation } from '../resources/observation.ts';
 import type { HumanSnapshot, HumanInputState, HumanForegroundQuestion } from '../participation/contract.ts';
 import type { HumanQuestionControls, HumanQuestionHandle } from '../participation/questions.ts';
 import type { OperationContract, OperationHandle, OperationReference, OperationCommand,
-  OperationLocation, OperationState, OperationFeedbackRead, OperationFeedbackPayload } from '../operations/contract.ts';
+  OperationLocation, OperationState, OperationFeedbackRead, OperationFeedbackPayload, OperationNotificationResult } from '../operations/contract.ts';
 import type { ConversationIdentity, InputReceipt } from './conversation.ts';
 import type { CancellationOptions, Submission, FileUploadSource, FileUploadValue } from './protocol.ts';
 import type { AssistantProgressFrame, ConversationEvent } from './events.ts';
@@ -33,7 +33,7 @@ export interface ProgramRequestStatus {
  */
 export interface ProgramSessionClient<P extends ProgramContract,
   Options extends CancellationOptions = CancellationOptions, Async extends boolean = boolean>
-  extends SurfaceClient<ProgramSurface<P>, Options, Async>, HumanQuestionControls<Options> {
+  extends SurfaceClient<ProgramSurface<P>, Options, Async> {
   readonly id: string;
   /** 原 Program 纯合同；保留模块身份和输入/出口的完整类型。 */
   readonly definition: P;
@@ -47,14 +47,10 @@ export interface ProgramSessionClient<P extends ProgramContract,
   request(requestId: string): RequestHandle<ProgramParsedInput<P>>;
   /** 只读核对当前宿主事实；读取取消不会投递输入或激活 Agent。 */
   requestStatus(requestId: string, options?: CancellationOptions): Promise<ProgramRequestStatus>;
-  /** 仅人工参与者可控制；取消只结束回执等待，已开始的原生控制仍继续结算。 */
-  pause(options?: CancellationOptions): Promise<ProgramGoalControl>;
-  cancel(options?: CancellationOptions): Promise<ProgramCancelResult>;
   readonly human: ResourceReader<HumanSnapshot>;
   readonly human$: Observable<Observation<HumanSnapshot>>;
   readonly questions$: Observable<HumanInputState>;
   readonly foregroundQuestions$: Observable<readonly HumanForegroundQuestion[]>;
-  question(callId: string, options?: Options): Promise<HumanQuestionHandle<Options>>;
   submit(input: Submission<ProgramInput<P>>, options?: Options): Promise<InputReceipt>;
   editQueuedInput(requestId: string, content: Submission['content'], options?: Options): Promise<InputReceipt>;
   uploadFile(data: FileUploadSource, options?: Options & { readonly name?: string }): Promise<FileUploadValue>;
@@ -62,6 +58,18 @@ export interface ProgramSessionClient<P extends ProgramContract,
   locateOperation<D extends OperationContract>(definition: D, command: OperationCommand<D>, options?: Options): Promise<OperationLocation<OperationReference<D>, OperationState<D>>>;
   readOperationFeedback<D extends OperationContract>(definition: D, command: OperationCommand<D>, participationId: string,
     options?: Options): Promise<OperationFeedbackRead<OperationReference<D>, OperationFeedbackPayload<D>>>;
+  /** 以当前参与身份核验原 follow 并通知；可靠投递仍使用原发布者身份。 */
+  notifyOperation(followId: string, options?: Options): Promise<OperationNotificationResult>;
   /** 只归还本消费者持有的观察；已受理业务仍归原 owner。 */
   release(): void | Promise<void>;
+}
+
+/** 人工参与端口；服务参与者借用同一事实，但不能回答、占有前台等待或控制模型。 */
+export interface HumanProgramSessionClient<P extends ProgramContract,
+  Options extends CancellationOptions = CancellationOptions, Async extends boolean = boolean>
+  extends ProgramSessionClient<P, Options, Async>, HumanQuestionControls<Options> {
+  question(callId: string, options?: Options): Promise<HumanQuestionHandle<Options>>;
+  /** 取消只结束回执等待，已开始的原生控制仍继续结算。 */
+  pause(options?: CancellationOptions): Promise<ProgramGoalControl>;
+  cancel(options?: CancellationOptions): Promise<ProgramCancelResult>;
 }

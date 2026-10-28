@@ -32,15 +32,15 @@ test('队列编辑沿原请求重新准入，保留位置及身份且不唤醒�
       content: [{ type: 'text', text: '旧资料正文' }, { type: 'file', receiptId: oldFile.receiptId }] } satisfies Submission<{ merchantId: string }>;
     await session.submit(input);
     const original = queued(agent.inbox.nextStep, input.requestId)!;
-    const service = await app.host.service(session.id, program);
+    const service = await app.host.service().open(session.id, program);
     const serviceInput = { ...input, requestId: 'following-facts', content: '排在后面的服务资料' };
     const forgedActor = { signal: new AbortController().signal, actorId: 'program-service' };
-    assert.throws(() => service.submit(serviceInput, forgedActor), /REACTIVE_SERVICE_INPUT_ACTOR_FIXED/u);
+    assert.throws(() => service.submit(serviceInput, forgedActor), /REACTIVE_SERVICE_ACTOR_IMMUTABLE/u);
     await service.submit(serviceInput);
     await assert.rejects(session.submit(serviceInput, { actorId: 'program-service' }), /REACTIVE_REQUEST_ID_CONFLICT/u);
     await assert.rejects(session.editQueuedInput(serviceInput.requestId, '同名actor冒充服务', { actorId: 'program-service' }),
       error => error instanceof InputEditRejectedError && error.reason === 'actor-mismatch');
-    assert.throws(() => service.editQueuedInput(serviceInput.requestId, '覆盖服务来源', forgedActor), /REACTIVE_SERVICE_INPUT_ACTOR_FIXED/u);
+    assert.throws(() => service.editQueuedInput(serviceInput.requestId, '覆盖服务来源', forgedActor), /REACTIVE_SERVICE_ACTOR_IMMUTABLE/u);
     await service.editQueuedInput(serviceInput.requestId, '正式服务资料修订');
     await assert.rejects(session.editQueuedInput(input.requestId, '其他人编辑', { actorId: 'other-actor' }),
       error => error instanceof InputEditRejectedError && error.requestId === input.requestId && error.reason === 'actor-mismatch');
@@ -136,7 +136,7 @@ test('已持久编辑准备但替换前取消不改原队列，实际消费及�
     const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
     sessionId = session.id;
     const agent = app.native.agents.get(SessionId(session.id))!;
-    const service = await app.host.service(session.id, program);
+    const service = await app.host.service().open(session.id, program);
     await service.submit({ requestId: 'draft-facts', intent: 'question', delivery: 'inject', scope: null, content: '持久原正文' });
     const controller = new AbortController(), cancelled = new Error('EDIT_ABORTED_AFTER_DURABLE_PREPARE');
     let prepared = false;

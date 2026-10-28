@@ -83,7 +83,7 @@ export interface FollowHost {
   wait(agent: Agent, continuation: Continuation, wait: WaitReference): Promise<void>;
   resolved(agent: Agent, link: OperationFollowLink): boolean;
   waiting(agent: Agent, link: OperationFollowLink): boolean;
-  admit(link: OperationFollowLink, actorId: string, signal: AbortSignal): Promise<void>;
+  admit(link: OperationFollowLink, source: Extract<OperationAccess['source'], { readonly kind: 'participant' }>, signal: AbortSignal): Promise<void>;
   deliver(agent: Agent, input: Submission, actorId: string, signal: AbortSignal): Promise<InputReceipt>;
 }
 
@@ -249,7 +249,7 @@ export class OperationFollows {
     access.signal.throwIfAborted();
     const owner = this.owner(link);
     this.validate(owner, link.when);
-    await this.host.admit(link, access.source.actorId, access.signal);
+    await this.host.admit(link, access.source, access.signal);
     access.signal.throwIfAborted();
     // 已结案的框架关联只核本次通知准入；不能让旧 outbox 重新登记业务观察。
     if (notStarted) return;

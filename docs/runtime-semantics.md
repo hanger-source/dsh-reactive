@@ -87,7 +87,7 @@ dsh 的实际顺序是：inbox 提取并报告本步输入，执行 `system-prom
 | --- | --- |
 | `Offer` | 显式工具名和 enabled 控制当前模型可调用性，实际执行复用当前 Action 绑定；通过真实 tool occurrence 取得 callId、rootCallId、parentCallId 和消费的输入 |
 | 程序显式调用绑定 | 宿主以 serviceActorId 建立独立服务参与身份；没有隐式模型输入或 Goal continuation |
-| 同进程 `conversation.resolveAction` | 按明确的原始 scope 捕获当前 Expose 绑定，调用使用可信 actorId 建立独立 human 参与身份，执行前核验同一 bindingId |
+| 同进程 `conversation.resolveAction` | 按明确的原始 scope 捕获当前 Expose 绑定，调用保留句柄的 human 或 service 角色与对应可信 actorId，服务逐调用不能改写身份，执行前核验同一 bindingId |
 
 普通参与调用不凭参数自报原生执行身份，也不继承当前 Goal；需要 Goal 等待或完成接线时，只有实际原生工具入口提供对应权限。手工使用 `bindAction` 时，调用方必须提供自己的可信执行来源与准入合同。远程入口使用同一纯 Surface 合同及宿主绑定，认证、传输和恢复边界见[外部参与与观察](transport.md)。
 

@@ -62,7 +62,7 @@ test('View与人工查询按消费者连接，独立endpoint授权与真实Gatew
   const workspace = await runtime.application.createWorkspace({ directory: root });
   local = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
   gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
-    model: { provider: 'reader-lifecycle', model: 'unused' }, actor: principal => principal.id,
+    model: { provider: 'reader-lifecycle', model: 'unused' }, participant: principal => ({ participant: 'human', actorId: principal.id }),
     access(service) {
       for (const [kind, endpoint] of [['views-only', 'view'], ['human-only', 'questions']]) {
         service.registerPolicy(kind, { bindings: () => [{ resource: { kind: 'session', id: local.id },

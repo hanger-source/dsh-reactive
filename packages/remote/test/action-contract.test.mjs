@@ -56,7 +56,7 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
   const workspace = await runtime.application.createWorkspace({ directory: root });
   local = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
   gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
-    model: { provider: 'contract', model: 'unused' }, actor: principal => principal.id,
+    model: { provider: 'contract', model: 'unused' }, participant: principal => ({ participant: 'human', actorId: principal.id }),
     access: service => service.registerPolicy('contract-user', { bindings: () => [{
       resource: { kind: 'session', id: local.id }, role: { name: 'contract-user', resource: 'session', actions: [
         'reactivePrograms/open', 'reactivePrograms/resolveAction', 'reactivePrograms/startAction',

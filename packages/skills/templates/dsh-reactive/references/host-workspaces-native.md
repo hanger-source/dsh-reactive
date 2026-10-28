@@ -42,7 +42,7 @@ createWorkspace 注册原生 existing 目录，不隐式 mkdir。Environment 不
 
 正式登记删除后，原生 domain/changed 提交事实结束工作区 owner，不等待整个宿主退出。旧资源、共享流和持续关系一起撤销，清理重入不能利用原生尚未撤下的实体缓存重建 owner。目录和会话历史由原生保留，已受理业务不因查询退出而回滚。清理失败保留诊断并由宿主退出汇总，其他工作区仍须释放。
 
-`host.service(id, Program)` 是固定 serviceActorId 的服务参与端口：可读、解析 Action、submit/edit 输入及观察 Operation，不能回答人工问题、控制 Goal 或自报 actor。ProgramSession.submit 也保固定服务来源。普通 UI/人工端口与服务不可混用。
+`host.service(actorId)` 在取得时固定服务身份；省略参数时使用宿主配置的 serviceActorId。这个应用视图通过 create、open、resume、completeCreation 取得服务会话，复用原工作区、会话图和取得回滚，不增加 owner 或应用销毁权。服务会话可读、解析 Action、submit/edit 输入、上传文件及观察 Operation，逐调用不能自报 actor，不能回答人工问题或控制 Goal。ProgramSession.submit 仍使用宿主配置的服务来源。普通 UI/人工端口与服务不可混用。
 
 ## 嵌入与可选能力
 

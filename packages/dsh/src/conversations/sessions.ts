@@ -45,10 +45,6 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         throw new Error('REACTIVE_HOST_DISPOSED'); }
     get(id: string) { return this.#sessions.get(id); }
     forAgent(agent: Agent) { return this.#entries.get(agent); }
-    assertServiceActor(): void {
-        if (!this.options.serviceActorId?.trim())
-            throw new Error('REACTIVE_ACTION_ACTOR_REQUIRED');
-    }
     async recoverChild(session: ConversationSession): Promise<void> {
         if (!session.child)
             return;

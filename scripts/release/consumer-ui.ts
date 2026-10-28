@@ -1,5 +1,5 @@
 import { defineAction, defineProgram, defineSurface, resourceView, z, type OperationContract, type OperationHandle, type Invocation, type Json } from '@hanger-source/dsh-reactive';
-import { bindProgramClient, type RemoteProgramSession } from '@hanger-source/dsh-reactive-client';
+import { bindProgramClient, type RemoteProgramSession, type RemoteServiceProgramSession } from '@hanger-source/dsh-reactive-client';
 import { createNativeActionViews, defineNativeActionView, bindNativeSession, retainNativeSession,
   type NativeSession, type NativeActionViewProps } from '@hanger-source/dsh-reactive-native-ui';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
@@ -16,6 +16,10 @@ export const portableCall = (session: Session) => callPublishedAction(session, '
 export const portableView = (session: Session): Promise<string> => readSessionView(session, 'version');
 export const nativeClient = (ctx: Parameters<typeof bindProgramClient>[1]) => bindProgramClient(program, ctx);
 export const nativeReference = (ctx: Parameters<typeof retainNativeSession>[1], sessionId: string) => retainNativeSession(program, ctx, sessionId);
+export function rejectServiceSession(native: Parameters<typeof bindNativeSession>[1], service: RemoteServiceProgramSession<typeof program>) {
+  // @ts-expect-error 服务端口没有人工参与能力，不能作为原生人工会话绑定。
+  return bindNativeSession(program, native, service);
+}
 export const view = defineNativeActionView(action, (_props: NativeActionViewProps<typeof action>) => null);
 export const publicEntries = [createNativeActionViews, bindNativeSession, getDeveloperSkill] as const;
 export const developerSkill = getDeveloperSkill();

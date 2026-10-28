@@ -8,7 +8,7 @@ import { type Observation } from "@hanger-source/dsh-reactive/kernel";
 import { ResourceReader } from "@hanger-source/dsh-reactive/kernel";
 import { createHumanQuestionResolver, type HumanQuestionResolver, type HumanQuestionHandle, type HumanSnapshot } from "@hanger-source/dsh-reactive/kernel";
 import { type ActionContract, type ActionInput, type ActionScope } from "@hanger-source/dsh-reactive/kernel";
-import { type OperationContract, type OperationHandle, type OperationReference, type OperationCommand, type OperationLocation, type OperationState, type BoundOperation, type OperationFeedbackRead, type OperationFeedbackPayload } from "@hanger-source/dsh-reactive/kernel";
+import { type OperationContract, type OperationHandle, type OperationReference, type OperationCommand, type OperationLocation, type OperationState, type BoundOperation, type OperationFeedbackRead, type OperationFeedbackPayload, type OperationNotificationResult } from "@hanger-source/dsh-reactive/kernel";
 import { type ActionInvocation } from "@hanger-source/dsh-reactive/kernel";
 import { type HumanAnswer, type HumanForegroundQuestion, type HumanInputState, type HumanWaitFrame } from "@hanger-source/dsh-reactive/kernel";
 import { type ConversationActivity } from "@hanger-source/dsh-reactive/kernel";
@@ -20,8 +20,8 @@ import { surfaceSlotDefinition, type SurfaceViews } from "@hanger-source/dsh-rea
 import { createSurfaceCollectionClient, createSurfaceModuleClient, type SurfaceCollectionClient } from "@hanger-source/dsh-reactive/kernel";
 import type { Surface, SurfaceMount } from '@hanger-source/dsh-reactive';
 import { actionManifestSlot, type ToolActionBinding } from "@hanger-source/dsh-reactive/kernel";
-import { abortable, type InputReceipt, type CollectionResolvedAction, type SurfaceClient, type ProgramSessionClient, type ViewValue, type ProgramCancelResult, type ProgramRequestStatus } from "@hanger-source/dsh-reactive";
-import { assertServiceInputOptions } from './inputs.ts';
+import { abortable, type CollectionResolvedAction, type SurfaceClient, type ProgramSessionClient, type HumanProgramSessionClient, type ViewValue, type ProgramCancelResult, type ProgramRequestStatus } from "@hanger-source/dsh-reactive";
+import { assertParticipantOptions, type ParticipantIdentity } from '../participation/identity.ts';
 import type { ConversationSession } from './session.ts';
 import type { ConversationSessions } from './sessions.ts';
 import type { ConversationInputs } from './inputs.ts';
@@ -36,11 +36,17 @@ export type EnvironmentOperationReaders<E extends AnyEnvironment> = {
 };
 export type ProgramOperationReaders<P extends ProgramContract> = SurfaceClient<P['surface'], SubmitOptions, false>['operations'];
 type ProgramViews<P extends ProgramContract> = SurfaceViews<P['surface']>;
-export type ServiceConversation<P extends ProgramContract> = Pick<ConversationHandle<P>, 'id' | 'definition' | 'identity' | 'surface' | 'activity$' | 'progress' | 'progress$' | 'progressFrames$' | 'events$' | 'rawEvents$' | 'actionManifest' | 'actionManifest$' | 'views' | 'view' | 'viewResource' | 'observeView' | 'readView' | 'collection' | 'module' | 'request' | 'requestStatus' | 'resolveAction' | 'invokeAction' | 'operations' | 'resolveOperation' | 'attachOperation' | 'locateOperation' | 'readOperationFeedback' | 'snapshot' | 'progressSnapshot' | 'release'> & {
-    submit(input: Submission<ProgramInput<P>>, options?: CancellationOptions): Promise<InputReceipt>;
-    editQueuedInput(requestId: string, content: Submission['content'], options?: CancellationOptions): Promise<InputReceipt>;
-};
-export class ConversationHandle<P extends ProgramContract = ProgramContract> implements ProgramSessionClient<P, SubmitOptions, false> {
+export interface ServiceConversation<P extends ProgramContract = ProgramContract> extends ProgramSessionClient<P, CancellationOptions, false> {
+    readonly activity$: Observable<ConversationActivity>;
+    readonly rawEvents$: Observable<ConversationEvent>;
+    observeWireView(name: string): Observable<Observation<Json>>;
+    uploadEncodedFile(request: EncodedFileUploadRequest, options?: CancellationOptions): Promise<FileUploadValue>;
+    invokeAction<K extends keyof P['surface']['actions'] & string>(name: K, bindingId: string, input: ActionInput<P['surface']['actions'][K]>, options?: CancellationOptions): ActionInvocation<P['surface']['actions'][K]>;
+    resolveOperation<K extends keyof P['surface']['operations'] & string>(name: K, options?: CancellationOptions): BoundOperation<P['surface']['operations'][K]>;
+    snapshot(): ConversationActivity;
+    progressSnapshot(): Observation<ConversationProgressSnapshot>;
+}
+export class ConversationHandle<P extends ProgramContract = ProgramContract> implements HumanProgramSessionClient<P, SubmitOptions, false> {
     readonly activity$: Observable<ConversationActivity>;
     readonly progress$: Observable<Observation<ConversationProgressSnapshot>>;
     readonly progress: ResourceReader<ConversationProgressSnapshot>;
@@ -58,7 +64,7 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
     #viewResources = new Map<string, ResourceReader<unknown>>();
     #operations?: ProgramOperationReaders<P>;
     #requests = new Map<string, RequestHandle<ProgramParsedInput<P>>>();
-    private constructor(private readonly entry: ConversationSession, private readonly participant: 'human' | 'service', private readonly sessions: ConversationSessions, private readonly inputs: ConversationInputs, private readonly actions: ActionAuthority, private readonly participation: OperationParticipation, private readonly questions: ConversationQuestions, private readonly facts: ConversationObservations) {
+    private constructor(private readonly entry: ConversationSession, private readonly participant: ParticipantIdentity, private readonly sessions: ConversationSessions, private readonly inputs: ConversationInputs, private readonly actions: ActionAuthority, private readonly participation: OperationParticipation, private readonly questions: ConversationQuestions, private readonly facts: ConversationObservations) {
         this.#scope = entry.conversation.scope.child();
         sessions.registerSessionAccess(this, entry, this.#scope.signal, () => this.assertActive());
         entry.pins++;
@@ -79,7 +85,7 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
         }, { signal: this.#scope.signal, onObserverError: error => this.#scope.observerError(error) });
     }
     /** @internal 只有宿主能建立带观察生存期的句柄。 */
-    static create<P extends ProgramContract = ProgramContract>(entry: ConversationSession, participant: 'human' | 'service', sessions: ConversationSessions, inputs: ConversationInputs, actions: ActionAuthority, participation: OperationParticipation, questions: ConversationQuestions, facts: ConversationObservations): ConversationHandle<P> {
+    static create<P extends ProgramContract = ProgramContract>(entry: ConversationSession, participant: ParticipantIdentity, sessions: ConversationSessions, inputs: ConversationInputs, actions: ActionAuthority, participation: OperationParticipation, questions: ConversationQuestions, facts: ConversationObservations): ConversationHandle<P> {
         return new ConversationHandle<P>(entry, participant, sessions, inputs, actions, participation, questions, facts);
     }
     private observe<T>(source$: Observable<T>): Observable<T> {
@@ -105,7 +111,7 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
     }
     private assertHuman() {
         this.assertActive();
-        if (this.participant !== 'human') throw new Error('REACTIVE_HUMAN_PARTICIPANT_REQUIRED');
+        if (this.participant.participant !== 'human') throw new Error('REACTIVE_HUMAN_PARTICIPANT_REQUIRED');
     }
     get id() { return this.entry.header.id as string; }
     /** P 由宿主创建句柄时的实际 Program 绑定确定；返回原对象，不重建合同。 */
@@ -152,6 +158,7 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
     /** 只读解析当前绑定并核验明确的原始目标；不激活 Agent，也不受理业务。 */
     resolveAction<K extends keyof P['surface']['actions'] & string>(name: K, expectedScope: z.input<P['surface']['actions'][K]['scope']>, options: CancellationOptions = {}): ResolvedAction<P['surface']['actions'][K]> {
         this.assertActive();
+        assertParticipantOptions(this.participant, options);
         options.signal?.throwIfAborted();
         const binding = this.actions.resolveSessionAction(this.entry, name, expectedScope);
         // Surface 已核验同一合同；scope 来自实际绑定的唯一解析，不再 parse 领域输出。
@@ -163,6 +170,7 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
     /** 已认证 transport 的第二阶段受理；必填 bindingId 只核对原绑定，不授予权限。 */
     invokeAction<K extends keyof P['surface']['actions'] & string>(name: K, bindingId: string, input: ActionInput<P['surface']['actions'][K]>, options: SubmitOptions = {}): ActionInvocation<P['surface']['actions'][K]> {
         this.assertActive();
+        assertParticipantOptions(this.participant, options);
         return this.actions.invokeSession(this.entry, name, bindingId, input, options, this.participant) as ActionInvocation<P['surface']['actions'][K]>;
     }
     /** 解析时捕获当前操作绑定；取得的 reader 不随组件后来更换槽而改指目标。 */
@@ -171,6 +179,7 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
         return this.#operations ??= Object.freeze(Object.fromEntries(Object.keys(this.surface.operations).map(name => [name,
             (options: SubmitOptions = {}) => {
                 this.assertActive();
+                assertParticipantOptions(this.participant, options);
                 const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
                 return this.participation.resolveOperation(this.entry, name, { ...options, signal }, this.participant);
             },
@@ -179,6 +188,7 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
     /** transport 和 collection 使用同一合同查找；动态地址由框架 factory 生成。 */
     resolveOperation<K extends keyof P['surface']['operations'] & string>(name: K, options: SubmitOptions = {}): BoundOperation<P['surface']['operations'][K]> {
         this.assertActive();
+        assertParticipantOptions(this.participant, options);
         const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
         return this.participation.resolveOperation(this.entry, name, { ...options, signal }, this.participant) as BoundOperation<P['surface']['operations'][K]>;
     }
@@ -217,51 +227,62 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
         return this.observe(value.observations$);
     }
     async readView<K extends keyof P['surface']['views'] & string>(name: K, options: CancellationOptions = {}): Promise<ViewValue<P['surface']['views'][K]>> {
+        assertParticipantOptions(this.participant, options);
         return this.viewResource(name).read(options.signal);
     }
     submit(input: Submission<ProgramInput<P>>, options: SubmitOptions = {}) {
         this.assertActive();
-        if (this.participant === 'service')
-            assertServiceInputOptions(options);
+        assertParticipantOptions(this.participant, options);
         return this.inputs.submitSession(this.entry, input, options, this.participant);
     }
     /** 保留本请求来源与业务范围，重新准入仍未消费的正文；编辑本身不唤醒 Agent。 */
     editQueuedInput(requestId: string, content: Submission['content'], options: SubmitOptions = {}) {
         this.assertActive();
-        if (this.participant === 'service')
-            assertServiceInputOptions(options);
+        assertParticipantOptions(this.participant, options);
         return this.inputs.editSessionInput(this.entry, requestId, content, options, this.participant);
     }
     /** 显式上传至本会话；receipt 由原生 exact Session 持有，提交正文时使用它。 */
     async uploadFile(data: FileUploadSource, options: UploadFileOptions = {}): Promise<FileUploadValue> {
         this.assertActive();
-        const { name, actorId, signal } = options;
+        assertParticipantOptions(this.participant, options);
+        const { name, ...participationOptions } = options;
+        const { signal } = participationOptions;
         signal?.throwIfAborted();
         const bytes = data instanceof Uint8Array ? data : new Uint8Array(await data.arrayBuffer());
         this.assertActive();
         signal?.throwIfAborted();
-        return this.uploadEncodedFile({ data: bytesToBase64(bytes), ...(name === undefined ? {} : { name }) }, { actorId, signal });
+        return this.uploadEncodedFile({ data: bytesToBase64(bytes), ...(name === undefined ? {} : { name }) }, participationOptions);
     }
     /** 已认证 transport 接入官方 canonical base64；不解码重编码而洗掉非法输入。 */
     uploadEncodedFile(request: EncodedFileUploadRequest, options: SubmitOptions = {}): Promise<FileUploadValue> {
         this.assertActive();
-        return this.inputs.uploadSessionFile(this.entry, request, options);
+        assertParticipantOptions(this.participant, options);
+        return this.inputs.uploadSessionFile(this.entry, request, options, this.participant);
     }
     whenIdle() { this.assertActive(); return this.sessions.settle(this.sessions.live(this.entry).agent); }
     attachOperation<D extends OperationContract>(definition: D, reference: OperationReference<D>, options: SubmitOptions = {}): Promise<OperationHandle<D>> {
         this.assertActive();
+        assertParticipantOptions(this.participant, options);
         const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
         return this.participation.attachOperation(this.id, definition, reference, { ...options, signal }, this.participant);
     }
     locateOperation<D extends OperationContract>(definition: D, command: OperationCommand<D>, options: SubmitOptions = {}): Promise<OperationLocation<OperationReference<D>, OperationState<D>>> {
         this.assertActive();
+        assertParticipantOptions(this.participant, options);
         const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
         return this.participation.locateOperation(this.id, definition, command, { ...options, signal }, this.participant);
     }
     readOperationFeedback<D extends OperationContract>(definition: D, command: OperationCommand<D>, id: string, options: SubmitOptions = {}): Promise<OperationFeedbackRead<OperationReference<D>, OperationFeedbackPayload<D>>> {
         this.assertActive();
+        assertParticipantOptions(this.participant, options);
         const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
         return this.participation.readOperationFeedback(this.id, definition, command, id, { ...options, signal }, this.participant);
+    }
+    notifyOperation(followId: string, options: SubmitOptions = {}): Promise<OperationNotificationResult> {
+        this.assertActive();
+        assertParticipantOptions(this.participant, options);
+        const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
+        return this.participation.notifyOperation(this.id, followId, { ...options, signal }, this.participant);
     }
     async question(callId: string, options: SubmitOptions = {}): Promise<HumanQuestionHandle<SubmitOptions>> {
         this.assertHuman();
@@ -294,6 +315,7 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
     /** 权威请求切面来自原生日志与投影；冷读取不激活 Agent，也不改写观察缓存。 */
     async requestStatus(requestId: string, options: CancellationOptions = {}): Promise<ProgramRequestStatus> {
         this.assertActive();
+        assertParticipantOptions(this.participant, options);
         const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
         return firstValueFrom(abortable(async (readSignal): Promise<ProgramRequestStatus> => {
             const inspection = await nativeSessionAccess(this).inspect(readSignal);

@@ -8,6 +8,7 @@ export { ProgramRemoteService } from './host.ts';
 export type { ProgramRemoteOptions } from './host.ts';
 export { createProgramActionOwner } from './actions.ts';
 export type { ProgramActionOwner, ProgramActionOwnerOptions } from './actions.ts';
+export type { ProgramParticipant } from './participant.ts';
 export * from './carrier.ts';
 export * from './gateway.ts';
 export type * from '@hanger-source/dsh-reactive-client/types';

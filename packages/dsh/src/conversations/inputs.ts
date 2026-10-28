@@ -2,7 +2,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import { appendPluginRecord } from "@deepseek-ai/dsh-session";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
-import { conversationBindings, type Submission, type CancellationOptions, type SubmitOptions } from "@hanger-source/dsh-reactive/kernel";
+import { conversationBindings, type Submission, type SubmitOptions } from "@hanger-source/dsh-reactive/kernel";
 import { type ApplicationDefinition } from "@hanger-source/dsh-reactive/kernel";
 import { contentDigest, submissionSourceDigest, canonical, recordSchema, submissionSchema, type SubmissionRecord } from "./records.ts";
 import { admitPendingRecovery, followAdmittedInput, isRecoveryControl, resumePendingInput, retainClaimedInputs } from "./pending-input.ts";
@@ -17,10 +17,7 @@ import type { ConversationSession, LiveConversation } from './session.ts';
 import type { ConversationSessions } from './sessions.ts';
 import type { ConversationObservations } from './observations.ts';
 import type { OperationParticipation } from '../operations/participation.ts';
-export function assertServiceInputOptions(options: CancellationOptions) {
-    if ('actorId' in options)
-        throw new Error('REACTIVE_SERVICE_INPUT_ACTOR_FIXED');
-}
+import { humanParticipant, serviceParticipant, participantActor, type ParticipantIdentity } from '../participation/identity.ts';
 /** 受理正文与来源的唯一事务入口；实际队列和附件仍由原生服务持有。 */
 export class ConversationInputs {
     #pending = new Map<string, {
@@ -34,8 +31,7 @@ export class ConversationInputs {
     constructor(private readonly ctx: Context, private readonly definition: ApplicationDefinition, private readonly workspaces: Workspaces, private readonly options: HostOptions, private readonly signal: AbortSignal, private readonly sessions: ConversationSessions, private readonly facts: ConversationObservations, private readonly delegations: NativeDelegations, private readonly operations: () => OperationParticipation) { }
     bindConversation(session: ConversationSession): void {
         session.conversation[conversationBindings]().setSubmit((input, options) => {
-            assertServiceInputOptions(options);
-            return this.submitSession(session, input, options, 'service');
+            return this.submitSession(session, input, options, serviceParticipant(this.options.serviceActorId));
         });
     }
     async prepare(entry: LiveConversation, signal: AbortSignal) {
@@ -100,11 +96,9 @@ export class ConversationInputs {
                 directory: workspace.native.path, parentSessionId: inspection.meta.parentSession ?? null }, { actorId, participant, signal });
         }
     }
-    async editSessionInput(session: ConversationSession, requestId: string, content: Submission['content'], options: SubmitOptions = {}, participant: Admission['participant'] = 'human') {
+    async editSessionInput(session: ConversationSession, requestId: string, content: Submission['content'], options: SubmitOptions = {}, identity: ParticipantIdentity = humanParticipant) {
         this.sessions.assertSessionWorkspace(session);
-        const actorId = options.actorId ?? (participant === 'service' ? this.options.serviceActorId : this.options.actorId);
-        if (!actorId?.trim())
-            throw new Error('REACTIVE_INPUT_ACTOR_REQUIRED');
+        const actorId = participantActor(identity, options, this.options.actorId), participant = identity.participant;
         const signal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
         signal.throwIfAborted();
         await this.sessions.activate(session.header.id);
@@ -117,15 +111,13 @@ export class ConversationInputs {
             persist: () => this.facts.flush(entry.agent),
         });
     }
-    async submitSession(session: ConversationSession, raw: unknown, options: SubmitOptions, participant: Admission['participant'] = 'human'): Promise<{
+    async submitSession(session: ConversationSession, raw: unknown, options: SubmitOptions, identity: ParticipantIdentity = humanParticipant): Promise<{
         sessionId: string;
         requestId: string;
         accepted: true;
     }> {
         const signal = options.signal ?? new AbortController().signal;
-        const actorId = options.actorId ?? (participant === 'service' ? this.options.serviceActorId : this.options.actorId);
-        if (!actorId?.trim())
-            throw new Error('REACTIVE_INPUT_ACTOR_REQUIRED');
+        const actorId = participantActor(identity, options, this.options.actorId), participant = identity.participant;
         signal.throwIfAborted();
         this.sessions.assertSessionWorkspace(session);
         const input = submissionSchema.parse(raw);
@@ -149,10 +141,8 @@ export class ConversationInputs {
                 this.#pending.delete(key);
         }
     }
-    async uploadSessionFile(session: ConversationSession, request: EncodedFileUploadRequest, options: SubmitOptions): Promise<FileUploadValue> {
-        const actorId = options.actorId ?? this.options.actorId;
-        if (!actorId?.trim())
-            throw new Error('REACTIVE_INPUT_ACTOR_REQUIRED');
+    async uploadSessionFile(session: ConversationSession, request: EncodedFileUploadRequest, options: SubmitOptions, identity: ParticipantIdentity = humanParticipant): Promise<FileUploadValue> {
+        participantActor(identity, options, this.options.actorId);
         const signal = options.signal ?? new AbortController().signal;
         const encoded = { data: request.data, ...(request.name === undefined ? {} : { name: request.name }) };
         signal.throwIfAborted();

@@ -262,7 +262,7 @@ test('已有持久成员但Agent setup尚未完成时不能取得公开句柄，
       '先有真实持久成员，再由原生Agent完成其全部setup');
     await assert.rejects(app.host.open(sessionId), unfinished);
     await assert.rejects(app.host.resume(sessionId), unfinished);
-    await assert.rejects(app.host.service(sessionId, program), unfinished);
+    await assert.rejects(app.host.service().open(sessionId, program), unfinished);
     assert.throws(() => app.host.conversation(sessionId), unfinished);
     released.resolve(); await creating;
     remove();

@@ -48,7 +48,7 @@ test('真实文件资源共享watch并先监听后读，失效取消旧页，冷
     const visible = new Set();
     const role = { name: 'file-artifacts', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/questions', 'reactivePrograms/view'] };
     gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
-      model: { provider: 'file-resources', model: 'unused' }, actor: principal => principal.id,
+      model: { provider: 'file-resources', model: 'unused' }, participant: principal => ({ participant: 'human', actorId: principal.id }),
       access: service => service.registerPolicy('files', { bindings: () => [...visible].map(id => ({ role, resource: { kind: 'session', id } })) }),
       carrier: { async authenticate(request) {
         if (request.headers.get('authorization') !== 'Bearer file-reader') throw new RemoteAuthenticationError(401);

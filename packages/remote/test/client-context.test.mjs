@@ -60,7 +60,7 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
       'reactivePrograms/view', 'reactivePrograms/resolveAction', 'reactivePrograms/startAction', 'reactivePrograms/actionResult', 'reactivePrograms/observeAction',
       'reactivePrograms/requestStatus', 'reactivePrograms/pause', 'reactivePrograms/cancel'] };
     const gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
-      model: { provider: 'client-context', model: 'unused' }, actor: principal => principal.id,
+      model: { provider: 'client-context', model: 'unused' }, participant: principal => ({ participant: 'human', actorId: principal.id }),
       access: service => service.registerPolicy('context-user', { bindings: () => [
         ...[...visible].map(id => ({ role, resource: { kind: 'session', id } })),
         { role: { name: 'workspace-owner', resource: 'workspace', actions: ['reactivePrograms/create', 'reactivePrograms/completeCreation'] },

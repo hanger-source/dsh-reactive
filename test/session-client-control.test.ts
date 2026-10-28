@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { foldGoal } from '@deepseek-ai/dsh-goal';
 import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session';
-import { defineApplication, defineEnvironment, defineProgram, defineSurface, z, type ProgramSessionClient } from '@hanger-source/dsh-reactive';
+import { defineApplication, defineEnvironment, defineProgram, defineSurface, z, type HumanProgramSessionClient } from '@hanger-source/dsh-reactive';
 import { implementProgram } from '@hanger-source/dsh-reactive/program';
 import { boot } from './native-support.ts';
 
@@ -29,7 +29,7 @@ for (const control of ['pause', 'cancel'] as const) for (const cancellation of [
     let stop = () => {};
     const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
     const peer = await app.host.open(session.id, program);
-    const common: ProgramSessionClient<typeof program> = session;
+    const common: HumanProgramSessionClient<typeof program> = session;
     try {
       const agent = app.native.agents.get(SessionId(session.id))!;
       assert.ok(agent);
@@ -83,9 +83,9 @@ test('预取消不进入Goal或队列控制，服务身份可读权威请求但�
     models++; throw new Error('SESSION_CONTROL_ADMISSION_MUST_NOT_CALL_MODEL');
   });
   const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
-  const service = await app.host.service(session.id, program);
+  const service = await app.host.service().open(session.id, program);
   try {
-    const common: ProgramSessionClient<typeof program> = session;
+    const common: HumanProgramSessionClient<typeof program> = session;
     const agent = app.native.agents.get(SessionId(session.id))!;
     await common.submit({ requestId: 'preserved', intent: 'question', delivery: 'inject', content: '显式取消前保留', scope: null });
     const abort = new AbortController(), reason = new Error('CONTROL_CANCELLED_BEFORE_ADMISSION');

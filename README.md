@@ -39,7 +39,7 @@ Jobs 与 MCP 的 `toolNames`、MCP 的 `resourceToolNames` 是实际注册工具
 - 局部关系使用 `createResource(scope, options)`、`createReaction(scope, options)` 直接取得同一类运行实例；资源构造不读取，反应构造不执行。组件用 `useResource(implementation, params)` 从程序 owner 取得共享绑定，自定义业务 hook 继续组合标准观察流。
 - `useResourceInstance(implementation, params)` 与 `useReaction(implementation, params)` 取得程序拥有的完整实例；普通函数、Promise、流与 hooks 共用同一对象。反应仍须显式 `start()`，程序失败或退出停止查询、感知和排队关系，已受理业务保留原 owner。
 - 局部业务 hook 使用 `useResourceInstance(() => ({ value, read }), dependencies)` 或 `useReaction(() => ({ event, result, observe, operator, execute }), dependencies)` 直接构造同一类实例，无需额外参数合同或 Scope。依赖决定本组件的身份，目标变化取得新实例，旧对象保留原目标；factory 不读取、不启动反应。
-- `host.service(sessionId, Program)` 提供固定服务来源的业务调用与输入入口。它与人工 SDK 共享准入链，持久保留各自来源，服务事件不会继承人的输入或 Goal 授权。
+- `host.service(actorId).open(sessionId, Program)` 提供在取得时固定身份的服务端口。同一服务视图也可创建、恢复会话及上传文件，与人工端共享准入链，持久保留各自来源；服务事件不继承人的输入或 Goal 授权。
 - `defineAction` 定义共享业务合同，`implementAction` 接入宿主执行，`useAction` 绑定明确目标。显式调用产生一次 Invocation；关联的 Operation 可以独立定位和持续观察。
 - `defineProgram` 定义可共享的输入与公开 Surface 合同，`implementProgram` 将宿主组件接到同一合同；`defineEnvironment` 组合程序、指令、Skill 与 Preset。`createWorkspace` 注册明确目录，创建会话时同时选择环境与工作区。
 - `composeSurface` 从领域模块的局部合同生成类型化实例路径、根 Surface 和挂载点；`Module` 统一隔离 Context、Offer、Follow 名称并映射局部 Expose。`selectSurface` 按合同选择公开能力，模块不需要接收 names 或应用自定义 Outlet。

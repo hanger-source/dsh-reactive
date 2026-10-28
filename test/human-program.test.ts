@@ -135,7 +135,7 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.equal(await session.question(question.callId), bound, '同一 SDK 复用固定问题对象');
       assert.deepEqual((await bound.state.read()).foreground, question);
       await assert.rejects(session.question('never-asked'), /REACTIVE_HUMAN_QUESTION_NOT_FOUND/u);
-      const service = await app.host.service(session.id, scene.program);
+      const service = await app.host.service().open(session.id, scene.program);
       try {
         // 忽略公开类型的 JavaScript 调用也不能把后台服务变成人工参与者。
         const untyped = service as unknown as typeof session;

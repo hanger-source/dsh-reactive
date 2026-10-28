@@ -28,7 +28,7 @@ export class ConversationPrograms {
     }
     release(agent: Agent): Promise<void> { return this.bindings.release(agent); }
     create(conversation: Conversation<any>, implementation: ProgramImplementation, workspace: ManagedWorkspace, session: () => ConversationSession): ProgramInstance<any> {
-        return new ProgramInstance(conversation.scope, implementation, conversation, workspace.context, { execution: () => this.authority.participantExecution(session(), {}, 'service', 'program'),
+        return new ProgramInstance(conversation.scope, implementation, conversation, workspace.context, { execution: () => this.authority.programExecution(session(), 'program'),
             admit: (action, input, call, execution) => this.authority.admitAction(session(), action, input, call, execution),
             operation: (action, event, execution) => this.operations.operationEvent(action, event, execution),
             operationAccess: binding => this.operations.programAccess(session(), binding),

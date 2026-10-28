@@ -1,5 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis";
-import { type SubmitOptions, type Workspace, type WorkspaceInfo, type WorkspaceRegistration, type ConversationCreateOptions } from "@hanger-source/dsh-reactive/kernel";
+import { type SubmitOptions, type CancellationOptions, type Workspace, type WorkspaceInfo, type WorkspaceRegistration, type ConversationCreateOptions } from "@hanger-source/dsh-reactive/kernel";
 import { type ApplicationDefinition } from "@hanger-source/dsh-reactive/kernel";
 import { type AnyEnvironment, type EnvironmentAt } from "@hanger-source/dsh-reactive/kernel";
 import { type OperationContract, type OperationHandle, type OperationReference, type OperationCommand, type OperationLocation, type OperationState, type OperationNotificationResult, type OperationFeedbackRead, type OperationFeedbackPayload } from "@hanger-source/dsh-reactive/kernel";
@@ -19,6 +19,20 @@ import { ProgramTools } from './execution/tools.ts';
 import { OperationParticipation } from './operations/participation.ts';
 import { ConversationPrograms } from './programs/preparation.ts';
 import { ConversationQuestions } from './participation/questions.ts';
+import { humanParticipant, serviceParticipant, type ParticipantIdentity } from './participation/identity.ts';
+
+/** 可信宿主签发的固定服务身份；会话、工作区与执行仍由同一应用持有。 */
+export interface ApplicationService<E extends readonly AnyEnvironment[] = readonly AnyEnvironment[]> {
+    create<Id extends E[number]['id']>(environmentId: Id, options: ConversationCreateOptions): Promise<ServiceConversation<EnvironmentAt<E[number], Id>['program']['definition']>>;
+    open(sessionId: string): Promise<ServiceConversation>;
+    open<P extends ProgramContract>(sessionId: string, expected: P): Promise<ServiceConversation<P>>;
+    resume(sessionId: string): Promise<ServiceConversation>;
+    resume<P extends ProgramContract>(sessionId: string, expected: P): Promise<ServiceConversation<P>>;
+    completeCreation(reference: CreationReference): Promise<ServiceConversation>;
+    createWorkspace(input: WorkspaceRegistration): Promise<WorkspaceInfo>;
+    describe(): Promise<readonly WorkspaceInfo[]>;
+    notifyOperation(sessionId: string, followId: string, options?: CancellationOptions): Promise<OperationNotificationResult>;
+}
 /** 应用入口只组合能力域，执行和事实由对应owner持有。 */
 export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyEnvironment[]> {
     #lifetime = new AbortController();
@@ -32,7 +46,7 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
     private readonly questions: ConversationQuestions;
     private readonly programs: ConversationPrograms;
     private readonly stopDelegationUpdates: () => void;
-    private constructor(ctx: Context, definition: ApplicationDefinition<E>, private readonly workspaces: Workspaces, options: HostOptions, private readonly delegations: NativeDelegations, private readonly releaseInstallation: () => Promise<void>) {
+    private constructor(ctx: Context, definition: ApplicationDefinition<E>, private readonly workspaces: Workspaces, private readonly options: HostOptions, private readonly delegations: NativeDelegations, private readonly releaseInstallation: () => Promise<void>) {
         installReactiveProjection(ctx);
         const signal = this.#lifetime.signal;
         this.facts = new ConversationObservations(ctx, signal);
@@ -59,11 +73,14 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
         return new ApplicationHost(ctx, definition, workspaces, options, delegations, releaseInstallation);
     }
     initialize(): Promise<void> { return this.sessions.initialize(); }
-    private handle<P extends ProgramContract = ProgramContract>(session: ConversationSession, participant: 'human' | 'service' = 'human'): ConversationHandle<P> {
+    private handle<P extends ProgramContract = ProgramContract>(session: ConversationSession, participant: ParticipantIdentity = humanParticipant): ConversationHandle<P> {
         return ConversationHandle.create<P>(session, participant, this.sessions, this.inputs, this.actions, this.operations, this.questions, this.facts);
     }
     async create<Id extends E[number]['id']>(environmentId: Id, options: ConversationCreateOptions): Promise<ConversationHandle<EnvironmentAt<E[number], Id>['program']['definition']>> {
-        return this.handle<EnvironmentAt<E[number], Id>['program']['definition']>(await this.sessions.create(environmentId, options));
+        return this.createAs(environmentId, options, humanParticipant);
+    }
+    private async createAs<Id extends E[number]['id']>(environmentId: Id, options: ConversationCreateOptions, participant: ParticipantIdentity): Promise<ConversationHandle<EnvironmentAt<E[number], Id>['program']['definition']>> {
+        return this.handle<EnvironmentAt<E[number], Id>['program']['definition']>(await this.sessions.create(environmentId, options), participant);
     }
     createWorkspace(input: WorkspaceRegistration): Promise<WorkspaceInfo> { return this.sessions.createWorkspace(input); }
     /** 取得已有本地工作区的编程接点，不创建或恢复Session。 */
@@ -72,20 +89,27 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
     open(sessionId: string): Promise<ConversationHandle>;
     open<P extends ProgramContract>(sessionId: string, expected: P): Promise<ConversationHandle<P>>;
     async open(sessionId: string, expected?: ProgramContract): Promise<ConversationHandle> {
-        const session = await this.sessions.readSession(sessionId, expected);
-        return this.handle(session);
+        return this.openAs(sessionId, expected, humanParticipant);
     }
-    async completeCreation(reference: CreationReference): Promise<ConversationHandle> { return this.handle(await this.sessions.completeCreation(reference)); }
+    private async openAs<P extends ProgramContract = ProgramContract>(sessionId: string, expected: P | undefined, participant: ParticipantIdentity): Promise<ConversationHandle<P>> {
+        const session = await this.sessions.readSession(sessionId, expected);
+        return this.handle<P>(session, participant);
+    }
+    async completeCreation(reference: CreationReference): Promise<ConversationHandle> { return this.completeCreationAs(reference, humanParticipant); }
+    private async completeCreationAs(reference: CreationReference, participant: ParticipantIdentity): Promise<ConversationHandle> { return this.handle(await this.sessions.completeCreation(reference), participant); }
     resume(sessionId: string): Promise<ConversationHandle>;
     resume<P extends ProgramContract>(sessionId: string, expected: P): Promise<ConversationHandle<P>>;
     async resume(sessionId: string, expected?: ProgramContract): Promise<ConversationHandle> {
+        return this.resumeAs(sessionId, expected, humanParticipant);
+    }
+    private async resumeAs<P extends ProgramContract = ProgramContract>(sessionId: string, expected: P | undefined, participant: ParticipantIdentity): Promise<ConversationHandle<P>> {
         const session = await this.sessions.readSession(sessionId, expected);
         const acquired = await this.sessions.activate(sessionId);
         try {
             if (session.child)
                 await this.sessions.recoverChild(session);
             await this.operations.reconcileOperations(this.sessions.live(this.sessions.require(sessionId)));
-            return this.handle(session);
+            return this.handle<P>(session, participant);
         }
         catch (error) {
             if (acquired) {
@@ -102,22 +126,39 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
         this.sessions.expectProgram(session, expected);
         return this.handle(session);
     }
-    async service<P extends ProgramContract>(sessionId: string, expected: P): Promise<ServiceConversation<P>> {
-        this.sessions.assertServiceActor();
-        const session = await this.sessions.readSession(sessionId, expected);
-        return this.handle<P>(session, 'service');
+    service(actorId?: string): ApplicationService<E> {
+        this.#lifetime.signal.throwIfAborted();
+        const participant = serviceParticipant(actorId === undefined ? this.options.serviceActorId : actorId), application = this;
+        const service: ApplicationService<E> = {
+            create<Id extends E[number]['id']>(environmentId: Id, options: ConversationCreateOptions) {
+                return application.createAs(environmentId, options, participant);
+            },
+            open<P extends ProgramContract = ProgramContract>(sessionId: string, expected?: P) {
+                return application.openAs(sessionId, expected, participant);
+            },
+            resume<P extends ProgramContract = ProgramContract>(sessionId: string, expected?: P) {
+                return application.resumeAs(sessionId, expected, participant);
+            },
+            completeCreation: reference => application.completeCreationAs(reference, participant),
+            createWorkspace: input => application.createWorkspace(input),
+            describe: () => application.describe(),
+            notifyOperation: (sessionId, followId, options = {}) => application.operations.notifyOperation(sessionId, followId, options, participant),
+        };
+        return Object.freeze(service);
     }
     operationDefinition(kind: string, version: number): OperationContract { return this.operations.operationDefinition(kind, version); }
-    attachOperation<D extends OperationContract>(sessionId: string, definition: D, reference: OperationReference<D>, options: SubmitOptions = {}, participant: 'human' | 'service' = 'human'): Promise<OperationHandle<D>> {
-        return this.operations.attachOperation(sessionId, definition, reference, options, participant);
+    attachOperation<D extends OperationContract>(sessionId: string, definition: D, reference: OperationReference<D>, options: SubmitOptions = {}): Promise<OperationHandle<D>> {
+        return this.operations.attachOperation(sessionId, definition, reference, options);
     }
-    locateOperation<D extends OperationContract>(sessionId: string, definition: D, command: OperationCommand<D>, options: SubmitOptions = {}, participant: 'human' | 'service' = 'human'): Promise<OperationLocation<OperationReference<D>, OperationState<D>>> {
-        return this.operations.locateOperation(sessionId, definition, command, options, participant);
+    locateOperation<D extends OperationContract>(sessionId: string, definition: D, command: OperationCommand<D>, options: SubmitOptions = {}): Promise<OperationLocation<OperationReference<D>, OperationState<D>>> {
+        return this.operations.locateOperation(sessionId, definition, command, options);
     }
-    readOperationFeedback<D extends OperationContract>(sessionId: string, definition: D, command: OperationCommand<D>, id: string, options: SubmitOptions = {}, participant: 'human' | 'service' = 'human'): Promise<OperationFeedbackRead<OperationReference<D>, OperationFeedbackPayload<D>>> {
-        return this.operations.readOperationFeedback(sessionId, definition, command, id, options, participant);
+    readOperationFeedback<D extends OperationContract>(sessionId: string, definition: D, command: OperationCommand<D>, id: string, options: SubmitOptions = {}): Promise<OperationFeedbackRead<OperationReference<D>, OperationFeedbackPayload<D>>> {
+        return this.operations.readOperationFeedback(sessionId, definition, command, id, options);
     }
-    notifyOperation(sessionId: string, followId: string, options: SubmitOptions = {}): Promise<OperationNotificationResult> { return this.operations.notifyOperation(sessionId, followId, options); }
+    notifyOperation(sessionId: string, followId: string, options: SubmitOptions = {}): Promise<OperationNotificationResult> {
+        return this.operations.notifyOperation(sessionId, followId, { signal: options.signal }, serviceParticipant(options.actorId ?? this.options.serviceActorId));
+    }
     close(sessionId: string): Promise<void> { return this.sessions.close(sessionId); }
     dispose(): Promise<void> {
         if (this.#disposing) return this.#disposing;

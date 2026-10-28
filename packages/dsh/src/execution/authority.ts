@@ -16,6 +16,7 @@ import type { ConversationSessions } from '../conversations/sessions.ts';
 import type { ConversationObservations } from '../conversations/observations.ts';
 import type { ConversationInputs } from '../conversations/inputs.ts';
 import type { Workspaces } from '../workspaces/workspaces.ts';
+import { humanParticipant, serviceParticipant, participantActor, type ParticipantIdentity } from '../participation/identity.ts';
 type ToolExecution = ActionExecutionContext & {
     readonly source: Extract<ActionExecutionContext['source'], {
         readonly kind: 'tool';
@@ -105,19 +106,18 @@ export class ActionAuthority {
         };
         return this.signExecution(entry.session, execution);
     }
-    participantExecution(session: ConversationSession, options: SubmitOptions, participant: 'human' | 'service', entrypoint: string, beforeExecute?: () => void): ActionExecutionContext {
+    participantExecution(session: ConversationSession, options: SubmitOptions, identity: ParticipantIdentity, entrypoint: string, beforeExecute?: () => void): ActionExecutionContext {
         this.assertActive();
-        const actorId = participant === 'service' ? this.options.serviceActorId : options.actorId ?? this.options.actorId;
-        if (participant === 'service' && options.actorId !== undefined && options.actorId !== actorId)
-            throw new Error('REACTIVE_SERVICE_ACTOR_IMMUTABLE');
-        if (!actorId?.trim())
-            throw new Error('REACTIVE_ACTION_ACTOR_REQUIRED');
+        const actorId = participantActor(identity, options, this.options.actorId), participant = identity.participant;
         const signal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
         signal.throwIfAborted();
         // 独立参与调用没有继承当前模型输入或 Goal 续接权限。
         const execution: ActionExecutionContext = { invocationId: randomUUID(), sessionId: session.header.id,
             source: { kind: 'participant', actorId, participant, entrypoint }, inputs: [], continuation: null, signal };
         return this.signExecution(session, execution, beforeExecute);
+    }
+    programExecution(session: ConversationSession, entrypoint: string): ActionExecutionContext {
+        return this.participantExecution(session, {}, serviceParticipant(this.options.serviceActorId), entrypoint);
     }
     currentAction(session: ConversationSession, name: string): ActionReference {
         const actions = session.program.outputs.actions.peek();
@@ -138,7 +138,7 @@ export class ActionAuthority {
             throw new ActionTargetMismatchError(name);
         return action;
     }
-    invokeSession(session: ConversationSession, name: string, bindingId: string, input: unknown, options: SubmitOptions = {}, participant: 'human' | 'service' = 'human'): Invocation<unknown, Json> {
+    invokeSession(session: ConversationSession, name: string, bindingId: string, input: unknown, options: SubmitOptions = {}, identity: ParticipantIdentity = humanParticipant): Invocation<unknown, Json> {
         this.assertActive();
         const program = session.program;
         program.flush();
@@ -150,7 +150,7 @@ export class ActionAuthority {
             return true;
         };
         check();
-        const execution = this.participantExecution(session, options, participant, participant === 'service' ? 'service-sdk' : 'sdk', () => { program.flush(); check(); });
+        const execution = this.participantExecution(session, options, identity, identity.participant === 'service' ? 'service-sdk' : 'sdk', () => { program.flush(); check(); });
         return program.invoke(action, input, execution, check);
     }
 }

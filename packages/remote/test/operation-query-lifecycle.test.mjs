@@ -100,7 +100,7 @@ test('Operation查询按消费者共享连接，Session退出等待本次流退�
   const workspace = await runtime.application.createWorkspace({ directory: root });
   local = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
   gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
-    model: { provider: 'operation-query', model: 'unused' }, actor: principal => principal.id,
+    model: { provider: 'operation-query', model: 'unused' }, participant: principal => ({ participant: 'human', actorId: principal.id }),
     access: service => service.registerPolicy('reader', { bindings: () => [{ resource: { kind: 'session', id: local.id },
       role: { name: 'operation-reader', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/observeOperation',
         'reactivePrograms/resolveAction', 'reactivePrograms/startAction', 'reactivePrograms/actionResult', 'reactivePrograms/actionInvocation', 'reactivePrograms/observeAction',

@@ -1,7 +1,7 @@
-import type { ActionInput, CancellationOptions, ProgramContract, ProgramSessionClient, Surface, SurfaceClient, SurfaceMount, ViewValue } from '@hanger-source/dsh-reactive';
+import type { ActionInput, CancellationOptions, ProgramContract, ProgramSessionClient, HumanProgramSessionClient, Surface, SurfaceClient, SurfaceMount, ViewValue } from '@hanger-source/dsh-reactive';
 import { combineResources, composeSurface, defineProgram, defineSurface, resourceView, selectSurface, z } from '@hanger-source/dsh-reactive';
 
-export function sessionControls<P extends ProgramContract>(session: ProgramSessionClient<P>, signal: AbortSignal) {
+export function sessionControls<P extends ProgramContract>(session: HumanProgramSessionClient<P>, signal: AbortSignal) {
   return { pause: () => session.pause({ signal }), cancel: () => session.cancel({ signal }),
     status: (requestId: string) => session.requestStatus(requestId, { signal }) };
 }
@@ -29,7 +29,7 @@ export function observePublishedCapabilities<P extends ProgramContract, K extend
 // 同一模块仅依赖共享合同，本地、远程和浏览器消费者直接传入原对象。
 export function sessionResources<P extends ProgramContract>(session: ProgramSessionClient<P>) {
   return { surface: session.surface, progress: session.progress, human: session.human,
-    request: (id: string) => session.request(id), question: (callId: string) => session.question(callId) };
+    request: (id: string) => session.request(id) };
 }
 
 export async function readSessionView<P extends ProgramContract, K extends keyof P['surface']['views'] & string>(

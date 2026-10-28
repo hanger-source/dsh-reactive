@@ -12,7 +12,7 @@ import { mountProgramGateway } from '@hanger-source/dsh-reactive-remote';
 const gateway = await mountProgramGateway(runtime.native, {
   application: runtime.application,
   model: { provider: 'my-provider', model: 'my-model' },
-  actor: principal => actorDirectory.actorId(principal),
+  participant: principal => ({ participant: 'human', actorId: actorDirectory.actorId(principal) }),
   access: service => registerApplicationPolicies(service),
   carrier: {
     host: '127.0.0.1',
@@ -24,7 +24,7 @@ const gateway = await mountProgramGateway(runtime.native, {
 
 `actorDirectory`、`registerApplicationPolicies` 与 `authenticateRequest` 属于应用。认证必须同时覆盖 HTTP 和 WebSocket upgrade，核对实际部署的 Host、Origin、会话或凭据，返回可信 `Principal`；参数正文不能选择 principal、actor 或权限。`RemoteAuthenticationError(401 | 403)` 表达认证拒绝。反向代理部署须同时转发 `/api/*` 与官方 stream mux 路径，保持这条认证边界。
 
-应用通过官方 `PrincipalMap` 声明自己的可信身份种类，policy 只为该种类登记实际权限。`actor` 必须判别实际 principal，再映射到业务身份；不要假设所有 principal 都有 id。
+应用通过官方 `PrincipalMap` 声明自己的可信身份种类，policy 只为该种类登记实际权限。`participant` 必须判别实际 principal，再映射到业务角色与 actorId；不要假设所有 principal 都有 id。
 
 ```ts
 declare module '@deepseek-ai/dsh-typert-protocol' {
@@ -34,7 +34,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
 }
 ```
 
-`actor(principal)` 签发输入来源中的 actorId；客户端收到的 `ProgramIdentity.actorId` 只是来源事实。框架不向参与者发放 owner token，也不把普通参与者提升为 owner。每个 Remote endpoint 仍由官方 Gateway 与 RemoteAccess 准入：
+`participant(principal)` 签发输入来源中的角色与 actorId；客户端收到的 `ProgramIdentity.participant` 和 `actorId` 是宿主确认的来源事实。框架不向参与者发放 owner token，也不把普通参与者提升为 owner。每个 Remote endpoint 仍由官方 Gateway 与 RemoteAccess 准入：
 
 | 权限 | 准入对象 |
 | --- | --- |
@@ -108,7 +108,11 @@ const receipt = await invocation.result;
 
 支持调用方取消的本地与远程 SDK 方法使用 `{ signal }` 选项，类型来自 core 的 `CancellationOptions`。远程身份始终来自认证载体，选项不携带 actor。`resolveAction` 的信号只取消尚未完成的解析等待，就绪连接随后由 Session 持有；远程 Action 调用的信号只取消开始回执的等待，已受理的业务和已取得 Invocation 的结果、观察继续归原 owner。受理尚未确认时仍按未知受理处理，不自动重发。已取消的调用在发送前明确拒绝。
 
-本地与远程的 `requestStatus(requestId, { signal })`、`pause({ signal })`、`cancel({ signal })` 由共同的 ProgramSessionClient 提供，回执类型 ProgramRequestStatus、ProgramGoalControl 与 ProgramCancelResult 定义在 core。暂停返回原 Goal 的 id、revision、phase，本地具体句柄还保留完整原生 GoalView；canceled:true 只确认原生处理已 idle 并完成持久 flush，不代表外部业务已取消。服务参与者只能读取请求状态，不能调用人工控制。
+本地与远程的 `requestStatus(requestId, { signal })` 属于共同的 ProgramSessionClient；`pause({ signal })`、`cancel({ signal })` 和问答控制属于 HumanProgramSessionClient。回执类型 ProgramRequestStatus、ProgramGoalControl 与 ProgramCancelResult 定义在 core。暂停返回原 Goal 的 id、revision、phase，本地具体句柄还保留完整原生 GoalView；canceled:true 只确认原生处理已 idle 并完成持久 flush，不代表外部业务已取消。服务参与者可以读取问题和请求状态，不能调用人工控制。
+
+Gateway 的 participant(principal) 从认证主体映射 `{ participant: 'human' | 'service', actorId }`。该身份不进入请求参数，由宿主在取得会话端口时固定；输入、Action、Operation 与上传沿同一身份准入，Invocation 回执还核对参与者类别和 actor。服务自动化通过 createServiceProgramClient 或 bindServiceProgramClient 使用共同能力，人工端使用 createProgramClient 或 bindProgramClient；各工厂核对宿主返回的身份，服务运行对象不包含回答、前台认领或 Goal 控制方法。即使单独授予了这些 endpoint 的访问 grant，服务身份仍会被服务器拒绝。
+
+固定 rc.3 的原生 `$stream` 与 Journal supervisor 需要 `interactions: 'answer'` 才具备连接代际和恢复循环。服务 SDK 明确复用这一正式传输；该标志不表示业务上的 human 身份，也不授予人工权限。`none` 连接目前不能绑定这套完整 SDK，框架不会降级成无恢复流、伪造连接代际或复制原生重连机制。
 
 这些方法的等待属于调用它们的 Session 句柄。调用级 signal、句柄 release 或 SDK dispose 会结束尚未返回的等待，即使公共 Context 仍存活或载体延迟返回回执；同一 Context 上其他 SDK 继续工作。已取消调用不启动控制，Host 在异步取得真实句柄后、进入读取或原生控制前再次核验请求取消。已经进入暂停或取消的控制由原生 owner 结算，Host 持有其短命句柄直到结算，不因 transport 退出提前释放；客户端退出不回滚控制，也不取消已受理业务。需要确认最终事实时，使用仍有效的句柄观察当前状态。
 

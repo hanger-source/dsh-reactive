@@ -68,7 +68,7 @@ test('认证content保留正文附件与原请求身份，排队编辑重新准�
   const read = { name: 'read-content', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/questions', 'reactivePrograms/editQueuedInput'] };
   const beforeGateway = ['attachments', 'commands', 'fileUploads', 'connection', 'credentials'].map(name => runtime.native.get(name)[symbols.original]);
   gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
-    model: { provider: 'remote-input-content', model: 'test' }, actor: principal => principal.id,
+    model: { provider: 'remote-input-content', model: 'test' }, participant: principal => ({ participant: 'human', actorId: principal.id }),
     access: service => service.registerPolicy('content-reader', { bindings: principal => [
       ...sessionIds.map(id => ({ role: principal.id === 'alice' ? participate : read, resource: { kind: 'session', id } })),
       ...(principal.id === 'alice' ? [{ role: upload, resource: { kind: 'session', id: original.id } }] : []),

@@ -109,7 +109,7 @@ renderer 在 React commit 后收集整棵树的声明，经过私有运行时品
 | --- | --- |
 | `Offer` 对应的模型工具 | 进入原生工具及 PTC 管线，携带真实 callId、rootCallId、parentCallId、已消费输入和适用 Goal continuation |
 | 组件程序显式调用绑定 | 宿主以配置的 serviceActorId 建立服务参与身份，携带独立 invocationId，不借用当前模型的输入或 Goal 权限 |
-| 同进程句柄的 `resolveAction` | 按调用者明确期望的 scope 捕获 `Expose` 的实际绑定；调用以可信选项或宿主 actorId 建立 human 参与身份，执行前核验同一绑定 |
+| 同进程句柄的 `resolveAction` | 按调用者明确期望的 scope 捕获 `Expose` 的实际绑定；保留句柄的 human 或 service 角色，服务 actor 在取得端口时固定，人工 actor 由可信选项或宿主配置提供，执行前核验同一绑定 |
 
 远程宿主从同一 Surface 合同分派到实际绑定，调用者身份由认证载体取得。各入口共用绑定的解析与准入链；独立调用不因参数中出现 callId 或 Goal 引用就取得原生调用权限。
 

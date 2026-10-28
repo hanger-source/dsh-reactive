@@ -39,7 +39,7 @@ test('Schedule真实CAS和持久变更驱动资源失效，迟到切面不回写
   try {
     // 正式Controller/Gateway提供Schedule公开依赖；不构造同名空服务或调用私有安装接点。
     gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
-      model: { provider: 'schedule-resources', model: 'unused' }, actor: principal => principal.id,
+      model: { provider: 'schedule-resources', model: 'unused' }, participant: principal => ({ participant: 'human', actorId: principal.id }),
       access: () => {}, carrier: { authenticate: async () => { throw new RemoteAuthenticationError(401); } },
     });
     await capability.install(runtime.native, join(root, 'home'));

@@ -65,7 +65,7 @@ test('同一View资源贯通本地、远程和hooks，动态重挂及真实断�
     const visible = new Set();
     const role = { name: 'view-reader', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/questions', 'reactivePrograms/view'] };
     gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
-      model: { provider: 'view-resources', model: 'unused' }, actor: principal => principal.id,
+      model: { provider: 'view-resources', model: 'unused' }, participant: principal => ({ participant: 'human', actorId: principal.id }),
       access: service => service.registerPolicy('views', { bindings: () => [...visible].map(id => ({ role, resource: { kind: 'session', id } })) }),
       carrier: { async authenticate(request) {
         if (request.headers.get('authorization') !== 'Bearer view-reader') throw new RemoteAuthenticationError(401);

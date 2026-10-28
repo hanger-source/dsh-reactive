@@ -5,7 +5,7 @@ export * from './resources/index.ts';
 export * from './reactions/index.ts';
 export type { Workspace } from './workspaces/context.ts';
 export type { SnapshotSource } from './reactivity/observable.ts';
-export type { ProgramSessionClient, ProgramGoalControl, ProgramCancelResult, ProgramRequestStatus } from './conversations/client.ts';
+export type { ProgramSessionClient, HumanProgramSessionClient, ProgramGoalControl, ProgramCancelResult, ProgramRequestStatus } from './conversations/client.ts';
 export { defineApplication } from './applications/definition.ts';
 export { defineEnvironment } from './environments/definition.ts';
 export { z } from 'zod';

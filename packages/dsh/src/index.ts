@@ -1,4 +1,5 @@
 export { ApplicationHost } from './application.ts';
+export type { ApplicationService } from './application.ts';
 export { mountApplication } from './applications/mount.ts';
 export type { ApplicationFactory } from './applications/mount.ts';
 export type { HostOptions } from './applications/options.ts';

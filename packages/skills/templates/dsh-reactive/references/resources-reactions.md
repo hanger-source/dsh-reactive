@@ -102,4 +102,4 @@ run.state$.subscribe(state => {
 
 取消监控订阅不停止运行。未处理错误终止这次运行，重新 start 是显式决定。stop 或 Scope 退出停止感知及尚未开始的 RxJS 工作，不取消已受理 Action/Job。跨重启执行、事务幂等和定时调度归原业务或原生 owner。
 
-持续事件需要提交会话时，先用宿主 `host.service(sessionId, Program)` 得到固定服务身份端口；调用其 `resolveAction` 或 `submit`，不能借人工句柄自报 actor 或继承人的 Goal。
+持续事件需要提交会话时，先用 `host.service(actorId).open(sessionId, Program)` 得到固定服务身份端口；调用其 `resolveAction` 或 `submit`，不能逐调用自报 actor 或继承人的 Goal。同一应用视图也可创建或恢复会话。

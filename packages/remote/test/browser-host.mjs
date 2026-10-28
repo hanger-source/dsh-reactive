@@ -90,7 +90,7 @@ const sessionId = randomUUID();
 const credential = randomUUID();
 let origin;
 const gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
-  model: { provider: 'browser-proof', model: 'unused' }, actor: principal => principal.id,
+  model: { provider: 'browser-proof', model: 'unused' }, participant: principal => ({ participant: 'human', actorId: principal.id }),
   access: service => service.registerPolicy('browser-participant', { bindings() {
     return [{ role: { name: 'create', resource: 'workspace', actions: ['reactivePrograms/create'] }, resource: { kind: 'workspace', id: workspace.workspaceId } },
       { role: { name: 'native-client-catalog', resource: 'global', actions: ['session/control', 'session/list'] }, resource: { kind: 'global' } },

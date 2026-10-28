@@ -145,7 +145,7 @@ test('组合程序随输入切换完整模块，共享工作区事实，保存�
     assert.equal(changes.listenerCount('b'), 1);
     const otherProgram = definition.environments[1].program.definition;
     await assert.rejects(app.host.open(id, otherProgram), /REACTIVE_PROGRAM_CONTRACT_MISMATCH/);
-    await assert.rejects(app.host.service(id, otherProgram), /REACTIVE_PROGRAM_CONTRACT_MISMATCH/);
+    await assert.rejects(app.host.service().open(id, otherProgram), /REACTIVE_PROGRAM_CONTRACT_MISMATCH/);
     await assert.rejects(app.host.resume(id, otherProgram), /REACTIVE_PROGRAM_CONTRACT_MISMATCH/);
     assert.equal(setups, 2, '错合同的冷读取和恢复不求值程序');
     assert.equal(changes.listenerCount('b'), 1, '取得句柄失败不留下业务来源连接');

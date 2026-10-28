@@ -8,7 +8,9 @@
 
 `session.module(mount)` 供业务消费者使用局部槽名；返回 SurfaceClient 的合同是 mount.selected，mount.surface 保留组件实现的原合同。资源对象、调用选项和同步/异步时序继续来自原客户端，不增加连接、owner 或 release。根会话、集合成员及局部模块均支持 module；继续选择嵌套模块时，须属于父原合同且保持父已公开的子集，不能用更宽的挂载恢复隐藏槽。
 
-`session.requestStatus(requestId, { signal })`、`pause({ signal })`、`cancel({ signal })` 是共同 ProgramSessionClient 方法，ProgramRequestStatus、ProgramGoalControl、ProgramCancelResult 从 core 导入。暂停回执提供原 Goal 的 id/revision/phase；canceled:true 表示原生处理已 idle 并完成持久 flush，不代表外部业务 Operation 已取消。requestStatus 核验原生日志、投影、成员及代际，不把客户端缺项或读取失败当 absent；冷查询不激活 Agent。服务参与者可以核对状态，不能控制 Goal 或答复人工问题。
+`session.requestStatus(requestId, { signal })` 是共同 ProgramSessionClient 方法；`pause({ signal })`、`cancel({ signal })` 和问答控制属于 HumanProgramSessionClient。ProgramRequestStatus、ProgramGoalControl、ProgramCancelResult 从 core 导入。暂停回执提供原 Goal 的 id/revision/phase；canceled:true 表示原生处理已 idle 并完成持久 flush，不代表外部业务 Operation 已取消。requestStatus 核验原生日志、投影、成员及代际，不把客户端缺项或读取失败当 absent；冷查询不激活 Agent。服务参与者可以读取问题与请求状态，不能控制 Goal 或答复人工问题。
+
+远程服务用 createServiceProgramClient/bindServiceProgramClient，返回的 RemoteServiceProgramSession 可直接交给共同模块，运行对象本身不包含人工方法。Gateway 的 participant(principal) 明确签发角色和 actor，wire 不能自报。固定 rc.3 的完整流与 journal 恢复仍要求正式 answer 传输连接；它与业务 human 权限分离，不表示后台程序需要人工界面。人工原生 UI 只接受 RemoteProgramSession。
 
 调用级 signal、release 或所属 SDK dispose 拒绝尚未返回的回执等待，公共 Context 与其他 SDK 保持原寿命。已取消的调用不启动控制，Host 在取得句柄后、进入实际读取或控制前重新检查请求取消。已受理控制继续结算，Host 等待真正完成后才释放自己的短命句柄；取消等待不回滚已受理业务，也不因回执未知自动重发控制。openEvents 继续使用远程 SDK 的官方 carrier、分页与重连合同，不要求本地接口伪造传输状态。
 

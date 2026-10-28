@@ -67,7 +67,7 @@ await runtime.application.close(sessionId);
 const credential = randomUUID();
 let origin;
 const gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
-  model: { provider: 'browser-requests', model: 'test' }, actor: principal => principal.id,
+  model: { provider: 'browser-requests', model: 'test' }, participant: principal => ({ participant: 'human', actorId: principal.id }),
   access: service => service.registerPolicy('browser-request-peer', { bindings: () => [{ role: { name: 'request-reader', resource: 'session',
     actions: ['reactivePrograms/open', 'reactivePrograms/questions', 'reactivePrograms/progress', 'reactivePrograms/journal',
       'reactivePrograms/journalPage', 'reactivePrograms/resume', 'reactivePrograms/submit'] }, resource: { kind: 'session', id: sessionId } }] }),

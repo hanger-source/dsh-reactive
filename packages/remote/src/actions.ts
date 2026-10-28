@@ -7,6 +7,7 @@ import { Inbox } from '@hanger-source/dsh-reactive-client/transport';
 import type { ProgramActionRequest, ProgramActionStart, ProgramInvocationAddress, ProgramInvocationFrame } from '@hanger-source/dsh-reactive-client/types';
 import { decodeProgramFailure } from '@hanger-source/dsh-reactive-client/errors';
 import { createProgramFailureMapper } from './host-errors.ts';
+import { resolveProgramParticipant, type ProgramParticipant } from './participant.ts';
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface RemoteErrorDetailsMap {
@@ -24,8 +25,8 @@ export interface ProgramActionOwner {
 }
 
 export interface ProgramActionOwnerOptions {
-  /** 仅接受认证宿主签发的 Principal，由此映射真实业务 actor。 */
-  actor(principal: Principal): string;
+  /** 仅接受认证宿主签发的 Principal，由此确定业务角色和 actor。 */
+  participant(principal: Principal): ProgramParticipant;
   /** owner 关闭只释放关联与观察，ApplicationHost 仍决定业务执行的生存期。 */
   readonly signal?: AbortSignal;
   /** 已完成结果在本进程中的保留时间，默认五分钟；不是持久恢复或幂等承诺。 */
@@ -36,6 +37,7 @@ export interface ProgramActionOwnerOptions {
 
 type Entry = {
   readonly sessionId: string;
+  readonly participant: ProgramParticipant['participant'];
   readonly actorId: string;
   readonly name: string;
   readonly contract: ActionIdentity;
@@ -67,11 +69,9 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
   const completed = new Set<string>();
   const lifetime = new AbortController();
   const signal = options.signal ? AbortSignal.any([options.signal, lifetime.signal]) : lifetime.signal;
-  const actor = (principal: Principal): string => {
+  const participant = (principal: Principal): ProgramParticipant => {
     signal.throwIfAborted();
-    const id = options.actor(principal);
-    if (!id.trim()) throw new Error('REACTIVE_ACTOR_REQUIRED');
-    return id;
+    return resolveProgramParticipant(options.participant, principal);
   };
   const evict = (id: string): void => {
     const entry = entries.get(id);
@@ -79,9 +79,9 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
     entries.delete(id); completed.delete(id);
   };
   const lookup = (request: ProgramInvocationAddress, principal: Principal): Entry => {
-    const actorId = actor(principal);
+    const identity = participant(principal);
     const entry = entries.get(request.invocationId);
-    if (!entry || entry.sessionId !== request.sessionId || entry.actorId !== actorId) {
+    if (!entry || entry.sessionId !== request.sessionId || entry.actorId !== identity.actorId || entry.participant !== identity.participant) {
       throw new RemoteError('reactive/invocation-unavailable', 'Invocation is absent, expired, or belongs to another participant', {});
     }
     return entry;
@@ -94,9 +94,11 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
   if (signal.aborted) dispose();
   return {
     async start(request: ProgramActionRequest, principal: Principal, querySignal: AbortSignal): Promise<ProgramActionStart> {
-      const actorId = actor(principal);
+      const identity = participant(principal);
       querySignal.throwIfAborted();
-      const handle = await application.open(request.sessionId).catch(rethrow);
+      const handle = await (identity.participant === 'service'
+        ? application.service(identity.actorId).open(request.sessionId)
+        : application.open(request.sessionId)).catch(rethrow);
       let retained = false;
       try {
         signal.throwIfAborted(); querySignal.throwIfAborted();
@@ -105,10 +107,12 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
         assertActionIdentity(request.contract, definition);
         // 不向 execute 传 transport signal。Host 在同一公开入口核验当前 Expose/准入。
         // 动态句柄不声称拥有某个静态 Program；唯一的合同 parse 由这个真实 Host 入口执行。
-        const invocation = handle.invokeAction(request.name, request.bindingId, request.input, { actorId });
+        const invocation = handle.invokeAction(request.name, request.bindingId, request.input,
+          identity.participant === 'human' ? { actorId: identity.actorId } : {});
         const wireResult = invocation.result.then(value => z.json().parse(z.encode(definition.output, value)))
           .catch(rethrow);
-        const entry: Entry = { sessionId: request.sessionId, actorId, name: request.name, contract: actionIdentity(definition), invocation, wireResult };
+        const entry: Entry = { sessionId: request.sessionId, participant: identity.participant, actorId: identity.actorId,
+          name: request.name, contract: actionIdentity(definition), invocation, wireResult };
         entries.set(invocation.id, entry); retained = true;
         const settle = (): void => {
           handle.release();

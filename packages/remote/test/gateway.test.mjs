@@ -81,7 +81,7 @@ test('动态模块集合经真实Gateway保留Date、单向目标与独立Operat
     'reactivePrograms/resolveAction', 'reactivePrograms/startAction', 'reactivePrograms/actionResult', 'reactivePrograms/observeAction',
     'reactivePrograms/resolveOperation', 'reactivePrograms/locateOperation', 'reactivePrograms/observeOperation'] };
   gateway = await mountProgramGateway(runtime.native, { application: runtime.application, model: { provider: 'remote-module', model: 'test' },
-    actor: principal => principal.id,
+    participant: principal => ({ participant: 'human', actorId: principal.id }),
     access: service => service.registerPolicy('module-user', { bindings: () => [{ role, resource: { kind: 'session', id: local.id } }] }),
     carrier: { onError: error => carrierErrors.push(error), authenticate(request) {
       if (request.headers.get('authorization') !== 'Bearer module-user') throw new RemoteAuthenticationError(401);
@@ -315,7 +315,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
   const bindingRole = { name: 'business-action-only', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/resolveAction',
     'reactivePrograms/startAction', 'reactivePrograms/actionResult', 'reactivePrograms/observeAction'] };
   const gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
-    model: { provider: 'remote-test', model: 'test' }, actor: principal => principal.id, completedRetentionMs: 500,
+    model: { provider: 'remote-test', model: 'test' }, participant: principal => ({ participant: 'human', actorId: principal.id }), completedRetentionMs: 500,
     access: service => service.registerPolicy('remote-test-user', { bindings(principal) {
       return [{ role: principal.id === 'alice' ? globalRole : discoveryRole, resource: { kind: 'global' } }, ...[...sessions]
         .map(id => ({ role: principal.id === 'alice' ? sessionRole : readerRole, resource: { kind: 'session', id } })),
@@ -858,7 +858,7 @@ test('获授权远程 notify 读取 SQLite 可靠 follow 与业务终态，沿�
   });
   const sessionId = crypto.randomUUID();
   gateway = await mountProgramGateway(runtime.native, { application: runtime.application, model: { provider: 'remote-follow', model: 'test' },
-    actor: principal => principal.id,
+    participant: principal => ({ participant: 'human', actorId: principal.id }),
     access: service => service.registerPolicy('remote-follow-user', { bindings(principal) {
       const actions = ['reactivePrograms/open', 'reactivePrograms/questions'];
       if (principal.id === 'wire-operator') actions.push('reactivePrograms/submit');
@@ -1036,7 +1036,7 @@ test('远程只读 Operation 槽捕获原命令，F1 后新 Follow 等 F2，Date
   });
   const sessionId = crypto.randomUUID();
   gateway = await mountProgramGateway(runtime.native, { application: runtime.application, model: { provider: 'remote-feedback', model: 'test' },
-    actor: principal => principal.id, access: service => service.registerPolicy('feedback-peer', { bindings(principal) {
+    participant: principal => ({ participant: 'human', actorId: principal.id }), access: service => service.registerPolicy('feedback-peer', { bindings(principal) {
       const actions = ['reactivePrograms/open', 'reactivePrograms/questions'];
       if (principal.id === 'operator') actions.push('reactivePrograms/submit', 'reactivePrograms/resolveOperation', 'reactivePrograms/locateOperation', 'reactivePrograms/readOperationFeedback');
       if (principal.id === 'notifier') actions.push('reactivePrograms/notifyOperation');
@@ -1134,7 +1134,7 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；请
   const role = { name: 'request-reader', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/questions',
     'reactivePrograms/progress', 'reactivePrograms/journal', 'reactivePrograms/journalPage', 'reactivePrograms/submit', 'reactivePrograms/resume'] };
   const gateway = await mountProgramGateway(runtime.native, { application: runtime.application, model: { provider: 'request-progress', model: 'test' },
-    actor: principal => principal.id, access: service => service.registerPolicy('request-peer', { bindings: () => [{ role, resource: { kind: 'session', id: sessionId } }] }),
+    participant: principal => ({ participant: 'human', actorId: principal.id }), access: service => service.registerPolicy('request-peer', { bindings: () => [{ role, resource: { kind: 'session', id: sessionId } }] }),
     carrier: { onError: error => carrierErrors.push(error), authenticate: async () => ({ kind: 'request-peer', id: 'request-observer' }) },
   });
   context.after(async () => {

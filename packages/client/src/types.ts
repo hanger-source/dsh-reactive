@@ -20,7 +20,14 @@ export type ProgramWorkspaceRegistration = WorkspaceRegistration;
 export interface ProgramCreateRequest extends ConversationCreateOptions { readonly environmentId: string; }
 export type ProgramCreationReference = CreationReference;
 export interface ProgramAddress { readonly sessionId: string; }
-export interface ProgramIdentity { readonly sessionId: string; readonly environmentId: string; readonly workspaceId: string; readonly actorId: string; }
+/** 参与来源由宿主principal映射签发，客户端请求不能自报。 */
+export interface ProgramIdentity {
+  readonly sessionId: string;
+  readonly environmentId: string;
+  readonly workspaceId: string;
+  readonly actorId: string;
+  readonly participant: 'human' | 'service';
+}
 export type ProgramWorkspace = WorkspaceInfo;
 /** 从核心合同派生结构，递归 JSON 只用 Typert 的公开 canonical JSON 符号。 */
 type WireSubmission<S> = S extends { readonly result: unknown } ? Omit<S, 'result'> & {

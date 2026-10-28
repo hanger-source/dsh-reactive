@@ -6,11 +6,13 @@
 
 ## 定义业务行为
 
-可复用消费者通过 core 的 `ProgramSessionClient<P>` 描述所需会话能力，直接接收本地 `ConversationHandle<P>` 或远程 `RemoteProgramSession<P>`。视图、进展、原请求和人工问题继续返回各自原有的资源对象；同一模块可以用函数、Promise、RxJS 或 hooks 读取它们，框架不为跨宿主复用建立第二个会话。
+可复用消费者通过 core 的 `ProgramSessionClient<P>` 描述共同会话能力，直接接收本地或远程的人工、服务端口。视图、进展、原请求和人工问题继续返回各自原有的资源对象；同一模块可以用函数、Promise、RxJS 或 hooks 读取它们，框架不为跨宿主复用建立第二个会话。需要回答、前台认领或 Goal 控制的模块明确使用 `HumanProgramSessionClient<P>`。
 
 只需要公开模块出口时使用 `SurfaceClient<S>`，根会话与 `collection(name).instance(key)` 共用视图、动作、Operation 槽和嵌套集合合同。业务代码用 `await client.resolveAction(...)` 和 `await action(...)` 消费两种时序；具体本地类型仍保留同步解析和受理，具体远程类型仍返回 Promise。`ProgramSessionClient` 的 Async 参数只描述这部分 Surface 时序；读取或附着业务 Operation 不会变成一次 Action。
 
-会话的 `pause({ signal })`、`cancel({ signal })` 与 `requestStatus(requestId, { signal })` 同样属于 `ProgramSessionClient`。共同回执类型从 core 导入：ProgramGoalControl 提供 Goal 的 id、revision、phase，本地 pause 仍可返回完整原生 GoalView；ProgramCancelResult 的 canceled:true 表示原生处理已 idle 并完成持久 flush，不表示外部业务 Operation 已取消。ProgramRequestStatus 核对原生日志和投影，冷读取不激活 Agent，不能拿客户端缓存中的缺项证明 absent。取消信号和句柄退出只结束本次回执等待，已取消的调用不启动控制，已经受理的控制继续由原生 owner 结算。服务参与者可读取请求状态，不能控制 Goal 或答复人工问题。带 carrier 重连、分页与游标的 openEvents 继续由远程 SDK 提供。
+会话的 `requestStatus(requestId, { signal })` 属于 `ProgramSessionClient`，`pause({ signal })` 和 `cancel({ signal })` 属于 `HumanProgramSessionClient`。共同回执类型从 core 导入：ProgramGoalControl 提供 Goal 的 id、revision、phase，本地 pause 仍可返回完整原生 GoalView；ProgramCancelResult 的 canceled:true 表示原生处理已 idle 并完成持久 flush，不表示外部业务 Operation 已取消。ProgramRequestStatus 核对原生日志和投影，冷读取不激活 Agent，不能拿客户端缓存中的缺项证明 absent。取消信号和句柄退出只结束本次回执等待，已取消的调用不启动控制，已经受理的控制继续由原生 owner 结算。服务参与者可读取请求状态，不能控制 Goal 或答复人工问题。带 carrier 重连、分页与游标的 openEvents 继续由远程 SDK 提供。
+
+本地服务通过 `host.service(actorId)` 取得固定身份的应用视图，再用 create、open、resume 或 completeCreation 取得服务会话；省略 actorId 时明确使用宿主配置的 serviceActorId。视图借用同一应用 owner，没有独立执行器或销毁权。逐调用选项不能改写服务 actor，输入、Action、Operation、队列编辑和文件上传保持同一来源。远程服务使用 `createServiceProgramClient` 或 `bindServiceProgramClient`，角色与 actor 仍由 Gateway 的认证映射签发，客户端工厂只选择所需能力，不能授予身份。
 
 `ProgramSession` 是后台组件收到的会话事实与输入接口，`ProgramSessionClient` 是外部消费者的能力接口。两者不互相伪造执行身份。消费者释放观察后，已受理的调用和业务 Operation 仍由原 owner 持有。
 

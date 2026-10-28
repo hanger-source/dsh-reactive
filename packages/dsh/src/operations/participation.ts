@@ -21,6 +21,7 @@ import type { ConversationSessions } from '../conversations/sessions.ts';
 import type { ConversationObservations } from '../conversations/observations.ts';
 import type { ConversationInputs } from '../conversations/inputs.ts';
 import type { ActionAuthority } from '../execution/authority.ts';
+import { humanParticipant, serviceParticipant, assertParticipantOptions, participantActor, type ParticipantIdentity } from '../participation/identity.ts';
 /** 可靠操作参与与精确 Goal 续接；Operation 事实仍由业务 owner 持有。 */
 export class OperationParticipation {
     #follows: OperationFollows;
@@ -46,11 +47,11 @@ export class OperationParticipation {
             },
             waiting: (agent, link) => this.facts.liveState(agent.session).activity.waits.some(item => canonical(item.wait) === canonical(link.wait)
                 && canonical(item.continuation) === canonical(link.continuation)),
-            admit: (link, actorId, signal) => this.definition.admit({
+            admit: (link, source, signal) => this.definition.admit({
                 requestId: 'operation:' + link.id, content: [{ type: 'text', text: '核验原业务操作的结算状态' }], intent: 'result', scope: link.scope,
                 result: { continuation: link.continuation, wait: link.wait, ready: false },
-            }, this.sessions.get(link.continuation.sessionId)!.conversation.identity, { actorId, participant: 'service', signal }),
-            deliver: (agent, input, actorId, signal) => this.inputs.submitSession(this.sessions.forAgent(agent)!.session, input, { actorId, signal }, 'service'),
+            }, this.sessions.get(link.continuation.sessionId)!.conversation.identity, { actorId: source.actorId, participant: source.participant, signal }),
+            deliver: (agent, input, actorId, signal) => this.inputs.submitSession(this.sessions.forAgent(agent)!.session, input, { signal }, serviceParticipant(actorId)),
         });
     }
     private assertActive() { if (this.signal.aborted)
@@ -92,7 +93,7 @@ export class OperationParticipation {
     programAccess(session: ConversationSession, binding: OperationBindingReference): OperationAccess {
         if (this.#follows.forDefinition(binding.definition) !== operationBindingOwner(binding))
             throw new Error('REACTIVE_OPERATION_OWNER_MISMATCH');
-        return this.authority.participantExecution(session, {}, 'service', 'program-operation');
+        return this.authority.programExecution(session, 'program-operation');
     }
     async participate(entry: LiveConversation, follow: BoundFollow, execution: ActionExecutionContext & {
         readonly continuation: Continuation;
@@ -168,8 +169,9 @@ export class OperationParticipation {
         this.assertActive();
         return this.#follows.definition(kind, version);
     }
-    resolveOperation(session: ConversationSession, name: string, options: SubmitOptions = {}, participant: 'human' | 'service' = 'human'): BoundOperation<OperationContract> {
+    resolveOperation(session: ConversationSession, name: string, options: SubmitOptions = {}, identity: ParticipantIdentity = humanParticipant): BoundOperation<OperationContract> {
         this.assertActive();
+        assertParticipantOptions(identity, options);
         session.program.flush();
         const binding = session.program.outputs.operations.peek()[name];
         const definition = surfaceSlotDefinition(session.implementation.definition.surface, 'operations', name);
@@ -178,7 +180,7 @@ export class OperationParticipation {
         if (binding.definition !== definition || this.#follows.forDefinition(definition) !== operationBindingOwner(binding))
             throw new Error('REACTIVE_OPERATION_OWNER_MISMATCH');
         return bindOperation(this.#follows.forDefinition(definition), operationBindingCommand(binding), {
-            access: () => this.authority.participantExecution(session, options, participant, 'operation-query'),
+            access: () => this.authority.participantExecution(session, options, identity, 'operation-query'),
             readFeedback: (operation, id, access) => this.readBoundOperationFeedback(session, operation, id, access),
         });
     }
@@ -193,30 +195,31 @@ export class OperationParticipation {
         access.signal.throwIfAborted();
         return this.#follows.readInspectedFeedback(inspection, binding.definition, operationBindingCommand(binding), id, access);
     }
-    async readOperationFeedback<D extends OperationContract>(sessionId: string, definition: D, command: OperationCommand<D>, id: string, options: SubmitOptions = {}, participant: 'human' | 'service' = 'human'): Promise<OperationFeedbackRead<OperationReference<D>, OperationFeedbackPayload<D>>> {
+    async readOperationFeedback<D extends OperationContract>(sessionId: string, definition: D, command: OperationCommand<D>, id: string, options: SubmitOptions = {}, identity: ParticipantIdentity = humanParticipant): Promise<OperationFeedbackRead<OperationReference<D>, OperationFeedbackPayload<D>>> {
+        assertParticipantOptions(identity, options);
         const session = await this.sessions.readSession(sessionId);
-        const access = this.authority.participantExecution(session, options, participant, 'operation-query');
+        const access = this.authority.participantExecution(session, options, identity, 'operation-query');
         if (session.live.value)
             return this.#follows.readFeedback(session.live.value.agent, definition, command, id, access);
         const inspection = await this.facts.inspect(sessionId);
         access.signal.throwIfAborted();
         return this.#follows.readInspectedFeedback(inspection, definition, command, id, access);
     }
-    async attachOperation<D extends OperationContract>(sessionId: string, definition: D, reference: OperationReference<D>, options: SubmitOptions = {}, participant: 'human' | 'service' = 'human'): Promise<OperationHandle<D>> {
+    async attachOperation<D extends OperationContract>(sessionId: string, definition: D, reference: OperationReference<D>, options: SubmitOptions = {}, identity: ParticipantIdentity = humanParticipant): Promise<OperationHandle<D>> {
+        assertParticipantOptions(identity, options);
         const session = await this.sessions.readSession(sessionId);
-        const access = this.authority.participantExecution(session, options, participant, 'operation-query');
+        const access = this.authority.participantExecution(session, options, identity, 'operation-query');
         return attachOwnedOperation(this.#follows.forDefinition(definition), reference, access);
     }
-    async locateOperation<D extends OperationContract>(sessionId: string, definition: D, command: OperationCommand<D>, options: SubmitOptions = {}, participant: 'human' | 'service' = 'human'): Promise<OperationLocation<OperationReference<D>, OperationState<D>>> {
+    async locateOperation<D extends OperationContract>(sessionId: string, definition: D, command: OperationCommand<D>, options: SubmitOptions = {}, identity: ParticipantIdentity = humanParticipant): Promise<OperationLocation<OperationReference<D>, OperationState<D>>> {
+        assertParticipantOptions(identity, options);
         const session = await this.sessions.readSession(sessionId);
-        const access = this.authority.participantExecution(session, options, participant, 'operation-query');
+        const access = this.authority.participantExecution(session, options, identity, 'operation-query');
         return locateOwnedOperation(this.#follows.forDefinition(definition), command, access);
     }
-    async notifyOperation(sessionId: string, followId: string, options: SubmitOptions = {}): Promise<OperationNotificationResult> {
+    async notifyOperation(sessionId: string, followId: string, options: SubmitOptions, identity: ParticipantIdentity): Promise<OperationNotificationResult> {
         this.assertActive();
-        const actorId = options.actorId ?? this.options.serviceActorId;
-        if (!actorId?.trim())
-            throw new Error('REACTIVE_OPERATION_PUBLISHER_REQUIRED');
+        const actorId = participantActor(identity, options, this.options.actorId);
         const callerSignal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
         callerSignal.throwIfAborted();
         const session = await this.sessions.readSession(sessionId);
@@ -227,7 +230,7 @@ export class OperationParticipation {
         const link = live ? this.#follows.link(live.agent, followId) : this.#follows.inspectedLink(inspection!, followId);
         const notStarted = live ? this.#follows.isNotStarted(live.agent, followId) : this.#follows.inspectedNotStarted(inspection!, followId);
         const access: OperationAccess = { sessionId, source: {
-                kind: 'participant', participant: 'service', actorId, entrypoint: 'operation-feedback',
+                kind: 'participant', participant: identity.participant, actorId, entrypoint: 'operation-feedback',
             }, signal };
         // 冷会话在加载原生 Agent 前也须取得业务 follow 权限；纯读权不能触发激活。
         await this.#follows.admit(link, access, notStarted);

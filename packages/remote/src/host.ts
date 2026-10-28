@@ -3,7 +3,7 @@ import { Remote, RemoteError, TypertRemoteService, type Principal } from '@deeps
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { SessionId, SessionLogOffset, type Session, type SessionEvent } from '@deepseek-ai/dsh-session';
 import type { ProgramJournalEntry, ProgramJournalPage } from '@hanger-source/dsh-reactive-client/types';
-import { type ApplicationHost, type ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
+import { type ApplicationHost, type ConversationHandle, type ServiceConversation } from '@hanger-source/dsh-reactive-dsh';
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import { decodeProgramFailure } from '@hanger-source/dsh-reactive-client/errors';
 import { createProgramFailureMapper } from './host-errors.ts';
@@ -15,9 +15,15 @@ import type { ProgramRequestAddress, ProgramRequestStatus, ProgramWorkspace, Pro
 import type { ProgramProgressFrame, ProgramConversationEvent } from '@hanger-source/dsh-reactive-client/types';
 import { Inbox } from '@hanger-source/dsh-reactive-client/transport';
 import { createProgramActionOwner, type ProgramActionOwner, type ProgramActionOwnerOptions } from './actions.ts';
+import { resolveProgramParticipant, type ProgramParticipant } from './participant.ts';
 
 declare module '@deepseek-ai/cordis' {
   interface Context { reactivePrograms: ProgramRemoteService; }
+}
+declare module '@deepseek-ai/dsh-typert-protocol' {
+  interface RemoteErrorDetailsMap {
+    'reactive/human-participant-required': Record<string, never>;
+  }
 }
 /** 身份映射来自宿主认证配置，wire 参数不能选择 actor。 */
 export interface ProgramRemoteOptions<E extends readonly AnyEnvironment[] = readonly AnyEnvironment[]> extends ProgramActionOwnerOptions {
@@ -43,10 +49,24 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     if (!invocation) throw new RemoteError('gateway/internal', 'Remote invocation identity is required', {});
     return invocation.peer.principal;
   }
-  private actor(): string {
-    const actor = this.options.actor(this.principal());
-    if (!actor.trim()) throw new RemoteError('gateway/internal', 'Host actor mapping is invalid', {});
-    return actor;
+  private participant(): ProgramParticipant {
+    return resolveProgramParticipant(this.options.participant, this.principal());
+  }
+  private human(): ProgramParticipant {
+    const identity = this.participant();
+    if (identity.participant !== 'human') {
+      throw new RemoteError('reactive/human-participant-required', 'This operation requires a human participant', {});
+    }
+    return identity;
+  }
+  private port(identity: ProgramParticipant) {
+    return identity.participant === 'service' ? this.options.application.service(identity.actorId) : this.options.application;
+  }
+  private openSession(sessionId: string, identity = this.participant()) {
+    return this.port(identity).open(sessionId).catch(this.rethrow);
+  }
+  private callOptions(identity: ProgramParticipant, signal: AbortSignal) {
+    return identity.participant === 'human' ? { actorId: identity.actorId, signal } : { signal };
   }
   /** 注册身份可以返回；成员读取仍按当前 endpoint 的 Workspace 与 Session grant 逐项核对。 */
   private visibleWorkspace(workspace: ProgramWorkspace): ProgramWorkspace {
@@ -83,59 +103,59 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 显式注册已有工作目录；不选择 Environment 或创建会话。 */
   @Remote
   async createWorkspace(request: ProgramWorkspaceRegistration, signal: AbortSignal): Promise<ProgramWorkspace> {
-    this.principal();
+    const identity = this.participant();
     signal.throwIfAborted();
-    const workspace = await this.options.application.createWorkspace(request).catch(this.rethrow);
+    const workspace = await this.port(identity).createWorkspace(request).catch(this.rethrow);
     return this.visibleWorkspace(workspace);
   }
 
   /** 在获准的既有 Workspace 中，以指定 Environment 创建工作会话。 */
   @Remote({ resources: { session: _request => undefined, workspace: request => WorkspaceId(request.workspaceId) } })
   async create(request: ProgramCreateRequest, signal: AbortSignal): Promise<ProgramIdentity> {
-    const actorId = this.actor();
+    const identity = this.participant();
     signal.throwIfAborted();
     const { environmentId, ...options } = request;
-    const handle = await this.options.application.create(environmentId, options).catch(this.rethrow);
-    try { return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, actorId }; }
+    const handle = await this.port(identity).create(environmentId, options).catch(this.rethrow);
+    try { return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, ...identity }; }
     finally { handle.release(); }
   }
 
   /** 凭明确引用补齐框架已持久化但尚未完成的创建。 */
   @Remote({ resources: { session: _request => undefined, workspace: request => WorkspaceId(request.workspaceId) } })
   async completeCreation(request: ProgramCreationReference, signal: AbortSignal): Promise<ProgramIdentity> {
-    const actorId = this.actor();
+    const identity = this.participant();
     signal.throwIfAborted();
-    const handle = await this.options.application.completeCreation(request).catch(this.rethrow);
-    try { return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, actorId }; }
+    const handle = await this.port(identity).completeCreation(request).catch(this.rethrow);
+    try { return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, ...identity }; }
     finally { handle.release(); }
   }
 
   /** 只读打开当前程序，不把观察变成模型唤醒。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async open(request: ProgramAddress, signal: AbortSignal): Promise<ProgramIdentity> {
-    const actorId = this.actor();
+    const identity = this.participant();
     signal.throwIfAborted();
-    const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
-    try { return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, actorId }; }
+    const handle = await this.openSession(request.sessionId, identity);
+    try { return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, ...identity }; }
     finally { handle.release(); }
   }
 
   /** 显式恢复真实宿主；只读 open 不承担激活语义。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async resume(request: ProgramAddress, signal: AbortSignal): Promise<ProgramIdentity> {
-    const actorId = this.actor();
+    const identity = this.participant();
     signal.throwIfAborted();
-    const handle = await this.options.application.resume(request.sessionId).catch(this.rethrow);
-    try { return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, actorId }; }
+    const handle = await this.port(identity).resume(request.sessionId).catch(this.rethrow);
+    try { return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, ...identity }; }
     finally { handle.release(); }
   }
 
   /** 发现仅返回获准的 Workspace 与其获准成员；global endpoint grant 不授予内容。 */
   @Remote
   async describe(signal: AbortSignal): Promise<readonly ProgramWorkspace[]> {
-    this.principal();
+    const identity = this.participant();
     signal.throwIfAborted();
-    const workspaces = await this.options.application.describe().catch(this.rethrow);
+    const workspaces = await this.port(identity).describe().catch(this.rethrow);
     return workspaces.filter(workspace => this.ctx.remoteAccess.allows({ kind: 'workspace', id: WorkspaceId(workspace.workspaceId) }))
       .map(workspace => this.visibleWorkspace(workspace));
   }
@@ -143,7 +163,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 暂停原生 Goal；它不取消外部业务操作。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async pause(request: ProgramAddress, signal: AbortSignal): Promise<ProgramGoalControl> {
-    this.principal();
+    this.human();
     signal.throwIfAborted();
     const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
     try {
@@ -158,7 +178,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 取消原生处理；真实业务 owner 的 body 不随网络调用结束。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async cancel(request: ProgramAddress, signal: AbortSignal): Promise<ProgramCancelResult> {
-    this.principal();
+    this.human();
     signal.throwIfAborted();
     const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
     try { signal.throwIfAborted(); return await handle.cancel().catch(this.rethrow); }
@@ -168,32 +188,31 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 原始提交继续由 ApplicationHost 解析、准入、持久化及关联。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async submit(request: ProgramSubmitRequest, signal: AbortSignal): Promise<ProgramInputReceipt> {
-    const actorId = this.actor();
+    const identity = this.participant();
     signal.throwIfAborted();
-    const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
+    const handle = await this.openSession(request.sessionId, identity);
     // wire 只证明 JSON；动态环境的 scope 合同继续由 Host 唯一 parse，不在 remote 重复转换。
-    try { return await handle.submit(request.submission, { actorId, signal }).catch(this.rethrow); }
+    try { return await handle.submit(request.submission, this.callOptions(identity, signal)).catch(this.rethrow); }
     finally { handle.release(); }
   }
 
   /** 认证主体只上传到获准会话；正文编码及 staged receipt 由同一 Host 入口处理。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async uploadFile(request: ProgramUploadFileRequest, signal: AbortSignal): Promise<ProgramFileUploadValue> {
-    const actorId = this.actor();
+    const identity = this.participant();
     signal.throwIfAborted();
-    const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
+    const handle = await this.openSession(request.sessionId, identity);
     try {
       return await handle.uploadEncodedFile({ data: request.data, ...(request.name === undefined ? {} : { name: request.name }) },
-        { actorId, signal }).catch(this.rethrow);
+        this.callOptions(identity, signal)).catch(this.rethrow);
     } finally { handle.release(); }
   }
 
   /** 核对原 requestId 的真实受理/消费事实；查询不唤醒模型或重投输入。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async requestStatus(request: ProgramRequestAddress, signal: AbortSignal): Promise<ProgramRequestStatus> {
-    this.principal();
     signal.throwIfAborted();
-    const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
+    const handle = await this.openSession(request.sessionId);
     try {
       signal.throwIfAborted();
       return await handle.requestStatus(request.requestId, { signal }).catch(this.rethrow);
@@ -204,8 +223,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 一个 Session 连接承载当前状态与新事实；快照不伪造新的请求事件。 */
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *progress(request: ProgramAddress, signal: AbortSignal): AsyncIterable<ProgramProgressFrame> {
-    this.principal();
-    const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
+    const handle = await this.openSession(request.sessionId);
     const inbox = new Inbox<ProgramProgressFrame>(1024 * 1024);
     const subscriptions: Subscription[] = [];
     const abort = (): void => inbox.fail(signal.reason);
@@ -248,7 +266,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 监听先于 opening cut；观察不经过 Controller.follow 的后台 Agent 激活。 */
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *journal(request: ProgramJournalOpenRequest, signal: AbortSignal): AsyncIterable<ProgramJournalFrame> {
-    this.principal();
+    const identity = this.participant();
     const id = SessionId(request.sessionId);
     const inbox = new Inbox<ProgramJournalEntry>(1024 * 1024);
     let cut: number | undefined;
@@ -268,10 +286,10 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     }, { global: true });
     const abort = (): void => inbox.fail(signal.reason);
     signal.addEventListener('abort', abort, { once: true });
-    let handle: ConversationHandle | undefined;
+    let handle: ConversationHandle | ServiceConversation | undefined;
     try {
       signal.throwIfAborted();
-      handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
+      handle = await this.openSession(request.sessionId, identity);
       cut = handle.snapshot().sequence;
       // await opening 期间只保留原生 Session，不把已持久历史塞入有界 carrier 邮箱。
       if (openingSession) {
@@ -292,8 +310,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 同一 Program 权限边界内的原生冷安全分页，不唤醒 Agent。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async journalPage(request: ProgramJournalPageRequest, signal: AbortSignal): Promise<ProgramJournalPage> {
-    this.principal();
-    const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
+    const handle = await this.openSession(request.sessionId);
     try {
       const { sessionId, ...page } = request;
       return await this.ctx.sessionController.page({ address: { kind: 'session', sessionId: SessionId(sessionId) }, ...page }, signal);
@@ -303,8 +320,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 订阅已编码的当前视图；业务 source 连接仍归 Program owner。 */
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *view(request: ProgramViewRequest, signal: AbortSignal): AsyncIterable<ProgramViewFrame> {
-    this.principal();
-    const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
+    const handle = await this.openSession(request.sessionId);
     const inbox = new Inbox<ProgramViewFrame>(1024 * 1024);
     let first = true;
     const subscription = handle.observeWireView(request.name).subscribe({
@@ -327,9 +343,8 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 流拥有真实会话句柄；开场交付绑定，释放流才结束这次只读持有。 */
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *resolveAction(request: ProgramActionBindingRequest, signal: AbortSignal): AsyncIterable<ProgramActionBinding> {
-    this.principal();
     signal.throwIfAborted();
-    const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
+    const handle = await this.openSession(request.sessionId);
     try {
       signal.throwIfAborted();
       const definition = surfaceSlotDefinition(handle.surface, 'actions', request.name);
@@ -371,11 +386,11 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** 捕获当前 Expose 槽的真实 command；后续读取不再解析这个槽或登记原生等待。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async resolveOperation(request: ProgramOperationBindingRequest, signal: AbortSignal): Promise<ProgramOperationBinding> {
-    const actorId = this.actor();
+    const identity = this.participant();
     signal.throwIfAborted();
-    const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
+    const handle = await this.openSession(request.sessionId, identity);
     try {
-      const binding = handle.resolveOperation(request.name, { actorId, signal });
+      const binding = handle.resolveOperation(request.name, this.callOptions(identity, signal));
       return { operation: { kind: binding.definition.kind, version: binding.definition.version }, command: z.json().parse(binding.command) };
     } catch (error) { return this.rethrow(error); }
     finally { handle.release(); }
@@ -383,10 +398,10 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
 
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async editQueuedInput(request: ProgramInputEditRequest, signal: AbortSignal): Promise<ProgramInputReceipt> {
-    const actorId = this.actor();
+    const identity = this.participant();
     signal.throwIfAborted();
-    const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
-    try { return await handle.editQueuedInput(request.requestId, request.content, { actorId, signal }).catch(this.rethrow); }
+    const handle = await this.openSession(request.sessionId, identity);
+    try { return await handle.editQueuedInput(request.requestId, request.content, this.callOptions(identity, signal)).catch(this.rethrow); }
     finally { handle.release(); }
   }
 
@@ -394,51 +409,67 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async readOperationFeedback(request: ProgramOperationFeedbackRequest, signal: AbortSignal): Promise<ProgramOperationFeedbackRead> {
     const definition = this.options.application.operationDefinition(request.operation.kind, request.operation.version);
-    const value = await this.options.application.readOperationFeedback(request.sessionId, definition, request.command,
-      request.participationId, { actorId: this.actor(), signal }).catch(this.rethrow);
-    if (value.status === 'unknown') return value;
-    if (value.status === 'rejected') return { ...value, reason: z.json().parse(value.reason) };
-    const reference = z.json().parse(value.reference);
-    if (value.status === 'pending') return { status: 'pending', reference };
-    const node = encodeOperationFeedback(definition, value.node);
-    return { status: 'ready', reference, node: { id: node.id, payload: z.json().parse(node.payload) } };
+    const identity = this.participant();
+    const handle = await this.openSession(request.sessionId, identity);
+    try {
+      const value = await handle.readOperationFeedback(definition, request.command,
+        request.participationId, this.callOptions(identity, signal)).catch(this.rethrow);
+      if (value.status === 'unknown') return value;
+      if (value.status === 'rejected') return { ...value, reason: z.json().parse(value.reason) };
+      const reference = z.json().parse(value.reference);
+      if (value.status === 'pending') return { status: 'pending', reference };
+      const node = encodeOperationFeedback(definition, value.node);
+      return { status: 'ready', reference, node: { id: node.id, payload: z.json().parse(node.payload) } };
+    } finally { handle.release(); }
   }
 
   /** 只按既有业务 command 查受理事实；unknown 不重发 Action。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async locateOperation(request: ProgramOperationLocateRequest, signal: AbortSignal): Promise<ProgramOperationLocation> {
     const definition = this.options.application.operationDefinition(request.operation.kind, request.operation.version);
-    const location = await this.options.application.locateOperation(request.sessionId, definition, request.command, { actorId: this.actor(), signal }).catch(this.rethrow);
-    return location.status === 'accepted' ? { status: 'accepted', reference: z.json().parse(location.reference),
-      state: z.json().parse(z.encode(definition.state, location.state)) }
-      : location.status === 'rejected' ? { status: 'rejected', reason: z.json().parse(location.reason) } : location;
+    const identity = this.participant();
+    const handle = await this.openSession(request.sessionId, identity);
+    try {
+      const location = await handle.locateOperation(definition, request.command, this.callOptions(identity, signal)).catch(this.rethrow);
+      return location.status === 'accepted' ? { status: 'accepted', reference: z.json().parse(location.reference),
+        state: z.json().parse(z.encode(definition.state, location.state)) }
+        : location.status === 'rejected' ? { status: 'rejected', reason: z.json().parse(location.reason) } : location;
+    } finally { handle.release(); }
   }
 
   /** 连接实际 owner 的当前事实，只有 ready 才编码同一 Operation state schema。 */
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *observeOperation(request: ProgramOperationRequest, signal: AbortSignal): AsyncIterable<ProgramViewFrame> {
     const definition = this.options.application.operationDefinition(request.operation.kind, request.operation.version);
-    const operation = await this.options.application.attachOperation(request.sessionId, definition, request.reference, { actorId: this.actor(), signal }).catch(this.rethrow);
-    let first = true;
-    try { yield* frames(operation.observations$, signal, observed => {
-      const observation: WireObservation = observed.status === 'ready'
-        ? { ...observed, value: z.json().parse(z.encode(definition.state, observed.value)) }
-        : observed.status === 'error' ? { ...observed, error: this.failure(observed.error) } : observed;
-      const frame: ProgramViewFrame = { type: first ? 'baseline' : 'observation', observation }; first = false; return frame;
-    }); } catch (error) { this.rethrow(error); }
+    const identity = this.participant();
+    const handle = await this.openSession(request.sessionId, identity);
+    try {
+      const operation = await handle.attachOperation(definition, request.reference, this.callOptions(identity, signal));
+      let first = true;
+      yield* frames(operation.observations$, signal, observed => {
+        const observation: WireObservation = observed.status === 'ready'
+          ? { ...observed, value: z.json().parse(z.encode(definition.state, observed.value)) }
+          : observed.status === 'error' ? { ...observed, error: this.failure(observed.error) } : observed;
+        const frame: ProgramViewFrame = { type: first ? 'baseline' : 'observation', observation }; first = false; return frame;
+      });
+    } catch (error) { this.rethrow(error); }
+    finally { handle.release(); }
   }
 
   /** 宿主重新核验原 follow 与业务事实；不接受网络端自报 ready。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
-  notifyOperation(request: ProgramOperationNotification, signal: AbortSignal): Promise<ProgramOperationNotificationResult> {
-    return this.options.application.notifyOperation(request.sessionId, request.followId, { actorId: this.actor(), signal }).catch(this.rethrow);
+  async notifyOperation(request: ProgramOperationNotification, signal: AbortSignal): Promise<ProgramOperationNotificationResult> {
+    const identity = this.participant();
+    signal.throwIfAborted();
+    const handle = await this.openSession(request.sessionId, identity);
+    try { return await handle.notifyOperation(request.followId, this.callOptions(identity, signal)).catch(this.rethrow); }
+    finally { handle.release(); }
   }
 
   /** 同一原生问题投影与实际前台请求，不维护第二份问题注册。 */
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *questions(request: ProgramAddress, signal: AbortSignal): AsyncIterable<ProgramQuestionsFrame> {
-    this.principal();
-    const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
+    const handle = await this.openSession(request.sessionId);
     let first = true;
     try {
       yield* frames(handle.human.values$, signal, ({ questions, foreground }) => {
@@ -457,7 +488,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** bool 只说明前台受理或 continued 排队，不是答案落盘和工具结算。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async answerQuestion(request: ProgramAnswerRequest, signal: AbortSignal): Promise<boolean> {
-    const actorId = this.actor();
+    const { actorId } = this.human();
     const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
     try { return await handle.answerQuestion(request.callId, request.answer, { actorId, signal }).catch(this.rethrow); }
     finally { handle.release(); }
@@ -466,7 +497,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** claim 真实前台等待；流退出由原生 Human owner 释放 claim。 */
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *attachWait(request: ProgramQuestionRequest, signal: AbortSignal): AsyncIterable<ProgramWaitFrame> {
-    const actorId = this.actor();
+    const { actorId } = this.human();
     const handle = await this.options.application.open(request.sessionId).catch(this.rethrow);
     try { yield* handle.attachWait(request.callId, { actorId, signal }); }
     catch (error) { this.rethrow(error); }
