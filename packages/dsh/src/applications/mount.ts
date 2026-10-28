@@ -1,64 +1,121 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import type { Context } from "@deepseek-ai/cordis";
+import type { Context, Fiber } from "@deepseek-ai/cordis";
 import { type ApplicationDefinition } from "@hanger-source/dsh-reactive/kernel";
 import { type AnyEnvironment } from "@hanger-source/dsh-reactive/kernel";
 import { Workspaces } from "../workspaces/workspaces.ts";
-import { createApplicationAssembly, type ApplicationAssembly } from "../delegations.ts";
+import { createApplicationAssembly, type ApplicationAssembly } from './assembly.ts';
 import { ApplicationHost } from '../application.ts';
 import { requireActivePlugin } from '../native-installation.ts';
 import type { HostOptions } from './options.ts';
 export type ApplicationFactory<E extends readonly AnyEnvironment[] = readonly AnyEnvironment[]> = (assembly: ApplicationAssembly) => ApplicationDefinition<E>;
-export function assembleApplication<E extends readonly AnyEnvironment[]>(ctx: Context, factory: ApplicationFactory<E>) {
-    const { assembly, native } = createApplicationAssembly(ctx);
-    return { definition: factory(assembly), native };
+export async function assembleApplication<E extends readonly AnyEnvironment[]>(ctx: Context, factory: ApplicationFactory<E>) {
+    const state = createApplicationAssembly(ctx);
+    let closing: Promise<void> | undefined;
+    const release = () => {
+        if (closing) return closing;
+        const completion = Promise.withResolvers<void>();
+        closing = completion.promise;
+        void (async () => {
+            const failures = new Set<unknown>();
+            for (const capability of [...state.complete().capabilities].reverse()) {
+                try { await capability.dispose(); } catch (error) { failures.add(error); }
+            }
+            state.native.dispose();
+            if (failures.size === 1) throw [...failures][0];
+            if (failures.size) throw new AggregateError([...failures], 'REACTIVE_APPLICATION_CAPABILITIES_DISPOSAL_FAILED');
+        })().then(completion.resolve, completion.reject);
+        return closing;
+    };
+    try {
+        const definition = factory(state.assembly);
+        return { definition, native: state.native, ...state.complete(), release };
+    } catch (error) {
+        try { await release(); }
+        catch (cleanup) { throw new AggregateError([error, cleanup], 'REACTIVE_APPLICATION_ASSEMBLY_FAILED'); }
+        throw error;
+    }
 }
 export async function mountApplication<E extends readonly AnyEnvironment[]>(ctx: Context, factory: ApplicationFactory<E>, options: HostOptions = {}): Promise<ApplicationHost<E>> {
-    return mountAssembledApplication(ctx, assembleApplication(ctx, factory), options);
+    return mountAssembledApplication(ctx, await assembleApplication(ctx, factory), options);
 }
-export async function mountAssembledApplication<E extends readonly AnyEnvironment[]>(ctx: Context, assembled: ReturnType<typeof assembleApplication<E>>, options: HostOptions = {}): Promise<ApplicationHost<E>> {
-    const { definition, native: delegations } = assembled;
-    const environments: AnyEnvironment[] = [];
-    for (const environment of definition.environments) {
-        const skills: string[] = [];
-        for (const directory of environment.skills ?? []) {
-            if (!isAbsolute(directory))
-                throw new Error('REACTIVE_SKILL_PATH_NOT_ABSOLUTE');
-            skills.push(await realpath(directory));
-        }
-        environments.push({ ...environment, skills });
-    }
+export async function mountAssembledApplication<E extends readonly AnyEnvironment[]>(ctx: Context, assembled: Awaited<ReturnType<typeof assembleApplication<E>>>, options: HostOptions = {}): Promise<ApplicationHost<E>> {
+    const { definition, native: delegations, capabilities } = assembled;
     let host: ApplicationHost<E> | undefined;
-    const required = ['agents', 'sessions', 'sessionPersistence', 'sessionQuery', 'sessionProjections', 'workspaceRegistry',
-        'goals', 'tools', 'systemPrompt', 'loader', 'agentPresets', 'skills', 'fs', 'workingDirectory', 'userQuestions', 'attachments', 'fileUploads'];
-    if (delegations.programs().length)
-        required.push('subagents');
-    const owner = ctx.inject(required, async (native) => {
-        const workspaces = new Workspaces(native, definition.name, environments);
-        try {
-            host = ApplicationHost.create(native, definition, workspaces, options, delegations);
-            await host.initialize();
+    let installation: (Fiber & PromiseLike<Fiber>) | undefined;
+    const releaseInstallation = async () => {
+        const failures = new Set<unknown>();
+        if (installation) {
+            try { await installation.dispose(); } catch (error) { failures.add(error); }
+            try { await installation; } catch (error) { failures.add(error); }
         }
-        catch (error) {
-            const failures: unknown[] = [error];
-            try {
-                if (host)
-                    await host.dispose();
-                else
-                    workspaces.dispose();
-            }
-            catch (cleanup) {
-                failures.push(cleanup);
-            }
-            if (failures.length > 1)
-                throw new AggregateError(failures, 'REACTIVE_APPLICATION_STARTUP_FAILED');
-            throw error;
+        try { await assembled.release(); } catch (error) { failures.add(error); }
+        if (failures.size === 1) throw [...failures][0];
+        if (failures.size) throw new AggregateError([...failures], 'REACTIVE_APPLICATION_INSTALLATION_FAILED');
+    };
+    try {
+        let home: string | undefined;
+        if (capabilities.length) {
+            if (!options.home) throw new Error('REACTIVE_NATIVE_HOME_REQUIRED');
+            if (!isAbsolute(options.home)) throw new Error('REACTIVE_HOME_NOT_ABSOLUTE');
+            home = await realpath(options.home);
         }
-    });
-    await requireActivePlugin(owner);
-    if (!host) {
-        await owner.dispose();
-        throw new Error('REACTIVE_DSH_SERVICES_REQUIRED');
+        const environments: AnyEnvironment[] = [];
+        for (const environment of definition.environments) {
+            const skills: string[] = [];
+            for (const directory of environment.skills ?? []) {
+                if (!isAbsolute(directory)) throw new Error('REACTIVE_SKILL_PATH_NOT_ABSOLUTE');
+                skills.push(await realpath(directory));
+            }
+            environments.push({ ...environment, skills });
+        }
+        const hostOptions = { ...options, operations: [...new Set([...options.operations ?? [], ...assembled.operations])] };
+        const required = ['agents', 'sessions', 'sessionPersistence', 'sessionQuery', 'sessionProjections', 'workspaceRegistry',
+            'goals', 'tools', 'systemPrompt', 'loader', 'agentPresets', 'skills', 'fs', 'workingDirectory', 'userQuestions', 'attachments', 'fileUploads'];
+        if (delegations.programs().length) required.push('subagents');
+        installation = ctx.plugin({ name: 'reactive-application:' + definition.name, async apply(application: Context) {
+            let hostInstallation: (Fiber & PromiseLike<Fiber>) | undefined;
+            // 同步generator保留thenable disposer的原身份；async yield会先将它解析成另一函数。
+            application.effect(function* () {
+                yield () => assembled.release();
+                const nativeInstallation = application.plugin({ name: 'reactive-application-capabilities', async apply(native: Context) {
+                    for (const capability of capabilities) await capability.install(native, home!);
+                } });
+                yield nativeInstallation.dispose;
+                hostInstallation = application.plugin({ name: 'reactive-application-host', async apply(scope: Context) {
+                    await requireActivePlugin(nativeInstallation);
+                    await requireActivePlugin(scope.inject(required, async native => {
+                        if (host) throw new Error('REACTIVE_APPLICATION_INSTALLATION_ENDED');
+                        const workspaces = new Workspaces(native, definition.name, environments);
+                        try {
+                            host = ApplicationHost.create(native, definition, workspaces, hostOptions, delegations, releaseInstallation);
+                            await host.initialize();
+                            native.effect(() => () => {
+                                // 必需服务退出同时撤销本次应用安装；不等待正在卸载自己的子Fiber。
+                                if (installation?.state === 1 || installation?.state === 2) {
+                                    void installation.dispose().catch(error => console.error('reactive.application.disposal.failed', error));
+                                }
+                            });
+                        } catch (error) {
+                            try { if (host) await host.drain(); else workspaces.dispose(); }
+                            catch (cleanup) { throw new AggregateError([error, cleanup], 'REACTIVE_APPLICATION_STARTUP_FAILED'); }
+                            throw error;
+                        }
+                    }));
+                    if (!host) throw new Error('REACTIVE_DSH_SERVICES_REQUIRED');
+                } });
+                yield hostInstallation.dispose;
+                yield () => host?.drain().catch(error => console.error('reactive.application.drain.failed', error));
+            });
+            await requireActivePlugin(hostInstallation!);
+        } });
+        await requireActivePlugin(installation);
+        return host!;
+    } catch (error) {
+        try { await releaseInstallation(); }
+        catch (cleanup) {
+            if (cleanup !== error) throw new AggregateError([error, cleanup], 'REACTIVE_APPLICATION_STARTUP_FAILED');
+        }
+        throw error;
     }
-    return host;
 }

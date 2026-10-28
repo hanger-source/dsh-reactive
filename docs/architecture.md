@@ -177,11 +177,17 @@ operations 槽的 resolver 从当前声明取得原 command，之后的查询保
 
 宿主的 `conversations` 分别持有会话与 live Agent 的关联、输入受理事务、句柄和原生观察；`execution` 持有唯一执行身份签发、原生工具与政策；`programs` 持有声明与具体 Agent 的装配及稳定准备；`operations` 持有操作参与、结果投递与 Goal 续接条件；`participation` 持有答复和前台等待入口。`applications` 完成正式挂载与配置，ApplicationHost 组合这些责任及整体释放顺序。各域继续读取原生 inbox、Goal、日志与投影，不各自保存一份会话或工作状态。
 
-`createRuntime(assembly => definition, options)` 使用独立 Home 和显式模型配置，并持有原生附件存储、FileUploads 与所需 Connection、凭据服务；已有宿主从同样接收装配工厂的 `mountApplication` 接入，须明确提供官方 attachments、fileUploads 及其依赖。Gateway 沿用宿主这份服务，不另选 home 或建立第二个附件 owner。assembly 为本宿主创建实际委托实现和单一原生 Operation owner，业务模块仍消费普通 Action。组件层已有实现和聚焦试验不等于完整框架或真实业务验收。
+`createRuntime(assembly => definition, options)` 使用独立 Home 和显式模型配置，并持有原生附件存储、FileUploads 与所需 Connection、凭据服务；已有宿主从同样接收装配工厂的 `mountApplication` 接入，须明确提供官方 attachments、fileUploads 及其依赖。Gateway 沿用宿主这份服务，不另选 home 或建立第二个附件 owner。
+
+可复用宿主模块在同一次工厂调用中通过 `assembly.native(capability)` 登记原生能力、通过 `assembly.operation(owner)` 登记实际业务 Operation owner，并通过 `assembly.implementDelegation` 构造原生委托实现。这三个入口保留所交付对象的精确类型；native 和 operation 返回原对象，模块直接把它交给自己的 Program、hooks 或服务消费者，不要求应用另外列出安装与 owner 清单。同一原对象重复登记只取得一份装配，不同 owner 占用相同 kind/version 硬失败。工厂返回即封闭登记，组件求值与后续回调不能再追加宿主能力。
+
+应用挂载负责安装已登记能力，安装失败释放本次挂载，Host 退出等待能力实际释放；底层服务与已受理业务继续遵循原 owner。Runtime 传递其已经归一化的 home；嵌入宿主仅在登记原生能力时必须向 `mountApplication` 显式提供绝对 home。Operation 登记使恢复能找到同一实际 owner，不把业务操作寿命交给 Host。组件层已有实现和聚焦试验不等于完整框架或真实业务验收。
+
+`native` 接走尚未安装能力实例的一次安装归属。同一应用内重复选择同一对象只安装一次；另一应用不能再次取得该实例，也不能在失败回滚时撤销原应用的能力。复用模块时为各应用构造能力实例，共享底层服务则使用各域已有的 provided 选项。自定义能力的 dispose 必须允许安装前回滚。`operation` 借用实际业务 owner，可由多个应用明确共用，不取得其业务销毁责任。
 
 独立宿主同时安装官方 `llm-retry`、`token-meter`、`compaction-basic` 与 `compaction-image-offload`。重试策略归实际模型 adapter；失败请求的重试不重新执行已经返回的业务工具。TokenMeter 沿原生持久事件形成用量和上下文压力，自动压缩依赖该压力、模型容量及显式压缩配置；图片卸载只响应原生明确的容量错误和 occurrence，不删除原附件。它们共同使用原生取消、日志和恢复机制，不增加自己的重试队列或摘要状态。
 
-`RuntimeOptions.installNative` 是基础服务与模型装配完成、应用挂载之前的正式原生安装边界。安装仍使用 Cordis 的插件与作用域；`requireActivePlugin` 区分已结束 await 和实际 ACTIVE，拒绝缺依赖的 pending 安装并清理该次 fiber。独立 Runtime 启动失败会等待原生释放，嵌入宿主也可把一批可选能力放在同一个插件 fiber 中取得同样的批次边界。普通业务模块只消费资源、Action 与 NativeTools 声明，不承担插件装配。
+`RuntimeOptions.installNative` 保留为宿主显式选择的共享底座安装边界，在基础服务与模型装配完成后、应用能力安装前执行；`options.operations` 保留为宿主显式提供的共享业务 owner。模块自己的能力和 owner 随 assembly 收集，无须在这些选项中再列一次。安装仍使用 Cordis 的插件与作用域；`requireActivePlugin` 区分已结束 await 和实际 ACTIVE，拒绝缺依赖的 pending 安装并清理该次 fiber。独立 Runtime 启动失败会等待原生释放。普通业务组件只消费资源、Action 与 NativeTools 声明，不承担插件装配。
 
 `deepseek` 直接连接官方 Messages adapter，`piAi` 安装官方多协议 provider，`nativeModel` 允许已有宿主提供自己的 adapter。Provider profile 中模型目录的容量与输入模态是部署声明，不能从网关名字推测；目录的默认值也不是已向供应商验证的能力。真实模型自主协作、正式协议传输边界和确定性故障注入各有独立验证范围。
 

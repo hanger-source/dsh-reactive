@@ -9,7 +9,7 @@ import type { NativeSessionAccess } from './conversations/session-access.ts';
 /** 宿主选择的一次能力安装；必需服务退出会撤销实例，不转向替换后的provider。 */
 export interface NativeCapability {
   readonly install: NativeInstallation;
-  /** 撤销本实例观察并等待其安装范围真正退出；借入服务仍由外部宿主持有。 */
+  /** 撤销本实例观察并等待其安装范围真正退出；安装前回滚也可调用，借入服务仍由外部宿主持有。 */
   dispose(): Promise<void>;
 }
 

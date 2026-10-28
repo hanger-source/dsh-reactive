@@ -75,8 +75,9 @@ export async function createRuntime<E extends readonly AnyEnvironment[]>(factory
   openHomes.add(home);
   const ctx = new Context();
   let host: ApplicationHost<E> | undefined;
+  let assembled: Awaited<ReturnType<typeof assembleApplication<E>>> | undefined;
   try {
-    const assembled = assembleApplication(ctx, factory);
+    assembled = await assembleApplication(ctx, factory);
     const definition = assembled.definition;
     await ctx.plugin(SessionStore);
     await ctx.plugin(SessionProjectionRegistry);
@@ -124,11 +125,12 @@ export async function createRuntime<E extends readonly AnyEnvironment[]>(factory
     });
     await options.model.install(ctx, home);
     await options.installNative?.(ctx, home);
-    host = await mountAssembledApplication(ctx, assembled, { actorId: options.actorId, serviceActorId: options.serviceActorId, operations: options.operations,
+    host = await mountAssembledApplication(ctx, assembled, { home, actorId: options.actorId, serviceActorId: options.serviceActorId, operations: options.operations,
       model: { provider: options.model.provider, model: options.model.model } });
   } catch (error) {
     const failures: unknown[] = [error];
     try { await host?.dispose(); } catch (cleanup) { failures.push(cleanup); }
+    try { await assembled?.release(); } catch (cleanup) { failures.push(cleanup); }
     try { await ctx.fiber.dispose(); } catch (cleanup) { failures.push(cleanup); }
     openHomes.delete(home);
     if (failures.length > 1) throw new AggregateError(failures, 'REACTIVE_STARTUP_FAILED');

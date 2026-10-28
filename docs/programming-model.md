@@ -260,10 +260,21 @@ React commit 提交完整声明，native prepare 等待当前依赖。每次异�
 
 ## 启动宿主
 
-宿主明确登记 Operation owner、服务发布身份、独立数据目录和模型。`deepseek` 使用官方 Messages 适配器，`piAi` 接入官方多协议 provider profile；业务组件不持有模型适配器。`nativeModel` 留给已有原生适配器的宿主。
+宿主明确选择服务发布身份、独立数据目录和模型；可复用模块在应用工厂中登记自己的 Operation owner 和原生能力。`deepseek` 使用官方 Messages 适配器，`piAi` 接入官方多协议 provider profile；业务组件不持有模型适配器。`nativeModel` 留给已有原生适配器的宿主。
 
 ```ts
-import { createRuntime, deepseek } from '@hanger-source/dsh-reactive-dsh';
+import { createRuntime, deepseek, type ApplicationAssembly } from '@hanger-source/dsh-reactive-dsh';
+import { createNativeTools } from '@hanger-source/dsh-reactive-dsh/tools';
+
+function merchantModule(assembly: ApplicationAssembly) {
+  const preparation = assembly.operation(PreparationOwner);
+  const tools = assembly.native(createNativeTools({ service: 'provided' }));
+  return {
+    environment: defineEnvironment({ id: 'delivery',
+      instructions: '根据当前商家事实处理交付要求。', program: implementation }),
+    preparation, tools,
+  };
+}
 
 const configuredModel = deepseek({
   model: 'deepseek-flash',
@@ -272,15 +283,22 @@ const configuredModel = deepseek({
   retryPolicy: { mode: 'normal', maxRetries: 3 },
 });
 
-const runtime = await createRuntime(() => application, {
+const runtime = await createRuntime(assembly => {
+  const merchant = merchantModule(assembly);
+  return defineApplication({ name: 'operations', admit: authorizeInput,
+    environments: [merchant.environment] });
+}, {
   home: '/application/data/operations',
   actorId: authenticatedActorId,
   serviceActorId: 'operations-publisher',
-  operations: [PreparationOwner],
   model: configuredModel,
   compaction: { headroomTokens: 8192, maxTokens: 2048 },
 });
 ```
+
+模块取得的 preparation 和 tools 就是所登记的原对象，可直接交给其组件、hooks 或服务函数；上文 Action 的 PreparationOwner 无须在启动选项中再次列出。相同原对象登记多次只装配一次；不同 Operation owner 占用相同 kind/version 拒绝挂载。工厂返回后登记封闭，运行中的组件与回调不能再调用 assembly 追加能力。原生委托仍通过同一 assembly 的 implementDelegation 构造。
+
+`assembly.native` 只登记能力，由应用挂载安装并在 Host 退出时等待释放；构造模块不会启动原生 I/O 或业务执行。已有宿主使用 `mountApplication(ctx, factory, { home })` 时，有原生能力登记才要求显式绝对 home；Runtime 使用自己的归一化 home。`options.operations` 和 `RuntimeOptions.installNative` 继续供宿主选择共享 owner 与底座服务，模块登记不要求再配置一份。
 
 serviceActorId 是持久原工作反馈的发布主体，必须由业务权限体系明确授予所需能力。它不替代独立调用者的认证，也不能从业务正文取得。
 

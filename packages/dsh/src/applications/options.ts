@@ -1,5 +1,7 @@
 import { type OperationOwnerReference } from "@hanger-source/dsh-reactive/kernel";
 export interface HostOptions {
+    /** 声明原生能力时显式指定安装根目录；独立Runtime提供其规范化home。 */
+    home?: string;
     /** 应用配置的可靠业务 owner；同 kind/version 唯一，供模块退出及进程恢复后的关联读取。 */
     operations?: readonly OperationOwnerReference[];
     model?: {

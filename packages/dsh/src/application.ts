@@ -23,6 +23,7 @@ import { ConversationQuestions } from './participation/questions.ts';
 export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyEnvironment[]> {
     #lifetime = new AbortController();
     #closing?: Promise<void>;
+    #disposing?: Promise<void>;
     private readonly sessions: ConversationSessions<E>;
     private readonly facts: ConversationObservations;
     private readonly inputs: ConversationInputs;
@@ -31,7 +32,7 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
     private readonly questions: ConversationQuestions;
     private readonly programs: ConversationPrograms;
     private readonly stopDelegationUpdates: () => void;
-    private constructor(ctx: Context, definition: ApplicationDefinition<E>, private readonly workspaces: Workspaces, options: HostOptions, private readonly delegations: NativeDelegations) {
+    private constructor(ctx: Context, definition: ApplicationDefinition<E>, private readonly workspaces: Workspaces, options: HostOptions, private readonly delegations: NativeDelegations, private readonly releaseInstallation: () => Promise<void>) {
         installReactiveProjection(ctx);
         const signal = this.#lifetime.signal;
         this.facts = new ConversationObservations(ctx, workspaces, signal, () => this.sessions);
@@ -50,11 +51,12 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
         this.programs.installAssembly();
         this.inputs.installPreStep();
         tools.installPolicies();
-        ctx.effect(() => () => this.dispose());
+        // 原生卸载只排空业务；公开dispose在排空后退出安装，避免Fiber等待自己。
+        ctx.effect(() => () => this.drain());
     }
     /** @internal 正式mount完成依赖后构造同一应用。 */
-    static create<E extends readonly AnyEnvironment[]>(ctx: Context, definition: ApplicationDefinition<E>, workspaces: Workspaces, options: HostOptions, delegations: NativeDelegations): ApplicationHost<E> {
-        return new ApplicationHost(ctx, definition, workspaces, options, delegations);
+    static create<E extends readonly AnyEnvironment[]>(ctx: Context, definition: ApplicationDefinition<E>, workspaces: Workspaces, options: HostOptions, delegations: NativeDelegations, releaseInstallation: () => Promise<void>): ApplicationHost<E> {
+        return new ApplicationHost(ctx, definition, workspaces, options, delegations, releaseInstallation);
     }
     initialize(): Promise<void> { return this.sessions.initialize(); }
     private handle<P extends ProgramContract = ProgramContract>(session: ConversationSession, participant: 'human' | 'service' = 'human'): ConversationHandle<P> {
@@ -112,6 +114,19 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
     notifyOperation(sessionId: string, followId: string, options: SubmitOptions = {}): Promise<OperationNotificationResult> { return this.operations.notifyOperation(sessionId, followId, options); }
     close(sessionId: string): Promise<void> { return this.sessions.close(sessionId); }
     dispose(): Promise<void> {
+        if (this.#disposing) return this.#disposing;
+        const completion = Promise.withResolvers<void>();
+        this.#disposing = completion.promise;
+        void (async () => {
+            const failures = new Set<unknown>();
+            try { await this.drain(); } catch (error) { failures.add(error); }
+            try { await this.releaseInstallation(); } catch (error) { failures.add(error); }
+            if (failures.size) throw new AggregateError([...failures], 'REACTIVE_APPLICATION_DISPOSAL_FAILED');
+        })().then(completion.resolve, completion.reject);
+        return this.#disposing;
+    }
+    /** @internal 父安装退出与显式dispose共用排空回执；这里不卸载正在等待它的Fiber。 */
+    drain(): Promise<void> {
         if (this.#closing) return this.#closing;
         const completion = Promise.withResolvers<void>();
         this.#closing = completion.promise;

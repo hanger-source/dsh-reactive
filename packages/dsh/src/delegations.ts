@@ -66,9 +66,6 @@ export interface DelegationOptions<D extends ActionContract, P extends ProgramCo
   objective(input: ActionParsedInput<D>, call: ActionCallContext<ActionScope<D>>): string;
   authorize(admission: DelegationAdmission<D>): void | PromiseLike<void>;
 }
-export interface ApplicationAssembly {
-  implementDelegation<D extends ActionContract, P extends ProgramContract>(action: D, options: DelegationOptions<NoInfer<D>, P>): ActionImplementation<D>;
-}
 type Descriptor = { readonly action: ActionContract; readonly program: ProgramImplementation;
   readonly mode: 'spawn' | 'fork'; authorize(admission: DelegationAdmission): void | PromiseLike<void>;
   childInput(input: unknown, call: ActionCallContext<unknown>): unknown; objective(input: unknown, call: ActionCallContext<unknown>): string };
@@ -577,10 +574,4 @@ export class NativeDelegations {
     });
     return [...failures, ...nodes];
   }
-}
-
-export function createApplicationAssembly(ctx: Context) {
-  const native = new NativeDelegations(ctx);
-  const assembly: ApplicationAssembly = Object.freeze({ implementDelegation: <D extends ActionContract, P extends ProgramContract>(action: D, options: DelegationOptions<D, P>) => native.implementation(action, options) });
-  return { assembly, native };
 }

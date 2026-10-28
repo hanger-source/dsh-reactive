@@ -3,7 +3,7 @@ import { defineApplication, defineEnvironment, defineProgram, defineSurface, def
   type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, z } from '@hanger-source/dsh-reactive';
 import { concatMap, firstValueFrom, type Observable } from 'rxjs';
 import { implementProgram, useAction, useResource, useResourceInstance, useReaction, useBeforeStep } from '@hanger-source/dsh-reactive/program';
-import { createRuntime, type ConversationHandle, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
+import { createRuntime, mountApplication, type ApplicationAssembly, type ConversationHandle, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-reactive-dsh/tools';
 import { createProgramClient, type RemoteProgramSession } from '@hanger-source/dsh-reactive-client';
@@ -61,6 +61,19 @@ export const localImplementation = (save: (target: string, value: number) => Pro
 const preparation = defineOperation({ kind: 'consumer.preparation', version: 1,
   command: z.object({ target: z.string(), commandId: z.string() }), reference: z.object({ id: z.string() }),
   state: z.enum(['running', 'complete']), settled: state => state === 'complete' ? state : undefined });
+export function backendModule(assembly: ApplicationAssembly, owner: OperationOwner<typeof preparation>) {
+  const operation: OperationOwner<typeof preparation> = assembly.operation(owner);
+  const tools: ReturnType<typeof createNativeTools> = assembly.native(createNativeTools({ service: 'provided' }));
+  return { operation, tools, environment: defineEnvironment({ id: 'module', instructions: '发行包模块装配', program }) };
+}
+export const moduleBackend = (owner: OperationOwner<typeof preparation>, options: RuntimeOptions) => createRuntime(assembly => {
+  const module = backendModule(assembly, owner);
+  return defineApplication({ name: 'registry-module-consumer', admit: async () => {}, environments: [module.environment] });
+}, options);
+export const mountedModuleBackend = (context: Parameters<typeof mountApplication>[0], home: string, owner: OperationOwner<typeof preparation>) => mountApplication(context, assembly => {
+  const module = backendModule(assembly, owner);
+  return defineApplication({ name: 'registry-mounted-module-consumer', admit: async () => {}, environments: [module.environment] });
+}, { home });
 export function useLocalPreparation(owner: OperationOwner<typeof preparation>, target: string,
   submit: (command: { target: string; commandId: string }) => Promise<{ id: string }>) {
   return useAction(() => ({ name: 'local_prepare', description: '委托真实业务操作',

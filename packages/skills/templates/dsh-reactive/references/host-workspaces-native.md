@@ -22,6 +22,12 @@ export async function start<P extends ProgramContract>(home: string, model: Runt
 
 保留具体 Program 类型，不用任意 T 或宽泛 interface 冒充已验证合同。admit 来自业务可信政策，不写空 policy 冒充正式权限。
 
+可复用宿主模块接收 `ApplicationAssembly`：用 `assembly.native(createNativeTools({ service: 'provided' }))` 等登记原生能力，用 `assembly.operation(actualOwner)` 登记已有真实 Operation owner，用 `assembly.implementDelegation(...)` 构造子程序委托实现。native 和 operation 返回原对象及其精确类型，模块把它们交给自己的 Program、hooks 或服务，并返回 environment 供应用组合；无需启动层再列一份模块的能力与 owner。相同原对象重复登记只装配一次，不同 Operation owner 的 kind/version 冲突硬失败；工厂返回即封闭登记，组件及迟到回调不能继续注册。
+
+应用挂载安装已登记能力，失败释放本次装配，Host 退出等待实际释放。Runtime 传递其归一化 home；已有宿主调用 `mountApplication(ctx, factory, { home })` 时，只有登记原生能力才必须明确提供绝对 home。`options.operations` 与 `RuntimeOptions.installNative` 继续表达宿主选择的共享业务 owner 和底座安装，模块自身的登记无须重复配置。Operation 的可靠状态与已受理工作继续归业务 owner，登记不改变它们的寿命。
+
+native 选择尚未安装的能力实例并交给一个应用；另一应用不能重复取得该实例，退出或失败后也不能复用。各应用使用独立能力实例，共享底层服务用各域已有 provided 选项。自定义能力 dispose 需允许安装前回滚。operation 借用业务 owner，允许多个应用明确共用。
+
 Runtime 的 home 必须显式绝对路径，隔离会话、附件、存储与凭据；不能改全局环境变量或进程 cwd 给多 Runtime 共享个人目录。`deepseek`/`piAi`/`nativeModel` 接模型；使用实际模型声明的容量和能力，不猜 contextWindow 或 vision。需要控制摘要/预留量时显式传 RuntimeOptions.compaction；官方 retry、token meter、compaction、image offload 已由 Runtime 安装。
 
 ```ts
