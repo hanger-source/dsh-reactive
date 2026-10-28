@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate as immediate } from 'node:timers/promises';
+import { symbols } from '@deepseek-ai/cordis';
 import { Fragment, createElement as h } from 'react';
 import { BehaviorSubject, filter, firstValueFrom, tap } from 'rxjs';
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session';
@@ -25,6 +27,7 @@ async function scenario(mode: 'native' | 'ptc') {
   const calls: ActionCallContext<{ readonly merchantId: string }>[] = [];
   const effects: { step: Step; merchantId: string; invocationId: string }[] = [];
   const admitted: HumanQuestionOrigin[] = [];
+  let responderGate: { entered: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> } | undefined;
   const collectDetails = defineAction({ name: 'collect_merchant_details', description: '收集原商家的交付偏好，再记录本次已经准入的资料',
     scope: z.object({ merchantId: z.string() }).strict(),
     input: z.object({ step: z.enum(['foreground', 'timed', 'cancel', 'drain', 'log-failure', 'undeclared']) }).strict(),
@@ -61,13 +64,15 @@ async function scenario(mode: 'native' | 'ptc') {
       useRelation(() => action.invocations$.pipe(tap(invocation => { invocations.push(invocation); })), [action]);
       return h(Fragment, null, Context({ name: 'merchant', value: { merchantId: 'merchant-a' } }),
         Offer({ name: 'collect_merchant_details', action }), Expose({ surface, value: { actions: { collectDetails: action } } }),
-        mounted.status === 'ready' && mounted.value ? HumanInput({ admitResponder(admission) {
+        mounted.status === 'ready' && mounted.value ? HumanInput({ async admitResponder(admission) {
           if (admission.actorId !== 'reviewer') throw new Error('REVIEWER_REQUIRED');
           if (!admission.question.origin.inputs.length || admission.question.origin.inputs.some(input => input.actorId !== 'request-author'
             || z.object({ merchantId: z.literal('merchant-a'), requestedAt: z.iso.datetime() }).strict().parse(input.scope).merchantId !== 'merchant-a')) {
             throw new Error('QUESTION_ORIGIN_DENIED');
           }
           admitted.push(structuredClone(admission.question.origin));
+          const held = responderGate; responderGate = undefined;
+          if (held) { held.entered.resolve(); await held.release.promise; }
         } }) : null);
     } }),
   })] });
@@ -84,6 +89,10 @@ async function scenario(mode: 'native' | 'ptc') {
       code: `return await tools.collect_merchant_details(${JSON.stringify({ step: selected.step })});` });
   }, mode);
   return { app, program, mounted$, drainReturn, requests, calls, invocations, effects, admitted,
+    holdResponder() {
+      assert.equal(responderGate, undefined);
+      return responderGate = { entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() };
+    },
     next(step: Step) {
       assert.equal(next, undefined);
       const rootCallId = `human-program-${mode}-${++sequence}`;
@@ -286,7 +295,19 @@ for (const mode of ['native', 'ptc'] as const) {
       const bound = await session.question(question.callId);
       assert.deepEqual((await bound.state.read()).foreground, question);
       assert.deepEqual(scene.effects, []);
-      assert.deepEqual(await timed.result, { step: 'timed', outcome: 'pending', callId: question.callId });
+      const expiring = scene.holdResponder();
+      let expiredOutcome: unknown;
+      const expiredAnswer = bound.answer(deliveryDetails, { actorId: 'reviewer' })
+        .then(value => { expiredOutcome = value; }, error => { expiredOutcome = error; });
+      try {
+        await expiring.entered.promise;
+        assert.deepEqual(await timed.result, { step: 'timed', outcome: 'pending', callId: question.callId });
+        await immediate();
+        assert.ok(expiredOutcome instanceof Error);
+        assert.equal(Reflect.get(expiredOutcome, 'code'), 'ASK_TIMED_OUT', '真实前台问题到期时，准入等待不被尚未结束的策略拖住');
+        expiring.release.resolve(); await expiredAnswer;
+        assert.deepEqual(scene.effects, [], '迟到的前台准入不能将超时问题改成已回答');
+      } finally { expiring.release.resolve(); await expiredAnswer; }
       await session.whenIdle();
       assert.equal(scene.calls.length, 1);
       assert.deepEqual(scene.effects, []);
@@ -305,7 +326,89 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.equal(app.native.agents.get(SessionId(session.id)), undefined, '读取持久问题对象不创建 Agent');
       assert.deepEqual((await late.state.read()).active?.origin, question.origin);
       await assert.rejects(late.attachWait()[Symbol.asyncIterator]().next(), /REACTIVE_HUMAN_FOREGROUND_UNAVAILABLE/u);
-      assert.equal(await late.answer(deliveryDetails, { actorId: 'reviewer' }), true);
+      const beforeLateRequests = scene.requests.length, beforeLateAdmissions = scene.admitted.length;
+      const invalidBatches: HumanAnswer[] = [
+        { answers: [] },
+        { answers: [deliveryDetails.answers[0]!, deliveryDetails.answers[0]!] },
+        { answers: [...deliveryDetails.answers, { id: 'never-asked', selected: ['站内'] }] },
+      ];
+      for (const invalid of invalidBatches) {
+        await assert.rejects(late.answer(invalid, { actorId: 'reviewer' }), error => {
+          assert.ok(error instanceof Error); assert.equal(Reflect.get(error, 'code'), 'BAD_ANSWER'); return true;
+        });
+        assert.equal(app.native.agents.get(SessionId(session.id)), undefined, '不完整、重复或多余答案必须在激活之前拒绝');
+        assert.equal(scene.requests.length, beforeLateRequests);
+        assert.equal(scene.admitted.length, beforeLateAdmissions, '答案批次不完整时不进入响应者策略');
+      }
+
+      const persistence = Reflect.get(app.native.sessionPersistence, symbols.original) as typeof app.native.sessionPersistence;
+      const open = persistence.open;
+      for (const readingPhase of [1, 2]) {
+        const observer = app.host.conversation(session.id, scene.program);
+        const enteredRead = Promise.withResolvers<void>(), continueRead = Promise.withResolvers<void>(), closedRead = Promise.withResolvers<void>();
+        let reads = 0, held = false, outcome: unknown;
+        let answering: Promise<void> | undefined;
+        persistence.open = async function (...args) {
+          const handle = await open.apply(this, args);
+          if (args[0] === session.id && args[1] === 'read' && ++reads === readingPhase) {
+            held = true;
+            const close = handle.close;
+            handle.close = async function (...closeArgs) {
+              try { return await close.apply(this, closeArgs); }
+              finally { closedRead.resolve(); }
+            };
+            enteredRead.resolve(); await continueRead.promise;
+          }
+          return handle;
+        };
+        try {
+          answering = observer.answerQuestion(question.callId, deliveryDetails, { actorId: 'reviewer' })
+            .then(value => { outcome = value; }, error => { outcome = error; });
+          await enteredRead.promise;
+          observer.release(); await immediate();
+          assert.ok(outcome instanceof Error); assert.match(outcome.message, /REACTIVE_SCOPE_DISPOSED/u,
+            `第${readingPhase}次冷读取不配合signal时，SDK退出仍及时结束答复等待`);
+          assert.equal(app.native.agents.get(SessionId(session.id)), undefined);
+          continueRead.resolve(); await closedRead.promise; await answering; await immediate();
+          assert.equal(app.native.agents.get(SessionId(session.id)), undefined, '迟到的真实持久读取不能激活已退出响应者的Agent');
+          assert.equal(scene.requests.length, beforeLateRequests);
+          assert.deepEqual(scene.effects, []);
+        } finally {
+          continueRead.resolve(); observer.release();
+          if (held) await closedRead.promise;
+          await answering;
+          persistence.open = open;
+        }
+      }
+
+      for (const ending of ['caller', 'sdk'] as const) {
+        const observer = app.host.conversation(session.id, scene.program), held = scene.holdResponder();
+        const cancellation = new AbortController(), reason = new Error('CANCEL_COLD_HUMAN_RESPONSE_ADMISSION');
+        let outcome: unknown;
+        const waiting = observer.answerQuestion(question.callId, deliveryDetails, { actorId: 'reviewer', signal: cancellation.signal })
+          .then(value => { outcome = value; }, error => { outcome = error; });
+        try {
+          await held.entered.promise;
+          if (ending === 'caller') cancellation.abort(reason); else observer.release();
+          await immediate();
+          if (ending === 'caller') assert.equal(outcome, reason);
+          else { assert.ok(outcome instanceof Error); assert.match(outcome.message, /REACTIVE_SCOPE_DISPOSED/u); }
+          held.release.resolve(); await waiting; await immediate();
+          assert.equal(app.native.agents.get(SessionId(session.id)), undefined, '迟到的冷准入不激活已取消或退出的响应者会话');
+          assert.equal(scene.requests.length, beforeLateRequests);
+          assert.deepEqual(scene.effects, []);
+        } finally { held.release.resolve(); observer.release(); await waiting; }
+      }
+
+      const held = scene.holdResponder(), changing = structuredClone(deliveryDetails);
+      const answering = late.answer(changing, { actorId: 'reviewer' });
+      try {
+        await held.entered.promise;
+        changing.answers[0]!.selected[0] = '邮件';
+        changing.answers.push({ id: 'never-asked', selected: ['站内'] });
+        held.release.resolve();
+        assert.equal(await answering, true);
+      } finally { held.release.resolve(); await answering; }
       cold.release();
       await session.whenIdle();
       assert.equal(scene.calls.length, 1, '晚答只续接原生输入，不重新执行已经返回的 Action body');

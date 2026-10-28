@@ -1,17 +1,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp } from 'node:fs/promises';
+import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { useLayoutEffect } from 'react';
-import { filter, firstValueFrom, timeout, type Subscription } from 'rxjs';
+import { filter, firstValueFrom, from, timeout, type Subscription } from 'rxjs';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { combineResources, defineApplication, defineEnvironment, defineProgram, defineSurface, z, type Observation } from '@hanger-source/dsh-reactive';
-import { implementProgram, useResource } from '@hanger-source/dsh-reactive/program';
+import { implementProgram, NativeTools, useResource } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeCapabilities, nativeModel, type ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
-import { createNativeApproval, type ApprovalPolicy, type NativeSessionApproval } from '@hanger-source/dsh-reactive-dsh/approval';
+import { createNativeApproval, type ApprovalOutcome, type ApprovalPolicy, type ApprovalRequestEvent, type NativeApprovalEvent, type NativeSessionApproval } from '@hanger-source/dsh-reactive-dsh/approval';
 import { createNativeTools } from '@hanger-source/dsh-reactive-dsh/tools';
+import { text, tool } from './native-support.ts';
 
 test('Approval政策资源与原生日志、hooks和Tool组合同源，冷读恢复及释放不产生批准或模型调用', { timeout: 20_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-approval-resource-'));
@@ -80,3 +81,98 @@ test('Approval政策资源与原生日志、hooks和Tool组合同源，冷读恢
     assert.equal(models, 0); assert.equal(answers, 0); assert.deepEqual(errors, []);
   } finally { subscription?.unsubscribe(); resumed?.release(); one?.release(); two?.release(); await runtime.dispose(); }
 });
+
+for (const answerer of ['owned', 'provided'] as const) {
+  test(`Approval退出撤销尚未决策的${answerer}回答，晚批准不能执行原生工具`, { timeout: 20_000 }, async t => {
+    const root = await mkdtemp(join(tmpdir(), `dsh-reactive-approval-${answerer}-exit-`));
+    const entered = Promise.withResolvers<ApprovalRequestEvent>();
+    const late = Promise.withResolvers<ApprovalOutcome>(), answered = Promise.withResolvers<void>();
+    const cancelled = Promise.withResolvers<void>();
+    t.signal.addEventListener('abort', () => late.resolve('allowed-once'), { once: true });
+    let answers = 0;
+    const answer = async (request: ApprovalRequestEvent): Promise<ApprovalOutcome> => {
+      if (++answers === 1) return 'allowed-once';
+      entered.resolve(request);
+      try { return await late.promise; }
+      finally { answered.resolve(); }
+    };
+    const approval = createNativeApproval({ policy: 'ask',
+      require: call => call.name === 'approval_effect' ? { reason: '写入前需要本次批准' } : undefined,
+      answer: answerer === 'owned' ? answer : 'provided',
+    });
+    const program = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+    const definition = defineApplication({ name: `approval-${answerer}-exit`, admit: async () => {}, environments: [defineEnvironment({
+      id: 'work', instructions: '仅按本次批准执行工具',
+      program: implementProgram(program, { Component: () => NativeTools({ names: ['approval_effect'] }) }),
+    })] });
+    const errors: unknown[] = [], audit: NativeApprovalEvent[] = [];
+    let planned: 'accepted' | 'withdrawn' | undefined;
+    let removeAnswer: (() => void) | undefined;
+    const runtime = await createRuntime(() => definition, { home: root, actorId: 'approval-owner', tools: 'native',
+      onError: event => errors.push(event.error),
+      async installNative(ctx, home) {
+        await approval.install(ctx, home);
+        // 外部回答者后注册且抢先处理；请求寿命不能依赖本能力的listener顺序。
+        if (answerer === 'provided') removeAnswer = ctx.on('approval/request', answer, { prepend: true });
+      },
+      // 脚本适配器只驱动可控工具请求；证据覆盖原生审批与执行边界，不代表外部provider。
+      model: nativeModel({ provider: 'approval-script', model: 'scripted', create: () => new class extends LlmAdapter {
+        async *stream() {
+          const current = planned; planned = undefined;
+          if (current) yield* tool('approval_effect', `approval-${answerer}-${current}`, { marker: current });
+          else yield* text('已取得本次工具结果');
+        }
+      }() }),
+    });
+    let session: ConversationHandle<typeof program> | undefined;
+    const removeAudit = runtime.native.on('session/event', (current, event) => {
+      if (current.id !== session?.id || event.type !== 'approval/asked' && event.type !== 'approval/decided') return;
+      audit.push(event);
+      if (event.type === 'approval/decided' && event.data.outcome === 'cancelled') cancelled.resolve();
+    });
+    const removeTool = runtime.native.get('tools')!.register({ name: 'approval_effect', description: '批准后写入本次调用身份',
+      parameters: { type: 'object', properties: { marker: { type: 'string' } }, required: ['marker'], additionalProperties: false },
+      output: { schema: { type: 'null' }, render: () => [{ type: 'text', text: 'null' }] },
+      async execute(raw, execution) {
+        const { marker } = z.object({ marker: z.enum(['accepted', 'withdrawn']) }).parse(raw);
+        await writeFile(join(root, marker + '.txt'), execution.callId);
+        return null;
+      },
+    });
+    try {
+      const workspace = await runtime.application.createWorkspace({ directory: root });
+      session = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
+      planned = 'accepted';
+      await session.submit({ requestId: 'accepted', content: '批准后执行', intent: 'question', delivery: 'followup', scope: null });
+      await session.whenIdle();
+      assert.equal(await readFile(join(root, 'accepted.txt'), 'utf8'), `approval-${answerer}-accepted`);
+
+      planned = 'withdrawn';
+      await session.submit({ requestId: 'withdrawn', content: '等待本次批准', intent: 'question', delivery: 'followup', scope: null });
+      const request = await firstValueFrom(from(entered.promise).pipe(timeout(5_000)));
+      assert.equal(request.agent, runtime.native.get('agents')!.get(SessionId(session.id)));
+      assert.equal(request.callId, `approval-${answerer}-withdrawn`);
+      assert.equal(request.signal?.aborted, false);
+      await approval.dispose();
+      assert.equal(request.signal?.aborted, true, '退出只撤销本安装尚未决策的请求');
+      await firstValueFrom(from(cancelled.promise).pipe(timeout(5_000)));
+      await session.whenIdle();
+      await assert.rejects(access(join(root, 'withdrawn.txt')), { code: 'ENOENT' });
+
+      late.resolve('allowed-once');
+      await answered.promise;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      await assert.rejects(access(join(root, 'withdrawn.txt')), { code: 'ENOENT' });
+      const asked = audit.filter(event => event.type === 'approval/asked');
+      const decided = audit.filter(event => event.type === 'approval/decided');
+      assert.deepEqual(asked.map(event => event.data.callId), [`approval-${answerer}-accepted`, `approval-${answerer}-withdrawn`]);
+      assert.deepEqual(decided.map(event => event.data.id), asked.map(event => event.data.id));
+      assert.deepEqual(decided.map(event => event.data.outcome), ['allowed-once', 'cancelled'], '官方审计保留已决策grant，待决策请求只结算一次取消');
+      assert.equal(answers, 2); assert.deepEqual(errors, []);
+    } finally {
+      late.resolve('allowed-once');
+      session?.release(); removeAudit(); removeTool(); removeAnswer?.();
+      await runtime.dispose();
+    }
+  });
+}

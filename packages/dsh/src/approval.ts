@@ -1,4 +1,4 @@
-import Approval, { type ApprovalPolicy, type ApprovalOutcome } from '@deepseek-ai/dsh-user-approval';
+import Approval, { type ApprovalPolicy, type ApprovalOutcome, type ApprovalRequest } from '@deepseek-ai/dsh-user-approval';
 import type { ApprovalRequestEvent } from '@deepseek-ai/dsh-user-approval/types';
 import type { ToolExecution } from '@deepseek-ai/dsh-tools';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
@@ -88,14 +88,37 @@ export function createNativeApproval(options: NativeApprovalOptions): NativeAppr
   }
   const sessions = new WeakMap<object, SessionApproval>();
   const policy = options.policy, require = options.require, answer = options.answer;
-  const owner = new NativeCapabilityOwner('reactive-native-approval', ['approval', 'tools'], function* (ctx) {
-    yield ctx.plugin(Approval, { policy });
-    if (answer !== 'provided') yield ctx.on('approval/request', (request, next) => answer(request, next));
+  class CapabilityApproval extends Approval {
+    override request(request: ApprovalRequest): Promise<ApprovalOutcome> {
+      owner.scope.assertActive();
+      const signal = request.signal ? AbortSignal.any([owner.scope.signal, request.signal]) : owner.scope.signal;
+      // 取消进入官方request；审计、决策与晚答丢弃仍由原生服务持有。
+      return super.request({ ...request, signal });
+    }
+  }
+  const owner: NativeCapabilityOwner = new NativeCapabilityOwner('reactive-native-approval', ['approval', 'tools'], function* (ctx) {
+    yield ctx.plugin(CapabilityApproval, { policy });
+    if (answer !== 'provided') yield ctx.on('approval/request', async (request, next) => {
+      const assertActive = () => { owner.scope.assertActive(); request.signal?.throwIfAborted(); };
+      assertActive();
+      const outcome = await answer(request, async () => {
+        assertActive();
+        const delegated = await next();
+        assertActive();
+        return delegated;
+      });
+      assertActive();
+      return outcome;
+    });
     yield ctx.on('tools/pre-execute', async (execution, next) => {
+      owner.scope.assertActive();
       const previous = await next();
       if (previous.kind !== 'allow') return previous;
+      owner.scope.assertActive();
       execution.signal.throwIfAborted();
       const requirement = require(execution);
+      owner.scope.assertActive();
+      execution.signal.throwIfAborted();
       return requirement === undefined ? previous : { kind: 'ask', reason: requirement.reason,
         ...(requirement.displayReason === undefined ? {} : { displayReason: requirement.displayReason }) };
     });

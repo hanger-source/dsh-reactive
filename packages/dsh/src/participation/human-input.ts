@@ -3,7 +3,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import { ToolCallId } from '@deepseek-ai/dsh-llm';
 import type { ProjectionSnapshot } from '@deepseek-ai/dsh-session-projection';
 import { UserQuestionError, type AskUserQuestionRequest } from '@deepseek-ai/dsh-user-questions';
-import { Observable, Subject } from 'rxjs';
+import { Observable, Subject, firstValueFrom } from 'rxjs';
+import { abortable, type HumanResponderAdmission } from '@hanger-source/dsh-reactive';
 import { humanAnswerSchema, type HumanAnswer, type HumanInputState, type HumanQuestion, type HumanQuestionOrigin, type HumanForegroundQuestion, type HumanResponderOptions, type HumanWaitFrame } from '@hanger-source/dsh-reactive/kernel';
 import type { HumanInputDeclaration } from '@hanger-source/dsh-reactive/kernel';
 import { Scope, type Value } from '@hanger-source/dsh-reactive/kernel';
@@ -47,6 +48,30 @@ export function humanInputSnapshot(snapshot: ProjectionSnapshot, source: Pick<Re
     active: questions.active.map(question => ({ ...question, origin: questionOrigin(source, question.callId) })),
     settled: questions.settled.map(question => ({ ...question, origin: questionOrigin(source, question.callId) })),
   });
+}
+
+/** @internal 冷预审与 live 受理核验同一完整答案批次，不以恢复 Agent 代替输入验证。 */
+export function assertHumanAnswerBatch(question: HumanQuestion, answer: HumanAnswer): void {
+  const ids = new Set(answer.answers.map(item => item.id));
+  if (ids.size !== answer.answers.length || question.questions.length !== answer.answers.length
+    || question.questions.some(item => !ids.has(item.id))) {
+    throw new UserQuestionError('the answer batch must name each question exactly once', 'BAD_ANSWER');
+  }
+}
+
+/** @internal 本次准入只借用当前声明；声明撤销或等待退出立即退等，结算后释放 revision 依赖。 */
+export async function admitHumanResponder(program: HumanInputProgram, scope: Scope,
+  policy: HumanInputDeclaration, admission: HumanResponderAdmission): Promise<void> {
+  const changed = new AbortController();
+  const signal = AbortSignal.any([scope.signal, program.signal, admission.signal, changed.signal]);
+  signal.throwIfAborted();
+  const stop = scope.effect(() => {
+    program.revision.get();
+    if (program.humanInput !== policy) changed.abort(new Error('REACTIVE_HUMAN_INPUT_CHANGED'));
+  });
+  try {
+    await firstValueFrom(abortable(() => policy.admitResponder({ ...admission, signal }), signal));
+  } finally { stop(); }
 }
 
 /** 一个真实 Agent 的前台 answerer 接点；持久问题及晚答输入始终归原生服务所有。 */
@@ -151,25 +176,21 @@ export class HumanInputs {
   }
 
   private async admit(callId: ToolCallId, answer: HumanAnswer | null, options: HumanResponderOptions) {
+    const actorId = options.actorId;
     this.assertRoot();
     this.program.flush();
     const policy = this.program.humanInput;
     if (!policy) throw new Error('REACTIVE_HUMAN_INPUT_NOT_DECLARED');
-    if (typeof options.actorId !== 'string' || !options.actorId.trim()) throw new Error('REACTIVE_HUMAN_RESPONDER_REQUIRED');
+    if (typeof actorId !== 'string' || !actorId.trim()) throw new Error('REACTIVE_HUMAN_RESPONDER_REQUIRED');
     const signal = AbortSignal.any([this.scope.signal, this.program.signal, ...options.signal ? [options.signal] : []]);
     signal.throwIfAborted();
     const address = this.question(callId);
-    const { question } = address;
-    if (answer) {
-      const ids = new Set(answer.answers.map(item => item.id));
-      if (ids.size !== answer.answers.length || question.questions.length !== answer.answers.length
-        || question.questions.some(item => !ids.has(item.id))) {
-        throw new UserQuestionError('the answer batch must name each question exactly once', 'BAD_ANSWER');
-      }
-    }
-    await policy.admitResponder({ channel: address.channel, question: structuredClone(question), answer: answer ? structuredClone(answer) : null,
-      actorId: options.actorId, signal });
-    return { ...address, policy, signal };
+    const { question, response } = address;
+    const responding = response ? AbortSignal.any([signal, response.signal]) : signal;
+    if (answer) assertHumanAnswerBatch(question, answer);
+    await admitHumanResponder(this.program, this.scope, policy, { channel: address.channel,
+      question: structuredClone(question), answer: answer ? structuredClone(answer) : null, actorId, signal: responding });
+    return { ...address, policy, signal: responding };
   }
 
   /** 在最后一个 await 之后同步复核；准入返回和原生受理之间不留权限窗口。 */

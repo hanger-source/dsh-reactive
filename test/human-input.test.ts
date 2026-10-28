@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
+import { setTimeout as delay, setImmediate as immediate } from 'node:timers/promises';
+import { symbols } from '@deepseek-ai/cordis';
 import { Fragment, createElement as h } from 'react';
 import { BehaviorSubject, filter, firstValueFrom } from 'rxjs';
 import { SessionId } from '@deepseek-ai/dsh-session';
@@ -286,14 +287,16 @@ for (const mode of ['native', 'ptc'] as const) {
   });
 }
 
-test('异步响应准入结束后复核当前声明，退出不能让旧策略提交答案，也不取消原问题', async () => {
+test('异步响应准入取消及时退出，迟到策略不回答或claim，当前声明与原答案快照决定正式受理', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-human-admission-'));
   const mounted$ = new BehaviorSubject(true);
-  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
-  let calls = 0, held = false;
+  const gates = [{ entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>(), finished: Promise.withResolvers<void>() }];
+  let gate: typeof gates[number] | undefined = gates[0];
+  let calls = 0;
   const policy = async (admission: HumanResponderAdmission) => {
     admitResponder(admission);
-    if (admission.answer && !held) { held = true; entered.resolve(); await release.promise; }
+    const held = gate; gate = undefined;
+    if (held) { held.entered.resolve(); await held.release.promise; held.finished.resolve(); }
   };
   const definition = defineApplication({ name: 'human-admission', admit: async () => {}, environments: [defineEnvironment({
     id: 'work', instructions: '取得当前正式参与许可',
@@ -307,6 +310,10 @@ test('异步响应准入结束后复核当前声明，退出不能让旧策略�
     if (calls === 1) yield* tool('ask_user_question', 'human-async-admission', { questions, timeout: 30 });
     else yield* text('当前策略已经审核并接受完整答复');
   });
+  const nativeQuestions = Reflect.get(app.native.userQuestions, symbols.original) as typeof app.native.userQuestions;
+  const attachWait = nativeQuestions.attachWait;
+  let attached = 0;
+  nativeQuestions.attachWait = function (...args) { attached++; return attachWait.apply(this, args); };
   try {
     const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
     const foreground = firstValueFrom(session.foregroundQuestions$.pipe(filter(value => value.length === 1)));
@@ -314,20 +321,61 @@ test('异步响应准入结束后复核当前声明，退出不能让旧策略�
     const [pending] = await foreground;
     assert.ok(pending);
     const answering = session.answerQuestion(pending.callId, answer);
-    const rejected = assert.rejects(answering, /REACTIVE_HUMAN_INPUT_CHANGED/u);
-    await entered.promise;
+    let rejectedBeforeRelease = false;
+    const rejected = assert.rejects(answering, /REACTIVE_HUMAN_INPUT_CHANGED/u).then(() => { rejectedBeforeRelease = true; });
+    await gates[0]!.entered.promise;
     mounted$.next(false);
     await assert.rejects(session.answerQuestion(pending.callId, answer), /REACTIVE_HUMAN_INPUT_NOT_DECLARED/u);
-    release.resolve(); await rejected;
+    await immediate();
+    assert.equal(rejectedBeforeRelease, true, '声明撤下不等待不配合signal的旧策略结束');
+    await rejected;
+    gates[0]!.release.resolve(); await gates[0]!.finished.promise; await immediate();
     assert.equal(calls, 1);
     assert.equal((await firstValueFrom(session.questions$)).active[0]?.state, 'open');
     assert.equal((await firstValueFrom(session.foregroundQuestions$))[0]?.callId, pending.callId);
     mounted$.next(true);
-    assert.equal(await session.answerQuestion(pending.callId, answer), true);
+
+    for (const entry of ['answer', 'claim'] as const) for (const ending of ['caller', 'sdk'] as const) {
+      const held = { entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>(), finished: Promise.withResolvers<void>() };
+      gates.push(held); gate = held;
+      const observer = app.host.conversation(session.id, definition.environments[0].program.definition);
+      const cancellation = new AbortController(), reason = new Error(`CANCEL_HUMAN_${entry.toUpperCase()}_ADMISSION`);
+      let outcome: unknown;
+      const waiting = (entry === 'answer'
+        ? observer.answerQuestion(pending.callId, answer, { signal: cancellation.signal })
+        : observer.attachWait(pending.callId, { signal: cancellation.signal })[Symbol.asyncIterator]().next())
+        .then(value => { outcome = value; }, error => { outcome = error; });
+      try {
+        await held.entered.promise;
+        if (ending === 'caller') cancellation.abort(reason); else observer.release();
+        await immediate();
+        if (ending === 'caller') assert.equal(outcome, reason, '响应准入不配合signal时仍及时交回原取消原因');
+        else { assert.ok(outcome instanceof Error); assert.match(outcome.message, /REACTIVE_SCOPE_DISPOSED/u); }
+        held.release.resolve(); await held.finished.promise; await waiting; await immediate();
+        assert.equal(attached, 0, '迟到准入不能进入原生claim');
+        assert.equal(calls, 1, '迟到准入不能提交答案或继续模型');
+        assert.equal((await firstValueFrom(session.questions$)).active[0]?.state, 'open');
+        assert.equal((await firstValueFrom(session.foregroundQuestions$))[0]?.callId, pending.callId);
+      } finally { held.release.resolve(); observer.release(); await waiting; }
+    }
+
+    const held = { entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>(), finished: Promise.withResolvers<void>() };
+    gates.push(held); gate = held;
+    const changing = structuredClone(answer);
+    const accepted = session.answerQuestion(pending.callId, changing);
+    await held.entered.promise;
+    changing.answers[0]!.selected[0] = '拒绝';
+    changing.answers[1]!.id = 'merchant-permission';
+    held.release.resolve();
+    assert.equal(await accepted, true);
     await session.whenIdle();
     assert.equal(calls, 2);
     assert.deepEqual((await firstValueFrom(session.questions$)).settled, [{ callId: pending.callId, answers: answer.answers, origin: pending.origin }]);
     assert.deepEqual(app.errors, []);
     session.release();
-  } finally { release.resolve(); await app.dispose(); }
+  } finally {
+    gates.forEach(held => held.release.resolve());
+    nativeQuestions.attachWait = attachWait;
+    await app.dispose();
+  }
 });
