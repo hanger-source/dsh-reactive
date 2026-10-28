@@ -1,10 +1,10 @@
-# 2.0 资源有效性与原生依赖
+# 资源有效性与原生依赖
 
-2.0 改变资源 owner 撤销时的公开观察行为，并将原生能力的必需服务纳入正式 Fiber 依赖。SDK 的异步退出方式沿用 1.0 的合同。
+资源 owner 撤销会改变公开观察的有效性，原生能力的必需服务也纳入正式 Fiber 依赖。SDK 的异步退出方式见 [SDK 作用域迁移](migration-sdk-scopes.md)。
 
 ## 资源观察
 
-1.x 的 owner 退出只完成观察，外部仍活跃的 hook 或有限值缓存可能继续保留旧 ready。2.0 在仍活跃的 observations$ 上先交付 error Observation，再正常完成；error 直接使用原 signal.reason。退出后的新订阅只取得撤销观察，不回放旧 ready、旧查询错误或重连来源。
+owner 退出会在仍活跃的 observations$ 上先交付 error Observation，再正常完成；error 直接使用原 signal.reason。曾经只处理完成的消费者需要处理这个撤销事实，避免外部仍活跃的 hook 或有限值缓存继续保留旧 ready。退出后的新订阅只取得撤销观察，不回放旧 ready、旧查询错误或重连来源。
 
 消费 observations$ 时必须处理 pending、ready、error，不能将每次 next 都当作业务成功。需要有效性参与 Context、工具条件或公开资源时，继续使用资源对象或 observations$，不将 values$ 的有限完成当作业务资格仍然有效。values$ 在自身 owner 退出时正常完成，活跃 owner 内的查询错误仍沿值流报错。
 

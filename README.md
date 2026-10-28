@@ -4,9 +4,9 @@
 
 组件运行在服务端或 Agent 宿主，渲染目标是对话环境。页面、CLI 和后台服务消费公开状态与行为，不拥有模型循环或已受理业务操作。
 
-API 与组件主链、SDK、原生接入按公共合同和版本记录演进；公开能力的限制以本文和分域文档为准，聚焦试验不代表完整框架已经验收。
+框架处于 0.x 建设阶段，公共编程模型与生命周期合同仍在收敛。API 与组件主链、SDK、原生接入按公共合同和版本记录演进；公开能力的限制以本文和分域文档为准，聚焦试验不代表完整框架已经验收。
 
-跨大版本升级时，按实际安装版本查看[模块 SDK 迁移](docs/migration-sdk-modules.md)与[参与端口迁移](docs/migration-participant-ports.md)，对齐局部模块合同、人工控制与服务身份。异步装配及资源寿命的变化见 [SDK 作用域迁移](docs/migration-sdk-scopes.md)、[资源有效性迁移](docs/migration-resource-ownership.md)及[来源完成与有效性迁移](docs/migration-resource-completion.md)。
+调整公共合同时，按实际安装版本查看[模块 SDK 迁移](docs/migration-sdk-modules.md)与[参与端口迁移](docs/migration-participant-ports.md)，对齐局部模块合同、人工控制与服务身份。异步装配及资源寿命的变化见 [SDK 作用域迁移](docs/migration-sdk-scopes.md)、[资源有效性迁移](docs/migration-resource-ownership.md)及[来源完成与有效性迁移](docs/migration-resource-completion.md)。
 
 借用对象的生命周期权限、内核工作区装配及原生任务的同步构造见[借用能力迁移](docs/migration-borrowed-capabilities.md)。
 

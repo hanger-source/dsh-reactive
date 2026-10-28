@@ -1,5 +1,18 @@
 # @hanger-source/dsh-reactive-native-ui
 
+此文件保留源码版本准备记录；条目和版本号本身不表示 npm 已发布或公共 API 已稳定。
+
+## 0.21.0
+
+### Patch Changes
+
+- Updated dependencies [00f0503]
+- Updated dependencies [81d05bc]
+- Updated dependencies [9c5d4b0]
+- Updated dependencies [73e4c02]
+  - @hanger-source/dsh-reactive@0.21.0
+  - @hanger-source/dsh-reactive-client@0.21.0
+
 ## 4.0.0
 
 ### Major Changes
