@@ -101,13 +101,19 @@
     "build": "wireit",
     "build:assets": "wireit",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "prepack": "npm run build",
+    "prepare:package": "wireit",
+    "prepack": "npm run prepare:package",
     "build:compile": "wireit"
   },
   "wireit": {
     "build": {
       "dependencies": [
-        "build:compile",
+        "build:compile"
+      ]
+    },
+    "prepare:package": {
+      "dependencies": [
+        "build",
         "build:assets"
       ]
     },

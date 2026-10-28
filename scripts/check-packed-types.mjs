@@ -66,6 +66,7 @@ for (const kind of kinds) {
   await checkConsumerDependencies(directory, kind);
   // 执行同一份仓外消费者：Program 的根合同必须被 /program 接受，UI 消费不加载后台 renderer。
   await run(process.execPath, [join(directory, 'compiled/consumer.js')], directory);
+  await run(process.execPath, [join(directory, 'consumer-skill.mjs'), packed.get('@hanger-source/dsh-reactive-skills').version], directory);
   const browser = kind === 'ui' ? await buildConsumerBrowser(directory) : undefined;
   console.log(JSON.stringify({ consumer: kind, directory, packages: names, strict: true, declaredDependencies: true, runtime: true, browser, source: 'workspace-tarballs' }));
 }

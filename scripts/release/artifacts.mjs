@@ -13,7 +13,7 @@ export async function prepare(options) {
   const out = resolve(options.out ?? join(root, '.tmp/releases', source.version));
   await mkdir(dirname(out), { recursive: true });
   await mkdir(out); // 已有现场不覆盖，重复准备必须选新的明确目录。
-  await run('npm', ['run', 'build']);
+  await run('npm', ['run', 'prepare:packages']);
   await unchanged(source);
   const raw = join(out, 'raw'), staging = join(out, 'staging'), ready = join(out, 'packages');
   await Promise.all([raw, staging, ready].map(path => mkdir(path)));

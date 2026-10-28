@@ -71,14 +71,10 @@ jobs:
           npm run check:packages
       - name: 编译并执行核心、Gateway 与原生 Slot 行为试验
         run: |
-          node scripts/prepare-test.mjs reset
-          npx --no-install tsc -p tsconfig.test.json
-          node scripts/prepare-test.mjs link
+          npm run build:test
           node --test --test-timeout=15000 .tmp/test/test/*.test.js
           npm run test --workspace @hanger-source/dsh-reactive-remote
           npm run test --workspace @hanger-source/dsh-reactive-native-ui
-      - name: 编译公开用法
-        run: npm run typecheck:examples
       - name: 从实际候选安装并验收后台、可选原生域、原生 UI 和 Skill
         run: npm run release -- verify-artifacts --manifest .tmp/release/release-manifest.json
       - uses: actions/upload-artifact@v7.0.2
@@ -90,6 +86,10 @@ jobs:
             .tmp/release/packages/*.tgz
           if-no-files-found: error
           retention-days: 30
+      - name: 单独验证业务和原生UI示例
+        run: |
+          npm run typecheck:examples
+          npm run test:examples --workspace @hanger-source/dsh-reactive-remote
 
   publish:
     needs: prepare

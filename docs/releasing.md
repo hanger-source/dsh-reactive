@@ -42,7 +42,9 @@ npm run release -- version --channel stable
 
 需要候选版时选择 `version --channel next`，使用标准 `changeset pre enter next` 与 `changeset version`。下一次候选继续同一预发布模式；正式版本用 `version --channel stable` 执行 `pre exit` 后再 version。脚本在修改原有预发布状态或消费 Changesets 前，将对应原文复制到唯一的 `.trash/release-version-*` 目录；归档失败不进入官方 version。脚本统一更新锁，不 commit、tag、push 或 publish。检查六包版本、内部依赖、各包 CHANGELOG、Skill optional peers 与锁后，运行本批相称的检查并提交版本变更。
 
-`pack:workspaces` 仅验证六个 workspace 能被 npm 打包，跳过 lifecycle；它不是带源码追溯的发行候选，也不表示 registry 已发布。日常 CI 将实际 tgz 安装到仓外消费者，严格编译并实际加载公开能力；原生 UI 的物理安装同时按 browser 条件完整打包纯合同、SDK 与可选 UI，核验无外部导入、后台 renderer 或另一份 core。日常 CI 与发行验收共用这些消费者和唯一编译配置。发行工作流额外检查来源与 receipt，并执行 registry 发布和安装验收。
+`pack:workspaces` 先通过 `prepare:packages` 完成同一构建图及打包资产，再跳过 lifecycle 打包六个 workspace；它不是带源码追溯的发行候选，也不表示 registry 已发布。正式 prepare 使用相同资产准备入口。tarball 检查同时核验 exports、CHANGELOG 和 manifest 明确声明的字面文件或目录，不能把缺少说明资产的包当成完整产物。
+
+日常 CI 将实际 tgz 安装到仓外消费者，严格编译并实际加载公开能力；原生 UI 的物理安装同时按 browser 条件完整打包纯合同、SDK 与可选 UI，核验无外部导入、后台 renderer 或另一份 core。日常 CI 与发行验收共用消费者、编译配置及 Skill 消费检查，实际运行安装包的 CLI，并核对公开入口、reference 导航与版本；示例验证单独执行，不阻断此前的框架实包证据。发行工作流额外检查来源与 receipt，并执行 registry 发布和安装验收。
 
 日常 `node scripts/check-packed-types.mjs /绝对路径/workspace-pack.json` 允许保留待收口 Changesets，不改版本或发布包。修复单个消费环境后可追加 `--consumer=ui`、`--consumer=backend` 或 `--consumer=native` 仅复查该环境；不传参数时检查全部三种环境。
 

@@ -16,10 +16,11 @@
   },
   "scripts": {
     "typecheck:core": "tsc --noEmit",
-    "typecheck": "npm run typecheck:core && npm run build && npm run typecheck:examples",
+    "typecheck": "wireit",
     "typecheck:examples": "tsc -p examples/tsconfig.json && tsc -p packages/native-ui/examples/tsconfig.json",
     "build:core": "wireit",
     "build": "wireit",
+    "prepare:packages": "wireit",
     "build:test": "wireit",
     "test:core": "npm run build:test && node --test --test-timeout=15000 .tmp/test/test/*.test.js",
     "test:remote": "npm run build && npm run test --workspace @hanger-source/dsh-reactive-remote",
@@ -30,11 +31,16 @@
     "build:native-ui": "wireit",
     "changeset": "changeset",
     "release": "node scripts/release.mjs",
-    "pack:workspaces": "npm pack --workspaces --ignore-scripts --pack-destination .tmp",
+    "pack:workspaces": "npm run prepare:packages && npm pack --workspaces --ignore-scripts --pack-destination .tmp",
     "check:boundaries": "depcruise --config .dependency-cruiser.cjs packages/*/src",
     "check:packages": "node scripts/check-packages.mjs"
   },
   "wireit": {
+    "typecheck": {
+      "command": "npm run typecheck:core",
+      "dependencies": ["build"],
+      "files": ["test/**", "tsconfig.json", "tsconfig.base.json"]
+    },
     "generate:remote": {
       "command": "node packages/remote/scripts/generate.mjs",
       "dependencies": ["./packages/dsh:build:compile", "./packages/client:build:contracts"],
@@ -51,6 +57,9 @@
         "./packages/native-ui:build",
         "./packages/skills:build"
       ]
+    },
+    "prepare:packages": {
+      "dependencies": ["build", "./packages/core:prepare:package"]
     },
     "build:core": {
       "dependencies": [

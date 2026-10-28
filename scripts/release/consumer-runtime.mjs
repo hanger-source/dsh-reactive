@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFile, readdir, realpath, lstat, access } from 'node:fs/promises';
-import { join, relative, isAbsolute, dirname } from 'node:path';
+import { readFile, realpath, lstat } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { checkDeveloperSkill } from './consumer-skill.mjs';
 
-const execute = promisify(execFile);
 const expected = JSON.parse(await readFile(new URL('./expected.json', import.meta.url), 'utf8'));
 const root = dirname(fileURLToPath(import.meta.url));
 for (const name of expected.packages) {
@@ -29,22 +27,6 @@ if (expected.kind === 'backend') {
   const tools = await import('@hanger-source/dsh-reactive-dsh/tools');
   assert.equal(typeof tools.createNativeTools, 'function');
 }
-const skill = await import('@hanger-source/dsh-reactive-skills');
-const manifest = skill.getDeveloperSkill();
-assert.equal(manifest.name, 'dsh-reactive'); assert.equal(manifest.version, expected.version);
-const directory = await realpath(manifest.directory);
-const entrypoint = await realpath(manifest.entrypoint);
-const child = relative(directory, entrypoint);
-assert.ok(child && child !== '..' && !child.startsWith('../') && !isAbsolute(child));
-await access(entrypoint);
-const references = (await readdir(join(directory, 'references'))).filter(file => file.endsWith('.md'));
-assert.equal(references.length, 5);
-for (const file of references) assert.ok((await readFile(join(directory, 'references', file), 'utf8')).length > 0);
-const installed = JSON.parse(await readFile(join(root, 'node_modules/@hanger-source/dsh-reactive-skills/package.json'), 'utf8'));
-for (const [name, version] of Object.entries(installed.peerDependencies)) {
-  assert.equal(version, expected.version); assert.equal(installed.peerDependenciesMeta[name].optional, true);
-}
-const command = await execute(process.execPath, [join(root, 'node_modules/.bin/dsh-reactive-skill')], { cwd: root });
-assert.deepEqual(JSON.parse(command.stdout), manifest);
+const developerSkill = await checkDeveloperSkill(expected.version);
 console.log(JSON.stringify({ kind: expected.kind, source: expected.source, commit: expected.commit,
-  version: expected.version, packages: expected.packages, developerSkill: { ...manifest, references } }));
+  version: expected.version, packages: expected.packages, developerSkill }));

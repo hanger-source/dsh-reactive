@@ -73,6 +73,7 @@ export async function prepareConsumerSources(directory, kind) {
   for (const file of sources) {
     await copyFile(join(root, 'scripts/release', file.source), join(directory, file.target));
   }
+  await copyFile(join(root, 'scripts/release/consumer-skill.mjs'), join(directory, 'consumer-skill.mjs'));
   if (kind === 'ui') {
     await mkdir(join(directory, 'native'));
     for (const file of nativeBrowserSources) {
@@ -89,7 +90,7 @@ export async function prepareConsumerSources(directory, kind) {
 export async function checkConsumerDependencies(directory, kind) {
   const sources = consumerSources(kind).map(file => file.target);
   await run(process.execPath, [join(root, 'node_modules/dependency-cruiser/bin/dependency-cruiser.mjs'),
-    '--config', join(root, '.dependency-cruiser.cjs'), ...sources,
+    '--config', join(root, '.dependency-cruiser.cjs'), ...sources, 'consumer-skill.mjs',
     ...sources.map(file => join('compiled', file.replace(/\.ts$/u, '.js'))),
     ...(kind === 'ui' ? nativeBrowserSources.map(file => join('native', file)) : [])], directory);
 }

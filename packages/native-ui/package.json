@@ -46,7 +46,7 @@
       "command": "node ../../scripts/archive-build-output.mjs build:compile && tsc -p tsconfig.json",
       "dependencies": [
         "../core:build:compile",
-        "../client:build:compile"
+        "../client:build"
       ],
       "files": [
         "src/**",

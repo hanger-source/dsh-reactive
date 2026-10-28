@@ -23,11 +23,11 @@ jobs:
           cache: npm
       - name: 安装公开依赖
         run: npm ci --ignore-scripts --registry https://registry.npmjs.org
-      - name: 从空产物验证单包前置任务并完成工作区构建
+      - name: 从空产物独立构建原生UI及其浏览器前置任务
         run: |
-          npm run build --workspace @hanger-source/dsh-reactive-client
           npm run build --workspace @hanger-source/dsh-reactive-native-ui
-          npm run build
+      - name: 严格编译框架与静态消费者
+        run: npm run typecheck
       - name: 检查依赖方向和公开包
         run: |
           npm run check:boundaries
@@ -41,10 +41,9 @@ jobs:
           node --test --test-timeout=15000 .tmp/test/test/*.test.js
           npm run test --workspace @hanger-source/dsh-reactive-remote
           npm run test --workspace @hanger-source/dsh-reactive-native-ui
-      - name: 严格编译业务和原生 UI 示例
-        run: npm run typecheck:examples
       - name: 打包并检查仓外依赖、类型与运行入口
         run: |
+          npm run prepare:packages
           npm pack --workspaces --ignore-scripts --pack-destination .tmp --json > .tmp/workspace-pack.json
           node scripts/check-packed-types.mjs .tmp/workspace-pack.json
       - uses: actions/upload-artifact@v7.0.2
@@ -54,3 +53,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+      - name: 单独验证业务和原生UI示例
+        run: |
+          npm run typecheck:examples
+          npm run test:examples --workspace @hanger-source/dsh-reactive-remote

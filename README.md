@@ -111,10 +111,9 @@ Team.roster 提供可与任务板共同组合的实时成员资源；持久成�
 
 ```sh
 npm ci
-npm run build
+npm run typecheck
 npm run check:boundaries
 npm run check:packages
-npm run typecheck:examples
 npm test
 ```
 

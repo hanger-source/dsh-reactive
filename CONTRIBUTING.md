@@ -4,8 +4,7 @@
 
 ```sh
 npm ci
-npm run build
-npm run typecheck:examples
+npm run typecheck
 npm run check:boundaries
 npm run check:packages
 npm run test:release
@@ -35,11 +34,13 @@ core 的根入口和客户端保持无 React、无原生宿主装配；后台组
 
 构建任务由各包 `package.json` 的 `wireit` 声明，根 `npm run build` 聚合六包任务；`npm run build --workspace <包名>` 也会先完成所需合同、宿主声明与生成贡献。Wireit 根据同一任务图调度、共享前置任务并检查输入及产物，无变化时跳过，不要求调用者记住构建顺序。TypeScript 项目引用保留编译边界和声明身份，各 `build:compile` 只编译自己的项目，不递归重建依赖。
 
-core 是共享合同的唯一编译来源；client 的 wire 合同、错误与 transport 由 `build:contracts` 单独产出，完整 SDK 引用这些声明。根 `generate:remote` 是官方 Typert 跨包生成的唯一任务，依赖 dsh 和 client 合同的已编译声明，拥有 remote 的 Host contribution 与 client 的 Remote contribution；包内 `generate` 只引用这项任务。client 编译完成后才能生成浏览器 bundle；native-ui 只需 client 的模块与声明，不要求先打浏览器 bundle。开发 Skill 独立从模板和当前包版本生成。
+core 是共享合同的唯一编译来源；client 的 wire 合同、错误与 transport 由 `build:contracts` 单独产出，完整 SDK 引用这些声明。根 `generate:remote` 是官方 Typert 跨包生成的唯一任务，依赖 dsh 和 client 合同的已编译声明，拥有 remote 的 Host contribution 与 client 的 Remote contribution；包内 `generate` 只引用这项任务。client 编译完成后才能生成浏览器 bundle；native-ui 的完整构建依赖包含该浏览器入口，不要求调用者提前构建 client。开发 Skill 独立从模板和当前包版本生成。
 
-每项任务的 `output` 同时声明其产物所有权。编译前按这份清单把旧产物移入 `.trash`，再由 TypeScript 完整生成本项目，避免删除或改名的源码留下旧模块；client 合同、SDK、生成贡献和浏览器 bundle 的输出清单互斥。构建缓存由 Wireit 管理，`lib`、构建信息与资产均可重新生成；缓存和构建工具只属于开发工作区，不进入运行时依赖。发行准备使用同一个根构建，打包时不重复运行 prepack。
+每项任务的 `output` 同时声明其产物所有权。编译前按这份清单把旧产物移入 `.trash`，再由 TypeScript 完整生成本项目，避免删除或改名的源码留下旧模块；client 合同、SDK、生成贡献和浏览器 bundle 的输出清单互斥。构建缓存由 Wireit 管理，`lib`、构建信息与资产均可重新生成；缓存和构建工具只属于开发工作区，不进入运行时依赖。
 
-`docs` 和根 `examples` 是说明及示例的唯一源。core 构建将选定资产复制入包；不要手工编辑其生成副本。客户端 `lib/typert.remote-client.*` 由官方 Typert 工具从远程宿主合同生成，修改服务合同后运行根构建，不手改生成内容。`lib`、`.tmp`、打包文件与本地运行数据不提交。
+`build` 只生成代码、声明、浏览器入口和版本化 Skill；`typecheck` 复用该构建后核对核心与测试的静态消费者。`prepare:packages` 在同一任务图中补齐打包资产，`pack:workspaces` 和正式发行准备都使用它；core 的普通单包 prepack 通过 `prepare:package` 完成同样准备。显式使用 `npm pack --ignore-scripts` 前必须先准备资产，打包阶段不再重跑 prepack。
+
+`docs` 和根 `examples` 是说明及示例的唯一源。core 的 `build:assets` 在打包准备时复制选定资产，不进入代码构建或框架类型检查；不要手工编辑其生成副本。示例类型与业务消费通过 `typecheck:examples` 和 remote 的 `test:examples` 单独验证，CI 在框架实包消费之后执行。客户端 `lib/typert.remote-client.*` 由官方 Typert 工具从远程宿主合同生成，修改服务合同后运行根构建，不手改生成内容。`lib`、`.tmp`、打包文件与本地运行数据不提交。
 
 ## 修改和验证
 
