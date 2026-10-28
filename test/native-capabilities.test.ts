@@ -18,7 +18,7 @@ import { implementProgram, NativeTools, Offer, Expose, Module, useAction, useObs
 import { boot, text, tool } from './native-support.ts';
 import type { ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
 import { createRuntime, nativeModel, requireActivePlugin } from '@hanger-source/dsh-reactive-dsh';
-import { createNativeJobs, type NativeSessionJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
+import { createNativeJobs, JobId, type NativeSessionJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
 import { createNativeApproval } from '@hanger-source/dsh-reactive-dsh/approval';
 import { NativeCapabilityOwner, nativeObservation } from '../packages/dsh/src/native-capability.ts';
 
@@ -329,6 +329,11 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     assert.equal(capability.forSession(programSession.source), programSession.jobs);
     assert.throws(() => capability.forSession({ identity: programSession.source.identity }), /REACTIVE_NATIVE_SESSION_REQUIRED/);
     let observedSession = capability.forSession(session);
+    const absent = observedSession.job(JobId('native-lifecycle-0000000000000000'));
+    assert.equal(observedSession.job(absent.id), absent);
+    assert.throws(() => absent.snapshot(), /unknown job/u);
+    await assert.rejects(absent.state.read(), /unknown job/u);
+    assert.throws(() => absent.stop('不存在的目标不能进入执行'), /unknown job/u);
     const launch = () => programSession.jobs.start({ kind: 'native-lifecycle', label: '隔离Node进程，显式停止前保持运行',
       run(job) {
         // 此生产方只持有实际ChildProcess；id、游标、事件与终态均由官方JobRegistry拥有。
@@ -357,7 +362,10 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     assert.deepEqual(await reader.output.read(), observed, '资源读取同样不推进原生输出游标');
     assert.equal(reader.output.peek().status, 'pending', '最后一个资源消费者退出撤下有效快照');
     assert.deepEqual(secondObserved, observed, '两个SDK观察者读取同一个真实输出，均不消费模型cursor');
-    assert.throws(() => capability.forSession(foreign).job(first), '另一个真实owner不能读取输出');
+    const foreignReader = capability.forSession(foreign).job(first);
+    assert.throws(() => foreignReader.readAt(0), '另一个真实owner不能读取输出');
+    await assert.rejects(foreignReader.output.read());
+    assert.throws(() => foreignReader.stop('外会话不能停止原进程'));
     assert.deepEqual(reader.readAt(0), observed, '重复SDK观察不消耗模型游标');
     assert.deepEqual(programSession.jobs.job(first).readAt(0), observed, 'Program与外部SDK消费同一原生Job，不复制输出状态');
     assert.equal(jobs.read(first, owner).chunks.map(chunk => chunk.text).join(''), 'native-job-ready\n');

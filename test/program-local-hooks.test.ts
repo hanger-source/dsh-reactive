@@ -5,15 +5,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Fragment, StrictMode, createElement, useLayoutEffect } from 'react';
 import { BehaviorSubject, Observable, Subject, concatMap } from 'rxjs';
-import { defineProgram, defineSurface, z, type ActionDefinition, type BoundAction, type LocalResource, type LocalReaction, type WorkspaceContext } from '@hanger-source/dsh-reactive';
+import { defineProgram, defineSurface, z, type ActionDefinition, type BoundAction, type LocalResource, type LocalReaction, type Workspace } from '@hanger-source/dsh-reactive';
 import { implementProgram, useAction, useObservable, useResource, useResourceInstance, useReaction } from '@hanger-source/dsh-reactive/program';
-import { Conversation, ProgramInstance, Scope, createWorkspaceContext } from '@hanger-source/dsh-reactive/kernel';
+import { Conversation, ProgramInstance, Scope, createWorkspace } from '@hanger-source/dsh-reactive/kernel';
 
 test('局部复合hook用同一Resource、Action和Reaction跨函数消费；组件身份、目标切换及Program失败各守原owner', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-local-hooks-'));
   await writeFile(join(root, 'a'), '11'); await writeFile(join(root, 'b'), '22');
   const scope = new Scope();
-  const workspace: WorkspaceContext = createWorkspaceContext(scope, { id: 'local-hooks', directory: root });
+  const workspace: Workspace = createWorkspace(scope, { id: 'local-hooks', directory: root });
   const selected = new BehaviorSubject({ target: 'a', visible: true, tick: 0 }), changes = new Subject<number>();
   const value = z.string().transform(Number), event = z.number(), result = z.string();
   let inputParses = 0, outputParses = 0, actionBodies = 0;
@@ -80,12 +80,13 @@ test('局部复合hook用同一Resource、Action和Reaction跨函数消费；组
       { key: side, session: conversation.identity.sessionId, side, target: current.value.target }))));
   } });
   const programs = ['one', 'two'].map(sessionId => {
-    const conversation = new Conversation({ sessionId, workspaceId: workspace.id, environmentId: 'work', directory: root, parentSessionId: null },
+    const sessionScope = scope.child();
+    const conversation = new Conversation(sessionScope, { sessionId, workspaceId: workspace.id, environmentId: 'work', directory: root, parentSessionId: null },
       workspace, definition, { sessionId, sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });
-    return new ProgramInstance(conversation.scope, implementation, conversation, workspace, {
+    return new ProgramInstance(sessionScope, implementation, conversation, workspace, {
       execution() { return { invocationId: crypto.randomUUID(), sessionId,
         source: { kind: 'participant', actorId: sessionId, participant: 'service', entrypoint: 'local-hook-consumer' },
-        inputs: [], continuation: null, signal: scope.signal }; },
+        inputs: [], continuation: null, signal: sessionScope.signal }; },
     });
   });
   try {

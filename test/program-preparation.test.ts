@@ -6,18 +6,19 @@ import { join } from 'node:path';
 import { setImmediate as immediate } from 'node:timers/promises';
 import { Fragment, createElement as h, type ComponentType } from 'react';
 import { BehaviorSubject, firstValueFrom, from, timeout } from 'rxjs';
-import { defineProgram, defineSurface, z, type ProgramProps, type WorkspaceContext } from '@hanger-source/dsh-reactive';
+import { defineProgram, defineSurface, z, type ProgramProps, type Workspace } from '@hanger-source/dsh-reactive';
 import { implementProgram, useBeforeStep, useObservable } from '@hanger-source/dsh-reactive/program';
-import { Conversation, ProgramInstance, Scope, createWorkspaceContext } from '@hanger-source/dsh-reactive/kernel';
+import { Conversation, ProgramInstance, Scope, createWorkspace } from '@hanger-source/dsh-reactive/kernel';
 
 const contract = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
 function programFor(Component: ComponentType<ProgramProps<typeof contract>>, directory: string) {
   const scope = new Scope();
-  const workspace: WorkspaceContext = createWorkspaceContext(scope, { id: 'preparation', directory });
+  const workspace: Workspace = createWorkspace(scope, { id: 'preparation', directory });
+  const sessionScope = scope.child();
   const sessionId = crypto.randomUUID();
-  const conversation = new Conversation({ sessionId, workspaceId: workspace.id, environmentId: 'work', directory, parentSessionId: null },
+  const conversation = new Conversation(sessionScope, { sessionId, workspaceId: workspace.id, environmentId: 'work', directory, parentSessionId: null },
     workspace, contract, { sessionId, sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });
-  const program = new ProgramInstance(conversation.scope, implementProgram(contract, { Component }), conversation, workspace, {
+  const program = new ProgramInstance(sessionScope, implementProgram(contract, { Component }), conversation, workspace, {
     execution() { throw new Error('PREPARATION_MUST_NOT_EXECUTE_ACTION'); },
   });
   return { scope, program };

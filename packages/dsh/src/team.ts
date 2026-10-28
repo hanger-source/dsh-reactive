@@ -1,4 +1,4 @@
-import TeamService, { TeamError, type Config, type TeamId, type TeamTaskId, type TeamMemberView, type TeamMemberProjection,
+import TeamService, { type Config, type TeamId, type TeamTaskId, type TeamMemberView, type TeamMemberProjection,
   type TeamTaskView, type TeamProjection, type CreateTeamTaskRequest, type UpdateTeamTaskRequest, type TeamWaitResult } from '@deepseek-ai/dsh-experimental-agent-team';
 import { SessionLogOffset } from '@deepseek-ai/dsh-session/types';
 import type { SessionId } from '@deepseek-ai/dsh-session';
@@ -29,7 +29,7 @@ export interface NativeTeamOptions {
 
 export type NativeTeamTaskUpdate = Omit<UpdateTeamTaskRequest, 'taskId'>;
 
-/** 原 Team 内固定的一项任务；观察和读取来自同一原生投影，修改仍由原生 CAS 受理。 */
+/** 原 Team 内的固定任务目标；观察和读取来自同一原生投影，缺席读取为 undefined。 */
 export interface NativeTeamTask {
   readonly id: TeamTaskId;
   readonly state: ResourceReader<TeamTaskView | undefined>;
@@ -51,8 +51,8 @@ export interface NativeSessionTeam {
   listMembers(): readonly TeamMemberView[];
   listTasks(): readonly TeamTaskView[];
   getTask(id: TeamTaskId): TeamTaskView;
-  /** 先核现有任务的归属；冷 Lead 可绑定，读取不会激活 Agent。 */
-  task(id: TeamTaskId, options?: CancellationOptions): Promise<NativeTeamTask>;
+  /** 同步绑定固定目标，不读取投影；修改仍须由真实 live 成员通过原生 membership 与 CAS 受理。 */
+  task(id: TeamTaskId): NativeTeamTask;
   createTask(request: CreateTeamTaskRequest, options?: CancellationOptions): Promise<TeamTaskView>;
   updateTask(request: UpdateTeamTaskRequest, options?: CancellationOptions): Promise<TeamTaskView>;
   waitForChange(timeoutMs: number, options?: CancellationOptions): Promise<TeamWaitResult>;
@@ -143,9 +143,8 @@ class SessionTeam implements NativeSessionTeam {
   listMembers(): readonly TeamMemberView[] { return ownNativeValue(this.service().listMembers(this.agent())); }
   listTasks(): readonly TeamTaskView[] { return ownNativeValue(this.service().listTasks(this.agent())); }
   getTask(id: TeamTaskId): TeamTaskView { return ownNativeValue(this.service().getTask(this.agent(), id)); }
-  async task(id: TeamTaskId, options: CancellationOptions = {}): Promise<NativeTeamTask> {
-    const projection = await this.readProjection(options);
-    if (!projection.tasks.some(task => task.id === id)) throw new TeamError(`team task "${id}" not found`, 'TEAM_TASK_NOT_FOUND');
+  task(id: TeamTaskId): NativeTeamTask {
+    this.context();
     let task = this.#tasks.get(id);
     if (!task) {
       const state = nativeResource(this.#scope, () => this.state.observations$.pipe(mapResource(projection => projection.tasks.find(current => current.id === id))));

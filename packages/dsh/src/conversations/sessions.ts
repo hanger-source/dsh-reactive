@@ -131,7 +131,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         this.#cleanupFailures.clear();
         for (const entry of this.#sessions.values()) {
             try {
-                entry.conversation.scope.dispose();
+                entry.scope.dispose();
             }
             catch (error) {
                 failures.push(error);
@@ -145,7 +145,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             return;
         if (this.#sessions.get(entry.header.id) === entry)
             this.#sessions.delete(entry.header.id);
-        entry.conversation.scope.dispose();
+        entry.scope.dispose();
     }
     release(entry: ConversationSession) { entry.pins--; this.collect(entry); }
     live(entry: ConversationSession) {
@@ -182,18 +182,19 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             return existing;
         }
         const { state, questions } = this.facts.stateOf(inspection);
-        const conversation = new Conversation({ sessionId: inspection.meta.id, workspaceId: workspace.native.id,
-            environmentId: environment.id, directory: workspace.native.path, parentSessionId: inspection.meta.parentSession ?? null }, workspace.context, implementation.definition, state.activity);
+        const scope = workspace.scope.child();
         let entry!: ConversationSession;
         try {
+            const conversation = new Conversation(scope, { sessionId: inspection.meta.id, workspaceId: workspace.native.id,
+                environmentId: environment.id, directory: workspace.native.path, parentSessionId: inspection.meta.parentSession ?? null }, workspace.context, implementation.definition, state.activity);
             conversation[conversationBindings]().accept(state.current);
             conversation[conversationBindings]().publishQuestions(questions);
-            const program = this.programs().create(conversation, implementation, workspace, () => entry);
+            const program = this.programs().create(scope, conversation, implementation, workspace, () => entry);
             const views = Object.freeze(Object.fromEntries(Object.entries(program.outputs.views)
                 .map(([name, value]) => [name, value.values$])));
             const live = new BehaviorSubject<LiveConversation | undefined>(undefined);
-            conversation.scope.own(() => live.complete());
-            entry = { header: inspection.meta, workspace, environment, implementation, child, conversation, state, program, views, pins: 0, live };
+            scope.own(() => live.complete());
+            entry = { scope, header: inspection.meta, workspace, environment, implementation, child, conversation, state, program, views, pins: 0, live };
             this.inputs().bindConversation(entry);
             this.registerSessionAccess(conversation, entry, program.signal, () => program.signal.throwIfAborted());
             if (agent) this.bindAgent(entry, agent);
@@ -211,7 +212,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
                     entry.live.next(undefined);
                 }
             }
-            try { conversation.scope.dispose(); } catch (cleanup) { failures.push(cleanup); }
+            try { scope.dispose(); } catch (cleanup) { failures.push(cleanup); }
             if (agent) {
                 try { await this.programs().release(agent); } catch (cleanup) { failures.push(cleanup); }
             }
@@ -302,7 +303,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
     }
     assertSessionWorkspace(session: ConversationSession) {
         this.assertActive();
-        session.conversation.scope.assertActive();
+        session.scope.assertActive();
         if (session.live.value)
             this.workspaces.assertMember(session.live.value.agent.session, session.workspace, session.environment);
         else

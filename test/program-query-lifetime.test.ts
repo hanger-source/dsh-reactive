@@ -5,20 +5,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Fragment, createElement, useLayoutEffect } from 'react';
 import { BehaviorSubject, EmptyError, Observable, Subject, defer, filter, firstValueFrom, from, lastValueFrom, map, of, timeout } from 'rxjs';
-import { Scope, ResourceReader, createResource, defineProgram, defineSurface, resourceView, z, type Observation, type WorkspaceContext } from '@hanger-source/dsh-reactive';
-import { Conversation, ProgramInstance, createWorkspaceContext } from '@hanger-source/dsh-reactive/kernel';
+import { Scope, ResourceReader, createResource, defineProgram, defineSurface, resourceView, z, type Observation, type Workspace } from '@hanger-source/dsh-reactive';
+import { Conversation, ProgramInstance, createWorkspace } from '@hanger-source/dsh-reactive/kernel';
 import { Context, Expose, implementProgram, useObservable, useResource, useShared } from '@hanger-source/dsh-reactive/program';
 
 test('同一外部资源在对象、原流和hook之间切换不重读，原owner退出撤下Context与公开视图', async () => {
   const scope = new Scope(), owner = new AbortController(), reason = new Error('BORROWED_FINITE_RESOURCE_ENDED');
-  const workspace = createWorkspaceContext(scope, { id: 'finite-reader', directory: '/workspace' });
+  const workspace = createWorkspace(scope, { id: 'finite-reader', directory: '/workspace' });
+  const sessionScope = scope.child();
   const definition = defineProgram({ input: z.null(), surface: defineSurface({ actions: {}, views: { current: resourceView(z.number()) } }) });
   const frame: Observation<number> = { status: 'ready', generation: 1, value: 42, observedAt: Date.now() };
   let reads = 0;
   const selected = new BehaviorSubject(0);
   const resource = new ResourceReader({ peek: () => frame, observations$: defer(() => { reads++; return of(frame); }) }, { signal: owner.signal });
   const identity = { sessionId: 'finite-reader', workspaceId: workspace.id, environmentId: 'work', directory: workspace.directory, parentSessionId: null };
-  const conversation = new Conversation(identity, workspace, definition, { sessionId: identity.sessionId,
+  const conversation = new Conversation(sessionScope, identity, workspace, definition, { sessionId: identity.sessionId,
     sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });
   const implementation = implementProgram(definition, { Component() {
     const mode = useObservable(selected);
@@ -29,7 +30,7 @@ test('同一外部资源在对象、原流和hook之间切换不重读，原owne
       Context({ name: 'current', source: observed, render: value => ({ value }) }),
       Expose({ surface: definition.surface, value: { views: { current: source }, actions: {} } }));
   } });
-  const program = new ProgramInstance(conversation.scope, implementation, conversation, workspace, {
+  const program = new ProgramInstance(sessionScope, implementation, conversation, workspace, {
     execution() { throw new Error('RESOURCE_OBSERVATION_MUST_NOT_EXECUTE_ACTION'); },
   });
   try {
@@ -46,7 +47,7 @@ test('同一外部资源在对象、原流和hook之间切换不重读，原owne
     program.flush();
     await assert.rejects(program.outputs.view('current').read(), error => error === reason);
     await assert.rejects(program.contexts.get('current')!.read(), error => error === reason);
-    assert.equal(conversation.scope.disposed, false, '来源退出没有结束借用它的Program');
+    assert.equal(sessionScope.disposed, false, '来源退出没有结束借用它的Program');
   } finally { owner.abort(); scope.dispose(); }
 });
 
@@ -63,7 +64,8 @@ test('复合hook的自建查询共享连接和终止缓存，Program退出不重
       status: 'ready' as const, generation: 1, observedAt: Date.now(), value,
     })));
     const scope = new Scope();
-    const workspace: WorkspaceContext = createWorkspaceContext(scope, { id: end, directory: root });
+    const workspace: Workspace = createWorkspace(scope, { id: end, directory: root });
+    const sessionScope = scope.child();
     const borrowed = createResource(scope, { value: z.string(), read: () => { reads.borrowed++; return readFile(paths.borrowed, 'utf8'); } });
     const events = new Subject<number>();
     const labelSource = file('label'), deniedSource = file('denied'), coldSource = file('cold');
@@ -84,7 +86,7 @@ test('复合hook的自建查询共享连接和终止缓存，Program退出不重
     }
     let capability!: ReturnType<typeof useCapability>;
     const definition = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
-    const conversation = new Conversation({ sessionId: end, workspaceId: workspace.id, environmentId: 'work',
+    const conversation = new Conversation(sessionScope, { sessionId: end, workspaceId: workspace.id, environmentId: 'work',
       directory: root, parentSessionId: null }, workspace, definition, {
       sessionId: end, sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [],
     });
@@ -93,7 +95,7 @@ test('复合hook的自建查询共享连接和终止缓存，Program退出不重
       useLayoutEffect(() => { capability = current; });
       return null;
     } });
-    const program = new ProgramInstance(conversation.scope, implementation, conversation, workspace, {
+    const program = new ProgramInstance(sessionScope, implementation, conversation, workspace, {
       execution() { throw new Error('QUERY_MUST_NOT_EXECUTE_ACTION'); },
     });
     const subscriptions: { unsubscribe(): void }[] = [];
@@ -127,7 +129,7 @@ test('复合hook的自建查询共享连接和终止缓存，Program退出不重
       assert.equal(starts, 1); events.next(11); assert.deepEqual(first, [11]); assert.deepEqual(second, [11]);
       one.unsubscribe(); assert.equal(stops, 0);
       if (end === 'fail') program.fail(new Error('EXPLICIT_PROGRAM_FAILURE'));
-      else conversation.scope.dispose();
+      else sessionScope.dispose();
       assert.equal(completed, 1); assert.equal(stops, 1); assert.equal(two.closed, true);
       events.next(22); assert.deepEqual(second, [11]); assert.deepEqual(late, []);
       for (const source of [capability.label, capability.denied, capability.cold, capability.live, capability.settings, capability.missing]) {
@@ -146,7 +148,7 @@ test('复合hook的自建查询共享连接和终止缓存，Program退出不重
       assert.equal(scope.disposed, false, 'Program退出不销毁共享事实的业务owner');
     } finally {
       subscriptions.forEach(subscription => subscription.unsubscribe());
-      conversation.scope.dispose(); scope.dispose(); events.complete();
+      sessionScope.dispose(); scope.dispose(); events.complete();
     }
   });
 });

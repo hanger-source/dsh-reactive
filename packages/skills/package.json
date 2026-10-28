@@ -20,8 +20,9 @@
   },
   "wireit": {
     "build": {
-      "command": "node scripts/build.mjs",
+      "command": "node ../../scripts/archive-build-output.mjs build && node scripts/build.mjs",
       "files": [
+        "../../scripts/archive-build-output.mjs",
         "scripts/build.mjs",
         "src/**",
         "templates/**",

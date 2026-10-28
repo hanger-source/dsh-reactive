@@ -8,6 +8,8 @@ API 与组件主链、SDK、原生接入按公共合同和版本记录演进；�
 
 跨大版本升级时，按实际安装版本查看[模块 SDK 迁移](docs/migration-sdk-modules.md)与[参与端口迁移](docs/migration-participant-ports.md)，对齐局部模块合同、人工控制与服务身份。异步装配及资源寿命的变化见 [SDK 作用域迁移](docs/migration-sdk-scopes.md)、[资源有效性迁移](docs/migration-resource-ownership.md)及[来源完成与有效性迁移](docs/migration-resource-completion.md)。
 
+借用对象的生命周期权限、内核工作区装配及原生任务的同步构造见[借用能力迁移](docs/migration-borrowed-capabilities.md)。
+
 源码位于 [hanger-source/dsh-reactive](https://github.com/hanger-source/dsh-reactive)，由 hanger 维护。六个公共包统一使用 `@hanger-source/dsh-reactive*` 名称与同一版本；正式发行通过 GitHub Actions 的 Trusted Publishing 完成，源码版本和 GitHub 提交不表示包已在 npm 发布。版本管理、候选验收和发布方式见[发行说明](docs/releasing.md)。
 
 `@hanger-source/dsh-reactive` 提供纯 Program、Surface、Action、Operation、输入与观察合同，供业务模块和本地、远程消费者共享。后台 React 程序从 `@hanger-source/dsh-reactive/program` 导入 `implementProgram`、声明组件与 hooks；纯合同和远程客户端不加载这个入口。原生 Runtime、模型与宿主装配位于独立包 `@hanger-source/dsh-reactive-dsh`，按宿主的实际能力选择依赖。
@@ -33,6 +35,8 @@ Jobs 与 MCP 的 `toolNames`、MCP 的 `resourceToolNames` 是实际注册工具
 ## 编程模型
 
 本地应用用 `runtime.application.workspace(id)`、组件用 `props.workspace` 取得同一工作区编程对象。`workspace.resource(implementation, params)` 与 `workspace.reaction(implementation, params)` 按正式实现与参数复用实例；局部业务直接使用 `workspace.resource({ value, read })`、`workspace.reaction({ event, result, observe, operator, execute })`，每次构造独立实例，显式保留返回对象即可跨 Environment、Session 共享。构造不读取，反应显式启动。不同工作区隔离；登记删除或宿主退出结束工作区 owner，撤销观察及排队关系，已受理业务继续由原 owner 完成。
+
+Workspace、Conversation、值、资源与反应绑定是借给消费者的编程对象，不公开所属 Scope 的销毁权。消费者退出自己的订阅、读取等待或 ReactionRun；真正创建 Scope 的 owner 负责释放共享关系，不能通过一个借用对象结束其他消费者的生命周期。
 
 - `defineResource`、`implementResource`、`bindResource` 定义事实来源并按参数取得稳定实例；普通函数、业务 hook 与公开视图消费同一观察。多个消费者共享来源，失效取消旧读取，最后观察者退出后撤掉旧的有效现场。
 - `defineReaction`、`implementReaction`、`bindReaction` 定义持续感知与动作之间的关系。实例显式 `start()`，`state$`、`events$` 与 `settled` 观察同一次运行；条件、去重和并发直接使用 RxJS。停止反应释放关系，已受理的业务仍由原 owner 结算。

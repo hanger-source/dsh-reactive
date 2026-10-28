@@ -50,7 +50,7 @@ createWorkspace 注册原生 existing 目录，不隐式 mkdir。Environment 不
 
 Subagents 的 dispose 只撤销读侧，不停止已有 Activation。普通原生发现不要求 Goal；带独立 Goal 的子程序委托继续通过 assembly.implementDelegation 和 NativeChildWork 组合 Action、Operation 与反馈。此入口不包装缺少可信 Program 执行前准入的 raw start/send，也不把这个缺口扩大为整个子 Agent 域不可用。
 
-Schedule 管理读取、冷 Team 投影及 Files 的显式读取使用所属 SDK 与调用者的取消信号；等待立即结算，不被迟到的原生查询回执拖住。Files 仍独立跟踪真实 I/O，实例退出等待这些读取与 unwatch 完成。只读等待的取消不改变原生 CAS、任务、提醒投递或成员执行的 owner。
+Schedule 管理读取、冷 Team 投影及 Files 的显式读取使用所属 SDK 与调用者的取消信号；等待立即结算，不被迟到的原生查询回执拖住。Schedule task.update/delete 也以同一信号结束回执等待；预取消不进入原生操作，已受理的 CAS 和持久投递继续由原生 owner 完成，取消等待不表示回滚，不能据此自动重试。Files 仍独立跟踪真实 I/O，实例退出等待这些读取与 unwatch 完成。只读等待的取消不改变原生任务、提醒投递或成员执行的 owner。
 
 Team 的 createTask、updateTask 与 task.update 同样以调用信号和 SDK 寿命结束本次回执等待；预取消不进入原生事务。已经进入的原生创建或 CAS 更新继续由 Team journal 持久化，取消或 SDK 退出不代表回滚，不能据此无条件重试；通过原任务身份与实际 revision 核对结果。
 
@@ -80,11 +80,13 @@ Jobs、Schedule、Team、Files、Approval、Clock 用 `capability.forSession(con
 
 同一原来源共享 SDK 实例，Program 来源和外部句柄分别拥有观察寿命。Jobs、Schedule、Team 会话与固定任务的 `state` 是可直接传给 `useResource` 的只读资源，Job 的 `output` 独立表示非消费输出切面。`state.read(signal)`、peek、subscribe、values$、observations$ 共用现有资源机制；原 state$/list$/catalog$/projection$ 是相应值流，不能用它们推断旧值仍有效。最后一个资源消费者退出会撤销查询并撤下旧 ready，组件退订不 dispose 会话 SDK，也不停止已受理工作。SDK dispose、Program 失败或来源退出释放其全部观察，不杀死 Job、不撤回提醒、不取消 Team 成员。Program 来源不自动取得人工、ToolOccurrence 或 Goal 权限。
 
+Jobs 的 jobs.job(id)、Schedule 与 Team 的 task(id) 都同步返回固定目标，同一来源与 id 复用对象。构造不读原生注册表、catalog 或投影，也不授予存在性与修改权限；可立即把它们的 state/output 交给 combineResources、useResource、Context 或资源 View。读取、历史和修改才分别进入原生存在性、所属会话、成员及 CAS 核验。Workspace、Conversation、值、资源和反应句柄同样不暴露所属 Scope；借用对象不能用于销毁共享 owner。
+
 Schedule 与 Team 的变化先撤下旧 ready 再读取新切面，读错误保留为资源 error，后续原生通知可以恢复，不使用无条件 retry。组合不同能力时直接用 combineResources/mapResource 组合 observations$，将同一观察交给 hooks、Context 和资源 View；不要把查询 pending/error 当成 Job 执行或任务业务状态。需要重新查询权威服务时，使用原 list/catalog/readProjection/任务 read 等显式入口。
 
 来源仍有效时，依赖原生切面或日志的长期观察会跟随实际 Agent 的关闭和恢复：在途旧读取取消，恢复后读取当前历史，日志不重复交付。关闭原生 Agent 不等于退出仍持有的 SDK 观察；读取本身不 resume 或启动模型。不要为这一转换维护第二份 Agent 状态或用无条件 retry 掩盖真正读取错误。
 
-Team 任务可用 `const task = await team.forSession(source).task(id)` 取得。`task.state$` 供 RxJS 和 `useObservable` 使用，`task.read({ signal })` 读取同一原生投影；显式 `task.update({ expectedRevision, action, ... })` 由原生 CAS 决定是否受理，不重复传 taskId，也不能向请求中塞入 taskId 更换目标。对象身份属于原来源与任务，不按当前界面选择重定向。删除后流和 read 返回 undefined；需要原生墓碑时用活跃成员的 getTask。冷 Lead 可以读取与取得对象，修改仍要求真实活跃成员，不会为此自动 resume、spawn 或 send。
+Team 任务可用 `const task = team.forSession(source).task(id)` 取得。`task.state$` 供 RxJS 和 `useObservable` 使用，`task.read({ signal })` 读取同一原生投影；显式 `task.update({ expectedRevision, action, ... })` 由原生 CAS 决定是否受理，不重复传 taskId，也不能向请求中塞入 taskId 更换目标。对象身份属于原来源与任务，不按当前界面选择重定向。缺席或删除后流和 read 返回 undefined；需要原生墓碑时用活跃成员的 getTask。Schedule 的 task(id) 同样允许先取得未知目标，再显式 read 查询；Jobs 对未知或外来目标的读取和控制则由原生边界拒绝。冷 Lead 可以读取与取得对象，修改仍要求真实活跃成员，不会为此自动 resume、spawn 或 send。
 
 Files 复用已安装的 WorkspaceFiles、fs、sandboxPolicy 和 Typert，不自动安装文件服务或改变沙箱政策。`const page = files.forSession(source).text(path, { offset, limit })` 返回正式 Resource 实例；metadata(path) 与 directory(path) 分别提供元数据和目录资源。同一原始路径与窗口取得同一对象，read、peek、values$、observations$、invalidate 与 `useResource(page)` 共用它。构造不做 I/O；首次观察等待 watch ready，之后变化取消旧读、重新取权威切面；同一 SDK 的文本页和元数据共享该路径的 watch，最后一个查询退出后释放它。读取失败保留为资源 error，后续文件变化可恢复；watch 初始化失败明确进入 error，不偷偷轮询或降级。SDK dispose 等待实际 unwatch，Agent close 不取消仍有效来源的文件观察。readBytes 继续每次返回独立缓冲区。产物需要公开时，用 mapResource 选择领域字段交给资源 View，沿现有本地或远程 Surface 消费，不给 UI 复制文件监听。
 

@@ -7,7 +7,7 @@ import { HumanInputs } from "../participation/human-input.ts";
 import { AgentBindings } from "./bindings.ts";
 import { type ManagedWorkspace } from "../workspaces/workspaces.ts";
 import { NativeProgress } from "../conversations/progress.ts";
-import type { ProgramImplementation } from "@hanger-source/dsh-reactive/kernel";
+import type { ProgramImplementation, Scope } from "@hanger-source/dsh-reactive/kernel";
 import { type NativeDelegations } from "../delegations.ts";
 import type { ConversationSession, LiveConversation } from '../conversations/session.ts';
 import type { ConversationSessions } from '../conversations/sessions.ts';
@@ -27,8 +27,8 @@ export class ConversationPrograms {
         this.bindings = new AgentBindings();
     }
     release(agent: Agent): Promise<void> { return this.bindings.release(agent); }
-    create(conversation: Conversation<any>, implementation: ProgramImplementation, workspace: ManagedWorkspace, session: () => ConversationSession): ProgramInstance<any> {
-        return new ProgramInstance(conversation.scope, implementation, conversation, workspace.context, { execution: () => this.authority.programExecution(session(), 'program'),
+    create(scope: Scope, conversation: Conversation<any>, implementation: ProgramImplementation, workspace: ManagedWorkspace, session: () => ConversationSession): ProgramInstance<any> {
+        return new ProgramInstance(scope, implementation, conversation, workspace.context, { execution: () => this.authority.programExecution(session(), 'program'),
             admit: (action, input, call, execution) => this.authority.admitAction(session(), action, input, call, execution),
             operation: (action, event, execution) => this.operations.operationEvent(action, event, execution),
             operationAccess: binding => this.operations.programAccess(session(), binding),
@@ -38,7 +38,7 @@ export class ConversationPrograms {
     }
     createLive(agent: Agent, session: ConversationSession): LiveConversation {
         let skills: ProgramSkills | undefined;
-        const installation = this.bindings.create(agent, session.conversation.scope, session.program.signal, () => skills?.dispose());
+        const installation = this.bindings.create(agent, session.scope, session.program.signal, () => skills?.dispose());
         session.program.signal.throwIfAborted();
         installation.scope.assertActive();
         skills = new ProgramSkills(agent, installation.context);
@@ -50,15 +50,14 @@ export class ConversationPrograms {
         const { session, agent } = entry, { conversation } = session;
         const program = session.program;
         await this.bindings.ready(agent);
-        this.bindings.contexts(agent, conversation.scope.computed(() => { program.revision.get(); return new Map(program.contexts); }));
-        const tools = conversation.scope.computed(() => {
+        this.bindings.contexts(agent, () => { program.revision.get(); return new Map(program.contexts); });
+        this.bindings.tools(agent, () => {
             program.revision.get();
             return [
                 ...[...program.offers.values()].filter(offer => offer.enabled.value).map(offer => this.tools.tool(entry, offer)),
                 ...[...program.follows.values()].filter(follow => follow.enabled.value).map(follow => this.tools.followTool(entry, follow)),
             ];
         });
-        this.bindings.tools(agent, tools);
         const nativeScope = entry.scope;
         nativeScope.own(() => { entry.nativeMask?.(); entry.nativeMask = undefined; });
         const questions = entry.human.questions$.subscribe({ next: value => conversation[conversationBindings]().publishQuestions(value), error: error => program.fail(error) });

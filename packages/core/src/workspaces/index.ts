@@ -1,1 +1,1 @@
-export type { Workspace, WorkspaceContext } from './context.ts';
+export type { Workspace } from './context.ts';

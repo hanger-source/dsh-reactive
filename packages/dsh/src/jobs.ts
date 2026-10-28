@@ -21,7 +21,7 @@ export interface NativeJobsOptions {
 /** owner 与 toolCall 不从业务参数补写；这里接原生正式 producer 合同。 */
 export type NativeJobSpec = Omit<JobSpec, 'owner' | 'toolCall'>;
 
-/** 原生 Job 执行实例的非消费读取与显式控制；它不是持久业务 Operation。 */
+/** 固定原生 Job 目标的非消费读取与显式控制；未知或外来目标由原生读写边界拒绝。 */
 export interface NativeJob {
   readonly id: JobId;
   readonly state: ResourceReader<JobView>;
@@ -76,6 +76,7 @@ export interface NativeSessionJobs {
   readonly list$: Observable<readonly JobView[]>;
   readonly events$: Observable<JobEvent>;
   list(): readonly JobView[];
+  /** 同步绑定固定目标，不读取注册表；读取与控制分别核验真实存在性和 owner。 */
   job(id: JobId): NativeJob;
   start(spec: NativeJobSpec, options?: CancellationOptions): JobId;
   dispose(): void;
@@ -125,7 +126,8 @@ class SessionJobs implements NativeSessionJobs {
   }
   list(): readonly JobView[] { return ownNativeValue(this.registry().list(this.ownerId)); }
   job(id: JobId): NativeJob {
-    this.registry().get(id, this.ownerId);
+    this.#scope.assertActive();
+    this.native.session(this.access, 'jobs');
     let job = this.#jobs.get(id);
     if (!job) { job = new NativeJobReader(this, id, this.#scope); this.#jobs.set(id, job); }
     return job;

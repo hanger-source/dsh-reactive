@@ -98,8 +98,10 @@ export class Scope {
 
 /** 同步依赖使用 value 读取，map/computed 自动跟踪实际读取的分支。 */
 export class Value<T> {
+  readonly #scope: Scope;
   readonly changes$: Observable<T>;
-  constructor(readonly scope: Scope, protected readonly node: Node<T>) {
+  constructor(scope: Scope, protected readonly node: Node<T>) {
+    this.#scope = scope;
     this.changes$ = new Observable(subscriber => {
       if (scope.disposed) { subscriber.complete(); return; }
       const release = scope.own(() => subscriber.complete());
@@ -109,28 +111,29 @@ export class Value<T> {
       return () => { stop?.(); release(); };
     });
   }
-  get value(): T { this.scope.assertActive(); return this.node.value; }
+  protected assertActive(): void { this.#scope.assertActive(); }
+  get value(): T { this.assertActive(); return this.node.value; }
   get(): T { return this.value; }
-  peek(): T { this.scope.assertActive(); return this.node.peek(); }
+  peek(): T { this.assertActive(); return this.node.peek(); }
   read(signal?: AbortSignal): Promise<T> {
     signal?.throwIfAborted();
     return Promise.resolve(this.peek());
   }
-  map<U>(project: (value: T) => U): Value<U> { return this.scope.computed(() => project(this.value)); }
+  map<U>(project: (value: T) => U): Value<U> { return this.#scope.computed(() => project(this.value)); }
   subscribe(accept: (value: T) => void): () => void {
-    this.scope.assertActive();
+    this.assertActive();
     // signals 的同步订阅先登记依赖，再交付基线；调用者无需自己先读再订阅。
     const stop = this.node.subscribe(value => {
-      if (this.scope.disposed) return;
-      try { accept(value); } catch (error) { this.scope.observerError(error); }
+      if (this.#scope.disposed) return;
+      try { accept(value); } catch (error) { this.#scope.observerError(error); }
     });
-    if (this.scope.disposed) { stop(); return () => {}; }
-    return this.scope.own(stop);
+    if (this.#scope.disposed) { stop(); return () => {}; }
+    return this.#scope.own(stop);
   }
 }
 
 export class Cell<T> extends Value<T> {
   declare protected readonly node: Signal<T>;
-  set(value: T) { this.scope.assertActive(); this.node.value = value; }
+  set(value: T) { this.assertActive(); this.node.value = value; }
   update(change: (value: T) => T) { this.set(change(this.peek())); }
 }

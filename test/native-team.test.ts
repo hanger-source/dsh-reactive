@@ -13,7 +13,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, view, z, type Observation } from '@hanger-source/dsh-reactive';
 import { Expose, implementProgram, useResource } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeModel, requireActivePlugin, type ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
-import { createNativeTeam, TeamError, type NativeSessionTeam, type TeamProjection, type TeamTaskView } from '@hanger-source/dsh-reactive-dsh/team';
+import { createNativeTeam, TeamError, TeamTaskId, type NativeSessionTeam, type TeamProjection, type TeamTaskView } from '@hanger-source/dsh-reactive-dsh/team';
 import { text } from './native-support.ts';
 
 for (const service of ['install', 'provided'] as const) {
@@ -81,6 +81,12 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
     release.resolve(); await immediate();
     assert.equal(delivered.includes(old.projection), false, '旧切面迟到不能覆盖恢复后的Team现场');
     team.readProjection = inspect;
+    const absent = team.task(TeamTaskId('999999'));
+    assert.equal(team.task(absent.id), absent);
+    assert.equal(await absent.read(), undefined);
+    assert.equal(await absent.state.read(), undefined);
+    await assert.rejects(absent.update({ expectedRevision: 1, action: 'claim' }),
+      error => error instanceof TeamError && error.code === 'TEAM_TASK_NOT_FOUND');
 
     other = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
     const foreign = capability.forSession(other);
@@ -88,9 +94,13 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
     const waiting = await team.createTask({ subject: '开始接待', description: '资料完成后才能认领', blockedBy: [original.id] });
     const independent = await foreign.createTask({ subject: '其他Team', description: '相同局部任务id仍属于另一个Team' });
     assert.equal(independent.id, original.id);
-    const task = await team.task(original.id), dependent = await team.task(waiting.id);
-    assert.equal(await team.task(original.id), task);
+    const task = team.task(original.id), dependent = team.task(waiting.id);
+    assert.equal(team.task(original.id), task);
     assert.equal((await dependent.state.read())?.ready, false);
+    const foreignDependent = foreign.task(waiting.id);
+    assert.equal(await foreignDependent.read(), undefined, '相同任务目标不能借入其他Team的记录');
+    await assert.rejects(foreignDependent.update({ expectedRevision: waiting.revision, action: 'claim' }),
+      error => error instanceof TeamError && error.code === 'TEAM_TASK_NOT_FOUND');
 
     const mutationHandle = await runtime.application.open(session.id, program);
     const writer = capability.forSession(mutationHandle);
@@ -127,7 +137,7 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
       releaseCreate.resolve(); await createFlushed.promise;
       const committedCreate = team.getTask(createdId);
       assert.equal(committedCreate.revision, 1);
-      const createdTask = await writer.task(createdId);
+      const createdTask = writer.task(createdId);
       const preCancelled = new AbortController(), preCancelledReason = new Error('TEAM_MUTATION_CANCELLED_BEFORE_ADMISSION');
       preCancelled.abort(preCancelledReason);
       const before = lead.session.snapshotEvents().filter(event => event.type === 'team/task').length;
@@ -195,20 +205,20 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
     await assert.rejects(task.update({ expectedRevision: original.revision, action: 'edit', subject: '过时修订' }),
       error => error instanceof TeamError && error.code === 'TEAM_TASK_STALE_REVISION');
     const programTeam = programTeams.get(session.id)!;
-    const programTask = await programTeam.task(original.id);
+    const programTask = programTeam.task(original.id);
     assert.deepEqual(await programTask.read(), completed, 'Program与SDK共用原生任务事实');
-    assert.equal((await foreign.task(independent.id)).id, task.id);
-    assert.equal((await (await foreign.task(independent.id)).read())?.subject, independent.subject);
+    assert.equal(foreign.task(independent.id).id, task.id);
+    assert.equal((await foreign.task(independent.id).read())?.subject, independent.subject);
 
     const removed = firstValueFrom(dependent.state$.pipe(filter(value => value === undefined), timeout(5_000)));
     await dependent.update({ expectedRevision: waiting.revision, action: 'delete' });
     await removed;
     assert.equal(await dependent.read(), undefined);
     assert.equal(team.getTask(waiting.id).status, 'deleted', '原生墓碑与当前任务板保持各自语义');
-    await assert.rejects(team.task(waiting.id), error => error instanceof TeamError && error.code === 'TEAM_TASK_NOT_FOUND');
+    assert.equal(team.task(waiting.id), dependent, '任务撤下不改变原父对象中固定目标的身份');
 
     await runtime.application.close(session.id);
-    const cold = await team.task(original.id);
+    const cold = team.task(original.id);
     assert.equal(cold, task, '同一来源的固定任务跨关闭恢复仍保留身份');
     assert.deepEqual(await cold.read(), completed);
     assert.equal(runtime.native.agents.get(SessionId(session.id)), undefined);

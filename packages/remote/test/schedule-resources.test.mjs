@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { setImmediate as immediate } from 'node:timers/promises';
 import { filter, firstValueFrom, timeout } from 'rxjs';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
-import ScheduleService from '@deepseek-ai/dsh-schedule';
+import ScheduleService, { ScheduleId, scheduleDomain } from '@deepseek-ai/dsh-schedule';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, mapResource, resourceView, z } from '@hanger-source/dsh-reactive';
 import { Expose, implementProgram, useResource } from '@hanger-source/dsh-reactive/program';
@@ -16,7 +16,7 @@ import { mountProgramGateway, RemoteAuthenticationError } from '@hanger-source/d
 
 const first = (source, predicate) => firstValueFrom(source.pipe(filter(predicate), timeout(8_000)));
 
-test('Schedule真实CAS和持久变更驱动资源失效，迟到切面不回写，读取失败后通知恢复且冷读不投递', { timeout: 25_000 }, async t => {
+test('Schedule同步目标沿真实CAS和持久变更读取，取消回执不撤回已受理事务且冷读不投递', { timeout: 25_000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-schedule-resources-'));
   const directory = join(root, 'workspace'); await mkdir(directory);
   const capability = createNativeSchedule({ service: { kind: 'install' } });
@@ -63,12 +63,21 @@ test('Schedule真实CAS和持久变更驱动资源失效，迟到切面不回写
     // 测试准备只经正式原生create写入一个小时后的记录；框架管理API并未获得创建/投递授权。
     const original = await runtime.native.schedule.create(SessionId(session.id), { title: '原提醒', prompt: '未来提醒，不在本次试验执行', after_seconds: 3600 });
     await first(sdk.state.observations$, value => value.status === 'ready' && value.value.some(row => row.id === original.id));
-    const task = await sdk.task(original.id), before = calls;
-    assert.equal(await sdk.task(original.id), task);
+    const task = sdk.task(original.id), before = calls;
+    assert.equal(sdk.task(original.id), task);
     subscriptions.push(task.state.observations$.subscribe());
     await task.state.read(t.signal);
-    assert.equal(calls, before + 1, '绑定核验读一次，任务资源复用会话观察而不再查询catalog');
-    await assert.rejects(capability.forSession(foreign).task(original.id), /REACTIVE_NATIVE_SCHEDULE_NOT_FOUND/);
+    assert.equal(calls, before, '绑定不读取，任务资源复用会话观察而不再查询catalog');
+    const foreignTask = capability.forSession(foreign).task(original.id);
+    assert.equal(await foreignTask.read(), undefined);
+    assert.equal(await foreignTask.state.read(t.signal), undefined);
+    assert.equal((await foreignTask.update({ expected: original, title: '不得修改其他会话提醒' })).code, 'schedule_not_found');
+    assert.equal((await foreignTask.history({ limit: 10 })).code, 'schedule_not_found');
+    const absent = sdk.task(ScheduleId('missing-reminder'));
+    assert.equal(sdk.task(absent.id), absent);
+    assert.equal(await absent.read(), undefined);
+    assert.equal(await absent.state.read(t.signal), undefined);
+    assert.deepEqual(await absent.delete(), { id: absent.id, deleted: false, code: 'schedule_not_found' });
 
     held = true;
     const changed = await task.update({ expected: original, title: '中间提醒' }); assert.equal(changed.updated, true);
@@ -85,16 +94,72 @@ test('Schedule真实CAS和持久变更驱动资源失效，迟到切面不回写
     const failed = first(task.state.observations$, value => value.status === 'error');
     const updated = await task.update({ expected: current.record, title: '恢复目标' }); assert.equal(updated.updated, true);
     assert.equal((await failed).error, failure);
-    const recovered = first(task.state.observations$, value => value.status === 'ready' && value.value?.title === '已恢复');
-    await task.update({ expected: updated.record, title: '已恢复' }); await recovered;
-    assert.ok(states.some(value => value.status === 'error' && value.error === failure));
-    assert.equal((await task.history({ limit: 10 })).records.length, 0, '观察不会生成投递回执');
-    await runtime.application.close(session.id);
-    assert.equal(runtime.native.agents.get(SessionId(session.id)), undefined);
-    assert.equal((await task.read()).title, '已恢复');
-    assert.equal((await task.state.read(t.signal)).title, '已恢复');
-    const ended = first(task.state.observations$, value => value.status === 'ready' && value.value?.status !== 'active');
-    await task.delete(); await ended;
+    const domain = runtime.native.storageDomain.get(scheduleDomain.name); assert.ok(domain);
+    const table = domain.table('tasks'), nativePut = table.put, nativeDelete = table.delete;
+    const updateAtWrite = Promise.withResolvers(), deleteAtWrite = Promise.withResolvers();
+    const releaseUpdate = Promise.withResolvers(), releaseDelete = Promise.withResolvers();
+    let putCalls = 0, deleteCalls = 0, putReceipt, deleteReceipt, updating, deleting, writer, writerHandle;
+    // 同一正式KV表完成真实落盘，只延后交回Schedule事务的put/delete回执。
+    table.put = function (...args) {
+      putReceipt = (async () => {
+        const result = await nativePut.apply(this, args); putCalls++;
+        updateAtWrite.resolve(); await releaseUpdate.promise; return result;
+      })();
+      return putReceipt;
+    };
+    table.delete = function (...args) {
+      deleteReceipt = (async () => {
+        const result = await nativeDelete.apply(this, args); deleteCalls++;
+        deleteAtWrite.resolve(); await releaseDelete.promise; return result;
+      })();
+      return deleteReceipt;
+    };
+    try {
+      const preCancelled = new AbortController(), preCancelledReason = new Error('SCHEDULE_MUTATION_CANCELLED_BEFORE_WRITE');
+      preCancelled.abort(preCancelledReason);
+      await assert.rejects(task.update({ expected: updated.record, title: '不得写入的修订' }, { signal: preCancelled.signal }),
+        error => error === preCancelledReason);
+      await assert.rejects(task.delete({ signal: preCancelled.signal }), error => error === preCancelledReason);
+      assert.equal(putCalls, 0); assert.equal(deleteCalls, 0);
+
+      const recovered = first(task.state.observations$, value => value.status === 'ready' && value.value?.title === '已恢复');
+      const cancellation = new AbortController(), reason = new Error('CANCEL_SCHEDULE_UPDATE_RECEIPT');
+      let updateOutcome;
+      updating = task.update({ expected: updated.record, title: '已恢复' }, { signal: cancellation.signal })
+        .then(value => { updateOutcome = value; }, error => { updateOutcome = error; });
+      await Promise.race([updateAtWrite.promise, updating.then(() => { throw new Error('SCHEDULE_UPDATE_DID_NOT_REACH_WRITE'); })]);
+      cancellation.abort(reason); await immediate();
+      assert.equal(updateOutcome, reason, '真实put尚未交回时，调用取消已经结束更新回执等待');
+      releaseUpdate.resolve(); await recovered; await updating;
+      assert.equal(table.get(original.id).record.title, '已恢复');
+      assert.equal(putCalls, 1, '取消更新等待不会重新执行已受理写入');
+      assert.ok(states.some(value => value.status === 'error' && value.error === failure));
+      assert.equal((await task.history({ limit: 10 })).records.length, 0, '观察不会生成投递回执');
+      await runtime.application.close(session.id);
+      assert.equal(runtime.native.agents.get(SessionId(session.id)), undefined);
+      assert.equal((await task.read()).title, '已恢复');
+      assert.equal((await task.state.read(t.signal)).title, '已恢复');
+
+      writerHandle = await runtime.application.open(session.id, program);
+      writer = capability.forSession(writerHandle);
+      const ended = first(task.state.observations$, value => value.status === 'ready' && value.value === undefined);
+      let deleteOutcome;
+      deleting = writer.task(original.id).delete().then(value => { deleteOutcome = value; }, error => { deleteOutcome = error; });
+      await Promise.race([deleteAtWrite.promise, deleting.then(() => { throw new Error('SCHEDULE_DELETE_DID_NOT_REACH_WRITE'); })]);
+      writer.dispose(); await immediate();
+      assert.ok(deleteOutcome instanceof Error); assert.match(deleteOutcome.message, /REACTIVE_SCOPE_DISPOSED/u,
+        '独立SDK退出不等待原生delete回执');
+      releaseDelete.resolve(); await ended; await deleting;
+      assert.equal(table.get(original.id), undefined);
+      assert.equal(putCalls, 1); assert.equal(deleteCalls, 1, 'SDK退出不会重新删除或补写已移除记录');
+      assert.equal(sdk.task(original.id), task);
+      assert.equal(await task.read(), undefined);
+    } finally {
+      releaseUpdate.resolve(); releaseDelete.resolve();
+      await Promise.allSettled([putReceipt, deleteReceipt, updating, deleting]);
+      table.put = nativePut; table.delete = nativeDelete;
+      writer?.dispose(); writerHandle?.release();
+    }
     assert.equal((await sdk.active()).length, 0);
     subscriptions.forEach(subscription => subscription.unsubscribe());
     assert.equal(sdk.state.peek().status, 'pending');

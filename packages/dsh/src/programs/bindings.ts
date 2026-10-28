@@ -3,14 +3,13 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
 import type {} from '@deepseek-ai/dsh-system-prompt';
 import type {} from '@deepseek-ai/dsh-fs';
-import { Scope, type Cell, type Value, batch } from '@hanger-source/dsh-reactive/kernel';
+import { Scope, type Cell, batch } from '@hanger-source/dsh-reactive/kernel';
 import { type ResourceValue } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin } from '../native-installation.ts';
 
 type BoundContext = { source: ResourceValue<string>; committed: Cell<string>; release(): void };
 interface Entry {
   readonly scope: Scope;
-  readonly sourceScope: Scope;
   readonly context: Context;
   readonly contexts: Map<string, BoundContext>;
   readonly closed: Promise<void>;
@@ -78,7 +77,7 @@ export class AgentBindings {
         });
       } });
       const installed = installation;
-      const entry: Entry = { scope, sourceScope, context: installed.ctx, contexts: new Map(), closed: ended.promise,
+      const entry: Entry = { scope, context: installed.ctx, contexts: new Map(), closed: ended.promise,
         async ready() { signal.throwIfAborted(); await requireActivePlugin(installed); signal.throwIfAborted(); scope.assertActive(); },
         dispose,
       };
@@ -105,8 +104,9 @@ export class AgentBindings {
     if (!entry) throw new Error('REACTIVE_AGENT_NOT_BOUND');
     return entry.ready();
   }
-  contexts(agent: Agent, definitions: Value<ReadonlyMap<string, ResourceValue<string>>>) {
+  contexts(agent: Agent, factory: () => ReadonlyMap<string, ResourceValue<string>>) {
     const scope = this.scope(agent);
+    const definitions = scope.computed(factory);
     const { contexts, context } = this.#entries.get(agent)!;
     scope.own(() => {
       const previous = [...contexts.values()]; contexts.clear();
@@ -157,10 +157,10 @@ export class AgentBindings {
     }
   }
   /** 能力表随派生值变化注册到原生 agent scope，移除的能力也同时退出执行准入。 */
-  tools(agent: Agent, definitions: Value<readonly ToolDefinition[]>) {
+  tools(agent: Agent, factory: () => readonly ToolDefinition[]) {
     const scope = this.scope(agent);
     const entry = this.#entries.get(agent)!;
-    if (definitions.scope !== entry.sourceScope) throw new Error('REACTIVE_TOOLS_SCOPE_MISMATCH');
+    const definitions = scope.computed(factory);
     const registrations = new Map<string, { definition: ToolDefinition; release(): void }>();
     const clear = () => {
       const previous = [...registrations.values()]; registrations.clear();

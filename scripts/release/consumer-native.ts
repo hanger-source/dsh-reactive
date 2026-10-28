@@ -1,8 +1,8 @@
-import { createNativeJobs, type NativeJob, type NativeJobs, type NativeSessionJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
+import { createNativeJobs, type JobId, type NativeJob, type NativeJobs, type NativeSessionJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
 import { createNativeMcp, type NativeMcp } from '@hanger-source/dsh-reactive-dsh/mcp';
 import { createNativeApproval, type NativeSessionApproval } from '@hanger-source/dsh-reactive-dsh/approval';
 import { createNativeClock } from '@hanger-source/dsh-reactive-dsh/time';
-import { createNativeSchedule, type NativeSessionSchedule, type NativeScheduleTask } from '@hanger-source/dsh-reactive-dsh/schedule';
+import { createNativeSchedule, type ScheduleId, type NativeSessionSchedule, type NativeScheduleTask } from '@hanger-source/dsh-reactive-dsh/schedule';
 import { createNativeTeam, type NativeSessionTeam, type NativeTeamTask, type NativeTeamTaskUpdate,
   type TeamTaskId } from '@hanger-source/dsh-reactive-dsh/team';
 import { createNativeFiles, type NativeSessionFiles, type NativeFileResource,
@@ -20,7 +20,7 @@ export const nativeControls = (session: ConversationHandle<typeof ConsumerModule
 // 这些是正式npm子入口；只加载与编译，不为包检查安装Runtime或执行原生副作用。
 export const entries = [createNativeJobs, createNativeMcp, createNativeApproval, createNativeClock,
   createNativeSchedule, createNativeTeam, createNativeFiles, createNativeSkills, createNativeTools, createNativeSubagents] as const;
-export const task = (team: NativeSessionTeam, id: TeamTaskId): Promise<NativeTeamTask> => team.task(id);
+export const task = (team: NativeSessionTeam, id: TeamTaskId): NativeTeamTask => team.task(id);
 export const change = (task: NativeTeamTask, request: NativeTeamTaskUpdate) => task.update(request);
 export const filePage = (files: NativeSessionFiles, path: string): NativeFileResource<WorkspaceFileText> => files.text(path);
 export const skillMaterial = (skills: NativeSessionSkills, files: NativeSessionFiles, name: string, path: string) =>
@@ -37,5 +37,10 @@ export const declaredNativeTools = (jobs: NativeJobs, mcp: NativeMcp) =>
 export const readMcpTools = (mcp: NativeMcp, signal: AbortSignal): Promise<readonly string[]> => mcp.toolNames.read(signal);
 export const nativeState = (jobs: NativeSessionJobs, schedule: NativeSessionSchedule, team: NativeSessionTeam) =>
   combineResources({ jobs: jobs.state, schedule: schedule.state, team: team.state });
-export const taskState = (job: NativeJob, scheduled: NativeScheduleTask, task: NativeTeamTask) =>
-  combineResources({ job: job.state, output: job.output, scheduled: scheduled.state, task: task.state });
+export function taskState(jobs: NativeSessionJobs, schedule: NativeSessionSchedule, team: NativeSessionTeam,
+  ids: { readonly job: JobId; readonly scheduled: ScheduleId; readonly task: TeamTaskId }) {
+  const job: NativeJob = jobs.job(ids.job), scheduled: NativeScheduleTask = schedule.task(ids.scheduled),
+    task: NativeTeamTask = team.task(ids.task);
+  return { job, scheduled, task,
+    resources: combineResources({ job: job.state, output: job.output, scheduled: scheduled.state, task: task.state }) };
+}

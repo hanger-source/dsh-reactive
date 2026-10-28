@@ -2,12 +2,12 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Session, SessionHeader } from '@deepseek-ai/dsh-session';
 import type { SessionInspection } from '@deepseek-ai/dsh-session-persistence';
 import { appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-session';
-import { WorkspaceId, workspaceDomainSpec, type Workspace } from '@deepseek-ai/dsh-workspace';
+import { WorkspaceId, workspaceDomainSpec, type Workspace as NativeWorkspace } from '@deepseek-ai/dsh-workspace';
 import type {} from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
-import { Scope, createWorkspaceContext } from '@hanger-source/dsh-reactive/kernel';
+import { Scope, createWorkspace } from '@hanger-source/dsh-reactive/kernel';
 import type { AnyEnvironment } from '@hanger-source/dsh-reactive/kernel';
-import type { WorkspaceContext, WorkspaceInfo, WorkspaceRegistration } from '@hanger-source/dsh-reactive/kernel';
+import type { Workspace, WorkspaceInfo, WorkspaceRegistration } from '@hanger-source/dsh-reactive/kernel';
 import { environmentPresetId } from '../programs/presets.ts';
 
 const bindingSchema = z.object({ application: z.string(), environmentId: z.string(), workspaceId: z.string() }).strict();
@@ -18,7 +18,7 @@ declare module '@deepseek-ai/dsh-session/types' {
     'plugin:reactive/created': z.infer<typeof creationSchema>;
   }
 }
-export interface ManagedWorkspace { native: Workspace; context: WorkspaceContext; }
+export interface ManagedWorkspace { native: NativeWorkspace; readonly scope: Scope; context: Workspace; }
 
 /** 原生 registry 拥有身份和会话成员；框架只拥有工作环境关联与共享资源作用域。 */
 export class Workspaces {
@@ -33,7 +33,7 @@ export class Workspaces {
       const workspace = this.#entries.get(change.key);
       if (!workspace) return;
       this.#entries.delete(change.key);
-      try { workspace.context.scope.dispose(); }
+      try { workspace.scope.dispose(); }
       catch (error) {
         this.#failures.add(error);
         console.error('reactive.workspace.disposal.failed', { workspaceId: change.key, error });
@@ -55,11 +55,11 @@ export class Workspaces {
     const existing = this.#entries.get(workspaceId);
     if (existing) {
       if (existing.native !== native) throw new Error('REACTIVE_WORKSPACE_IDENTITY_CHANGED');
-      existing.context.scope.assertActive();
+      existing.scope.assertActive();
       return existing;
     }
     const scope = this.#scope.child();
-    const workspace = { native, context: createWorkspaceContext(scope, { id: native.id, directory: native.path }) };
+    const workspace = { native, scope, context: createWorkspace(scope, { id: native.id, directory: native.path }) };
     this.#entries.set(workspaceId, workspace);
     return workspace;
   }
@@ -85,7 +85,7 @@ export class Workspaces {
   async describe(inspect: (id: string) => Promise<SessionInspection>): Promise<readonly WorkspaceInfo[]> {
     return Promise.all(this.ctx.workspaceRegistry.list().map(workspace => this.describeWorkspace(workspace, inspect)));
   }
-  private async describeWorkspace(native: Workspace, inspect: (id: string) => Promise<SessionInspection>): Promise<WorkspaceInfo> {
+  private async describeWorkspace(native: NativeWorkspace, inspect: (id: string) => Promise<SessionInspection>): Promise<WorkspaceInfo> {
     const sessionIds: string[] = [];
     for (const id of native.sessionIds) {
       const session = await inspect(id), bindings = this.bindings(session);

@@ -1,6 +1,6 @@
 import { Observable, Subject, asapScheduler, of, observeOn, shareReplay, mergeAll, map, filter, distinctUntilChanged, combineLatest } from 'rxjs';
 import { z } from 'zod';
-import { Scope, batch, type Cell } from '../reactivity/scope.ts';
+import { batch, type Scope, type Cell } from '../reactivity/scope.ts';
 import type { ProgramDefinition } from '../program/definition.ts';
 import { decodeProgramEvent, decodeProgramInputs } from '../program/decode.ts';
 import type { Surface } from '../surfaces/contract.ts';
@@ -12,8 +12,7 @@ import { shareResource } from '../resources/sharing.ts';
 import { ResourceReader } from '../resources/reader.ts';
 import { createAssistantProgress, createRequestHandle, type ConversationProgressSnapshot, type RequestHandle } from './request.ts';
 import type { Observation } from '../resources/observation.ts';
-import type { WorkspaceContext } from '../workspaces/context.ts';
-export type { WorkspaceContext } from '../workspaces/context.ts';
+import type { Workspace } from '../workspaces/context.ts';
 
 export { z };
 export type { Json, InputReference, GoalReference, Continuation, WaitReference, Submission, NormalizedSubmission, AdmittedSubmission, InputDelivery, PromptContentPart, AdmittedPromptContentPart, FileUploadValue, FileUploadReceiptId, EncodedFileUploadRequest, FileUploadSource, UploadFileOptions, Admission, CancellationOptions, SubmitOptions, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions } from './protocol.ts';
@@ -32,8 +31,7 @@ export const conversationBindings = Symbol('conversation-bindings');
 
 /** 对话事实和显式输入；组件、普通程序与外部观察消费同一原生会话。 */
 export class Conversation<T = Json, Raw = T> {
-  /** @internal 会话程序的 owner；释放页面句柄不释放此 scope。 */
-  readonly scope: Scope;
+  readonly #scope: Scope;
   readonly inputs$: Observable<readonly InputReference<T>[]>;
   readonly activity$: Observable<ConversationActivity>;
   readonly goal$: Observable<ConversationActivity['goal']>;
@@ -60,17 +58,18 @@ export class Conversation<T = Json, Raw = T> {
   #submit?: (input: Submission<Raw>, options: CancellationOptions) => Promise<InputReceipt>;
 
   constructor(
+    scope: Scope,
     readonly identity: ConversationIdentity,
-    readonly workspace: WorkspaceContext,
+    readonly workspace: Workspace,
     private readonly program: ProgramDefinition<z.ZodType<T, Raw>, Surface>,
     initial: ConversationActivity,
   ) {
-    this.scope = workspace.scope.child();
-    this.#inputs = this.scope.state([]);
-    this.#activity = this.scope.state(ownConversationActivity(initial));
-    this.#progressVersion = this.scope.state(0);
-    this.#questions = this.scope.state<HumanInputState | undefined>(undefined);
-    this.#foregroundQuestions = this.scope.state<readonly HumanForegroundQuestion[]>([]);
+    this.#scope = scope;
+    this.#inputs = scope.state([]);
+    this.#activity = scope.state(ownConversationActivity(initial));
+    this.#progressVersion = scope.state(0);
+    this.#questions = scope.state<HumanInputState | undefined>(undefined);
+    this.#foregroundQuestions = scope.state<readonly HumanForegroundQuestion[]>([]);
     this.inputs$ = this.#inputs.changes$;
     this.activity$ = this.#activity.changes$;
     this.goal$ = this.activity$.pipe(map(activity => activity.goal), distinctUntilChanged());
@@ -80,7 +79,7 @@ export class Conversation<T = Json, Raw = T> {
       this.#foregroundQuestions.changes$,
     ]).pipe(map(([questions, foreground], index): Observation<HumanSnapshot> => ({
       status: 'ready', generation: index + 1, observedAt: Date.now(), value: Object.freeze({ questions, foreground }),
-    }))), { signal: this.scope.signal, onObserverError: error => this.scope.observerError(error) });
+    }))), { signal: scope.signal, onObserverError: error => scope.observerError(error) });
     this.questions$ = this.human.values$.pipe(map(snapshot => snapshot.questions), distinctUntilChanged());
     this.foregroundQuestions$ = this.human.values$.pipe(map(snapshot => snapshot.foreground), distinctUntilChanged());
     this.rawEvents$ = this.observeFacts(this.#events.pipe(map(event => event.raw$), mergeAll()));
@@ -89,21 +88,21 @@ export class Conversation<T = Json, Raw = T> {
     this.progress = new ResourceReader({
       observations$: this.#progressVersion.changes$.pipe(map(() => this.progressSnapshot())),
       peek: () => this.progressSnapshot(),
-    }, { signal: this.scope.signal, onObserverError: error => this.scope.observerError(error) });
+    }, { signal: scope.signal, onObserverError: error => scope.observerError(error) });
     this.progress$ = this.progress.observations$;
-    this.scope.own(() => { this.#events.complete(); this.#frames.complete(); this.#requests.clear(); });
+    scope.own(() => { this.#events.complete(); this.#frames.complete(); this.#requests.clear(); });
   }
   private observeFacts<U>(source: Observable<U>): Observable<U> {
     return new Observable(subscriber => {
-      if (this.scope.disposed) { subscriber.complete(); return; }
+      if (this.#scope.disposed) { subscriber.complete(); return; }
       const subscription = source.subscribe(subscriber);
-      const release = this.scope.own(() => { subscription.unsubscribe(); subscriber.complete(); });
+      const release = this.#scope.own(() => { subscription.unsubscribe(); subscriber.complete(); });
       return () => { subscription.unsubscribe(); release(); };
     });
   }
   /** 同一版本按需物化一次前缀；无人读取时每个 token 不展开完整 compact stream。 */
   progressSnapshot(): Observation<ConversationProgressSnapshot> {
-    this.scope.assertActive();
+    this.#scope.assertActive();
     if (this.#progressSnapshot) return this.#progressSnapshot;
     const generation = this.#progressVersion.peek();
     try {
@@ -114,11 +113,11 @@ export class Conversation<T = Json, Raw = T> {
     }
   }
   request(requestId: string): RequestHandle<T> {
-    this.scope.assertActive();
+    this.#scope.assertActive();
     let request = this.#requests.get(requestId);
     if (!request) {
       request = createRequestHandle(this.identity.sessionId, requestId, this.progress, this.events$,
-        { signal: this.scope.signal, onObserverError: error => this.scope.observerError(error) });
+        { signal: this.#scope.signal, onObserverError: error => this.#scope.observerError(error) });
       this.#requests.set(requestId, request);
     }
     return request;
@@ -129,7 +128,7 @@ export class Conversation<T = Json, Raw = T> {
   }
   /** 显式投递到原生输入协议；订阅和组件求值不会重新投递。 */
   submit(input: Submission<Raw>, options: CancellationOptions = {}): Promise<InputReceipt> {
-    this.scope.assertActive();
+    this.#scope.assertActive();
     if (!this.#submit) return Promise.reject(new Error('REACTIVE_PROGRAM_NOT_ATTACHED'));
     return this.#submit(input, options);
   }
@@ -140,7 +139,7 @@ export class Conversation<T = Json, Raw = T> {
       setSubmit: (submit: (input: Submission<Raw>, options: CancellationOptions) => Promise<InputReceipt>) => { this.#submit = submit; },
       accept: (inputs: readonly InputReference[]) => this.#inputs.set(decodeProgramInputs(this.program, this.identity.sessionId, inputs)),
       emit: (event: ConversationEvent) => {
-        if (this.scope.disposed) return;
+        if (this.#scope.disposed) return;
         // 当前订阅者在事实发生时取得此 inner；后来订阅者不会收到已经排队的旧通知。
         // 原始观察与领域观察共享此事实 cut；raw-only 不求值业务 transform。
         // schema 求值与观察通知都离开原生 append，现有观察者共享一次领域解码。
@@ -155,7 +154,7 @@ export class Conversation<T = Json, Raw = T> {
         batch(() => { this.#activity.set(owned); this.notifyProgress(); });
       },
       emitProgressFrame: (value: AssistantProgressFrame) => {
-        if (this.scope.disposed) return;
+        if (this.#scope.disposed) return;
         const owned = this.#assistant.accept(value);
         this.notifyProgress();
         this.#frames.next(owned);

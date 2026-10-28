@@ -36,6 +36,8 @@ Workspace 由原生 registry 持有目录、稳定身份与成员。`createWorks
 
 内部 scope、cell 和资源快照用于持有连接、等待就绪及核验装配。业务组合继续使用 React 和 RxJS；模型与工具继续进入 dsh 的执行管线。
 
+工作区、对话、值、资源实例和反应绑定向消费者提供业务能力，不暴露其所属 Scope。退出自己的订阅、取消本次读取或停止一个 ReactionRun，不等于销毁共享 owner。内核装配用 `createWorkspace(scope, identity)` 和 `new Conversation(scope, identity, workspace, program, initial)` 显式借入 Scope；创建者保留释放责任，公开对象不能沿引用取得该权限。普通应用取得现成 Workspace 与会话句柄，无需参与这层装配。
+
 会话域持有冷 Program 图、公开句柄引用与实际 Agent 归属，并签发带成员、合同和代际核验的访问接点。事实投影只读取原生日志和已登记会话，不签发执行身份。每次原生 Program 安装由实际 Agent 下的正式 Fiber 持有，声明所需服务依赖；Context、Tool、Skill、人工参与及 Operation 续接借用同一安装作用域。Program 失败撤销这一份声明安装，关闭 Agent 等待其异步清理；仍有公开句柄的冷程序图和已受理业务保留各自 owner。
 
 打开冷会话先核对预期 Program 合同，再构造程序图。恢复的并发调用等待同一次原生取得和子程序恢复；取得失败只归还本次实际获得的 AgentHandle。已有冷句柄及其他会话继续有效，清理失败交回会话域汇总，不由原生日志代替失败回执。
@@ -78,6 +80,8 @@ flowchart LR
 组件求值与声明构造保持纯投影。它们不注册工具、不连接查询、不执行 Action。查询连接由提交后的观察及出口 owner 持有；长期事件关系由 `useRelation` 的 effect 持有。明确的 Action 调用才开始业务执行。
 
 子 Agent 的发现与执行保留不同责任。Subagents 读侧直接消费原生父目录和递归查询，one-shot、continuable、external 及分支诊断使用原生类型；catalog 是现有 Scope 下的资源，冷读不加载 Agent。NativeChildWork 只表达带独立 Goal 的子程序委托，Team 继续拥有具名成员及任务板；三者不合并为泛化任务状态，也不因观察目录建立新的 Goal 或输入。
+
+Jobs 的 `job(id)`、Schedule 与 Team 的 `task(id)` 同步构造原来源下的固定目标，复用同一个目标对象及资源。构造不读注册表、投影或 catalog，也不证明目标存在或授予控制权；读取、历史及原生修改各自在实际边界核验归属与权限。三类对象的资源可以直接组合，首次观察才建立查询。Schedule 与 Team 的缺席目标在资源或 read 中为 undefined；Job 未知或外来目标由其原生读取与控制边界拒绝。Schedule update/delete 的取消结束本次回执等待，预取消不开始工作；已受理 CAS 和持久投递仍归原生 owner，不能把等待取消当作回滚或自动重试依据。
 
 显式 owner 的资源把“来源完成”与“有效性结束”分开：正常有限来源立即释放自己的连接，资源仍可观察 owner 的后续撤销，不让外部活跃消费者永久保留旧 ready。值流同样沿读取 owner 完成；业务结果使用 Invocation.result 或 Operation.settled，活动状态不借用 RxJS EOF 表示业务完成。无显式读取 owner 的不可变事实和普通 Observable 保留自己的有限完成语义。
 

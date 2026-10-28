@@ -10,6 +10,8 @@
 
 工作区登记删除或宿主退出会结束该工作区的资源与持续关系。资源先交付 owner 失效，排队反应停止，已受理的业务函数仍沿原 owner 完成；新登记产生新身份，旧对象不复活。普通 workspace.share(source$) 保留有限流完成语义，失效需要参加业务组合时直接使用正式资源的 observations$。
 
+Workspace、Conversation、Value/Cell、ResourceValue、资源实例与反应绑定不提供所属 Scope。借用者释放自己的订阅或取消一次 read，停止自己启动的 ReactionRun；创建 Scope 的 owner 才负责销毁共享关系。普通应用继续借用 Workspace 和组件 hooks，无需反向取得内部 Scope。内核装配显式持有 Scope，并通过 createWorkspace(scope, identity) 与 Conversation 的首个构造参数传入；公开对象不返回这份销毁权。
+
 - 可复用合同：`defineResource({ name, params, value })` → `implementResource(definition, implementation)` → `bindResource(implementation, { scope }).instance(params)`。
 - 局部事实：`createResource(scope, { value, read, invalidations? })`，或互斥的 `{ observe }` 分支。它返回相同 `ResourceInstance`，不是另一套状态。可选 name 是诊断标签，不决定共享身份，也不需要注册名称。
 - 已有事实读侧：`new ResourceReader({ observations$, peek })` 沿用来源寿命，不另建 Scope、缓存或查询；提供第二参数 `{ signal }` 时限定本次借用寿命。调用活动等内存事实可以直接供 read、Observable 和 hooks 共用，执行取消信号不应被误用为已完成事实的读取寿命。问答、请求和 SDK 等有独立 owner 的工厂仍要求明确的所属作用域。

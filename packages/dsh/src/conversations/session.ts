@@ -10,6 +10,8 @@ import type { HumanInputs } from '../participation/human-input.ts';
 import type { NativeProgress } from './progress.ts';
 /** 应用观察中的同一程序；冷读取不拥有原生 Agent。 */
 export interface ConversationSession {
+    /** 本会话事实与Program图的实际owner；冷观察保留它，收集会话时统一撤销。 */
+    readonly scope: Scope;
     readonly header: SessionHeader;
     readonly workspace: ManagedWorkspace;
     readonly environment: AnyEnvironment;

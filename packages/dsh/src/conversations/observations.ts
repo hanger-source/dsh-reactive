@@ -19,13 +19,13 @@ export class ConversationObservations {
         throw new Error('REACTIVE_HOST_DISPOSED'); }
     emit(entry: ConversationSession, event: ConversationEvent) {
         // Conversation 在发生边界固定当前订阅者，并通过标准调度延迟解码与观察通知。
-        if (this.signal.aborted || entry.conversation.scope.disposed)
+        if (this.signal.aborted || entry.scope.disposed)
             return;
         try {
             entry.conversation[conversationBindings]().emit(event);
         }
         catch (error) {
-            entry.conversation.scope.observerError(error);
+            entry.scope.observerError(error);
         }
     }
     publish(entry: ConversationSession) {

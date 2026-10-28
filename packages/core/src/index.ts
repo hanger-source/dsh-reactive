@@ -10,7 +10,7 @@ export { defineApplication } from './applications/definition.ts';
 export { defineEnvironment } from './environments/definition.ts';
 export { z } from 'zod';
 export type { InputParticipant } from './conversations/protocol.ts';
-export type { Json, InputReference, GoalReference, Continuation, WaitReference, Submission, NormalizedSubmission, AdmittedSubmission, InputDelivery, PromptContentPart, AdmittedPromptContentPart, FileUploadValue, FileUploadReceiptId, EncodedFileUploadRequest, FileUploadSource, UploadFileOptions, CancellationOptions, SubmitOptions, Admission, Conversation, ConversationIdentity, WorkspaceContext, Views, ObservedViews, InputReceipt } from './conversations/conversation.ts';
+export type { Json, InputReference, GoalReference, Continuation, WaitReference, Submission, NormalizedSubmission, AdmittedSubmission, InputDelivery, PromptContentPart, AdmittedPromptContentPart, FileUploadValue, FileUploadReceiptId, EncodedFileUploadRequest, FileUploadSource, UploadFileOptions, CancellationOptions, SubmitOptions, Admission, Conversation, ConversationIdentity, Views, ObservedViews, InputReceipt } from './conversations/conversation.ts';
 export type { Environment, AnyEnvironment, EnvironmentInput, EnvironmentViews, EnvironmentActions, EnvironmentOperations, EnvironmentAt } from './environments/definition.ts';
 export type { ApplicationDefinition } from './applications/definition.ts';
 export { defineAction, implementAction, bindAction, ActionBindingUnavailableError, ActionTargetMismatchError } from './actions/contract.ts';

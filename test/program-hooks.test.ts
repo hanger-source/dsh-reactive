@@ -6,7 +6,7 @@ import { BehaviorSubject, Observable, Subject, Subscription, concatMap, map, of,
 import { z } from 'zod';
 import { defineAction, implementAction, type BoundAction } from '@hanger-source/dsh-reactive';
 import { Conversation } from '@hanger-source/dsh-reactive/kernel';
-import { type WorkspaceContext } from '@hanger-source/dsh-reactive';
+import { type Workspace } from '@hanger-source/dsh-reactive';
 import { defineOperation, implementOperation, type BoundOperation } from '@hanger-source/dsh-reactive';
 import { Expose } from '@hanger-source/dsh-reactive/program';
 import { defineProgram } from '@hanger-source/dsh-reactive';
@@ -14,7 +14,7 @@ import { useAction, useObservable, useOperation, useRelation, useResource } from
 import { implementProgram } from '@hanger-source/dsh-reactive/program';
 import { ProgramInstance } from '@hanger-source/dsh-reactive/kernel';
 import { defineSurface, resourceView } from '@hanger-source/dsh-reactive';
-import { Scope, createWorkspaceContext } from '@hanger-source/dsh-reactive/kernel';
+import { Scope, createWorkspace } from '@hanger-source/dsh-reactive/kernel';
 import { observeResource } from '@hanger-source/dsh-reactive';
 import { type Observation } from '@hanger-source/dsh-reactive';
 import { defineResource, implementResource, defineReaction, implementReaction, type ResourceInstance, type ReactionInstance } from '@hanger-source/dsh-reactive';
@@ -22,7 +22,8 @@ import { useResourceInstance, useReaction } from '@hanger-source/dsh-reactive/pr
 
 test('Program fatal 在同次广播中停止其他关系与查询，已受理的 Action 仍按原执行寿命结算', async () => {
   const scope = new Scope();
-  const workspace: WorkspaceContext = createWorkspaceContext(scope, { id: 'workspace', directory: '/workspace' });
+  const workspace: Workspace = createWorkspace(scope, { id: 'workspace', directory: '/workspace' });
+  const sessionScope = scope.child();
   const identity = { sessionId: 'fatal-program', workspaceId: workspace.id, environmentId: 'work',
     directory: workspace.directory, parentSessionId: null };
   const trigger = new BehaviorSubject(false), events = new Subject<number>();
@@ -49,7 +50,7 @@ test('Program fatal 在同次广播中停止其他关系与查询，已受理的
   } });
   const surface = defineSurface({ views: { current: resourceView(z.number()) }, actions: { save } });
   const definition = defineProgram({ input: z.null(), surface });
-  const conversation = new Conversation(identity, workspace, definition, { sessionId: identity.sessionId,
+  const conversation = new Conversation(sessionScope, identity, workspace, definition, { sessionId: identity.sessionId,
     sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });
   const bindings: BoundAction<typeof save, true>[] = [];
   const implementation = implementProgram(definition, { Component() {
@@ -67,10 +68,10 @@ test('Program fatal 在同次广播中停止其他关系与查询，已受理的
     useLayoutEffect(() => { if (changed.status === 'ready' && changed.value) events.next(1); }, [changed]);
     return Expose({ surface, value: { views: { current: current.observations$ }, actions: { save: action } } });
   } });
-  const program = new ProgramInstance(conversation.scope, implementation, conversation, workspace, {
+  const program = new ProgramInstance(sessionScope, implementation, conversation, workspace, {
     execution: () => ({ invocationId: 'save-before-fatal', sessionId: identity.sessionId,
       source: { kind: 'participant', participant: 'service', actorId: 'business-owner', entrypoint: 'program' },
-      inputs: [], continuation: null, signal: conversation.scope.signal }),
+      inputs: [], continuation: null, signal: sessionScope.signal }),
   });
   try {
     program.mount();
@@ -97,7 +98,7 @@ test('Program fatal 在同次广播中停止其他关系与查询，已受理的
     assert.equal((await run.settled).status, 'stopped');
     assert.throws(() => reaction.start(), /REACTIVE_SCOPE_DISPOSED/);
     assert.throws(() => resource.read(), /REACTIVE_SCOPE_DISPOSED/);
-    assert.equal(conversation.scope.disposed, false);
+    assert.equal(sessionScope.disposed, false);
     assert.equal(executingSignal.aborted, false, '程序失败不能冒充已受理业务的取消');
     finish.resolve('saved');
     assert.equal(await invocation.result, 'saved');
@@ -111,7 +112,7 @@ test('Program fatal 在同次广播中停止其他关系与查询，已受理的
 
 test('程序 hooks 跨组件共享资源和反应，跨会话隔离，目标切换不改写已取得实例', async () => {
   const scope = new Scope();
-  const workspace: WorkspaceContext = createWorkspaceContext(scope, { id: 'workspace', directory: '/workspace' });
+  const workspace: Workspace = createWorkspace(scope, { id: 'workspace', directory: '/workspace' });
   const selected = new BehaviorSubject('a'), changes = new Subject<number>();
   const reads: string[] = [];
   let observing = 0, rendering = false;
@@ -143,9 +144,10 @@ test('程序 hooks 跨组件共享资源和反应，跨会话隔离，目标切�
       { key: side, session: conversation.identity.sessionId, side, target: current.value })));
   } });
   const programs = ['one', 'two'].map(sessionId => {
+    const sessionScope = scope.child();
     const identity = { sessionId, workspaceId: workspace.id, environmentId: 'work', directory: workspace.directory, parentSessionId: null };
-    const conversation = new Conversation(identity, workspace, definition, { sessionId, sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });
-    return new ProgramInstance(conversation.scope, implementation, conversation, workspace, {
+    const conversation = new Conversation(sessionScope, identity, workspace, definition, { sessionId, sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });
+    return new ProgramInstance(sessionScope, implementation, conversation, workspace, {
       execution() { throw new Error('UNEXPECTED_EXECUTION'); },
     });
   });
@@ -181,7 +183,8 @@ test('程序 hooks 跨组件共享资源和反应，跨会话隔离，目标切�
 
 test('nullable Operation 只撤下当前绑定，恢复和换目标不重定向旧 command 或中止已有读取', async () => {
   const scope = new Scope();
-  const workspace: WorkspaceContext = createWorkspaceContext(scope, { id: 'workspace', directory: '/workspace' });
+  const workspace: Workspace = createWorkspace(scope, { id: 'workspace', directory: '/workspace' });
+  const sessionScope = scope.child();
   const identity = { sessionId: 'nullable-program', workspaceId: workspace.id, environmentId: 'work',
     directory: workspace.directory, parentSessionId: null };
   const selected = new BehaviorSubject<string | null>(null);
@@ -207,7 +210,7 @@ test('nullable Operation 只撤下当前绑定，恢复和换目标不重定向�
   });
   const surface = defineSurface({ views: {}, actions: {}, operations: { preparation: operation } });
   const definition = defineProgram({ input: z.null(), surface });
-  const conversation = new Conversation(identity, workspace, definition, { sessionId: identity.sessionId,
+  const conversation = new Conversation(sessionScope, identity, workspace, definition, { sessionId: identity.sessionId,
     sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });
   const committed: (BoundOperation<typeof operation> | null)[] = [];
   const implementation = implementProgram(definition, { Component() {
@@ -217,9 +220,9 @@ test('nullable Operation 只撤下当前绑定，恢复和换目标不重定向�
     useLayoutEffect(() => { committed.push(binding); }, [binding]);
     return binding ? Expose({ surface, value: { operations: { preparation: binding } } }) : null;
   } });
-  const program = new ProgramInstance(conversation.scope, implementation, conversation, workspace, {
+  const program = new ProgramInstance(sessionScope, implementation, conversation, workspace, {
     execution() { throw new Error('READ_MUST_NOT_EXECUTE_ACTION'); },
-    operationAccess: () => ({ sessionId: identity.sessionId, signal: conversation.scope.signal,
+    operationAccess: () => ({ sessionId: identity.sessionId, signal: sessionScope.signal,
       source: { kind: 'participant', participant: 'service', actorId: 'business-reader', entrypoint: 'program' } }),
   });
   try {

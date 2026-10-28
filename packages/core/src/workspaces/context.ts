@@ -26,11 +26,8 @@ export interface Workspace {
   reaction<E extends z.ZodType, R extends z.ZodType>(options: LocalReactionOptions<E, R>): LocalReaction<E, R>;
 }
 
-/** @internal 内核装配持有Scope；业务和Program借用Workspace，不释放整个工作区。 */
-export interface WorkspaceContext extends Workspace { readonly scope: Scope; }
-
 /** @internal 实例均归实际工作区Scope；正式实现共享参数身份，局部选项每次构造新身份。 */
-export function createWorkspaceContext(scope: Scope, identity: { readonly id: string; readonly directory: string }): WorkspaceContext {
+export function createWorkspace(scope: Scope, identity: { readonly id: string; readonly directory: string }): Workspace {
   scope.assertActive();
   function resource<D extends ResourceContract>(implementation: ResourceImplementation<D>, params: ResourceParameters<D>): ResourceInstance<D>;
   function resource<V extends z.ZodType>(options: LocalResourceOptions<V>): LocalResource<V>;
@@ -46,7 +43,7 @@ export function createWorkspaceContext(scope: Scope, identity: { readonly id: st
       ? bindReaction(source, { scope }).instance(params)
       : createReaction(scope, source);
   }
-  return Object.freeze({ ...identity, scope,
+  return Object.freeze({ id: identity.id, directory: identity.directory,
     share: <T>(source: Observable<T>) => connect(scope, source),
     resource, reaction,
   });

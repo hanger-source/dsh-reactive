@@ -13,6 +13,7 @@ import { resourceImplementation, type ResourceImplementation, type ResourceImple
 
 /** 实例身份属于绑定 scope；消费者退订不销毁身份，也不保留未经观察的旧 ready。 */
 export class ResourceInstance<D extends ResourceContract> implements ResourceReadable<ResourceData<D>> {
+  readonly #scope: Scope;
   #connection: Subscription | undefined;
   #observers = 0;
   #generation = 0;
@@ -25,7 +26,8 @@ export class ResourceInstance<D extends ResourceContract> implements ResourceRea
   readonly params: ResourceTarget<D>;
 
   /** @internal 只由绑定按正式实现创建。 */
-  constructor(readonly scope: Scope, definition: D, params: ResourceTarget<D>, implementation: ResourceImplementationOptions<D>) {
+  constructor(scope: Scope, definition: D, params: ResourceTarget<D>, implementation: ResourceImplementationOptions<D>) {
+    this.#scope = scope;
     const state = scope.state<Observation<ResourceData<D>>>({ status: 'pending', generation: 0 });
     this.#value = new ResourceValue(scope, state);
     this.definition = definition;
@@ -91,26 +93,25 @@ export class ResourceInstance<D extends ResourceContract> implements ResourceRea
   peek(): Observation<ResourceData<D>> { return this.#value.peek(); }
 
   read(signal?: AbortSignal): Promise<ResourceData<D>> {
-    this.scope.assertActive();
+    this.#scope.assertActive();
     if (signal?.aborted) return Promise.reject(signal.reason);
     const stop = this.subscribe(() => {});
     return this.#value.read(signal).finally(stop);
   }
 
   subscribe(accept: (observation: Observation<ResourceData<D>>) => void): () => void {
-    this.scope.assertActive();
+    this.#scope.assertActive();
     const subscription = this.observations$.subscribe(observation => {
-      try { accept(observation); } catch (error) { this.scope.observerError(error); }
+      try { accept(observation); } catch (error) { this.#scope.observerError(error); }
     });
     return () => subscription.unsubscribe();
   }
 
   /** 显式撤销当前代次并重连权威来源；没有观察者时保持 pending，不偷偷启动查询。 */
-  invalidate(): void { this.scope.assertActive(); this.#invalidations.next(); }
+  invalidate(): void { this.#scope.assertActive(); this.#invalidations.next(); }
 }
 
 export interface ResourceBinding<D extends ResourceContract = ResourceContract> {
-  readonly scope: Scope;
   readonly definition: D;
   instance(params: ResourceParameters<D>): ResourceInstance<D>;
 }
@@ -129,7 +130,7 @@ export function bindResource<D extends ResourceContract>(implementation: Resourc
   // 精确 scope、实现对象只对应一种 D；不按名字或调用者泛型恢复定义。
   if (previous) return previous as ResourceBinding<D>;
   const instances = new Map<string, ResourceInstance<D>>();
-  const binding: ResourceBinding<D> = Object.freeze({ scope, definition: implementation.definition,
+  const binding: ResourceBinding<D> = Object.freeze({ definition: implementation.definition,
     instance(raw: ResourceParameters<D>) {
       scope.assertActive();
       const params = ownParameters(z.parse<D['params']>(implementation.definition.params, raw));

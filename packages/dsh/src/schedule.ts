@@ -26,7 +26,7 @@ function scheduleRecord(entry: ScheduleCatalogEntry): ScheduleRecord {
   return ownNativeValue(record);
 }
 
-/** 已核验原会话归属的现有提醒；投递 ACK 与模型/业务完成分别表达。 */
+/** 原会话内的固定提醒目标；读取、历史与变更各自核验归属，缺席读取为 undefined。 */
 export interface NativeScheduleTask {
   readonly id: ScheduleId;
   readonly state: ResourceReader<ScheduleCatalogEntry | undefined>;
@@ -44,7 +44,8 @@ export interface NativeSessionSchedule {
   readonly catalog$: Observable<readonly ScheduleCatalogEntry[]>;
   active(options?: CancellationOptions): Promise<readonly ScheduleRecord[]>;
   catalog(options?: CancellationOptions): Promise<readonly ScheduleCatalogEntry[]>;
-  task(id: ScheduleId, options?: CancellationOptions): Promise<NativeScheduleTask>;
+  /** 同步绑定固定目标，不读取 catalog；取得对象不表示提醒存在或已经获得修改资格。 */
+  task(id: ScheduleId): NativeScheduleTask;
   /** 释放管理观察，不删除提醒或撤回已经投递的输入。 */
   dispose(): void;
 }
@@ -97,9 +98,8 @@ class SessionSchedule implements NativeSessionSchedule {
     signal.throwIfAborted(); this.context();
     return ownNativeValue(records.filter(record => record.sessionId === this.access.sessionId));
   }
-  async task(id: ScheduleId, options: CancellationOptions = {}): Promise<NativeScheduleTask> {
-    const records = await this.catalog(options);
-    if (!records.some(record => record.id === id)) throw new Error('REACTIVE_NATIVE_SCHEDULE_NOT_FOUND');
+  task(id: ScheduleId): NativeScheduleTask {
+    this.context();
     let task = this.#tasks.get(id);
     if (!task) {
       const state = nativeResource(this.scope, () => this.state.observations$.pipe(mapResource(current => current.find(record => record.id === id))));
@@ -119,9 +119,13 @@ class SessionSchedule implements NativeSessionSchedule {
           const signal = this.signal(opts);
           const selected = structuredClone(request);
           if (selected.expected.id !== id) throw new Error('REACTIVE_NATIVE_SCHEDULE_EXPECTED_MISMATCH');
-          return ownNativeValue(await this.service().update({ ...selected, id, sessionId: this.access.sessionId }, signal));
+          // 原生 signal 保留执行前取消；写入受理后，取消只结束消费者等待。
+          return firstValueFrom(abortable(async () => ownNativeValue(await this.service().update({ ...selected, id, sessionId: this.access.sessionId }, signal)), signal));
         },
-        delete: async (opts: CancellationOptions = {}) => ownNativeValue(await this.service().delete({ id, sessionId: this.access.sessionId }, this.signal(opts))),
+        delete: async (opts: CancellationOptions = {}) => {
+          const signal = this.signal(opts);
+          return firstValueFrom(abortable(async () => ownNativeValue(await this.service().delete({ id, sessionId: this.access.sessionId }, signal)), signal));
+        },
       });
       this.#tasks.set(id, task);
     }

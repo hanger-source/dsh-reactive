@@ -7,7 +7,7 @@ type Node<T> = Pick<ReadonlySignal<T>, 'value' | 'peek' | 'subscribe'>;
 
 export class ResourceValue<T> extends ResourceReader<T> {
   #observation: Value<Observation<T>>;
-  constructor(readonly scope: Scope, node: Node<Observation<T>>) {
+  constructor(scope: Scope, node: Node<Observation<T>>) {
     const observation = new Value(scope, node);
     super({ observations$: observation.changes$, peek: () => observation.peek() },
       { signal: scope.signal, onObserverError: error => scope.observerError(error) });

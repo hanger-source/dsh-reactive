@@ -57,6 +57,7 @@ function reactionSource<T>(factory: () => Observable<T>): Observable<T> {
 
 /** 一个运行持有唯一实际订阅；观察运行不会再次执行处理器。 */
 export class ReactionRun<D extends ReactionContract> {
+  readonly #scope: Scope;
   #state: ReactionState = Object.freeze({ status: 'running', emitted: 0 });
   #states = new ReplaySubject<ReactionState>(1);
   #events = new Subject<ReactionEvent<D>>();
@@ -73,18 +74,19 @@ export class ReactionRun<D extends ReactionContract> {
   readonly settled = this.#completion.promise;
 
   /** @internal 运行构造与实际订阅分开，避免同步完成跨过实例的 active 身份登记。 */
-  constructor(readonly definition: D, readonly params: ReactionTarget<D>, private readonly scope: Scope,
+  constructor(readonly definition: D, readonly params: ReactionTarget<D>, scope: Scope,
     private readonly implementation: ReactionImplementationOptions<D>, private readonly ended: () => void) {
+    this.#scope = scope;
     this.#states.next(this.#state);
   }
   snapshot(): ReactionState { return this.#state; }
 
   /** @internal 只有 instance.start 在登记 active 后调用。 */
   activate(): void {
-    this.scope.assertActive();
+    this.#scope.assertActive();
     if (this.#activated || this.#state.status !== 'running') throw new Error('REACTIVE_REACTION_ALREADY_STARTED');
     this.#activated = true;
-    this.#release = this.scope.own(() => this.stop());
+    this.#release = this.#scope.own(() => this.stop());
     let sequence = 0;
     const subscriber = new Subscriber<ReactionEvent<D>>({
       next: event => {
@@ -127,16 +129,17 @@ export class ReactionRun<D extends ReactionContract> {
 }
 
 export class ReactionInstance<D extends ReactionContract> {
+  readonly #scope: Scope;
   #active: ReactionRun<D> | undefined;
   /** @internal 绑定提供解析过的自有参数和正式实现。 */
-  constructor(readonly scope: Scope, readonly definition: D, readonly params: ReactionTarget<D>,
-    private readonly implementation: ReactionImplementationOptions<D>) {}
+  constructor(scope: Scope, readonly definition: D, readonly params: ReactionTarget<D>,
+    private readonly implementation: ReactionImplementationOptions<D>) { this.#scope = scope; }
 
   /** 副作用从此处显式发生；同实例不能无意建立第二条并行关系。 */
   start(): ReactionRun<D> {
-    this.scope.assertActive();
+    this.#scope.assertActive();
     if (this.#active) throw new Error('REACTIVE_REACTION_ALREADY_RUNNING');
-    const run = new ReactionRun<D>(this.definition, this.params, this.scope, this.implementation,
+    const run = new ReactionRun<D>(this.definition, this.params, this.#scope, this.implementation,
       () => { if (this.#active === run) this.#active = undefined; });
     this.#active = run;
     run.activate();
@@ -145,7 +148,6 @@ export class ReactionInstance<D extends ReactionContract> {
 }
 
 export interface ReactionBinding<D extends ReactionContract = ReactionContract> {
-  readonly scope: Scope;
   readonly definition: D;
   instance(params: ReactionParameters<D>): ReactionInstance<D>;
 }
@@ -162,7 +164,7 @@ export function bindReaction<D extends ReactionContract>(implementation: Reactio
   // 精确 scope、implementation 的私有登记只持有一种合同 D。
   if (previous) return previous as ReactionBinding<D>;
   const instances = new Map<string, ReactionInstance<D>>();
-  const binding: ReactionBinding<D> = Object.freeze({ scope, definition: implementation.definition,
+  const binding: ReactionBinding<D> = Object.freeze({ definition: implementation.definition,
     instance(raw: ReactionParameters<D>) {
       scope.assertActive();
       const params = ownParameters(z.parse<D['params']>(implementation.definition.params, raw));
