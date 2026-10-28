@@ -1,5 +1,5 @@
 import { createContext, createElement, useContext, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type DependencyList, type ReactNode } from 'react';
-import { EmptyError, ReplaySubject, Subscriber, isObservable, share, type Observable } from 'rxjs';
+import { EmptyError, ReplaySubject, Subscriber, defer, fromEvent, isObservable, of, share, takeUntil, type Observable } from 'rxjs';
 import type { z } from 'zod';
 import { bindAction, type ActionCallContext, type ActionDefinition, type ActionExecutionContext, type ActionImplementation, type ActionOperationEvent, type ActionReference, type BoundAction } from '../actions/contract.ts';
 import type { Json } from '../conversations/protocol.ts';
@@ -108,6 +108,15 @@ function useSource<T>(factory: () => Observable<T>, dependencies: DependencyList
   return source$;
 }
 
+/** hook只借管查询连接与终止缓存；RxJS持有唯一重放值，Program退出后不能重新连接。 */
+function shareQuery<T>(owner: ProgramHookOwner, source$: Observable<T>): Observable<T> {
+  const signal = AbortSignal.any([owner.signal, owner.reactivityScope.signal]);
+  const ended$ = defer(() => signal.aborted ? of(undefined) : fromEvent(signal, 'abort'));
+  return source$.pipe(share({ connector: () => new ReplaySubject<T>(1),
+    resetOnError: () => ended$, resetOnComplete: () => ended$, resetOnRefCountZero: true,
+  }), takeUntil(ended$));
+}
+
 /**
  * factory 纯构造 Observable，不订阅、不启动业务。deps 决定 source identity。
  * 每个已提交观察持有自己的查询连接；退出只停止查询，不取消已受理 Action。
@@ -122,14 +131,14 @@ export function useObservable<T>(factory: () => Observable<T>, dependencies: Dep
 
 /**
  * 同一查询同时供 Context 与 Expose 使用时显式共享此标准 Observable。
- * 最后一个查询观察退出后断开来源；完成与错误按该 source identity 保留。
+ * 最后一个查询观察退出后断开来源；完成与错误仅在Program活跃时按source identity保留。
+ * Program退出完成既有观察并清空终止缓存；迟到订阅不交付旧值、不重新连接。
  * 长期业务执行应由 Action 或明确的业务/工作区 owner 持有。
  */
 export function useShared<T>(factory: () => Observable<T>, dependencies: DependencyList): Observable<T> {
-  useOwner();
+  const owner = useOwner();
   const source$ = useSource(factory, dependencies);
-  return useMemo(() => source$.pipe(share({ connector: () => new ReplaySubject<T>(1),
-    resetOnError: false, resetOnComplete: false, resetOnRefCountZero: true })), [source$]);
+  return useMemo(() => shareQuery(owner, source$), [owner, source$]);
 }
 
 export interface ObservedResource<T> {
@@ -193,8 +202,7 @@ export function useResource(source: ResourceReadable<unknown> | ResourceImplemen
   const original$ = useSource(typeof current === 'function' ? current : () => current.observations$,
     typeof current === 'function' ? paramsOrDependencies as DependencyList : [current]);
   const observations$ = useMemo(() => typeof current === 'function'
-    ? normalizeResource(original$).pipe(share({ connector: () => new ReplaySubject<Observation<unknown>>(1),
-      resetOnError: false, resetOnComplete: false, resetOnRefCountZero: true })) : original$, [original$, typeof current]);
+    ? shareQuery(owner, normalizeResource(original$)) : original$, [owner, original$, typeof current]);
   const observed = useObservable(() => observations$, [observations$]);
   const state = observed.status === 'ready' ? observed.value : observed;
   return useMemo(() => Object.freeze({ state, observations$ }), [state, observations$]);

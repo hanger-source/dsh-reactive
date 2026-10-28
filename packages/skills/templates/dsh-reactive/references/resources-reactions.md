@@ -45,6 +45,8 @@ export function inventory(scope: Scope, service: {
 
 后台组件从 `@hanger-source/dsh-reactive/program` 调用 `useResource(instance)`，或 `useResource(implementation, params)`。后者按当前程序 Scope 共享同一实现与参数；跨会话共享时显式把绑定放到适当共享 Scope，再把实例传入。`useResource(factory, deps)` 用于已有 Observation 流，不让 hooks 成为唯一 owner。
 
+`useShared(factory, deps)` 与 factory 形式的 `useResource` 只构造查询，RxJS 持有唯一共享连接及重放值。来源完成或报错后，可在 Program 活跃期间按原 source identity 读取终止事实；Program 失败或退出会停止既有观察并清空该缓存。之前捕获的流在迟到订阅、包括完成清理期间的重入订阅时直接完成，不重放旧值或错误，也不重新打开尚未读取的来源。直接借入 `ResourceReadable` 的 observations$ 则保留原对象及原 owner；Program 退出不销毁工作区或业务系统拥有的事实。
+
 需要普通函数读取、写后失效或将对象交给其他业务 hook 时，用 `useResourceInstance(implementation, params)` 取得相同实例，再按需 `useResource(instance)`。取得实例不启动读取；不要为 read、Context 和公开 View 各建一个资源。
 
 局部 hook 可以直接 `useResourceInstance(() => ({ value: z.string(), read: () => target }), [target])`；observe/invalidations 与 createResource 使用同一选项和语义。局部反应直接 `useReaction(() => ({ event, result, observe, operator, execute }), dependencies)`，继续显式 start。factory 纯构造选项，dependencies 与 React useMemo 相同，必须列出捕获目标、数据源或业务函数的身份依赖；不要在 factory 中启动查询或动作。相同组件和依赖保留实例，其他组件不凭相同名称共享局部对象；共享合同仍用 implementation/params 入口。

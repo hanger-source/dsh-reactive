@@ -38,6 +38,8 @@ Workspace 由原生 registry 持有目录、稳定身份与成员。`createWorks
 
 业务自定义 hook 可以直接返回资源、Action 和标准 Observable，供下一层业务 hook 继续派生。`invocations$` 表达新发生的调用，`activeInvocations$` 表达本绑定当前在途调用集合；单次 `Invocation.activity$`、`result` 和独立 `operation` 不合并为一个 loading 或完成标记。晚观察者读取当前集合不会重发命令，内存集合也不承担跨重启任务恢复。
 
+hook 自建查询的共享连接和终止缓存受 Program 寿命约束。`useShared` 与 factory 形式的 `useResource` 复用 RxJS 的同一重放值，不另存一份业务状态；Program 失败或退出后，之前捕获的流直接完成，不重放旧事实或重新打开查询。借入的资源实例仍由原 owner 持有，hooks 不改变其身份或销毁共享事实。
+
 `NativeTools` 声明宿主已经安装的原生能力及业务政策。框架不重新注册同名工具，仍由原生实现和所有 guard 执行；异步政策返回后核验当前声明，模型可见性与生成的 PTC SDK 使用同一原生限制。业务文件系统的只读材料、草稿范围和路径准入继续由真实宿主实施。
 
 `actionManifest$` 提供工具名与 Action 名称、合同版本、模块完整路径、绑定和公开槽的关联；原生与 PTC 的持久结果 metadata 提供同源 canonical 输出。原生 UI slot 可以按实际工具名挂业务呈现，通过 `readActionPresentation` 读取相应名称与版本的合同结果，不反解命名编码或解析模型正文。它不定义业务卡片组件或视觉布局。
