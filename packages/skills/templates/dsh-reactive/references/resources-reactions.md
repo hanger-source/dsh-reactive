@@ -47,17 +47,19 @@ export function inventory(scope: Scope, service: {
 
 已有 Promise API 使用 `abortable(signal => read(signal), ownerSignal)` 接入 RxJS，也可用 `firstValueFrom` 取得同一次等待的 Promise。外部取消以原 reason 结束等待，已经取消时不进入 read；退订只撤销本订阅，迟到结果和拒绝不再交付。它不承担底层提供者的清理等待，也不取消其他消费者或已受理业务。
 
-`combineResources({ stock, quote: quote.observations$ })` 可以混合正式资源对象与观察流，只有所有依赖 ready 才产生派生 ready。对象和它的 observations$ 使用同一个来源与原 owner，不调用 read/peek、不重复解析或额外持有连接。`mapResource(project)` 保留 pending/error，并将投影异常表示为 error。
+`ResourceSource<T>` 是 `Observable<Observation<T>>` 或提供这个 observations$ 的对象；不要求对象另有 read、peek 或 subscribe。正式资源、SDK 资源和 useResource 返回的轻量对象都能直接组合。`combineResources({ stock, quote })` 可以混合对象与观察流，只有所有依赖 ready 才产生派生 ready。对象和它的 observations$ 使用同一个来源与原 owner，不调用 read/peek、不重复解析或额外持有连接。`mapResource(project)` 保留 pending/error，并将投影异常表示为 error。
 
-需要把完整派生关系作为对象传给普通函数、Promise、其他 hooks 或公开 View 时，用 `shareResource(combineResources(...), { signal: scope.signal })`。read、peek、subscribe、values$、observations$ 共用 RxJS 的唯一当前快照；已经解析的领域值不再重复 schema parse，不需要另建 Scope、合同或绑定表。构造不连接，有限来源的最终观察保留至最后消费者退出，之后显式读取再连接；signal 固定读侧寿命，取消不重新执行任何命令。
+需要把完整派生关系作为可读取对象传给普通函数、Promise 或其他模块时，用 `shareResource(source, { signal: scope.signal })`；source 可以直接是资源对象或 combineResources 返回的观察流。read、peek、subscribe、values$、observations$ 共用 RxJS 的唯一当前快照；已经解析的领域值不再重复 schema parse，不需要另建 Scope、合同或绑定表。构造不连接，有限来源的最终观察保留至最后消费者退出，之后显式读取再连接；signal 固定读侧寿命，取消不重新执行任何命令。
 
 `workspace.share(source$)` 则由工作区持续持有来源连接，同一来源跨会话共享，消费者全部退订也不停止来源。构造共享连接会立即订阅，应放在 defer 等订阅边界，不在 render 中执行。有限来源的最后值和错误仅在工作区 owner 活跃时重放；owner 退出后已有观察完成，之前捕获的流在迟到订阅时直接完成，不交付旧值或旧错误，也不重新连接来源。业务结果需要跨 owner 留存时，由业务自身的持久事实负责。
 
 切换查询使用 `source$.pipe(switchResource(project, { dependencies: value => [value.sku, value.revision] }))`，project 可以直接返回资源对象或观察流。只选真实影响读取的字段，元素按 Object.is 比较；框架捕获依赖 tuple，并保留连续相同有效依赖的连接。pending/error 会撤旧读取，同参数恢复 ready 也重新读取。退出派生只归还这次订阅，其他读者和原业务执行仍归各自 owner。不要手写 JSON.stringify、Observation 比较器或额外 query cache。
 
-后台组件从 `@hanger-source/dsh-reactive/program` 调用 `useResource(instance)`，或 `useResource(implementation, params)`。后者按当前程序 Scope 共享同一实现与参数；跨会话共享时显式把绑定放到适当共享 Scope，再把实例传入。`useResource(factory, deps)` 用于已有 Observation 流，不让 hooks 成为唯一 owner。
+后台组件从 `@hanger-source/dsh-reactive/program` 调用 `useResource(source)`，直接读取 ResourceSource；`useResource(factory, deps)` 也可以选择资源对象或构造观察流。`useResource(implementation, params)` 按当前程序 Scope 共享同一实现与参数；跨会话共享时显式把绑定放到适当共享 Scope，再把实例传入。资源对象及 hook 返回对象可直接交给 `Context source={source}` 和 resourceView 对应的 Expose 槽，不需要先取 observations$。
 
-`useShared(factory, deps)` 与 factory 形式的 `useResource` 只构造查询，RxJS 持有唯一共享连接及重放值。来源完成或报错后，可在 Program 活跃期间按原 source identity 读取终止事实；Program 失败或退出会停止既有观察并清空该缓存。之前捕获的流在迟到订阅、包括完成清理期间的重入订阅时直接完成，不重放旧值或错误，也不重新打开尚未读取的来源。直接借入 `ResourceReadable` 的 observations$ 则保留原对象及原 owner；Program 退出不销毁工作区或业务系统拥有的事实。
+已有普通 Observable 直接交给 `useShared(source$)`、`useObservable(source$)` 或 `useRelation(source$)`；确实构造管道时再使用 factory 与 dependencies。它们保留流元素的原类型，不根据业务值的 status 字段推断资源，也不把 error Observation 当成 RxJS error。
+
+`useShared` 与观察流形式的 `useResource` 由 RxJS 持有唯一共享连接及重放值。来源完成或报错后，可在 Program 活跃期间按原 source identity 读取终止事实；Program 失败或退出会停止既有观察并清空该缓存。之前捕获的流在迟到订阅、包括完成清理期间的重入订阅时直接完成，不重放旧值或错误，也不重新打开尚未读取的来源。直接借入资源对象的 observations$ 则保留原来源及原 owner；Program 退出不销毁工作区或业务系统拥有的事实。
 
 需要普通函数读取、写后失效或将对象交给其他业务 hook 时，用 `useResourceInstance(implementation, params)` 取得相同实例，再按需 `useResource(instance)`。取得实例不启动读取；不要为 read、Context 和公开 View 各建一个资源。
 

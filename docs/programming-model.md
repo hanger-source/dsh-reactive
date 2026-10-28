@@ -139,12 +139,12 @@ function MerchantWork({ merchantId }: { merchantId: string }) {
     prepareMerchant, () => ({ merchantId }), [merchantId],
   );
   return <>
-    <Context name="facts" observation={facts.state} render={value => value} />
+    <Context name="facts" source={facts} render={value => value} />
     <Offer action={prepare}
       enabled={facts.state.status === 'ready' && facts.state.value.canPrepare}
       follow={{ when: 'feedback', scope: { merchantId } }} />
     <Expose surface={merchantSurface} value={{
-      views: { facts: facts.observations$ },
+      views: { facts },
       actions: { prepare },
     }} />
   </>;
@@ -174,9 +174,11 @@ const review = composeSurface({
 
 挂载点的 surface 保留组件实现使用的原合同，selected 表达这次公开子集；`client.module(mount).surface` 是 selected。局部读取继续受父模块已经公开的子集约束，不能换一个更宽的子挂载恢复隐藏的视图、动作或 Operation；错误父合同和不可见槽都明确拒绝。
 
-`useResource` 直接读取已有资源 Observation，并返回同一条标准 observations$。`resourceView(Merchant)` 明确消费资源状态：pending 使当前读取失效，error 保留为读取失败，只有 ready 的领域值才编码。普通 `view(schema)` 消费值事件，不按业务字段猜状态。
+`ResourceSource<T>` 接受标准 `Observable<Observation<T>>` 或提供同一 `observations$` 的对象，不要求对象另有 read、peek 或 subscribe。资源实例、SDK 资源和 `useResource` 返回的轻量对象都满足这个合同。`useResource(source)` 读取当前状态，`Context source={source}` 通过同一 hook 贡献现场，`Expose` 的 `resourceView` 槽直接借入这个来源。资源对象保留原观察流与原 owner；公开视图按原观察流识别来源，对象与其流之间切换不重连。
 
-跨模块关系直接组合资源对象及标准观察流，两种来源可以混用。`combineResources` 和 `switchResource` 从对象的同一 observations$ 消费，保留解析后的领域值与原 owner，不调用 read/peek 或建立另一份状态。资源算子保留失效语义，不把旧 ready 留在派生现场：
+`resourceView(Merchant)` 明确消费资源状态：pending 使当前读取失效，error 保留为读取失败，只有 ready 的领域值才编码。普通 `view(schema)` 消费值事件，不按业务字段猜状态；已有单次 Observation 仍可交给 `Context observation`。
+
+跨模块关系直接组合 ResourceSource，两种来源可以混用。`combineResources`、`switchResource` 和 `shareResource` 从对象的同一 observations$ 消费，保留解析后的领域值与原 owner，不调用 read/peek 或建立另一份业务状态。资源算子保留失效语义，不把旧 ready 留在派生现场：
 
 ```ts
 const prerequisites$ = combineResources({
@@ -192,7 +194,7 @@ const prerequisites$ = combineResources({
 })));
 ```
 
-同一派生资源可以同时用于 Context、Offer 的当前条件与公开资源；依赖 pending/error 会使派生失效。共享连接由 useShared/useResource 管理，跨源组合不提供后端事务。Offer 的 enabled 决定模型现场，正式权限、来源一致性和修订仍由业务 owner 在执行边界核验。
+已有的 `prerequisites$` 可以直接 `useResource(prerequisites$)`，得到的对象继续传给 Context、其他业务 hook 或 Expose；构造上述管道时则使用 `useResource(() => combineResources(...).pipe(...), dependencies)` 或 `useShared(factory, dependencies)` 保持来源身份。依赖 pending/error 会使同一派生失效，跨源组合不提供后端事务。Offer 的 enabled 决定模型现场，正式权限、来源一致性和修订仍由业务 owner 在执行边界核验。
 
 Context 默认是本步必需现场，pending 会等待，error 会使准备失败。独立模块可以显式声明 `<Context required={false} ... />`：未就绪时撤下该上下文，ready 后再贡献当前值；同源 Surface 仍保留 pending/error，相关 Offer 仍按依赖条件关闭。它允许其他可用模块继续参与，不回放旧值，也不代替错误处理或业务授权。
 
@@ -244,17 +246,17 @@ const application = defineApplication({
 
 所有流仍是标准 Observable。使用 map、combineLatest、switchMap、concatMap、mergeMap、catchError 等表达业务关系，不需要框架自定义的流操作符。
 
-- `useShared(factory, dependencies)` memo 来源并使用 RxJS share/ReplaySubject 共享查询。最后一个查询观察退出时释放来源；已完成或失败的同一来源保留终态。
-- `useObservable(factory, dependencies)` 通过 useSyncExternalStore 读取普通来源的当前 Observation，提交后才订阅；退出停止此组件的查询观察。
-- `useResource(factory, dependencies)` 共享资源来源，直接返回 state 与 observations$。来源错误、空完成或停在 pending 后完成都进入资源 error；业务空值仍是 ready 中的值。
+- `useShared(source$)` 直接共享已有 Observable，`useShared(factory, dependencies)` memo 构造出的管道；RxJS 持有查询连接与重放值。最后一个查询观察退出时释放来源，已完成或失败的同一来源在 Program 活跃时保留终态。
+- `useObservable(source$)` 通过 useSyncExternalStore 读取普通值流的当前 Observation，提交后才订阅；构造来源使用 `useObservable(factory, dependencies)`。退出停止此组件的查询观察。
+- `useResource(source)` 直接消费 ResourceSource，或用 `useResource(factory, dependencies)` 选择、构造资源对象或观察流，返回 state 与 observations$。借入对象保留原观察流与 owner；裸观察流沿现有 hook 共享查询。来源错误、空完成或停在 pending 后完成都进入资源 error，业务空值仍是 ready 中的值。
 - `useResourceInstance(implementation, params)` 取得当前 Program 共享的正式资源实例。普通函数通过它 read、invalidate 或订阅，组件通过 `useResource(instance)` 观察，同一实现与解析参数只持有一个实例；直接 `useResource(implementation, params)` 也连接这个实例。
 - `useReaction(implementation, params)` 取得当前 Program 共享的持续反应，`start()` 才开始感知和执行。同实例不能同时 start 两次；组件退出不停止程序拥有的运行，业务显式调用 `run.stop()`。程序失败或退出会停止查询、持续感知及尚未开始的排队工作，已受理业务仍由原 owner 结算。
 - 局部资源使用 `useResourceInstance(() => ({ value, read, invalidations? }), dependencies)`，或同一选项的 observe 分支；局部反应使用 `useReaction(() => ({ event, result, observe, operator, execute }), dependencies)`。factory 只纯构造 createResource/createReaction 已有选项，React dependencies 决定组件内身份；同依赖重渲染保留实例，不同组件分别拥有局部身份。Program 统一持有这些正式实例，组件退出不销毁已交给普通函数的对象或停止显式运行。依赖改变取得新对象，旧实例不重定向；需要跨组件共享时，使用现有 implementation 与 params 合同入口。
 - `combineResources({ a: a$, b: b$ })` 组合具名资源，任一 error 保留为 error，尚有 pending 则不能产生 ready；全部有效才给出具名领域值。
-- `shareResource(observations$, { signal })` 将已有或组合后的 Observation 流提供为稳定只读资源。普通函数、Promise、peek、subscribe、values$、observations$ 与 `useResource(resource)` 共用 RxJS 的一份当前快照，不重复 schema 解析，不新建 Scope。构造不连接；有限来源的最终观察保留至最后消费者退出，之后显式读取再连接。signal 固定该资源的读取寿命，不能通过修改原 options 更换 owner。
+- `shareResource(source, { signal })` 将 ResourceSource 提供为稳定只读资源，原对象无需先拆 observations$。普通函数、Promise、peek、subscribe、values$、observations$ 与 `useResource(resource)` 共用 RxJS 的一份当前快照，不重复 schema 解析，不新建 Scope。构造不连接；有限来源的最终观察保留至最后消费者退出，之后显式读取再连接。signal 固定该资源的读取寿命，不能通过修改原 options 更换 owner。
 - `mapResource(project)` 只派生有效值，失效和错误继续传播；同步投影错误进入同代 error，后续有效代次可以恢复。
 - `switchResource(project, { dependencies: value => [value.id, value.revision] })` 根据当前有效依赖连接另一资源。依赖 tuple 按元素 `Object.is` 比较，连续 ready 的依赖相同就保留原查询；只选择实际影响查询的标量或稳定引用，不需要 JSON 编码或自行比较 pending/error。任何上游 pending/error 都立即退订旧查询并清除依赖身份，同一依赖恢复也会重新连接。selector 抛错变为当前 error，后续有效观察仍可恢复；新查询先进入 pending，迟到结果不能回写。tuple 在观察时被捕获，后续修改原数组不会改变已选身份。省略 dependencies 时，每次 ready 选择新来源。它只切换读取，不重发业务命令；共享仍由既有 owner 和 `useShared` 持有。
-- `useRelation(factory, dependencies)` 提交后建立长期关系，流内未恢复的错误进入程序失败边界。异步组合返回 Promise 或 Observable 进入高阶操作符，不依赖 tap(async ...) 等待。
+- `useRelation(source$)` 提交后持有已有 Observable，构造关系使用 `useRelation(factory, dependencies)`；未恢复的 RxJS error 进入程序失败边界。它保留普通流元素，不把业务值或 error Observation 猜成异常。异步组合返回 Promise 或 Observable 进入高阶操作符，不依赖 tap(async ...) 等待。
 - `useBeforeStep(check, dependencies)` 登记幂等检查，原生步骤实际等待它的返回值。每次登记有独立身份，相同函数被多个组件使用也各自拥有退出寿命。依赖替换或组件退出会中止旧检查收到的 signal 并结束等待；准备过程重新核对当前检查集合，旧 Promise 迟到完成或失败不再作为当前准备结果。原生步骤取消或 Program 失败同样结束等待，仍有效的检查失败则继续传播。检查应使用信号读取真实依赖并等待其工作完成，不在检查中执行业务命令。
 - `workspace.share(source$)` 把明确共享的连接交给工作区；应在订阅阶段连接，而非组件纯求值中启动来源。同一工作区与来源复用一个连接，会话或最后一个消费者退出不停止它；有限来源的终态只在工作区 owner 活跃时保留。owner 退出结束已有观察，之前捕获的流在迟到订阅时直接完成，不重放旧值或旧错误，也不重新连接来源。
 - `workspace.resource(implementation, params)` 与 `workspace.reaction(implementation, params)` 把正式资源、反应绑定到工作区，跨该工作区的多个 Environment 和 Session 复用同一实例；参数仍按原合同解析，不另传名字或 Scope。资源首次观察才读取，反应显式 start。应用通过 application.workspace(id) 在没有 Session 时也能取得这个编程接点；组件 props.workspace 是同一对象。

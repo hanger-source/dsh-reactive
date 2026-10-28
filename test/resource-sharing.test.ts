@@ -106,11 +106,11 @@ test('同一派生资源共享真实RxJS连接，首帧同步退出不启动来�
   const composed = combineResources({ left, right }).pipe(mapResource(value => ({ at: value.left, revision: value.right })));
   let connections = 0, releases = 0;
   const owner = new AbortController(), options = { signal: owner.signal };
-  const resource = shareResource(new Observable<Observation<{ at: Date; revision: number }>>(subscriber => {
+  const resource = shareResource({ observations$: new Observable<Observation<{ at: Date; revision: number }>>(subscriber => {
     connections++;
     const subscription = composed.subscribe(subscriber);
     return () => { releases++; subscription.unsubscribe(); };
-  }), options);
+  }) }, options);
   assert.equal(resource.peek().status, 'pending'); assert.equal(connections, 0);
   assert.equal((await firstValueFrom(resource.observations$.pipe(take(1)))).status, 'pending');
   assert.equal(connections, 0, '同步基线已经结束消费者时不能再启动查询');

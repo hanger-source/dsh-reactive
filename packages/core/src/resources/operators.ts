@@ -1,18 +1,13 @@
-import { catchError, combineLatest, defer, filter, isObservable, map, of, EMPTY, Observable, type OperatorFunction } from 'rxjs';
+import { catchError, combineLatest, defer, filter, map, of, EMPTY, Observable, type OperatorFunction } from 'rxjs';
 import type { Observation } from './observation.ts';
-import type { ResourceReadable } from './reader.ts';
+import { resourceObservations, type ResourceSource } from './source.ts';
 import { normalizeResource, switchLatest } from '../reactivity/observable.ts';
 
-/** 资源对象与其观察流表达同一个来源；组合不取得它的业务或生命周期所有权。 */
-export type ResourceSource<T> = ResourceReadable<T> | Observable<Observation<T>>;
 export type ResourceSources = Readonly<Record<string, ResourceSource<unknown>>>;
 export type ResourceValues<S extends ResourceSources> = {
   readonly [K in keyof S]: S[K] extends ResourceSource<infer T> ? T : never;
 };
 
-function observations<T>(source: ResourceSource<T>): Observable<Observation<T>> {
-  return isObservable(source) ? source : source.observations$;
-}
 export interface ResourceSwitchOptions<T> {
   /** 只有连续 ready 的这组依赖相同时才保留当前查询；元素按 Object.is 比较。 */
   readonly dependencies?: (value: T) => readonly unknown[];
@@ -60,7 +55,7 @@ export function switchResource<T, U>(project: (value: T) => ResourceSource<U>,
     return new Observable<Observation<U>>(subscriber => upstream$.pipe(
       switchLatest((upstream): Observable<Observation<U>> => {
         if (upstream.status !== 'ready') return EMPTY;
-        return defer(() => normalizeResource(observations(project(upstream.value)))).pipe(
+        return defer(() => normalizeResource(resourceObservations(project(upstream.value)))).pipe(
           map(observation => Object.freeze({ ...observation, generation: ++generation })),
           catchError((error: unknown) => of(Object.freeze({ status: 'error' as const, generation: ++generation, error }))),
         );
@@ -80,7 +75,7 @@ export function switchResource<T, U>(project: (value: T) => ResourceSource<U>,
 export function combineResources<const S extends ResourceSources>(sources: S): Observable<Observation<ResourceValues<S>>> {
   const entries = Object.entries<ResourceSource<unknown>>(sources);
   if (!entries.length) throw new Error('REACTIVE_RESOURCE_SOURCES_REQUIRED');
-  const normalized = entries.map(([, source]) => normalizeResource(observations(source)));
+  const normalized = entries.map(([, source]) => normalizeResource(resourceObservations(source)));
   return defer(() => {
     let generation = 0;
     return combineLatest(normalized).pipe(map((observations): Observation<ResourceValues<S>> => {

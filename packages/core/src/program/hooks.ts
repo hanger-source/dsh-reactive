@@ -7,7 +7,7 @@ import { bindOperation, type BoundOperation, type OperationAccessContext, type O
 import { Scope } from '../reactivity/scope.ts';
 import { type Observation } from '../resources/observation.ts';
 import { bindResource, type ResourceInstance } from '../resources/binding.ts';
-import type { ResourceReadable } from '../resources/reader.ts';
+import { resourceObservations, type ResourceSource } from '../resources/source.ts';
 import { isResourceImplementation, type ResourceImplementation } from '../resources/implementation.ts';
 import type { ResourceContract, ResourceParameters, ResourceData } from '../resources/definition.ts';
 import { createResource, type LocalResource, type LocalResourceOptions } from '../resources/local.ts';
@@ -118,10 +118,11 @@ export function useOperation<D extends OperationContract>(operationOwner: Operat
   }, [owner, operationOwner, ...dependencies]);
 }
 
-function useSource<T>(factory: () => Observable<T>, dependencies: DependencyList): Observable<T> {
-  const source$ = useMemo(factory, dependencies);
-  if (!isObservable(source$)) throw new Error('REACTIVE_HOOK_OBSERVABLE_REQUIRED');
-  return source$;
+function useSource<T>(source: T | (() => T), dependencies?: DependencyList): T {
+  const factory = typeof source === 'function';
+  if (factory && !Array.isArray(dependencies)) throw new Error('REACTIVE_HOOK_DEPENDENCIES_REQUIRED');
+  return useMemo(() => factory ? (source as () => T)() : source as T,
+    factory ? dependencies! : [source]);
 }
 
 /** hook只借管查询连接与终止缓存；RxJS持有唯一重放值，Program退出后不能重新连接。 */
@@ -134,26 +135,34 @@ function shareQuery<T>(owner: ProgramHookOwner, source$: Observable<T>): Observa
 }
 
 /**
- * factory 纯构造 Observable，不订阅、不启动业务。deps 决定 source identity。
+ * 直接借用 Observable 的对象身份；factory 纯构造来源，由显式 deps 决定身份。
+ * 构造不订阅、不启动业务。
  * 每个已提交观察持有自己的查询连接；退出只停止查询，不取消已受理 Action。
  * pending、空完成及错误均保留为现有 Observation，不冒充空业务结果。
  */
-export function useObservable<T>(factory: () => Observable<T>, dependencies: DependencyList): Observation<T> {
+export function useObservable<T>(source$: Observable<T>): Observation<T>;
+export function useObservable<T>(factory: () => Observable<T>, dependencies: DependencyList): Observation<T>;
+export function useObservable<T>(source: Observable<T> | (() => Observable<T>), dependencies?: DependencyList): Observation<T> {
   const owner = useOwner();
-  const source$ = useSource(factory, dependencies);
+  const source$ = useSource(source, dependencies);
+  if (!isObservable(source$)) throw new Error('REACTIVE_HOOK_OBSERVABLE_REQUIRED');
   const store = useMemo(() => observableStore(owner.scope, owner.signal, source$), [owner, source$]);
   return useSyncExternalStore(store.subscribe, store.getSnapshot);
 }
 
 /**
  * 同一查询同时供 Context 与 Expose 使用时显式共享此标准 Observable。
+ * 已有来源按对象身份共享；现场构造来源使用 factory 与显式 deps。
  * 最后一个查询观察退出后断开来源；完成与错误仅在Program活跃时按source identity保留。
  * Program退出完成既有观察并清空终止缓存；迟到订阅不交付旧值、不重新连接。
  * 长期业务执行应由 Action 或明确的业务/工作区 owner 持有。
  */
-export function useShared<T>(factory: () => Observable<T>, dependencies: DependencyList): Observable<T> {
+export function useShared<T>(source$: Observable<T>): Observable<T>;
+export function useShared<T>(factory: () => Observable<T>, dependencies: DependencyList): Observable<T>;
+export function useShared<T>(source: Observable<T> | (() => Observable<T>), dependencies?: DependencyList): Observable<T> {
   const owner = useOwner();
-  const source$ = useSource(factory, dependencies);
+  const source$ = useSource(source, dependencies);
+  if (!isObservable(source$)) throw new Error('REACTIVE_HOOK_OBSERVABLE_REQUIRED');
   return useMemo(() => shareQuery(owner, source$), [owner, source$]);
 }
 
@@ -203,31 +212,37 @@ export function useReaction(source: ReactionImplementation | (() => LocalReactio
 }
 
 /**
- * factory 纯构造已有资源观察流；deps 决定来源身份，订阅随已提交组件的查询连接存在。
+ * 直接来源按对象身份，factory 纯构造或选择来源，由显式 deps 决定身份。
+ * 资源对象借用原 observations$ 及其 owner；观察流的查询连接与共享归当前 Program。
+ * 订阅随已提交组件的查询连接存在，构造不读取。
  * 原资源状态直接供 Context 和资源 View 共享，不嵌套 Observation，也不丢弃失效事件。
  * 来源终止错误与未就绪完成进入同一条 error 观察；不隐式重试。
  */
-export function useResource<T>(resource: ResourceReadable<T>): ObservedResource<T>;
-export function useResource<T>(factory: () => Observable<Observation<T>>, dependencies: DependencyList): ObservedResource<T>;
+export function useResource<T>(source: ResourceSource<T>): ObservedResource<T>;
+export function useResource<T>(factory: () => ResourceSource<T>, dependencies: DependencyList): ObservedResource<T>;
 export function useResource<D extends ResourceContract>(implementation: ResourceImplementation<D>, params: ResourceParameters<NoInfer<D>>): ObservedResource<ResourceData<D>>;
-export function useResource(source: ResourceReadable<unknown> | ResourceImplementation | (() => Observable<Observation<unknown>>),
-  paramsOrDependencies: unknown = []): ObservedResource<unknown> {
+export function useResource(source: ResourceSource<unknown> | ResourceImplementation | (() => ResourceSource<unknown>),
+  paramsOrDependencies?: unknown): ObservedResource<unknown> {
   const owner = useOwner();
-  const current = isResourceImplementation(source)
+  const selected = isResourceImplementation(source)
     ? bindResource(source, { scope: owner.reactivityScope }).instance(paramsOrDependencies) : source;
-  const original$ = useSource(typeof current === 'function' ? current : () => current.observations$,
-    typeof current === 'function' ? paramsOrDependencies as DependencyList : [current]);
-  const observations$ = useMemo(() => typeof current === 'function'
-    ? shareQuery(owner, normalizeResource(original$)) : original$, [owner, original$, typeof current]);
-  const observed = useObservable(() => observations$, [observations$]);
+  const current = useSource<ResourceSource<unknown>>(selected,
+    typeof selected === 'function' ? paramsOrDependencies as DependencyList : undefined);
+  const original$ = resourceObservations(current), stream = isObservable(current);
+  const observations$ = useMemo(() => stream
+    ? shareQuery(owner, normalizeResource(original$)) : original$, [owner, original$, stream]);
+  const observed = useObservable(observations$);
   const state = observed.status === 'ready' ? observed.value : observed;
   return useMemo(() => Object.freeze({ state, observations$ }), [state, observations$]);
 }
 
-/** 提交后建立长期 RxJS 关系；未在流内恢复的错误使程序 owner 失败。 */
-export function useRelation<T>(factory: () => Observable<T>, dependencies: DependencyList): void {
+/** 直接借用已有流或以 factory/deps 构造来源；提交后建立关系，未恢复错误使程序 owner 失败。 */
+export function useRelation<T>(source$: Observable<T>): void;
+export function useRelation<T>(factory: () => Observable<T>, dependencies: DependencyList): void;
+export function useRelation<T>(source: Observable<T> | (() => Observable<T>), dependencies?: DependencyList): void {
   const owner = useOwner();
-  const source$ = useSource(factory, dependencies);
+  const source$ = useSource(source, dependencies);
+  if (!isObservable(source$)) throw new Error('REACTIVE_HOOK_OBSERVABLE_REQUIRED');
   useEffect(() => {
     const scope = owner.scope.child();
     const subscriber = new Subscriber<T>({ next() {}, complete() {},

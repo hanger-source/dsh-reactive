@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { isBoundAction, type ActionContract, type ActionReference, type BoundAction } from '../actions/contract.ts';
 import { isOperationBinding, type OperationContract, type OperationBindingReference, type BoundOperation } from '../operations/contract.ts';
 import type { Json } from '../conversations/protocol.ts';
-import type { Observation } from '../resources/observation.ts';
+import { resourceObservations, type ResourceSource } from '../resources/source.ts';
 import { actionManifestSlot, toolActionBindingSchema } from './presentation.ts';
 
 export type ViewMode = 'value' | 'resource';
@@ -16,7 +16,7 @@ export type ViewValue<V extends ViewDefinition> = z.output<V['schema']>;
 export type ViewWire<V extends ViewDefinition> = z.input<V['schema']> & Json;
 /** 资源来源携带当前有效性；普通值流的 emission 直接代表领域值。 */
 export type ViewSource<V extends ViewDefinition> = V extends { readonly mode: 'resource' }
-  ? Observable<Observation<ViewValue<V>>> : Observable<ViewValue<V>>;
+  ? ResourceSource<ViewValue<V>> : Observable<ViewValue<V>>;
 type ViewDefinitions = Readonly<Record<string, ViewDefinition>>;
 type ActionDefinitions = Readonly<Record<string, ActionContract>>;
 type OperationDefinitions = Readonly<Record<string, OperationContract>>;
@@ -52,7 +52,7 @@ export type PartialSurfaceBindings<S extends Surface> = {
 };
 /** 异构声明帧只携带来源和合同身份，不声称保留可调用的泛型输入。 */
 export interface SurfaceBindingReferences {
-  readonly views?: Readonly<Record<string, Observable<unknown>>>;
+  readonly views?: Readonly<Record<string, ResourceSource<unknown> | Observable<unknown>>>;
   readonly actions?: Readonly<Record<string, ActionReference>>;
   readonly operations?: Readonly<Record<string, OperationBindingReference>>;
 }
@@ -218,8 +218,11 @@ export function assertSurfaceBindings(surface: Surface, value: unknown): asserts
   if (value.views !== undefined) {
     if (!isRecord(value.views)) throw new Error('REACTIVE_SURFACE_VIEWS_INVALID');
     for (const key of Reflect.ownKeys(value.views)) {
-      if (typeof key !== 'string' || !surfaceSlotDefinition(surface, 'views', key)) throw new Error('REACTIVE_SURFACE_VIEW_UNKNOWN');
-      if (!isObservable(value.views[key])) throw new Error('REACTIVE_SURFACE_VIEW_OBSERVABLE_REQUIRED');
+      if (typeof key !== 'string') throw new Error('REACTIVE_SURFACE_VIEW_UNKNOWN');
+      const definition = surfaceSlotDefinition(surface, 'views', key);
+      if (!definition) throw new Error('REACTIVE_SURFACE_VIEW_UNKNOWN');
+      if (definition.mode === 'resource') resourceObservations(value.views[key] as ResourceSource<unknown>);
+      else if (!isObservable(value.views[key])) throw new Error('REACTIVE_SURFACE_VIEW_OBSERVABLE_REQUIRED');
     }
   }
   if (value.actions !== undefined) {

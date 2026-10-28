@@ -1,5 +1,5 @@
 import type { ActionInput, CancellationOptions, ProgramContract, ProgramSessionClient, HumanProgramSessionClient, Surface, SurfaceClient, SurfaceMount, ViewValue } from '@hanger-source/dsh-reactive';
-import { combineResources, composeSurface, defineProgram, defineSurface, resourceView, selectSurface, z } from '@hanger-source/dsh-reactive';
+import { combineResources, composeSurface, defineProgram, defineSurface, resourceView, selectSurface, shareResource, z } from '@hanger-source/dsh-reactive';
 
 export function sessionControls<P extends ProgramContract>(session: HumanProgramSessionClient<P>, signal: AbortSignal) {
   return { pause: () => session.pause({ signal }), cancel: () => session.cancel({ signal }),
@@ -30,6 +30,10 @@ export function observePublishedCapabilities<P extends ProgramContract, K extend
 export function sessionResources<P extends ProgramContract>(session: ProgramSessionClient<P>) {
   return { surface: session.surface, progress: session.progress, human: session.human,
     request: (id: string) => session.request(id) };
+}
+
+export function sharedSessionFacts<P extends ProgramContract>(session: ProgramSessionClient<P>, signal: AbortSignal) {
+  return shareResource(combineResources({ progress: session.progress, human: session.human }), { signal });
 }
 
 export async function readSessionView<P extends ProgramContract, K extends keyof P['surface']['views'] & string>(

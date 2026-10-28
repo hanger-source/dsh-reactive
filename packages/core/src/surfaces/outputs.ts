@@ -1,4 +1,4 @@
-import { EmptyError, Subscriber, map, type Observable } from 'rxjs';
+import { EmptyError, Subscriber, isObservable, map, type Observable } from 'rxjs';
 import type { ActionReference } from '../actions/contract.ts';
 import type { OperationBindingReference } from '../operations/contract.ts';
 import type { Json } from '../conversations/protocol.ts';
@@ -6,8 +6,9 @@ import { actionManifestSlot, toolActionBindingSchema, type ToolActionBinding } f
 import { ResourceValue } from '../resources/value.ts';
 import { Scope, batch, type Value } from '../reactivity/scope.ts';
 import { type Observation } from '../resources/observation.ts';
+import { resourceObservations, type ResourceSource } from '../resources/source.ts';
 import type { ProgramFrame } from '../program/frame.ts';
-import { assertSurfaceBindings, encodeView, surfaceSlotInstances, isSurfaceCollectionKeysSlot, surfaceCollectionKeysSlot, surfaceSlotDefinition, type Surface, type ViewDefinition, type ViewValue, type ViewWire } from './contract.ts';
+import { assertSurfaceBindings, encodeView, surfaceSlotInstances, isSurfaceCollectionKeysSlot, surfaceCollectionKeysSlot, surfaceSlotDefinition, type Surface, type SurfaceBindingReferences, type ViewDefinition, type ViewValue, type ViewWire } from './contract.ts';
 import { moduleRootSurface, moduleCollectionMemberships } from './composition.ts';
 
 export type ProgramViews<S extends Surface> = {
@@ -42,7 +43,7 @@ export interface ProgramOutputs<S extends Surface> {
 interface ViewSlot {
   readonly domain: ResourceValue<unknown>;
   readonly wire: ResourceValue<Json>;
-  replace(source: Observable<unknown> | undefined, missing?: unknown): void;
+  replace(source: ResourceSource<unknown> | Observable<unknown> | undefined, missing?: unknown): void;
   fail(error: unknown): void;
 }
 
@@ -90,13 +91,22 @@ function createSlot(scope: Scope, definition: ViewDefinition): ViewSlot {
     domain: new ResourceValue(scope, domain),
     wire: new ResourceValue(scope, wire),
     replace(next, missing) {
-      if (next === source && missing === unavailable) return;
+      // 公开槽的 mode 已核合同；资源对象与它的原观察流保留同一连接身份。
+      let nextSource: Observable<unknown> | undefined;
+      if (next !== undefined) {
+        if (definition.mode === 'resource') nextSource = resourceObservations(next as ResourceSource<unknown>);
+        else {
+          if (!isObservable(next)) throw new Error('REACTIVE_SURFACE_VIEW_OBSERVABLE_REQUIRED');
+          nextSource = next;
+        }
+      }
+      if (nextSource === source && missing === unavailable) return;
       const previous = connection;
-      connection = undefined; source = next; unavailable = missing;
+      connection = undefined; source = nextSource; unavailable = missing;
       pending();
       previous?.dispose();
       if (missing !== undefined) { error(missing); return; }
-      if (!next) return;
+      if (!nextSource) return;
       const owner = scope.child();
       connection = owner;
       let status: Observation<unknown>['status'] | undefined;
@@ -124,7 +134,7 @@ function createSlot(scope: Scope, definition: ViewDefinition): ViewSlot {
         },
       });
       const release = owner.own(() => subscription.unsubscribe());
-      next.pipe(map((value): Observation<EncodedView> => {
+      nextSource.pipe(map((value): Observation<EncodedView> => {
         const observation: Observation<unknown> = definition.mode === 'resource' ? resourceObservation(value)
           : { status: 'ready', generation: 0, value, observedAt: Date.now() };
         if (observation.status !== 'ready') return observation;
@@ -154,7 +164,7 @@ export function createProgramOutputs<const S extends Surface>(scope: Scope, surf
   const missing = new Map<string, Error>();
   const actionManifest = scope.state<readonly ToolActionBinding[]>(Object.freeze([]));
   let mounted: ReadonlyMap<string, ReadonlySet<string>> = new Map();
-  let currentSources: Readonly<Record<string, Observable<unknown>>> = {};
+  let currentSources: NonNullable<SurfaceBindingReferences['views']> = {};
   const instanceMissing = (name: string): Error | undefined => {
     if (surfaceSlotInstances(name).every(instance => mounted.get(instance.directory)?.has(instance.key))) return undefined;
     let error = missing.get(name);

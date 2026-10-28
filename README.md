@@ -45,7 +45,8 @@ Jobs 与 MCP 的 `toolNames`、MCP 的 `resourceToolNames` 是实际注册工具
 - `composeSurface` 从领域模块的局部合同生成类型化实例路径、根 Surface 和挂载点；`Module` 统一隔离 Context、Offer、Follow 名称并映射局部 Expose。`selectSurface` 按合同选择公开能力，模块不需要接收 names 或应用自定义 Outlet。
 - `collectionSurface` 声明动态模块集合。根合同保持稳定，`mount.instance(key)` 挂载完整业务模块，嵌套 Module 自动映射；本地及远程 `conversation.collection(name).instance(key)` 用同一局部合同读、调用和观察，`instances$` 提供实际成员。
 - `Context`、`Offer`、`Follow`、`Skill`、`HumanInput`、`Expose` 描述当前现场、业务能力、操作参与、方法、人工参与与公开出口。组件更新提交完整声明帧，保持已有绑定与调用的身份。
-- `useObservable` 读取标准值流，`useResource` 直接连接带失效状态的资源；`resourceView` 将同一资源状态交给 SDK 当前读取和观察。`useShared` 复用 RxJS 的查询共享；`useRelation` 建立长期关系；`useBeforeStep` 表达原生步骤前必须完成的检查。
+- `useObservable` 读取标准值流，`useShared` 共享查询，`useRelation` 建立长期关系；已有 Observable 可直接传入，构造管道时使用 factory 与依赖。`useBeforeStep` 表达原生步骤前必须完成的检查。
+- `ResourceSource` 是 Observation 流或提供同一 `observations$` 的对象。资源实例、SDK 资源、`useResource` 的返回对象与派生流可直接交给 `useResource`、`shareResource`、`Context source` 和 `resourceView` 的 Expose 槽，不机械拆流或另建 owner。普通值流仍由 `view` 与 `useObservable` 消费，不按业务字段猜资源状态。
 - `combineResources` 组合多路资源，任一依赖失效立即撤下派生 ready；`mapResource` 只投影当前有效事实，保留 pending/error。业务关系使用标准 RxJS 管道，并共同影响模型上下文、行为条件和公开观察。
 - `switchResource` 让下游查询跟随当前依赖，失效时退订旧读取；`Context required={false}` 显式撤下未就绪的模块现场，其他有效模块可以继续参与，公开资源仍保留真实失效或错误。
 - `switchResource(query, { dependencies })` 直接选择影响查询的业务字段；连续有效依赖相同时保留查询，失效后即使依赖相同也重新读取。业务无需编码 JSON 或编写 Observation 比较器。

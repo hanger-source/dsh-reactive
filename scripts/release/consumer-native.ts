@@ -24,20 +24,18 @@ export const task = (team: NativeSessionTeam, id: TeamTaskId): Promise<NativeTea
 export const change = (task: NativeTeamTask, request: NativeTeamTaskUpdate) => task.update(request);
 export const filePage = (files: NativeSessionFiles, path: string): NativeFileResource<WorkspaceFileText> => files.text(path);
 export const skillMaterial = (skills: NativeSessionSkills, files: NativeSessionFiles, name: string, path: string) =>
-  combineResources({ catalog: skills.catalog.observations$, definition: skills.definition(name).observations$,
-    file: files.text(path).observations$ });
+  combineResources({ catalog: skills.catalog, definition: skills.definition(name), file: files.text(path) });
 export const nativeCatalogs = (tools: NativeSessionTools, skills: NativeSessionSkills) =>
-  combineResources({ tools: tools.catalog.observations$, skills: skills.catalog.observations$ });
+  combineResources({ tools: tools.catalog, skills: skills.catalog });
 export const nativeCollaboration = (subagents: NativeSessionSubagents, team: NativeSessionTeam) =>
   combineResources({ children: subagents.catalog, team: team.state });
 export const nativeDescendants = (subagents: NativeSessionSubagents, signal: AbortSignal) => subagents.readDescendants({ signal });
 export const toolPolicy = (tools: NativeSessionTools, approval: NativeSessionApproval) =>
-  combineResources({ tools: tools.catalog.observations$, policy: approval.policy.observations$ });
+  combineResources({ tools: tools.catalog, policy: approval.policy });
 export const declaredNativeTools = (jobs: NativeJobs, mcp: NativeMcp) =>
-  combineResources({ jobs: jobs.toolNames.observations$, mcp: mcp.toolNames.observations$,
-    resources: mcp.resourceToolNames.observations$ });
+  combineResources({ jobs: jobs.toolNames, mcp: mcp.toolNames, resources: mcp.resourceToolNames });
 export const readMcpTools = (mcp: NativeMcp, signal: AbortSignal): Promise<readonly string[]> => mcp.toolNames.read(signal);
 export const nativeState = (jobs: NativeSessionJobs, schedule: NativeSessionSchedule, team: NativeSessionTeam) =>
-  combineResources({ jobs: jobs.state.observations$, schedule: schedule.state.observations$, team: team.state.observations$ });
+  combineResources({ jobs: jobs.state, schedule: schedule.state, team: team.state });
 export const taskState = (job: NativeJob, scheduled: NativeScheduleTask, task: NativeTeamTask) =>
-  combineResources({ job: job.state.observations$, output: job.output.observations$, scheduled: scheduled.state.observations$, task: task.state.observations$ });
+  combineResources({ job: job.state, output: job.output, scheduled: scheduled.state, task: task.state });

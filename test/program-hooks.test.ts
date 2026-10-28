@@ -40,6 +40,8 @@ test('Program fatal 在同次广播中停止其他关系与查询，已受理的
   let directObservation = new Subscription();
   const failure = new Error('BUSINESS_RELATION_FAILED');
   const delivered: number[] = [], queryValues: number[] = [], signals: AbortSignal[] = [];
+  const failingEvents = events.pipe(map(value => { if (value === 1) throw failure; return value; }));
+  const deliveredEvents = events.pipe(tap(value => delivered.push(value)));
   const save = defineAction({ name: 'save_record', description: '保存已受理的业务资料',
     scope: z.null(), input: z.null(), output: z.string() });
   const saveOwner = implementAction(save, { async execute(_input, call) {
@@ -51,9 +53,9 @@ test('Program fatal 在同次广播中停止其他关系与查询，已受理的
     sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });
   const bindings: BoundAction<typeof save, true>[] = [];
   const implementation = implementProgram(definition, { Component() {
-    const changed = useObservable(() => trigger, []);
-    useRelation(() => events.pipe(map(value => { if (value === 1) throw failure; return value; })), []);
-    useRelation(() => events.pipe(tap(value => delivered.push(value))), []);
+    const changed = useObservable(trigger);
+    useRelation(failingEvents);
+    useRelation(deliveredEvents);
     const current = useResource<number>(() => observeResource<string, number>({ key$: of('merchant-a'),
       read(_key, signal) { signals.push(signal); return read.promise; },
     }).pipe(tap<Observation<number>>(value => { if (value.status === 'ready') queryValues.push(value.value); })), []);

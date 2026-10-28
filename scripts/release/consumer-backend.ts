@@ -1,8 +1,9 @@
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction, combineResources, mapResource, switchResource, abortable,
-  resourceView, shareResource, type Scope, type Observation, type OperationContract, type OperationHandle,
+  resourceView, shareResource, type Scope, type ResourceSource, type OperationContract, type OperationHandle,
   type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, z } from '@hanger-source/dsh-reactive';
 import { concatMap, firstValueFrom, type Observable } from 'rxjs';
-import { implementProgram, useAction, useResource, useResourceInstance, useReaction, useBeforeStep } from '@hanger-source/dsh-reactive/program';
+import { Context, Expose, implementProgram, useAction, useResource, useResourceInstance, useReaction, useBeforeStep,
+  useObservable, useShared, useRelation } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, mountApplication, type ApplicationAssembly, type ConversationHandle, type ServiceConversation, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-reactive-dsh/tools';
@@ -38,16 +39,24 @@ export const readWithCancellation = <T>(read: (signal: AbortSignal) => T | Promi
 
 const current = defineResource({ name: 'consumer-current', params: z.null(), value: z.object({ revision: z.number() }) });
 const changes = defineReaction({ name: 'consumer-changes', params: z.null(), event: z.number(), result: z.string() });
+const backendFacts = defineSurface({ views: { current: resourceView(z.string()) }, actions: {} });
 export const workspaceBindings = (workspace: Workspace, resource: ResourceImplementation<typeof current>, reaction: ReactionImplementation<typeof changes>) =>
   ({ resource: workspace.resource(resource, null), reaction: workspace.reaction(reaction, null) });
 export const localWorkspace = (runtime: Awaited<ReturnType<typeof backend>>, id: string): Workspace => runtime.application.workspace(id);
 export function useBackendBindings(resource: ResourceImplementation<typeof current>, reaction: ReactionImplementation<typeof changes>) {
   const instance = useResourceInstance(resource, null);
-  const composed = combineResources({ current: instance, same: instance.observations$ }).pipe(
+  const composed = useShared(() => combineResources({ current: instance, same: instance.observations$ }).pipe(
     mapResource(value => value.current.revision + value.same.revision), switchResource(() => instance),
-    mapResource(value => value.revision.toFixed()));
-  return { resource: instance, composed, observed: useResource(instance), reaction: useReaction(reaction, null) };
+    mapResource(value => value.revision.toFixed())), [instance]);
+  const observed = useResource(composed);
+  return { resource: instance, composed, observed, borrowed: useResource(observed), selected: useResource(() => instance, [instance]),
+    reaction: useReaction(reaction, null), declarations: [
+      Context({ name: 'current', source: observed, render: value => value }),
+      Expose({ surface: backendFacts, value: { views: { current: observed } } }),
+    ] };
 }
+export const useBackendValues = (source: Observable<number>) => useObservable(useShared(source));
+export function useBackendRelation(relation: Observable<void>) { useRelation(relation); }
 export function useLocalBackend(target: string, changes$: Observable<number>, save: (target: string, value: number) => Promise<number>) {
   const resource = useResourceInstance(() => ({ value: z.string(), read: () => target }), [target]);
   const action = useAction(() => ({ name: 'local_save', description: '保存明确目标',
@@ -92,7 +101,7 @@ export function usePublicView(session: ConversationHandle<typeof contract> | Rem
   const resource: ResourceReadable<number> = session.viewResource('revision');
   return useResource(resource);
 }
-export const publicResource = (scope: Scope, source: Observable<Observation<number>>) => shareResource(source, { signal: scope.signal });
+export const publicResource = (scope: Scope, source: ResourceSource<number>) => shareResource(source, { signal: scope.signal });
 export function useOperationState<D extends OperationContract>(operation: OperationHandle<D>) { return useResource(operation.state); }
 export const useHumanState = (conversation: ProgramSession<typeof contract>) => useResource(conversation.human);
 export function useRuntimeSkills(skills: NativeSessionSkills, name: string) {

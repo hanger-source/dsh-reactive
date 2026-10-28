@@ -6,14 +6,17 @@ import type { Json } from '../conversations/protocol.ts';
 import type { HumanInputPolicy } from '../participation/contract.ts';
 import type { NativeToolAdmission } from '../tools/admission.ts';
 import type { Observation } from '../resources/observation.ts';
+import type { ResourceSource } from '../resources/source.ts';
 import { declaration } from './renderer.ts';
+import { useResource } from './hooks.ts';
 import { assertSurfaceBindings, type ExactSurfaceBindings, type PartialSurfaceBindings, type Surface, type SurfaceBindingReferences } from '../surfaces/contract.ts';
 import { isModuleDeclaration, moduleMountContext, type ModuleDeclaration } from './module.ts';
 import { moduleContribution, moduleName } from '../surfaces/composition.ts';
 
 export type ContextProps<T = unknown> = { readonly name: string; readonly required?: boolean } & (
-  | { readonly value: Json; readonly observation?: never; readonly render?: never }
-  | { readonly value?: never; readonly observation: Observation<T>; readonly render: (value: T) => Json }
+  | { readonly value: Json; readonly observation?: never; readonly source?: never; readonly render?: never }
+  | { readonly value?: never; readonly observation: Observation<T>; readonly source?: never; readonly render: (value: T) => Json }
+  | { readonly value?: never; readonly observation?: never; readonly source: ResourceSource<T>; readonly render: (value: T) => Json }
 );
 export type ContextDeclaration =
   | { readonly kind: 'context'; readonly name: string; readonly value: Json; readonly observation?: never }
@@ -101,6 +104,9 @@ function name(value: string, code: string) {
 export function Context<T>(props: ContextProps<T>): ReactElement | null {
   name(props.name, 'REACTIVE_CONTEXT_NAME_REQUIRED');
   if (props.required !== undefined && typeof props.required !== 'boolean') throw new Error('REACTIVE_CONTEXT_REQUIRED_INVALID');
+  if (props.source !== undefined) return createElement(ResourceContext<T>, {
+    name: props.name, required: props.required, source: props.source, render: props.render,
+  });
   if (props.observation === undefined) return leaf({ kind: 'context', name: props.name, value: json.parse(props.value) });
   const observed = props.observation;
   if (!Number.isSafeInteger(observed.generation) || observed.generation < 0) throw new Error('REACTIVE_CONTEXT_GENERATION_INVALID');
@@ -119,6 +125,13 @@ export function Context<T>(props: ContextProps<T>): ReactElement | null {
       value: json.parse(props.render(observed.value)) };
   } else throw new Error('REACTIVE_CONTEXT_OBSERVATION_INVALID');
   return leaf({ kind: 'context', name: props.name, observation: Object.freeze(observation) });
+}
+
+/** 来源观察属于真实组件；工厂函数的不同声明分支不改变调用者的hook次序。 */
+function ResourceContext<T>(props: { readonly name: string; readonly required?: boolean;
+  readonly source: ResourceSource<T>; readonly render: (value: T) => Json }): ReactElement | null {
+  const observed = useResource(props.source);
+  return Context({ name: props.name, required: props.required, observation: observed.state, render: props.render });
 }
 
 /** 描述已有绑定的可用性，不注册工具、不受理调用。 */

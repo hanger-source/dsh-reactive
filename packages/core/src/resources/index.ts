@@ -12,6 +12,7 @@ export type { Observation } from './observation.ts';
 export { observeResource } from './query.ts';
 export type { ResourceObservationOptions } from './query.ts';
 export { combineResources, mapResource, switchResource } from './operators.ts';
-export type { ResourceSource, ResourceSources, ResourceValues, ResourceSwitchOptions } from './operators.ts';
+export type { ResourceSource } from './source.ts';
+export type { ResourceSources, ResourceValues, ResourceSwitchOptions } from './operators.ts';
 export { createResource } from './local.ts';
 export type { LocalResourceOptions, LocalResource } from './local.ts';

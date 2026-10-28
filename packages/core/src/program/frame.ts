@@ -1,4 +1,3 @@
-import type { Observable } from 'rxjs';
 import type { ActionReference } from '../actions/contract.ts';
 import type { OperationBindingReference } from '../operations/contract.ts';
 import type { ContextDeclaration, OfferDeclaration, FollowDeclaration, NativeToolDeclaration, ProgramDeclaration, SkillDeclaration, HumanInputDeclaration } from './declarations.ts';
@@ -23,7 +22,7 @@ export interface ProgramFrame {
 
 type MutableContribution = {
   surface: Surface;
-  views: Record<string, Observable<unknown>>;
+  views: Record<string, NonNullable<SurfaceBindingReferences['views']>[string]>;
   actions: Record<string, ActionReference>;
   operations: Record<string, OperationBindingReference>;
 };

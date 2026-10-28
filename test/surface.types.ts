@@ -35,6 +35,7 @@ Expose({ surface, value: { views: { loadedAt: loadedAt$ } } });
 Offer({ name: 'prepare_merchant', action: prepared, enabled: true });
 Context({ name: 'merchant', value: { merchantId: 'merchant-a' } });
 Context({ name: 'time', observation: { status: 'ready', generation: 1, value: new Date(), observedAt: 0 }, render: value => value.toISOString() });
+Context({ name: 'resource-time', source: { observations$: loadedAt$ }, render: value => value.toISOString() });
 Skill({ name: 'merchant-delivery' });
 Skill({ directory: '/application/methods' });
 
@@ -45,7 +46,7 @@ const resourceWire: string = encodeView(loadedAt, new Date());
 const resourceDomain: Date = decodeView(loadedAt, resourceWire);
 void resourceDomain;
 function ResourceConsumer() {
-  const resource = useResource(() => loadedAt$, [loadedAt$]);
+  const resource = useResource(loadedAt$);
   const state: Observation<Date> = resource.state;
   if (state.status === 'ready') {
     const date: Date = state.value;
@@ -54,7 +55,7 @@ function ResourceConsumer() {
     const nested: Observation<Date> = state.value;
     void nested;
   }
-  Expose({ surface, value: { views: { loadedAt: resource.observations$ } } });
+  Expose({ surface, value: { views: { loadedAt: resource } } });
   // @ts-expect-error useResource 的来源必须明确携带资源有效性。
   useResource(() => of(new Date()), []);
 }

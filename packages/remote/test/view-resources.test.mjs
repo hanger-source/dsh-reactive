@@ -42,7 +42,7 @@ test('同一View资源贯通本地、远程和hooks，动态重挂及真实断�
   const expose = value => h(Expose, { surface: leaf, value: { views: { at: value }, actions: {} } });
   const definition = defineApplication({ name: 'view-resources', admit: async () => {}, environments: [
     defineEnvironment({ id: 'source', instructions: '公开资源不启动模型', program: implementProgram(program, { Component() {
-      const members = useObservable(() => layout, []);
+      const members = useObservable(layout);
       return h(Fragment, null, h(Module, { mount: composed.mounts.main }, expose(main.values)),
         members.status === 'ready' ? members.value.map(key => h(Module, { key, mount: composed.mounts.items.instance(key) }, expose(items.get(key).values))) : null);
     } }) }),
@@ -51,7 +51,7 @@ test('同一View资源贯通本地、远程和hooks，动态重挂及真实断�
       const discovery = useResource(() => combineResources({ members: borrowedDirectory, actions: borrowedManifest })
         .pipe(mapResource(({ members, actions }) => ({ members, actions: actions.length }))), []);
       return h(Expose, { surface: mirrorSurface, value: { views: {
-        at: current.observations$, discovery: discovery.observations$,
+        at: current, discovery,
       }, actions: {} } });
     } }) }),
   ] });

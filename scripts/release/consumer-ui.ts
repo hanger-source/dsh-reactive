@@ -3,7 +3,7 @@ import { bindProgramClient, type RemoteProgramSession, type RemoteServiceProgram
 import { createNativeActionViews, defineNativeActionView, bindNativeSession, retainNativeSession,
   type NativeSession, type NativeActionViewProps } from '@hanger-source/dsh-reactive-native-ui';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
-import { ConsumerModuleProgram, sessionResources, sessionControls, readSessionView, readSelectedRevision, callPublishedAction } from './consumer-session.js';
+import { ConsumerModuleProgram, sessionResources, sharedSessionFacts, sessionControls, readSessionView, readSelectedRevision, callPublishedAction } from './consumer-session.js';
 
 const action = defineAction({ name: 'release_consumer_read', description: '公开 UI 类型消费',
   scope: z.object({ subject: z.string() }).strict(), input: z.null(), output: z.object({ version: z.string() }).strict() });
@@ -24,6 +24,8 @@ export const view = defineNativeActionView(action, (_props: NativeActionViewProp
 export const publicEntries = [createNativeActionViews, bindNativeSession, getDeveloperSkill] as const;
 export const developerSkill = getDeveloperSkill();
 export const publicView = (native: NativeSession<typeof program>, session: Session) => native.resource(session.viewResource('version'));
+export const publicSessionFacts = (native: NativeSession<typeof program>, session: Session, signal: AbortSignal) =>
+  native.resource(sharedSessionFacts(session, signal));
 export function operationState<D extends OperationContract>(native: NativeSession<typeof program>, operation: OperationHandle<D>) {
   return native.resource(operation.state);
 }

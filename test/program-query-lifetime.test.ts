@@ -3,24 +3,31 @@ import { test } from 'node:test';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { useLayoutEffect } from 'react';
-import { EmptyError, Observable, Subject, defer, filter, firstValueFrom, from, lastValueFrom, map, of, timeout } from 'rxjs';
+import { Fragment, createElement, useLayoutEffect } from 'react';
+import { BehaviorSubject, EmptyError, Observable, Subject, defer, filter, firstValueFrom, from, lastValueFrom, map, of, timeout } from 'rxjs';
 import { Scope, ResourceReader, createResource, defineProgram, defineSurface, resourceView, z, type Observation, type WorkspaceContext } from '@hanger-source/dsh-reactive';
 import { Conversation, ProgramInstance, createWorkspaceContext } from '@hanger-source/dsh-reactive/kernel';
-import { Expose, implementProgram, useResource, useShared } from '@hanger-source/dsh-reactive/program';
+import { Context, Expose, implementProgram, useObservable, useResource, useShared } from '@hanger-source/dsh-reactive/program';
 
-test('外部资源有限完成后退出原owner，活跃Program的hook与公开视图撤下旧ready', async () => {
+test('同一外部资源在对象、原流和hook之间切换不重读，原owner退出撤下Context与公开视图', async () => {
   const scope = new Scope(), owner = new AbortController(), reason = new Error('BORROWED_FINITE_RESOURCE_ENDED');
   const workspace = createWorkspaceContext(scope, { id: 'finite-reader', directory: '/workspace' });
   const definition = defineProgram({ input: z.null(), surface: defineSurface({ actions: {}, views: { current: resourceView(z.number()) } }) });
   const frame: Observation<number> = { status: 'ready', generation: 1, value: 42, observedAt: Date.now() };
-  const resource = new ResourceReader({ peek: () => frame, observations$: of(frame) }, { signal: owner.signal });
+  let reads = 0;
+  const selected = new BehaviorSubject(0);
+  const resource = new ResourceReader({ peek: () => frame, observations$: defer(() => { reads++; return of(frame); }) }, { signal: owner.signal });
   const identity = { sessionId: 'finite-reader', workspaceId: workspace.id, environmentId: 'work', directory: workspace.directory, parentSessionId: null };
   const conversation = new Conversation(identity, workspace, definition, { sessionId: identity.sessionId,
     sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });
   const implementation = implementProgram(definition, { Component() {
-    const observed = useResource(resource);
-    return Expose({ surface: definition.surface, value: { views: { current: observed.observations$ }, actions: {} } });
+    const mode = useObservable(selected);
+    const observed = useResource(() => resource, []);
+    const source = mode.status === 'ready' && mode.value === 1 ? resource.observations$
+      : mode.status === 'ready' && mode.value === 2 ? observed : resource;
+    return createElement(Fragment, null,
+      Context({ name: 'current', source: observed, render: value => ({ value }) }),
+      Expose({ surface: definition.surface, value: { views: { current: source }, actions: {} } }));
   } });
   const program = new ProgramInstance(conversation.scope, implementation, conversation, workspace, {
     execution() { throw new Error('RESOURCE_OBSERVATION_MUST_NOT_EXECUTE_ACTION'); },
@@ -28,8 +35,17 @@ test('外部资源有限完成后退出原owner，活跃Program的hook与公开�
   try {
     program.mount();
     assert.equal(await program.outputs.view('current').read(), 42);
+    assert.deepEqual(JSON.parse(await program.contexts.get('current')!.read()), { value: 42 });
+    const initialReads = reads;
+    for (const mode of [1, 2, 0]) {
+      selected.next(mode); program.flush();
+      assert.equal(await program.outputs.view('current').read(), 42);
+      assert.equal(reads, initialReads, '同一原观察流的声明形态变化不能重新执行有限来源');
+    }
     owner.abort(reason);
+    program.flush();
     await assert.rejects(program.outputs.view('current').read(), error => error === reason);
+    await assert.rejects(program.contexts.get('current')!.read(), error => error === reason);
     assert.equal(conversation.scope.disposed, false, '来源退出没有结束借用它的Program');
   } finally { owner.abort(); scope.dispose(); }
 });
@@ -50,18 +66,20 @@ test('复合hook的自建查询共享连接和终止缓存，Program退出不重
     const workspace: WorkspaceContext = createWorkspaceContext(scope, { id: end, directory: root });
     const borrowed = createResource(scope, { value: z.string(), read: () => { reads.borrowed++; return readFile(paths.borrowed, 'utf8'); } });
     const events = new Subject<number>();
+    const labelSource = file('label'), deniedSource = file('denied'), coldSource = file('cold');
+    const settingsSource = observations('settings');
     let starts = 0, stops = 0;
     function useCapability() {
-      const label = useShared(() => file('label'), []);
-      const denied = useShared(() => file('denied'), []);
-      const cold = useShared(() => file('cold'), []);
+      const label = useShared(labelSource);
+      const denied = useShared(deniedSource);
+      const cold = useShared(coldSource);
       const live = useShared(() => new Observable<number>(subscriber => {
         starts++; const subscription = events.subscribe(subscriber);
         return () => { stops++; subscription.unsubscribe(); };
       }), []);
-      const settings = useResource(() => observations('settings'), []);
+      const settings = useResource(settingsSource);
       const missing = useResource(() => observations('missing'), []);
-      const shared = useResource(borrowed);
+      const shared = useResource(() => borrowed, []);
       return { label, denied, cold, live, settings: settings.observations$, missing: missing.observations$, borrowed: shared.observations$ };
     }
     let capability!: ReturnType<typeof useCapability>;
