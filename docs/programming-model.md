@@ -166,7 +166,7 @@ const review = composeSurface({
 
 `useResource` 直接读取已有资源 Observation，并返回同一条标准 observations$。`resourceView(Merchant)` 明确消费资源状态：pending 使当前读取失效，error 保留为读取失败，只有 ready 的领域值才编码。普通 `view(schema)` 消费值事件，不按业务字段猜状态。
 
-跨模块关系直接组合标准流。资源算子保留失效语义，不把旧 ready 留在派生现场：
+跨模块关系直接组合资源对象及标准观察流，两种来源可以混用。`combineResources` 和 `switchResource` 从对象的同一 observations$ 消费，保留解析后的领域值与原 owner，不调用 read/peek 或建立另一份状态。资源算子保留失效语义，不把旧 ready 留在派生现场：
 
 ```ts
 const prerequisites$ = combineResources({

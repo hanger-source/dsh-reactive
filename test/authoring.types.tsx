@@ -2,7 +2,7 @@ import { implementProgram } from '@hanger-source/dsh-reactive/program';
 import { Fragment } from 'react';
 import { concatMap, map, of } from 'rxjs';
 import { Context, Expose, Offer, useAction, useObservable, useResource, useResourceInstance, useReaction } from '@hanger-source/dsh-reactive/program';
-import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, implementResource, defineReaction, implementReaction, observeResource, resourceView, z, type CancellationOptions, type SubmitOptions } from '@hanger-source/dsh-reactive';
+import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, implementResource, defineReaction, implementReaction, observeResource, combineResources, mapResource, switchResource, resourceView, z, type CancellationOptions, type SubmitOptions } from '@hanger-source/dsh-reactive';
 import type { ApplicationHost } from '@hanger-source/dsh-reactive-dsh';
 
 const save = defineAction({
@@ -143,6 +143,20 @@ function useTypedProgramBindings() {
   const values = resource.values$.pipe(map(value => value.toISOString()));
   const observed = useResource(resource);
   if (observed.state.status === 'ready') observed.state.value.toISOString();
+  const combined = combineResources({ date: resource, copy: resource.observations$ }).pipe(mapResource(facts => {
+    facts.date.toISOString();
+    facts.copy.toISOString();
+    // @ts-expect-error 资源对象和观察流都保留解析后的Date，不能退化成any。
+    facts.date.trim();
+    return facts.date;
+  }));
+  const selected = combined.pipe(switchResource(() => resource), mapResource(date => {
+    // @ts-expect-error 切换后的资源同样保留Date领域类型。
+    date.toFixed();
+    return date.toISOString();
+  }));
+  // @ts-expect-error 普通值流不是保留pending/error的资源来源。
+  combineResources({ invalid: resource.values$ });
   // @ts-expect-error 资源入口接受参数 schema 的 input，不接受解析后的 number。
   useResourceInstance(parsedResource, { key: 7 });
   // @ts-expect-error 直接观察实现时同样遵循原参数输入类型。
@@ -154,7 +168,7 @@ function useTypedProgramBindings() {
   const start = () => reaction.start().events$.pipe(map(event => event.event + event.result));
   // @ts-expect-error 反应入口接受原参数，不能因调用参数错误扩大实现的合同。
   useReaction(parsedReaction, { key: 7 });
-  return { resource, reaction, read, values, start };
+  return { resource, reaction, read, values, start, combined, selected };
 }
 void useTypedProgramBindings;
 

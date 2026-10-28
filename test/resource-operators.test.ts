@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { BehaviorSubject, Observable, Subject, lastValueFrom, of } from 'rxjs';
 import type { Observation } from '@hanger-source/dsh-reactive';
 import { observeResource } from '@hanger-source/dsh-reactive';
-import { combineResources, mapResource, switchResource } from '@hanger-source/dsh-reactive';
+import { combineResources, mapResource, shareResource, switchResource } from '@hanger-source/dsh-reactive';
 
 const ready = <T>(value: T, generation: number): Observation<T> => ({ status: 'ready', generation, value, observedAt: Date.now() });
 
@@ -72,8 +72,10 @@ test('持续组合在任一依赖失效时撤销旧资格，读取和投影错�
   const preparation = new BehaviorSubject(ready({ onboardingId: 'a', prepared: true }, 7));
   const knowledge = new BehaviorSubject(ready({ onboardingId: 'a', usable: true }, 7));
   const reception = new BehaviorSubject(ready({ onboardingId: 'a', canEnable: true }, 3));
+  const owner = new AbortController();
   const seen: Observation<{ onboardingId: string; eligible: boolean }>[] = [];
-  const subscription = combineResources({ preparation, knowledge, reception }).pipe(mapResource(facts => {
+  const subscription = combineResources({ preparation: shareResource(preparation, { signal: owner.signal }), knowledge,
+    reception: shareResource(reception, { signal: owner.signal }) }).pipe(mapResource(facts => {
     if (facts.preparation.onboardingId !== facts.knowledge.onboardingId || facts.preparation.onboardingId !== facts.reception.onboardingId)
       throw new Error('BUSINESS_TARGET_CHANGED');
     return { onboardingId: facts.preparation.onboardingId,
@@ -109,9 +111,10 @@ test('持续组合在任一依赖失效时撤销旧资格，读取和投影错�
   knowledge.next(ready({ onboardingId: 'a', usable: true }, 11));
   assert.equal(current().status, 'ready', '一次投影错误不终止后来代次');
   subscription.unsubscribe();
+  owner.abort();
 });
 
-test('组合由各消费者独立连接，退订一个查询不停止另一个查询', () => {
+test('组合按原来源连接：独立流分开订阅，借入资源共享连接且不释放其他读者', () => {
   const changes = new Subject<Observation<number>>();
   let connected = 0, released = 0;
   const source = new Observable<Observation<number>>(subscriber => {
@@ -131,6 +134,16 @@ test('组合由各消费者独立连接，退订一个查询不停止另一个�
   if (firstLast.status === 'ready') assert.equal(firstLast.value.source, 1);
   if (secondLast.status === 'ready') assert.equal(secondLast.value.source, 2);
   b.unsubscribe(); assert.equal(released, 2);
+  const owner = new AbortController();
+  const shared = shareResource(source, { signal: owner.signal });
+  const direct = shared.subscribe(() => {});
+  const combined = combineResources({ source: shared });
+  const one = combined.subscribe(), two = combined.subscribe();
+  assert.equal(connected, 3, '组合沿用资源现有连接，不复制或重新解析来源');
+  one.unsubscribe(); two.unsubscribe();
+  assert.equal(released, 2, '退出派生不释放仍被直接读取者持有的来源');
+  direct(); assert.equal(released, 3);
+  owner.abort();
 
 });
 
@@ -147,16 +160,17 @@ test('依赖失效立即退订真实下游读取，旧结果迟到不回写，�
   const reads: Array<{ key: string; signal: AbortSignal; result: ReturnType<typeof Promise.withResolvers<string>> }> = [];
   const released: string[] = [];
   const seen: Observation<string>[] = [];
+  const owner = new AbortController();
   const resource = upstream.pipe(switchResource(key => {
     if (key === 'invalid') throw new Error('DEPENDENT_SOURCE_INVALID');
-    return new Observable<Observation<string>>(subscriber => {
+    return shareResource(new Observable<Observation<string>>(subscriber => {
       const subscription = observeResource({ key$: of(key), read(current, signal) {
         const result = Promise.withResolvers<string>();
         reads.push({ key: current, signal, result });
         return result.promise;
       } }).subscribe(subscriber);
       return () => { released.push(key); subscription.unsubscribe(); };
-    });
+    }), { signal: owner.signal });
   }));
   const subscription = resource.subscribe(value => seen.push(value));
   const current = () => seen.at(-1)!;
@@ -192,6 +206,7 @@ test('依赖失效立即退订真实下游读取，旧结果迟到不回写，�
   subscription.unsubscribe();
   assert.equal(reads[2]!.signal.aborted, true);
   assert.deepEqual(released, ['old-source', 'current-source', 'next-source']);
+  owner.abort();
   assert.ok(!seen.some(value => value.status === 'ready' && value.value === 'stale-knowledge'));
 });
 

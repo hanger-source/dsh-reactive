@@ -1,4 +1,4 @@
-import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction,
+import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction, combineResources, mapResource, switchResource,
   resourceView, shareResource, type Scope, type Observation, type OperationContract, type OperationHandle,
   type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, z } from '@hanger-source/dsh-reactive';
 import { concatMap, type Observable } from 'rxjs';
@@ -31,7 +31,10 @@ const current = defineResource({ name: 'consumer-current', params: z.null(), val
 const changes = defineReaction({ name: 'consumer-changes', params: z.null(), event: z.number(), result: z.string() });
 export function useBackendBindings(resource: ResourceImplementation<typeof current>, reaction: ReactionImplementation<typeof changes>) {
   const instance = useResourceInstance(resource, null);
-  return { resource: instance, observed: useResource(instance), reaction: useReaction(reaction, null) };
+  const composed = combineResources({ current: instance, same: instance.observations$ }).pipe(
+    mapResource(value => value.current.revision + value.same.revision), switchResource(() => instance),
+    mapResource(value => value.revision.toFixed()));
+  return { resource: instance, composed, observed: useResource(instance), reaction: useReaction(reaction, null) };
 }
 export function useLocalBackend(target: string, changes$: Observable<number>, save: (target: string, value: number) => Promise<number>) {
   const resource = useResourceInstance(() => ({ value: z.string(), read: () => target }), [target]);

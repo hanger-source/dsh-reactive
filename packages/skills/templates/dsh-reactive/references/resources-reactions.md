@@ -35,13 +35,13 @@ export function inventory(scope: Scope, service: {
 
 ## 派生仍使用标准 Observable
 
-`combineResources({ stock: stock.observations$, quote: quote.observations$ })` 只有所有依赖 ready 才产生派生 ready。`mapResource(project)` 保留 pending/error，并将投影异常表示为 error。
+`combineResources({ stock, quote: quote.observations$ })` 可以混合正式资源对象与观察流，只有所有依赖 ready 才产生派生 ready。对象和它的 observations$ 使用同一个来源与原 owner，不调用 read/peek、不重复解析或额外持有连接。`mapResource(project)` 保留 pending/error，并将投影异常表示为 error。
 
 需要把完整派生关系作为对象传给普通函数、Promise、其他 hooks 或公开 View 时，用 `shareResource(combineResources(...), { signal: scope.signal })`。read、peek、subscribe、values$、observations$ 共用 RxJS 的唯一当前快照；已经解析的领域值不再重复 schema parse，不需要另建 Scope、合同或绑定表。构造不连接，有限来源的最终观察保留至最后消费者退出，之后显式读取再连接；signal 固定读侧寿命，取消不重新执行任何命令。
 
 `workspace.share(source$)` 则由工作区持续持有来源连接，同一来源跨会话共享，消费者全部退订也不停止来源。构造共享连接会立即订阅，应放在 defer 等订阅边界，不在 render 中执行。有限来源的最后值和错误仅在工作区 owner 活跃时重放；owner 退出后已有观察完成，之前捕获的流在迟到订阅时直接完成，不交付旧值或旧错误，也不重新连接来源。业务结果需要跨 owner 留存时，由业务自身的持久事实负责。
 
-切换查询使用 `source$.pipe(switchResource(project, { dependencies: value => [value.sku, value.revision] }))`。只选真实影响读取的字段，元素按 Object.is 比较；框架捕获依赖 tuple，并保留连续相同有效依赖的连接。pending/error 会撤旧读取，同参数恢复 ready 也重新读取。不要手写 JSON.stringify、Observation 比较器或额外 query cache。
+切换查询使用 `source$.pipe(switchResource(project, { dependencies: value => [value.sku, value.revision] }))`，project 可以直接返回资源对象或观察流。只选真实影响读取的字段，元素按 Object.is 比较；框架捕获依赖 tuple，并保留连续相同有效依赖的连接。pending/error 会撤旧读取，同参数恢复 ready 也重新读取。退出派生只归还这次订阅，其他读者和原业务执行仍归各自 owner。不要手写 JSON.stringify、Observation 比较器或额外 query cache。
 
 后台组件从 `@hanger-source/dsh-reactive/program` 调用 `useResource(instance)`，或 `useResource(implementation, params)`。后者按当前程序 Scope 共享同一实现与参数；跨会话共享时显式把绑定放到适当共享 Scope，再把实例传入。`useResource(factory, deps)` 用于已有 Observation 流，不让 hooks 成为唯一 owner。
 

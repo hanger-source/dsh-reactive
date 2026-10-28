@@ -1,11 +1,18 @@
-import { catchError, combineLatest, defer, filter, map, of, EMPTY, Observable, type OperatorFunction } from 'rxjs';
+import { catchError, combineLatest, defer, filter, isObservable, map, of, EMPTY, Observable, type OperatorFunction } from 'rxjs';
 import type { Observation } from './observation.ts';
+import type { ResourceReadable } from './reader.ts';
 import { normalizeResource, switchLatest } from '../reactivity/observable.ts';
 
-export type ResourceSources = Readonly<Record<string, Observable<Observation<unknown>>>>;
+/** 资源对象与其观察流表达同一个来源；组合不取得它的业务或生命周期所有权。 */
+export type ResourceSource<T> = ResourceReadable<T> | Observable<Observation<T>>;
+export type ResourceSources = Readonly<Record<string, ResourceSource<unknown>>>;
 export type ResourceValues<S extends ResourceSources> = {
-  readonly [K in keyof S]: S[K] extends Observable<Observation<infer T>> ? T : never;
+  readonly [K in keyof S]: S[K] extends ResourceSource<infer T> ? T : never;
 };
+
+function observations<T>(source: ResourceSource<T>): Observable<Observation<T>> {
+  return isObservable(source) ? source : source.observations$;
+}
 export interface ResourceSwitchOptions<T> {
   /** 只有连续 ready 的这组依赖相同时才保留当前查询；元素按 Object.is 比较。 */
   readonly dependencies?: (value: T) => readonly unknown[];
@@ -23,9 +30,9 @@ export function mapResource<T, U>(project: (value: T) => U): OperatorFunction<Ob
 /**
  * ready 依赖选择实际下游资源；上游失效或改变会退订旧查询，不能继续交付旧 ready。
  * 显式依赖相同的连续 ready 保留同一查询；失效清除身份，同依赖恢复也必须重新连接。
- * project 只构造查询流，不受理业务；共享与重试仍由现有 owner 和 RxJS 组合决定。
+ * project 选择资源对象或构造查询流，不受理业务；共享与重试仍由现有 owner 和 RxJS 组合决定。
  */
-export function switchResource<T, U>(project: (value: T) => Observable<Observation<U>>,
+export function switchResource<T, U>(project: (value: T) => ResourceSource<U>,
   options: ResourceSwitchOptions<T> = {}): OperatorFunction<Observation<T>, Observation<U>> {
   const selectDependencies = options.dependencies;
   return source => defer(() => {
@@ -53,7 +60,7 @@ export function switchResource<T, U>(project: (value: T) => Observable<Observati
     return new Observable<Observation<U>>(subscriber => upstream$.pipe(
       switchLatest((upstream): Observable<Observation<U>> => {
         if (upstream.status !== 'ready') return EMPTY;
-        return defer(() => normalizeResource(project(upstream.value))).pipe(
+        return defer(() => normalizeResource(observations(project(upstream.value)))).pipe(
           map(observation => Object.freeze({ ...observation, generation: ++generation })),
           catchError((error: unknown) => of(Object.freeze({ status: 'error' as const, generation: ++generation, error }))),
         );
@@ -65,15 +72,15 @@ export function switchResource<T, U>(project: (value: T) => Observable<Observati
 }
 
 /**
- * 组合具名资源的当前观察，不过滤失效或借用上一代 ready。
+ * 组合具名资源对象或观察流的当前观察，不过滤失效或借用上一代 ready。
  * error 优先于 pending；全部就绪后才交付冻结的值对象。
  * generation 属于这次组合订阅，不把独立来源的代次当成共同事务版本。
  * 来源连接、共享和业务执行的寿命仍由现有 RxJS owner 决定。
  */
 export function combineResources<const S extends ResourceSources>(sources: S): Observable<Observation<ResourceValues<S>>> {
-  const entries = Object.entries<Observable<Observation<unknown>>>(sources);
+  const entries = Object.entries<ResourceSource<unknown>>(sources);
   if (!entries.length) throw new Error('REACTIVE_RESOURCE_SOURCES_REQUIRED');
-  const normalized = entries.map(([, source]) => normalizeResource(source));
+  const normalized = entries.map(([, source]) => normalizeResource(observations(source)));
   return defer(() => {
     let generation = 0;
     return combineLatest(normalized).pipe(map((observations): Observation<ResourceValues<S>> => {
