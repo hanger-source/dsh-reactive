@@ -1,5 +1,13 @@
 # @hanger-source/dsh-reactive-native-ui
 
+## 2.1.0
+
+### Patch Changes
+
+- Updated dependencies [d502e72]
+  - @hanger-source/dsh-reactive@2.1.0
+  - @hanger-source/dsh-reactive-client@2.1.0
+
 ## 2.0.0
 
 ### Patch Changes

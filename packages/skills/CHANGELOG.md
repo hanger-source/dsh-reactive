@@ -1,5 +1,22 @@
 # @hanger-source/dsh-reactive-skills
 
+## 2.1.0
+
+### Minor Changes
+
+- 5b81e34: 新增/subagents公共子入口，以createNativeSubagents接入宿主已有的正式子Agent服务。forSession(source).catalog提供同源资源，保留one-shot、continuable和external持久目录身份；readDescendants使用原生递归查询并保留分支诊断。父会话目录及实际Agent代际变化撤下旧有效性，冷读不加载Agent、创建Goal或投递消息；读取取消立即结算，SDK退出不停止原生子执行。NativeChildWork继续专用于带独立Goal的子程序委托，不把普通发现转换为Operation或复制执行引擎。公共exports、仓外消费者和同版本开发指导同步覆盖该入口。
+- d502e72: 公开集合成员与Action目录的同源资源：collection.instances与session.actionManifest可供普通读取、Promise、RxJS和hooks直接消费；对应值流继续借用同一查询，不复制状态、建立额外缓存或打开额外连接。本地、远程、服务参与端口及嵌套集合共用公共合同；嵌套目录随父模块撤下报告error，恢复后继续更新，SDK退出撤销借出读侧。目录只描述当前声明，不授予执行权限。同步仓外类型消费者和版本化开发指导。
+
+### Patch Changes
+
+- Updated dependencies [5b81e34]
+- Updated dependencies [d502e72]
+  - @hanger-source/dsh-reactive-dsh@2.1.0
+  - @hanger-source/dsh-reactive@2.1.0
+  - @hanger-source/dsh-reactive-client@2.1.0
+  - @hanger-source/dsh-reactive-remote@2.1.0
+  - @hanger-source/dsh-reactive-native-ui@2.1.0
+
 ## 2.0.0
 
 ### Minor Changes

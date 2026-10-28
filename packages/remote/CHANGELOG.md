@@ -1,5 +1,15 @@
 # @hanger-source/dsh-reactive-remote
 
+## 2.1.0
+
+### Patch Changes
+
+- Updated dependencies [5b81e34]
+- Updated dependencies [d502e72]
+  - @hanger-source/dsh-reactive-dsh@2.1.0
+  - @hanger-source/dsh-reactive@2.1.0
+  - @hanger-source/dsh-reactive-client@2.1.0
+
 ## 2.0.0
 
 ### Patch Changes
