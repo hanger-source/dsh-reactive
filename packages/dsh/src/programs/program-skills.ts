@@ -41,28 +41,25 @@ export class ProgramSkills {
     });
   }
 
-  /** React commit 只提交声明，文件读取、插件就绪和正文加载留在原生执行边界。 */
+  /** 当前整帧形成会话级依赖集合；等价目录共享原provider，文件与正文读取留在原生执行边界。 */
   commit(declarations: readonly SkillDeclaration[]) {
     this.assertActive();
-    const names: string[] = [];
-    const directories: string[] = [];
+    const names = new Set<string>();
+    const directories = new Set<string>();
     for (const declaration of declarations) {
       if (declaration.name !== undefined) {
         if (!isSkillName(declaration.name)) throw new Error('REACTIVE_SKILL_NAME_INVALID: ' + declaration.name);
-        names.push(declaration.name);
+        names.add(declaration.name);
       } else {
         if (!isAbsolute(declaration.directory)) throw new Error('REACTIVE_SKILL_PATH_NOT_ABSOLUTE: ' + declaration.directory);
-        directories.push(normalize(declaration.directory));
+        directories.add(normalize(declaration.directory));
       }
     }
-    if (new Set(names).size !== names.length || new Set(directories).size !== directories.length) {
-      throw new Error('REACTIVE_SKILL_DUPLICATE');
-    }
-    const same = (left: readonly string[], right: readonly string[]) => left.length === right.length
-      && left.every((value, index) => value === right[index]);
+    const same = (left: ReadonlySet<string>, right: readonly string[]) => left.size === right.length
+      && right.every(value => left.has(value));
     if (same(names, this.#names) && same(directories, this.#directories)) return;
-    this.#names = names;
-    this.#directories = directories;
+    this.#names = [...names];
+    this.#directories = [...directories];
     this.#revision++;
     this.invalidatePreparation();
   }

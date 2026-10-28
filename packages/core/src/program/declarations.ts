@@ -56,6 +56,7 @@ export interface ExposeProps<S extends Surface, B extends PartialSurfaceBindings
 export interface ExposeDeclaration {
   readonly kind: 'expose'; readonly surface: Surface; readonly value: SurfaceBindingReferences;
 }
+/** 会话级方法依赖；多个模块选择同一name或目录时共享，最后一项贡献退出才撤下。 */
 export type SkillProps =
   | { readonly name: string; readonly directory?: never }
   | { readonly name?: never; readonly directory: string };
@@ -65,8 +66,11 @@ export type SkillDeclaration = { readonly kind: 'skill' } & SkillProps;
 export interface HumanInputProps extends HumanInputPolicy {}
 export interface HumanInputDeclaration extends HumanInputPolicy { readonly kind: 'human-input'; }
 export interface NativeToolsProps {
+  /** 原生工具的真实全局名称，不随Module改名；重复贡献必须使用相同enabled与admit。 */
   readonly names: readonly string[];
+  /** 省略时为true；同名贡献的准入开关必须一致，不合并权限。 */
   readonly enabled?: boolean;
+  /** 同名贡献必须借用同一函数引用（或均省略）；异步准入后仍核验当前策略。 */
   readonly admit?: NativeToolAdmission;
 }
 export interface NativeToolDeclaration {
@@ -172,7 +176,7 @@ export function Expose<S extends Surface, const B extends PartialSurfaceBindings
   return leaf({ kind: 'expose', surface: props.surface, value });
 }
 
-/** 目录存在性和 scope/cwd 下的方法解析由原生装配核验，此处不读文件或创建 provider。 */
+/** 声明会话级方法依赖；目录存在性和scope/cwd解析由原生装配核验，此处不读文件或创建provider。 */
 export function Skill(props: SkillProps): ReactElement {
   if (props.name !== undefined && props.directory === undefined) {
     name(props.name, 'REACTIVE_SKILL_NAME_REQUIRED');
@@ -191,18 +195,18 @@ export function HumanInput(props: HumanInputProps): ReactElement {
   return leaf({ kind: 'human-input', admitResponder: props.admitResponder });
 }
 
-/** 组合宿主已经安装的原生能力；空集合不贡献声明，执行与准入仍归原生管线。 */
+/** 贡献宿主已安装的全局工具；相同策略共享至最后一项贡献退出，执行与准入仍归原生管线。 */
 export function NativeTools(props: NativeToolsProps): ReactElement {
   if (!Array.isArray(props.names)) throw new Error('REACTIVE_NATIVE_TOOLS_REQUIRED');
   if (props.enabled !== undefined && typeof props.enabled !== 'boolean') throw new Error('REACTIVE_NATIVE_TOOL_ENABLED_INVALID');
   if (props.admit !== undefined && typeof props.admit !== 'function') throw new Error('REACTIVE_NATIVE_TOOL_ADMISSION_INVALID');
   const names = new Set<string>();
-  const children = props.names.map(tool => {
+  const children = props.names.flatMap(tool => {
     if (typeof tool !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,79}$/u.test(tool) || tool === 'run_code') throw new Error('REACTIVE_NATIVE_TOOL_NAME_INVALID');
-    if (names.has(tool)) throw new Error('REACTIVE_NATIVE_TOOL_DUPLICATE: ' + tool);
+    if (names.has(tool)) return [];
     names.add(tool);
-    return createElement(Fragment, { key: tool }, leaf({ kind: 'native-tool', name: tool,
-      enabled: props.enabled ?? true, ...props.admit ? { admit: props.admit } : {} }));
+    return [createElement(Fragment, { key: tool }, leaf({ kind: 'native-tool', name: tool,
+      enabled: props.enabled ?? true, ...props.admit ? { admit: props.admit } : {} }))];
   });
   // Fragment 只组合声明，不产生新的原生注册或执行 owner。
   return createElement(Fragment, null, ...children);

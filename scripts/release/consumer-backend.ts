@@ -1,8 +1,9 @@
-import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction, combineResources, mapResource, switchResource, abortable,
+import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction, composeSurface, combineResources, mapResource, switchResource, abortable,
   resourceView, shareResource, type Scope, type ResourceSource, type OperationContract, type OperationHandle,
-  type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, z } from '@hanger-source/dsh-reactive';
+  type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, type NativeToolAdmission, z } from '@hanger-source/dsh-reactive';
 import { concatMap, firstValueFrom, map, type Observable } from 'rxjs';
-import { Context, Expose, implementProgram, useAction, useResource, useResourceInstance, useReaction, useBeforeStep,
+import { createElement } from 'react';
+import { Context, Expose, Module, Skill, NativeTools, implementProgram, useAction, useResource, useResourceInstance, useReaction, useBeforeStep,
   useObservable, useShared, useRelation } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, mountApplication, type ApplicationAssembly, type ConversationHandle, type ServiceConversation, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
@@ -20,6 +21,17 @@ const application = defineApplication({ name: 'registry-consumer', admit: async 
 ] });
 export const backend = (options: RuntimeOptions) => createRuntime(() => application, options);
 export const clientContract = () => contract;
+export function sharedDependencyProgram(skillName: string, toolNames: readonly string[], admit: NativeToolAdmission) {
+  const moduleSurface = defineSurface({ views: {}, actions: {} });
+  const modules = composeSurface({ left: moduleSurface, right: moduleSurface });
+  function Dependencies() {
+    return [createElement(Skill, { key: 'skill', name: skillName }), createElement(NativeTools, { key: 'native-tools', names: toolNames, enabled: true, admit })];
+  }
+  return implementProgram(defineProgram({ input: z.null(), surface: modules.surface }), { Component: () => [
+    createElement(Module, { key: 'left', mount: modules.mounts.left }, createElement(Dependencies)),
+    createElement(Module, { key: 'right', mount: modules.mounts.right }, createElement(Dependencies)),
+  ] });
+}
 export const portableLocal = (session: ConversationHandle<typeof contract>) => sessionResources(session);
 export const portableRemote = (session: RemoteProgramSession<typeof contract>) => sessionResources(session);
 export const portableLocalService = (session: ServiceConversation<typeof contract>) => sessionResources(session);

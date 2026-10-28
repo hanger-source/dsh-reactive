@@ -4,15 +4,16 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as immediate } from 'node:timers/promises';
+import { Fragment, createElement as h } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import { assembleContextFor } from '@deepseek-ai/dsh-agent';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import type { SkillProviderControl } from '@deepseek-ai/dsh-skill';
-import { BehaviorSubject, firstValueFrom, from, timeout } from 'rxjs';
-import { defineApplication, defineEnvironment, defineProgram, defineSurface, z,
+import { BehaviorSubject, filter, firstValueFrom, from, timeout } from 'rxjs';
+import { collectionSurface, composeSurface, defineApplication, defineEnvironment, defineProgram, defineSurface, z,
   type ApplicationDefinition, type AnyEnvironment } from '@hanger-source/dsh-reactive';
-import { implementProgram, Skill, useObservable } from '@hanger-source/dsh-reactive/program';
+import { implementProgram, Module, Skill, useObservable } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
 
 const contract = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
@@ -28,6 +29,59 @@ async function start<E extends readonly AnyEnvironment[]>(root: string, definiti
   });
   return { runtime, native, errors, models: () => models };
 }
+
+test('集合模块共享真实目录和方法正文，单项退出保留依赖，最后退出撤销原生贡献', { timeout: 15_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-skill-contributions-'));
+  const directory = join(root, 'method'), name = 'shared-method';
+  await mkdir(directory);
+  await writeFile(join(directory, 'SKILL.md'), '---\nname: ' + name
+    + '\ndescription: 多模块共同依赖的实际方法\n---\n\nSHARED_METHOD_BODY\n');
+  const selected = new BehaviorSubject<readonly string[]>(['left', 'right']);
+  const empty = defineSurface({ views: {}, actions: {} });
+  const composed = composeSurface({ dependencies: collectionSurface(empty) });
+  const program = defineProgram({ input: z.null(), surface: composed.surface });
+  function Dependency({ member }: { member: string }) {
+    return h(Fragment, null, Skill({ directory: member === 'left' ? directory : directory + '/.' }), Skill({ name }));
+  }
+  const app = await start(root, defineApplication({ name: 'skill-contributions', admit: async () => {}, environments: [
+    defineEnvironment({ id: 'work', instructions: '共同依赖保留会话级原生归属。',
+      program: implementProgram(program, { Component() {
+        const observed = useObservable(() => selected, []);
+        return observed.status === 'ready' ? h(Fragment, null, observed.value.map(member =>
+          h(Module, { key: member, mount: composed.mounts.dependencies.instance(member) }, h(Dependency, { member })))) : null;
+      } }) }),
+  ] }));
+  try {
+    const workspace = await app.runtime.application.createWorkspace({ directory: root });
+    const session = await app.runtime.application.create('work', { workspaceId: workspace.workspaceId });
+    const members = session.collection('dependencies');
+    const agent = app.native.get('agents')!.get(SessionId(session.id))!;
+    const signal = new AbortController().signal;
+    const assemble = () => wait(agent.ctx.systemPrompt.assemble(assembleContextFor(agent, signal)));
+    const catalog = () => app.native.get('skills')!.list({ scope: agent, cwd: root, signal });
+    const initial = await assemble();
+    assert.deepEqual(await members.instances.read(), ['left', 'right']);
+    const provider = (await catalog()).find(skill => skill.name === name)?.provider;
+    assert.ok(provider);
+    assert.equal(initial.contexts.filter(context => context.name === 'reactive:skill:' + name).length, 1);
+    assert.ok(JSON.stringify(initial.contexts).includes('SHARED_METHOD_BODY'));
+
+    const retained = firstValueFrom(members.instances$.pipe(filter(ids => ids.length === 1 && ids[0] === 'right'), timeout(3_000)));
+    selected.next(['right']); await retained;
+    const single = await assemble();
+    assert.equal((await catalog()).find(skill => skill.name === name)?.provider, provider);
+    assert.equal(single.contexts.filter(context => context.name === 'reactive:skill:' + name).length, 1);
+    assert.ok(JSON.stringify(single.contexts).includes('SHARED_METHOD_BODY'));
+
+    const removed = firstValueFrom(members.instances$.pipe(filter(ids => ids.length === 0), timeout(3_000)));
+    selected.next([]); await removed;
+    const absent = await assemble();
+    assert.equal((await catalog()).some(skill => skill.name === name), false);
+    assert.equal(absent.contexts.some(context => context.name === 'reactive:skill:' + name), false);
+    assert.equal(app.models(), 0); assert.deepEqual(app.errors, []);
+    session.release();
+  } finally { selected.complete(); await app.runtime.dispose(); }
+});
 
 test('真实Skill准备替换声明，不配合取消的共享provider不阻塞新集合或取消另一会话', { timeout: 15_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-skill-preparation-'));

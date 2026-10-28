@@ -168,6 +168,10 @@ const review = composeSurface({
 
 模块内部只写局部 Context、Follow 名称，Offer 默认使用 Action 合同名。Module 按显式路径隔离原生名字，并将本地 Expose 映射到根出口。SDK 使用 `a.facts`、`a.prepare`、`b.facts` 等精确路径，不重复列根槽、传 names 或编写 Outlet。挂载点不是普通路径字符串；伪造、错误根合同和重复挂载均拒绝。
 
+完整模块也可以自带会话级依赖。多个模块声明相同 name 或精确 directory 的 Skill 时共享贡献；directory 必须是绝对路径，宿主通过 path.normalize 做词法规范化，合并规范化后相同的目录。cwd 仅参与原生命名 Skill 方法的解析。一个模块退出后，其他贡献继续持有这份依赖，最后一项退出才撤下本声明拥有的 provider 与上下文，不反向卸载外部 provider；应用无须在中央重新列出模块依赖。
+
+NativeTools 按真实全局工具名逐项共享，前提是 enabled 完全一致（省略视为 true），且 admit 是同一函数引用或均未提供。复用模块应从装配处借入同一政策函数；分别创建的函数即使代码相同也不等价。参与条件或政策不同明确失败，不自动取并集、交集或合并权限。最后一项退出撤下本声明贡献及其政策，原生内建工具仍遵循各自独立的基础可用性规则。与实际提交的 Offer、Follow 同名仍冲突；HumanInput 仍是根会话唯一响应政策，不能按模块共享多份。
+
 外部业务模块用 `session.module(merchants.mounts.a)` 取得局部 SurfaceClient，随后直接 `readView('facts', { signal })`、`resolveAction('prepare', target)`，不接收根槽名或拼接路径。module 只重定位既有入口，视图资源仍是根会话中的同一个对象，调用选项、本地同步或远程异步时序及原 owner 都保留，不产生独立 release。集合成员和局部客户端也支持 module；嵌套挂载必须属于当前父模块的原合同。
 
 `selectSurface` 选择公开类别及槽，未列类别不公开。相同 MerchantWork 可以放到 review.mounts.a 下，只公开事实。公开选择不撤下模型工具，也不代替业务授权。

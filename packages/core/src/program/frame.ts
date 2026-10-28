@@ -32,7 +32,7 @@ function put<T>(target: Record<string, T>, key: string, value: T, code: string) 
   target[key] = value;
 }
 
-/** 合并同一次 React commit 的声明；此处不注册原生能力，也不执行资源或业务。 */
+/** 合并同一次React commit的声明及会话级依赖；此处不注册原生能力，也不执行资源或业务。 */
 export function collectProgramFrame(frame: Frame<ProgramDeclaration>): ProgramFrame {
   const contexts = entries<ContextDeclaration>();
   const offers = entries<OfferDeclaration>();
@@ -73,14 +73,21 @@ export function collectProgramFrame(frame: Frame<ProgramDeclaration>): ProgramFr
         toolNames.add(declaration.name);
         put(follows, declaration.name, declaration, 'REACTIVE_FOLLOW_DUPLICATE');
         break;
-      case 'native-tool':
+      case 'native-tool': {
+        const previous = nativeTools[declaration.name];
+        if (previous) {
+          if (previous.enabled !== declaration.enabled || previous.admit !== declaration.admit)
+            throw new Error('REACTIVE_NATIVE_TOOL_CONTRIBUTION_CONFLICT: ' + declaration.name);
+          break;
+        }
         if (toolNames.has(declaration.name)) throw new Error('REACTIVE_OFFER_DUPLICATE: ' + declaration.name);
         toolNames.add(declaration.name);
         put(nativeTools, declaration.name, declaration, 'REACTIVE_NATIVE_TOOL_DUPLICATE');
         break;
+      }
       case 'skill': {
         const key = declaration.name === undefined ? 'directory:' + declaration.directory : 'name:' + declaration.name;
-        if (skillKeys.has(key)) throw new Error('REACTIVE_SKILL_DUPLICATE: ' + key);
+        if (skillKeys.has(key)) break;
         skillKeys.add(key);
         skills.push(declaration);
         break;
