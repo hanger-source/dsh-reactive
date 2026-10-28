@@ -1,5 +1,24 @@
 # @hanger-source/dsh-reactive-skills
 
+## 1.1.0
+
+### Minor Changes
+
+- 66a1d07: abortable 接受外部 AbortSignal，以原取消原因结束本次观察与 Promise 等待，忽略不配合取消的迟到结果。客户端等待复用同一互操作；Schedule 只读查询、冷 Team 投影和显式 Files 读取不再被迟到的原生回执阻塞。Files 保留实际 I/O 的退出等待；原生历史读取继续传递查询信号，不取消已受理业务或其他消费者。
+- b4af2f5: combineResources 和 switchResource 直接组合 ResourceReadable 对象与 Observation 流；公开 ResourceSource 表达同一来源的两种消费入口。保持领域类型、原观察流、共享与 owner，不额外读取、解析或取得业务执行所有权。
+
+### Patch Changes
+
+- 7b3ef97: 原生能力退出加入外层已经开始的 Fiber 清理，观察释放失败保留到实际资源静止后报告。Runtime、Application、Preset 与动态 Skill 在撤销前确定同一个退出回执，避免同步清理重入启动第二次退出；Skill provider 的退休等待真实 Fiber。应用安装沿同一正式插件就绪检查核验并回收失败范围。
+- Updated dependencies [66a1d07]
+- Updated dependencies [7b3ef97]
+- Updated dependencies [b4af2f5]
+  - @hanger-source/dsh-reactive@1.1.0
+  - @hanger-source/dsh-reactive-dsh@1.1.0
+  - @hanger-source/dsh-reactive-client@1.1.0
+  - @hanger-source/dsh-reactive-native-ui@1.1.0
+  - @hanger-source/dsh-reactive-remote@1.1.0
+
 ## 1.0.0
 
 ### Major Changes
