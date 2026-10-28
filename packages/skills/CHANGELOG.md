@@ -1,5 +1,22 @@
 # @hanger-source/dsh-reactive-skills
 
+## 3.0.0
+
+### Minor Changes
+
+- 1c9e7ee: 显式owner的ResourceReader将来源正常完成与资源有效性结束分开：有限来源立即释放真实连接，资源观察和values$继续接受owner撤销，不让活跃的外部hook、Context或视图永久保留旧ready。空完成或pending完成交付EmptyError以结算读取，不重复查询或添加状态缓存。远程Invocation.activity仍与SDK共用同一资源，原生流在终态释放，业务完成改用result或按returned/failed筛选；不再用lastValueFrom(activity$)推断业务完成。未指定owner的本地不可变事实及普通Observable保留原来源的有限语义。更新本地/远程及浏览器直接消费者、原生UI试验和同版本开发指导，迁移见docs/migration-resource-completion.md。
+- dc676c6: Workspace提供直接的resource与reaction绑定入口，复用既有参数身份、Resource、Reaction和Scope；本地application.workspace(id)与组件props.workspace取得同一对象，在没有Session时也可构造、读取和显式运行。工作区编程合同及内核装配归core/workspaces，公共类型从根入口与/workspaces导出。跨环境、会话共享，同实现与目标在不同工作区隔离。正式工作区登记删除或宿主退出结束其owner，撤销旧资源与排队关系，保留已受理业务；清理重入不能复活已经删除的owner。共享连接在来源工厂执行前登记实际订阅，工厂内同步退出立即关闭它；直接释放来源后结束观察，使teardown失败返回Scope。删除后的清理失败保留到宿主退出汇总，其他工作区仍完整释放。同步开发指导和仓外消费入口。
+
+### Patch Changes
+
+- Updated dependencies [1c9e7ee]
+- Updated dependencies [dc676c6]
+  - @hanger-source/dsh-reactive@3.0.0
+  - @hanger-source/dsh-reactive-client@3.0.0
+  - @hanger-source/dsh-reactive-dsh@3.0.0
+  - @hanger-source/dsh-reactive-native-ui@3.0.0
+  - @hanger-source/dsh-reactive-remote@3.0.0
+
 ## 2.1.0
 
 ### Minor Changes
