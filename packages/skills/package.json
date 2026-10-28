@@ -15,8 +15,24 @@
   "bin": { "dsh-reactive-skill": "./dist/cli.mjs" },
   "files": ["dist", "skills", "release.json"],
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "wireit",
     "prepack": "npm run build"
+  },
+  "wireit": {
+    "build": {
+      "command": "node scripts/build.mjs",
+      "files": [
+        "scripts/build.mjs",
+        "src/**",
+        "templates/**",
+        "package.json"
+      ],
+      "output": [
+        "dist/**",
+        "skills/**"
+      ],
+      "clean": false
+    }
   },
   "peerDependencies": {
     "@hanger-source/dsh-reactive": "0.20.2",

@@ -18,20 +18,60 @@
     "typecheck:core": "tsc --noEmit",
     "typecheck": "npm run typecheck:core && npm run build && npm run typecheck:examples",
     "typecheck:examples": "tsc -p examples/tsconfig.json && tsc -p packages/native-ui/examples/tsconfig.json",
-    "build:core": "npm run build --workspace @hanger-source/dsh-reactive",
-    "build": "npm run build:dsh && npm run build:contracts --workspace @hanger-source/dsh-reactive-client && npm run generate --workspace @hanger-source/dsh-reactive-remote && tsc -b tsconfig.build.json && npm run build:assets --workspace @hanger-source/dsh-reactive && npm run build:browser --workspace @hanger-source/dsh-reactive-client && npm run build --workspace @hanger-source/dsh-reactive-skills",
-    "build:test": "node scripts/prepare-test.mjs reset && npm run build:dsh && tsc -p tsconfig.test.json && node scripts/prepare-test.mjs link",
+    "build:core": "wireit",
+    "build": "wireit",
+    "build:test": "wireit",
     "test:core": "npm run build:test && node --test --test-timeout=15000 .tmp/test/test/*.test.js",
     "test:remote": "npm run build && npm run test --workspace @hanger-source/dsh-reactive-remote",
     "test": "npm run test:core && npm run test:remote && npm run test --workspace @hanger-source/dsh-reactive-native-ui",
     "browser:remote": "npm run build && npm run browser:serve --workspace @hanger-source/dsh-reactive-remote",
-    "build:dsh": "npm run build --workspace @hanger-source/dsh-reactive-dsh",
-    "build:native-ui": "npm run build --workspace @hanger-source/dsh-reactive-native-ui",
+    "build:dsh": "wireit",
+    "build:native-ui": "wireit",
     "changeset": "changeset",
     "release": "node scripts/release.mjs",
     "pack:workspaces": "npm pack --workspaces --ignore-scripts --pack-destination .tmp",
     "check:boundaries": "depcruise --config .dependency-cruiser.cjs packages/*/src",
     "check:packages": "node scripts/check-packages.mjs"
+  },
+  "wireit": {
+    "generate:remote": {
+      "command": "node packages/remote/scripts/generate.mjs",
+      "dependencies": ["./packages/dsh:build:compile", "./packages/client:build:contracts"],
+      "files": ["packages/remote/src/**", "packages/remote/scripts/generate.mjs", "packages/remote/tsconfig.json", "tsconfig.base.json", "package.json", "packages/*/package.json"],
+      "output": ["packages/remote/lib/typert.host.*", "packages/client/lib/typert.remote-client.*"],
+      "clean": false
+    },
+    "build": {
+      "dependencies": [
+        "./packages/core:build",
+        "./packages/dsh:build",
+        "./packages/client:build",
+        "./packages/remote:build",
+        "./packages/native-ui:build",
+        "./packages/skills:build"
+      ]
+    },
+    "build:core": {
+      "dependencies": [
+        "./packages/core:build"
+      ]
+    },
+    "build:dsh": {
+      "dependencies": [
+        "./packages/dsh:build"
+      ]
+    },
+    "build:native-ui": {
+      "dependencies": [
+        "./packages/native-ui:build"
+      ]
+    },
+    "build:test": {
+      "command": "node scripts/prepare-test.mjs reset && tsc -p tsconfig.test.json && node scripts/prepare-test.mjs link",
+      "dependencies": [
+        "./packages/dsh:build"
+      ]
+    }
   },
   "devDependencies": {
     "rxjs": "7.8.2",
@@ -124,6 +164,7 @@
     "publint": "0.3.25",
     "@deepseek-ai/dsh-client-modules": "0.2.1-rc.3",
     "zustand": "5.0.16",
-    "immer": "11.2.9"
+    "immer": "11.2.9",
+    "wireit": "0.15.0"
   }
 }

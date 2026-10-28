@@ -60,8 +60,34 @@
     "release.json"
   ],
   "scripts": {
-    "build": "tsc -b tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "build": "wireit",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build:compile": "wireit",
+    "prepack": "npm run build"
+  },
+  "wireit": {
+    "build": {
+      "dependencies": [
+        "build:compile"
+      ]
+    },
+    "build:compile": {
+      "command": "node ../../scripts/archive-build-output.mjs build:compile && tsc -p tsconfig.json",
+      "dependencies": [
+        "../core:build:compile"
+      ],
+      "files": [
+        "src/**",
+        "tsconfig.json",
+        "../../tsconfig.base.json",
+        "../../scripts/archive-build-output.mjs",
+        "package.json"
+      ],
+      "output": [
+        "lib/**"
+      ],
+      "clean": false
+    }
   },
   "dependencies": {
     "@deepseek-ai/cordis": "4.0.5",

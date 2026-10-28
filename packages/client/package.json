@@ -42,10 +42,86 @@
     "release.json"
   ],
   "scripts": {
-    "build:contracts": "tsc -b tsconfig.contracts.json",
-    "build": "tsc -b tsconfig.json && npm run build:browser",
-    "build:browser": "node scripts/browser.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "build:contracts": "wireit",
+    "build": "wireit",
+    "build:browser": "wireit",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build:compile": "wireit",
+    "prepack": "npm run build"
+  },
+  "wireit": {
+    "build": {
+      "dependencies": [
+        "build:browser"
+      ]
+    },
+    "build:contracts": {
+      "command": "node ../../scripts/archive-build-output.mjs build:contracts && tsc -p tsconfig.contracts.json",
+      "dependencies": [
+        "../core:build:compile"
+      ],
+      "files": [
+        "src/types.ts",
+        "src/errors.ts",
+        "src/transport.ts",
+        "src/inbox.ts",
+        "tsconfig.contracts.json",
+        "../../tsconfig.base.json",
+        "../../scripts/archive-build-output.mjs",
+        "package.json"
+      ],
+      "output": [
+        "lib/types.*",
+        "lib/errors.*",
+        "lib/transport.*",
+        "lib/inbox.*",
+        "lib/contracts.tsbuildinfo"
+      ],
+      "clean": false
+    },
+    "build:compile": {
+      "command": "node ../../scripts/archive-build-output.mjs build:compile && tsc -p tsconfig.json",
+      "dependencies": [
+        "build:contracts",
+        "../remote:generate"
+      ],
+      "files": [
+        "src/**",
+        "!src/types.ts",
+        "!src/errors.ts",
+        "!src/transport.ts",
+        "!src/inbox.ts",
+        "tsconfig.json",
+        "../../tsconfig.base.json",
+        "../../scripts/archive-build-output.mjs",
+        "package.json"
+      ],
+      "output": [
+        "lib/**",
+        "!lib/types.*",
+        "!lib/errors.*",
+        "!lib/transport.*",
+        "!lib/inbox.*",
+        "!lib/contracts.tsbuildinfo",
+        "!lib/typert.*",
+        "!lib/client.browser.*"
+      ],
+      "clean": false
+    },
+    "build:browser": {
+      "command": "node scripts/browser.mjs",
+      "dependencies": [
+        "build:compile"
+      ],
+      "files": [
+        "scripts/browser.mjs"
+      ],
+      "output": [
+        "lib/client.browser.js",
+        "lib/client.browser.js.map"
+      ],
+      "clean": false
+    }
   },
   "dependencies": {
     "@deepseek-ai/cordis": "4.0.5",

@@ -28,13 +28,46 @@
     "release.json"
   ],
   "scripts": {
-    "generate": "node scripts/generate.mjs",
-    "build": "tsc -b ../dsh ../client/tsconfig.contracts.json && npm run generate && tsc -b tsconfig.json",
+    "generate": "wireit",
+    "build": "wireit",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --test --test-timeout=25000 test/*.test.mjs",
     "browser:serve": "node test/browser-host.mjs",
     "browser:requests": "node test/browser-request-host.mjs",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "build:compile": "wireit"
+  },
+  "wireit": {
+    "build": {
+      "dependencies": [
+        "build:compile",
+        "generate"
+      ]
+    },
+    "build:compile": {
+      "command": "node ../../scripts/archive-build-output.mjs build:compile && tsc -p tsconfig.json",
+      "dependencies": [
+        "../dsh:build:compile",
+        "../client:build:contracts"
+      ],
+      "files": [
+        "src/**",
+        "tsconfig.json",
+        "../../tsconfig.base.json",
+        "../../scripts/archive-build-output.mjs",
+        "package.json"
+      ],
+      "output": [
+        "lib/**",
+        "!lib/typert.*"
+      ],
+      "clean": false
+    },
+    "generate": {
+      "dependencies": [
+        "../../:generate:remote"
+      ]
+    }
   },
   "dependencies": {
     "@deepseek-ai/dsh-agent-default-model": "0.2.1-rc.3",

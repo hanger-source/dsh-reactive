@@ -94,10 +94,53 @@
     "directory": "packages/core"
   },
   "scripts": {
-    "build": "tsc -b tsconfig.json && npm run build:assets",
-    "build:assets": "node scripts/package-assets.mjs",
+    "build": "wireit",
+    "build:assets": "wireit",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "build:compile": "wireit"
+  },
+  "wireit": {
+    "build": {
+      "dependencies": [
+        "build:compile",
+        "build:assets"
+      ]
+    },
+    "build:compile": {
+      "command": "node ../../scripts/archive-build-output.mjs build:compile && tsc -p tsconfig.json",
+      "dependencies": [],
+      "files": [
+        "src/**",
+        "tsconfig.json",
+        "../../tsconfig.base.json",
+        "../../scripts/archive-build-output.mjs",
+        "package.json"
+      ],
+      "output": [
+        "lib/**"
+      ],
+      "clean": false
+    },
+    "build:assets": {
+      "command": "node scripts/package-assets.mjs",
+      "files": [
+        "scripts/package-assets.mjs",
+        "../../README.md",
+        "../../CONTRIBUTING.md",
+        "../../docs/**",
+        "../../examples/merchant-operations/**",
+        "../../examples/capabilities/**",
+        "../../examples/fleet-inspection/**"
+      ],
+      "output": [
+        "README.md",
+        "CONTRIBUTING.md",
+        "docs/**",
+        "examples/**"
+      ],
+      "clean": false
+    }
   },
   "dependencies": {
     "@deepseek-ai/dsh-attachment": "0.2.1-rc.3",

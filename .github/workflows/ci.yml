@@ -23,17 +23,17 @@ jobs:
           cache: npm
       - name: 安装公开依赖
         run: npm ci --ignore-scripts --registry https://registry.npmjs.org
-      - name: 构建六个工作区
-        run: npm run build
+      - name: 从空产物验证单包前置任务并完成工作区构建
+        run: |
+          npm run build --workspace @hanger-source/dsh-reactive-client
+          npm run build --workspace @hanger-source/dsh-reactive-native-ui
+          npm run build
       - name: 检查依赖方向和公开包
         run: |
           npm run check:boundaries
           npm run check:packages
       - name: 编译行为试验并统一模块身份
-        run: |
-          node scripts/prepare-test.mjs reset
-          npx --no-install tsc -p tsconfig.test.json
-          node scripts/prepare-test.mjs link
+        run: npm run build:test
       - name: 核心、Gateway 网络与原生 Slot 行为
         run: |
           node --test --test-timeout=15000 .tmp/test/test/*.test.js
