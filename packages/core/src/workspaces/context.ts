@@ -1,4 +1,4 @@
-import { UnsubscriptionError, type Observable } from 'rxjs';
+import type { Observable } from 'rxjs';
 import type { z } from 'zod';
 import type { Scope } from '../reactivity/scope.ts';
 import { connect } from '../reactivity/observable.ts';
@@ -6,8 +6,8 @@ import { bindResource, type ResourceInstance } from '../resources/binding.ts';
 import type { ResourceContract, ResourceParameters } from '../resources/definition.ts';
 import { isResourceImplementation, type ResourceImplementation } from '../resources/implementation.ts';
 import { createResource, type LocalResource, type LocalResourceOptions } from '../resources/local.ts';
-import { shareResource } from '../resources/sharing.ts';
-import { resourceObservations, type ResourceSource } from '../resources/source.ts';
+import { scopedResourceSharing } from '../resources/sharing.ts';
+import type { ResourceSource } from '../resources/source.ts';
 import type { ResourceReader } from '../resources/reader.ts';
 import { bindReaction, type ReactionInstance } from '../reactions/binding.ts';
 import type { ReactionContract, ReactionParameters } from '../reactions/definition.ts';
@@ -34,29 +34,7 @@ export interface Workspace {
 /** @internal 实例均归实际工作区Scope；正式实现共享参数身份，局部选项每次构造新身份。 */
 export function createWorkspace(scope: Scope, identity: { readonly id: string; readonly directory: string }): Workspace {
   scope.assertActive();
-  const resources = new WeakMap<Observable<unknown>, unknown>();
-  const cleanupFailures: unknown[] = [];
-  const recordCleanupFailure = (error: unknown): void => {
-    // 只拆RxJS的释放包装，业务AggregateError仍是原来的一个失败事实。
-    if (error instanceof UnsubscriptionError && error.errors.length) {
-      for (const failure of error.errors) recordCleanupFailure(failure);
-    } else cleanupFailures.push(error);
-  };
-  scope.own(() => {
-    if (cleanupFailures.length === 1) throw cleanupFailures[0];
-    if (cleanupFailures.length) throw new AggregateError(cleanupFailures, 'REACTIVE_WORKSPACE_RESOURCE_CLEANUP_FAILED');
-  });
-  function sharedResource<T>(source: ResourceSource<T>): ResourceReader<T> {
-    scope.assertActive();
-    const observations$ = resourceObservations(source);
-    const previous = resources.get(observations$);
-    // 同一个原观察流对应同一个T；身份不从资源名称或公开字段重新推断。
-    if (previous) return previous as ResourceReader<T>;
-    const reader = shareResource(observations$, { signal: scope.signal, onObserverError: error => scope.observerError(error),
-      onCleanupError: recordCleanupFailure });
-    resources.set(observations$, reader);
-    return reader;
-  }
+  const sharedResource = scopedResourceSharing(scope, 'REACTIVE_WORKSPACE_RESOURCE_CLEANUP_FAILED');
   function resource<D extends ResourceContract>(implementation: ResourceImplementation<D>, params: ResourceParameters<D>): ResourceInstance<D>;
   function resource<V extends z.ZodType>(options: LocalResourceOptions<V>): LocalResource<V>;
   function resource(source: ResourceImplementation | LocalResourceOptions<z.ZodType>, params?: unknown): ResourceInstance<ResourceContract> {

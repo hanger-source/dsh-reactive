@@ -27,6 +27,7 @@ import type { ConversationSessions } from './sessions.ts';
 import type { ConversationInputs } from './inputs.ts';
 import type { ConversationObservations } from './observations.ts';
 import type { ActionAuthority } from '../execution/authority.ts';
+import { InvocationUnavailableError } from '../execution/invocation.ts';
 import type { OperationParticipation } from '../operations/participation.ts';
 import type { ConversationQuestions } from '../participation/questions.ts';
 import { nativeSessionAccess } from './session-access.ts';
@@ -139,11 +140,12 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
     get actionManifest$(): Observable<readonly ToolActionBinding[]> { return this.actionManifest.values$; }
     collection<K extends keyof P['surface']['collections'] & string>(name: K): SurfaceCollectionClient<P['surface']['collections'][K], SubmitOptions, false> {
         this.assertActive();
-        // factory 已由同一根 Surface 查得叶合同；此处恢复擦除后的统一传输签名。
+        // factory 提供同一根Surface的exact叶合同；Action运输保持实际定义泛型。
         const untyped = this as ConversationHandle;
         return createSurfaceCollectionClient(this.surface, name, { asynchronous: false,
             viewResource: address => this.resource(address),
-            resolveAction: (address, _definition, expectedScope, options) => untyped.resolveAction(address, expectedScope, options),
+            resolveAction: (address, definition, expectedScope, options) => this.resolveActionAt(address, definition, expectedScope, options),
+            invocation: (address, definition, id, options) => this.invocationAt(address, definition, id, options),
             resolveOperation: (address, _definition, options) => untyped.resolveOperation(address, options),
         });
     }
@@ -152,7 +154,8 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
         const untyped = this as ConversationHandle;
         return createSurfaceModuleClient(this.surface, mount, { asynchronous: false,
             viewResource: address => this.resource(address),
-            resolveAction: (address, _definition, expectedScope, options) => untyped.resolveAction(address, expectedScope, options),
+            resolveAction: (address, definition, expectedScope, options) => this.resolveActionAt(address, definition, expectedScope, options),
+            invocation: (address, definition, id, options) => this.invocationAt(address, definition, id, options),
             resolveOperation: (address, _definition, options) => untyped.resolveOperation(address, options),
         });
     }
@@ -170,21 +173,52 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
     }
     /** 只读解析当前绑定并核验明确的原始目标；不激活 Agent，也不受理业务。 */
     resolveAction<K extends keyof P['surface']['actions'] & string>(name: K, expectedScope: z.input<P['surface']['actions'][K]['scope']>, options: CancellationOptions = {}): ResolvedAction<P['surface']['actions'][K]> {
+        const definition = surfaceSlotDefinition(this.surface, 'actions', name);
+        if (!definition) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
+        return this.resolveActionAt(name, definition, expectedScope, options);
+    }
+    private resolveActionAt<D extends ActionContract>(name: string, definition: D, expectedScope: z.input<D['scope']>, options: SubmitOptions = {}): ResolvedAction<D> {
         this.assertActive();
         assertParticipantOptions(this.participant, options);
         options.signal?.throwIfAborted();
+        this.assertActionDefinition(name, definition);
         const binding = this.actions.resolveSessionAction(this.entry, name, expectedScope);
         // Surface 已核验同一合同；scope 来自实际绑定的唯一解析，不再 parse 领域输出。
-        return Object.freeze(Object.assign((input: ActionInput<P['surface']['actions'][K]>, options: SubmitOptions = {}) => this.invokeAction(name, binding.bindingId, input, options), {
-            definition: surfaceSlotDefinition(this.surface, 'actions', name) as P['surface']['actions'][K], bindingId: binding.bindingId,
-            scope: binding.scope as ActionScope<P['surface']['actions'][K]>,
+        return Object.freeze(Object.assign((input: ActionInput<D>, options: SubmitOptions = {}) => this.invokeActionAt(name, definition, binding.bindingId, input, options), {
+            definition, bindingId: binding.bindingId,
+            scope: binding.scope as ActionScope<D>,
         }));
+    }
+    private assertActionDefinition(name: string, definition: ActionContract): void {
+        if (surfaceSlotDefinition(this.surface, 'actions', name) !== definition) throw new Error('REACTIVE_SURFACE_ACTION_CONTRACT_MISMATCH');
     }
     /** 已认证 transport 的第二阶段受理；必填 bindingId 只核对原绑定，不授予权限。 */
     invokeAction<K extends keyof P['surface']['actions'] & string>(name: K, bindingId: string, input: ActionInput<P['surface']['actions'][K]>, options: SubmitOptions = {}): ActionInvocation<P['surface']['actions'][K]> {
+        const definition = surfaceSlotDefinition(this.surface, 'actions', name);
+        if (!definition) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
+        return this.invokeActionAt(name, definition, bindingId, input, options);
+    }
+    private invokeActionAt<D extends ActionContract>(name: string, definition: D, bindingId: string, input: ActionInput<D>, options: SubmitOptions): ActionInvocation<D> {
         this.assertActive();
         assertParticipantOptions(this.participant, options);
-        return this.actions.invokeSession(this.entry, name, bindingId, input, options, this.participant) as ActionInvocation<P['surface']['actions'][K]>;
+        this.assertActionDefinition(name, definition);
+        // 同一实际Surface已核definition；唯一宿主执行入口按该definition解析并返回原call。
+        return this.actions.invokeSession(this.entry, name, bindingId, input, options, this.participant) as ActionInvocation<D>;
+    }
+    /** 原受理记录与当前Expose无关；本句柄仍须具有自己的借用资格。 */
+    invocation<K extends keyof P['surface']['actions'] & string>(name: K, id: string, options: SubmitOptions = {}): ActionInvocation<P['surface']['actions'][K]> {
+        const definition = surfaceSlotDefinition(this.surface, 'actions', name);
+        if (!definition) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
+        return this.invocationAt(name, definition, id, options);
+    }
+    private invocationAt<D extends ActionContract>(name: string, definition: D, id: string, options: SubmitOptions = {}): ActionInvocation<D> {
+        this.assertActive();
+        assertParticipantOptions(this.participant, options);
+        this.assertActionDefinition(name, definition);
+        const stored = this.actions.readInvocation(this.id, id, this.entry.implementation.definition, options, this.participant);
+        if (stored.name !== name || stored.definition !== definition) throw new InvocationUnavailableError();
+        // 原记录又核exact定义与地址；这里只恢复擦除过的异构call，不复制ResourceReader。
+        return stored.invocation as ActionInvocation<D>;
     }
     /** 解析时捕获当前操作绑定；取得的 reader 不随组件后来更换槽而改指目标。 */
     get operations(): ProgramOperationReaders<P> {

@@ -22,6 +22,8 @@ uploadFile 在本地、远程与原生 UI 都同步返回 FileUploadInvocation�
 
 共享传输合同从客户端的 `/types`、`/errors` 和 `/inbox` 入口取得；连接行为从 `/transport`、生成的远程调用入口从 `/remote` 取得。根入口与这些子入口共用同一份错误类和 Inbox。浏览器条件下各入口共享构建模块，可以在一个应用中共同导入，不能将每个入口分别内联成独立 SDK 副本。
 
+Invocation 的有界保留配置 completedRetentionMs/maxCompleted 属于 RuntimeOptions/HostOptions，Gateway 不持另一份回执。局部 Module 和嵌套 Collection 的 invocation(name,id) 由原 Surface 合同投射精确地址；换 SDK 后仍核原参与者、Program 与 Action，读取不激活 Session、不重新执行。
+
 createProgramClient、bindProgramClient、createServiceProgramClient、bindServiceProgramClient 与 retainNativeSession 要求真实 SharedProgramContract：在纯合同文件使用 `defineProgram({ name: 'inventory', version: 1, input, surface })`，与宿主共享同一发布者合同。name/version 随 Program 请求发送；Gateway 核目标环境或会话，create、completeCreation 和 resume 在实际副作用前拒绝错合同，SDK 核建立句柄的返回身份。工作区登记与 describe 不绑定 Program。
 
 合同不匹配使用 ProgramContractMismatchError 或宿主 reactive/program-contract-mismatch，并保留 expected/actual；无名目标不能远程消费，使用 SharedProgramRequiredError 或 reactive/shared-program-required。version 默认 1，独立于 npm 版本，不推断 schema/codec 等价、不授予权限。纯本地 Program 可继续无名；已有 ProgramSessionClient<P>、RemoteProgramSession<P> 与 NativeSession<P> 的通用消费者仍保留 P extends ProgramContract，无需自己创建 SDK。

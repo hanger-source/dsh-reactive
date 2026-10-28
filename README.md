@@ -12,6 +12,8 @@
 
 会话成员移除、读取资格和远程请求身份见[会话资格迁移](docs/migration-conversation-access.md)。
 
+Program 派生资源、活动读侧及局部 Surface 调用查回见[Program 资源与调用回执](docs/migration-program-resources.md)。
+
 调整公共合同时，按实际安装版本查看[共享 Program 合同迁移](docs/migration-shared-program-contracts.md)、[模块 SDK 迁移](docs/migration-sdk-modules.md)与[参与端口迁移](docs/migration-participant-ports.md)，对齐合同身份、局部模块、人工控制与服务来源。异步装配及资源寿命的变化见 [SDK 作用域迁移](docs/migration-sdk-scopes.md)、[资源有效性迁移](docs/migration-resource-ownership.md)及[来源完成与有效性迁移](docs/migration-resource-completion.md)。
 
 借用对象的生命周期权限、内核工作区装配及原生任务的同步构造见[借用能力迁移](docs/migration-borrowed-capabilities.md)。

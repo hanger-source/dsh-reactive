@@ -212,6 +212,7 @@ test('Scope 退出后真实文件写入的迟到拒绝仍结算原反应，不�
   });
   await writeFile(join(directory, 'unavailable'), 'not a directory');
   const run = instance.start(), delivered: number[] = [];
+  const terminal = lastValueFrom(run.state.values$);
   run.events$.subscribe({ next: event => delivered.push(event.result), complete: () => { completed = true; } });
   void run.settled.then(() => { settled = true; });
   try {
@@ -219,14 +220,18 @@ test('Scope 退出后真实文件写入的迟到拒绝仍结算原反应，不�
     assert.equal(source.observed, false); assert.equal(completed, true);
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(settled, false);
-    assert.deepEqual(run.snapshot(), { status: 'draining', reason: 'stopped', pending: 1, emitted: 0 });
+    assert.deepEqual(await run.state.read(), { status: 'draining', reason: 'stopped', pending: 1, emitted: 0 });
     release.resolve();
     const settlement = await run.settled;
     assert.equal(settlement.status, 'failed'); assert.ok(writeFailure);
     if (settlement.status === 'failed') assert.equal(settlement.error, writeFailure);
-    const late = await firstValueFrom(run.state$);
+    assert.equal(await terminal, settlement, '来源Scope退出不结束原run对真实写入结算的观察');
+    const late = await run.state.read();
     assert.equal(late.status, 'failed');
     if (late.status === 'failed') assert.equal(late.error, writeFailure);
+    const current = run.state.peek();
+    assert.equal(current.status, 'ready');
+    if (current.status === 'ready') assert.equal(current.value, settlement);
     assert.deepEqual(started, [1]); assert.deepEqual(delivered, []);
     assert.equal(await readFile(join(directory, 'unavailable'), 'utf8'), 'not a directory');
   } finally { release.resolve(); scope.dispose(); }
@@ -532,18 +537,31 @@ test('热事件先交付再通知计数，状态观察者同步 stop 不制造�
   const run = createReaction(scope, { event: z.number(), result: z.number(), observe: () => source,
     operator: concatMap, execute: value => value,
   }).start();
-  const delivered: number[] = [], states: string[] = [];
-  run.events$.subscribe(event => delivered.push(event.result));
-  run.state$.subscribe(state => {
+  const delivered: number[] = [], states: string[] = [], following: string[] = [], counts: Promise<number>[] = [];
+  run.events$.subscribe(event => {
+    delivered.push(event.result);
+    counts.push(run.state.read().then(state => state.emitted));
+    const current = run.state.peek();
+    assert.equal(current.status, 'ready');
+    if (current.status === 'ready') assert.equal(current.value.emitted, delivered.length);
+  });
+  run.state.subscribe(observation => {
+    assert.equal(observation.status, 'ready');
+    if (observation.status !== 'ready') return;
+    const state = observation.value;
     states.push(state.status);
     if (state.status === 'running' && state.emitted === 1) run.stop();
   });
+  run.state$.subscribe(state => following.push(state.status));
   try {
     source.next(1); source.next(2);
     const settlement = await run.settled;
     assert.equal(settlement.status, 'stopped'); assert.equal(settlement.emitted, 1);
     assert.deepEqual(delivered, [1]);
+    assert.deepEqual(await Promise.all(counts), [1], '事件回调中的read与peek观察同一个已交付计数');
     assert.equal(states.at(-1), 'stopped');
     assert.equal(states.slice(states.indexOf('draining')).includes('running'), false);
+    assert.equal(following.at(-1), 'stopped');
+    assert.equal(following.slice(following.indexOf('draining')).includes('running'), false, '并列消费者也不能在重入stop后收到旧running');
   } finally { scope.dispose(); }
 });

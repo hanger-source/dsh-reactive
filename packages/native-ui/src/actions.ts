@@ -45,10 +45,26 @@ export function createNativeActionViews(
     if (views.has(key)) throw new Error('REACTIVE_NATIVE_VIEW_ACTION_DUPLICATE');
     views.set(key, definition);
   }
-  const registrations = new Map<string, { action: ActionContract; users: Set<object>; release(): void }>();
+  type Registration = { action: ActionContract; users: Set<object>; release: (() => void) | undefined };
+  const registrations = new Map<string, Registration>();
   const consumers = new Set<() => void>();
   const errors = new Subject<{ readonly sessionId: string; readonly error: unknown }>();
   let disposed = false;
+  let updating = 0;
+  const completeErrors = () => { if (disposed && updating === 0) errors.complete(); };
+  // 只沿当前同步调用栈排空错误交付；不延后原生注册/释放或另建调度队列。
+  const update = (run: () => void) => {
+    updating++;
+    try { run(); } finally { updating--; completeErrors(); }
+  };
+  const releaseUnused = (name: string, registration: Registration) => {
+    // register尚未返回时保留同一entry，允许同步重入的另一消费者共享本次真实注册。
+    if (registration.users.size || !registration.release || registrations.get(name) !== registration) return;
+    registrations.delete(name);
+    const release = registration.release;
+    registration.release = undefined;
+    release();
+  };
   const acquire = (owner: object, binding: ToolActionBinding) => {
     const definition = views.get(actionIdentityKey({ name: binding.action, version: binding.actionVersion }));
     if (!definition) return;
@@ -63,43 +79,71 @@ export function createNativeActionViews(
         ? readActionPresentation(definition!.action, native.block.meta) : undefined;
       return definition!.render({ native, result });
     }
-    const release = slots.register({ name: 'tool.call.toolview', key: binding.toolName }, ActionView);
-    registrations.set(binding.toolName, { action: definition.action, users: new Set([owner]), release });
+    const registration: Registration = { action: definition.action, users: new Set([owner]), release: undefined };
+    registrations.set(binding.toolName, registration);
+    try { registration.release = slots.register({ name: 'tool.call.toolview', key: binding.toolName }, ActionView); }
+    catch (error) {
+      if (registrations.get(binding.toolName) === registration) registrations.delete(binding.toolName);
+      throw error;
+    }
+    releaseUnused(binding.toolName, registration);
   };
   const releaseOwner = (owner: object, keep: ReadonlySet<string> = new Set()) => {
-    for (const [name, registration] of registrations) {
+    const failures: unknown[] = [];
+    for (const [name, registration] of [...registrations]) {
       if (keep.has(name)) continue;
-      registration.users.delete(owner);
-      if (!registration.users.size) { registration.release(); registrations.delete(name); }
+      if (!registration.users.delete(owner)) continue;
+      try { releaseUnused(name, registration); } catch (error) { failures.push(error); }
     }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length) throw new AggregateError(failures, 'REACTIVE_NATIVE_VIEW_RELEASE_FAILED');
   };
   return {
     errors$: errors.asObservable(),
     attach(source, options = {}) {
       if (disposed) throw new Error('REACTIVE_NATIVE_VIEWS_DISPOSED');
-      options.signal?.throwIfAborted();
+      const signal = options.signal;
+      signal?.throwIfAborted();
       const owner = {};
       let subscription: { unsubscribe(): void } | undefined;
       let stopped = false;
       const stop = () => {
         if (stopped) return;
         stopped = true;
-        options.signal?.removeEventListener('abort', stop);
-        subscription?.unsubscribe();
-        releaseOwner(owner);
+        signal?.removeEventListener('abort', aborted);
         consumers.delete(stop);
+        update(() => {
+          const failures: unknown[] = [];
+          try { subscription?.unsubscribe(); } catch (error) { failures.push(error); }
+          try { releaseOwner(owner); } catch (error) { failures.push(error); }
+          if (failures.length === 1) throw failures[0];
+          if (failures.length) throw new AggregateError(failures, 'REACTIVE_NATIVE_VIEW_CONSUMER_RELEASE_FAILED');
+        });
       };
+      const failed = (error: unknown) => update(() => {
+        try { stop(); }
+        catch (cleanup) { error = new AggregateError([error, cleanup], 'REACTIVE_NATIVE_VIEW_OBSERVATION_FAILED'); }
+        errors.next({ sessionId: source.id, error });
+      });
+      const aborted = () => update(() => { try { stop(); } catch (error) { errors.next({ sessionId: source.id, error }); } });
       consumers.add(stop);
-      options.signal?.addEventListener('abort', stop, { once: true });
+      signal?.addEventListener('abort', aborted, { once: true });
       subscription = source.actionManifest$.subscribe({
         next: bindings => {
           if (stopped) return;
           // 已见工具的历史调用仍沿相同视图读取；声明撤下不改写历史工具的展示身份。
-          try { for (const binding of bindings) acquire(owner, binding); }
-          catch (error) { stop(); errors.next({ sessionId: source.id, error }); }
+          update(() => {
+            try {
+              for (const binding of bindings) {
+                if (stopped) break;
+                acquire(owner, binding);
+              }
+            }
+            catch (error) { failed(error); }
+          });
         },
-        error: error => { stop(); errors.next({ sessionId: source.id, error }); },
-        complete: stop,
+        error: failed,
+        complete: aborted,
       });
       if (stopped) subscription.unsubscribe();
       return stop;
@@ -107,8 +151,12 @@ export function createNativeActionViews(
     dispose() {
       if (disposed) return;
       disposed = true;
-      for (const stop of [...consumers]) stop();
-      errors.complete();
+      update(() => {
+        const failures: unknown[] = [];
+        for (const stop of [...consumers]) { try { stop(); } catch (error) { failures.push(error); } }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length) throw new AggregateError(failures, 'REACTIVE_NATIVE_VIEWS_DISPOSAL_FAILED');
+      });
     },
     [Symbol.dispose]() { this.dispose(); },
   };

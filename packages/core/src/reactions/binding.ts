@@ -1,6 +1,8 @@
-import { Observable, ReplaySubject, Subject, Subscriber, Subscription, UnsubscriptionError, defer, from, isObservable, map, of } from 'rxjs';
+import { Observable, Subject, Subscriber, Subscription, UnsubscriptionError, defer, from, isObservable, map, of } from 'rxjs';
 import { z } from 'zod';
 import type { Scope } from '../reactivity/scope.ts';
+import type { Observation } from '../resources/observation.ts';
+import { ResourceReader } from '../resources/reader.ts';
 import { ownParameters, parameterIdentity } from '../reactivity/parameters.ts';
 import type { ReactionContract, ReactionInput, ReactionParameters, ReactionResult, ReactionTarget } from './definition.ts';
 import { reactionImplementation, type ReactionImplementation, type ReactionImplementationOptions } from './implementation.ts';
@@ -26,8 +28,10 @@ function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
 /** 一个运行持有唯一实际订阅；观察运行不会再次执行处理器。 */
 export class ReactionRun<D extends ReactionContract> {
   readonly #scope: Scope;
-  #state: ReactionState = Object.freeze({ status: 'running', emitted: 0 });
-  #states = new ReplaySubject<ReactionState>(1);
+  #current: Extract<Observation<ReactionState>, { status: 'ready' }> = Object.freeze({
+    status: 'ready', generation: 1, observedAt: Date.now(), value: Object.freeze({ status: 'running', emitted: 0 }),
+  });
+  #states = new Subject<void>();
   #events = new Subject<ReactionEvent<D>>();
   #connection = new Subscription();
   #controller = new AbortController();
@@ -41,8 +45,17 @@ export class ReactionRun<D extends ReactionContract> {
   #failures: unknown[] = [];
   #failure: unknown;
   #knownFailures = new Set<unknown>();
+  /** 当前运行的同源资源；退出感知后仍交付draining和真实终态，不随原Scope撤销。 */
+  readonly state = new ResourceReader<ReactionState>({ peek: () => this.#current,
+    observations$: new Observable<Observation<ReactionState>>(subscriber => {
+      if (this.#finished) { subscriber.next(this.#current); subscriber.complete(); return; }
+      // 先连接通知再交当前事实；事件回调内重入读取也不能重放通知前的旧计数。
+      subscriber.add(this.#states.subscribe({ next: () => subscriber.next(this.#current), complete: () => subscriber.complete() }));
+      if (!subscriber.closed) subscriber.next(this.#current);
+    }),
+  });
   /** 回放当前运行状态；来源、执行与释放失败均通过 failed 状态交付。 */
-  readonly state$ = this.#states.asObservable();
+  readonly state$ = this.state.values$;
   /** RxJS 选中的热成功结果流；关系终止时 complete，失选的 Promise 不补发结果。 */
   readonly events$ = this.#events.asObservable();
   /** 等已开始的裸 Promise 及结果解析完成后 resolve 终态；失败不 reject。 */
@@ -52,23 +65,26 @@ export class ReactionRun<D extends ReactionContract> {
   constructor(readonly definition: D, readonly params: ReactionTarget<D>, scope: Scope,
     private readonly implementation: ReactionImplementationOptions<D>, private readonly ended: () => void) {
     this.#scope = scope;
-    this.#states.next(this.#state);
   }
-  snapshot(): ReactionState { return this.#state; }
+  snapshot(): ReactionState { return this.#current.value; }
+
+  private updateState(state: ReactionState): void {
+    this.#current = Object.freeze({ status: 'ready', generation: this.#current.generation + 1, observedAt: Date.now(), value: state });
+  }
 
   /** @internal 只有 instance.start 在登记 active 后调用。 */
   activate(): void {
     this.#scope.assertActive();
-    if (this.#activated || this.#state.status !== 'running') throw new Error('REACTIVE_REACTION_ALREADY_STARTED');
+    if (this.#activated || this.#current.value.status !== 'running') throw new Error('REACTIVE_REACTION_ALREADY_STARTED');
     this.#activated = true;
     this.#release = this.#scope.own(() => this.stop());
     let sequence = 0;
     const subscriber = new Subscriber<ReactionEvent<D>>({
       next: event => {
         if (!this.accepting()) return;
-        this.#state = Object.freeze({ status: 'running', emitted: this.#state.emitted + 1 });
+        this.updateState(Object.freeze({ status: 'running', emitted: this.#current.value.emitted + 1 }));
         this.#events.next(event);
-        if (this.#state.status === 'running') this.#states.next(this.#state);
+        if (this.#current.value.status === 'running') this.#states.next();
       },
       error: (error: unknown) => this.fail(error),
       complete: () => this.end(this.#scope.disposed ? 'stopped' : 'completed'),
@@ -214,23 +230,23 @@ export class ReactionRun<D extends ReactionContract> {
 
   private settle(): void {
     if (!this.#ending || this.#finished) return;
-    const reason = this.#ending, emitted = this.#state.emitted;
+    const reason = this.#ending, emitted = this.#current.value.emitted;
     if (this.#depth || this.#pending) {
-      const previous = this.#state;
+      const previous = this.#current.value;
       if (previous.status === 'draining' && previous.reason === reason && previous.pending === this.#pending
         && (previous.reason !== 'failed' || previous.error === this.#failure)) return;
-      this.#state = Object.freeze(reason === 'failed'
+      this.updateState(Object.freeze(reason === 'failed'
         ? { status: 'draining', reason, pending: this.#pending, emitted, error: this.#failure }
-        : { status: 'draining', reason, pending: this.#pending, emitted });
-      this.#states.next(this.#state);
+        : { status: 'draining', reason, pending: this.#pending, emitted }));
+      this.#states.next();
       return;
     }
     this.#finished = true;
     const state: ReactionSettlement = Object.freeze(reason === 'failed'
       ? { status: 'failed', emitted, error: this.#failure } : { status: reason, emitted });
-    this.#state = state;
+    this.updateState(state);
     this.ended();
-    try { this.#states.next(state); this.#states.complete(); }
+    try { this.#states.next(); this.#states.complete(); }
     finally { this.#completion.resolve(state); }
   }
 }

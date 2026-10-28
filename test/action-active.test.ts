@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { firstValueFrom, lastValueFrom } from 'rxjs';
-import { bindAction, defineAction, implementAction, z, type ActionExecutionContext } from '@hanger-source/dsh-reactive';
+import { filter, firstValueFrom, lastValueFrom } from 'rxjs';
+import { bindAction, combineResources, defineAction, implementAction, z, type ActionExecutionContext } from '@hanger-source/dsh-reactive';
 
 test('绑定release与原调用取消在不合作准入返回前结案，迟到准入不能开始真实写入', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-action-admission-'));
@@ -29,7 +29,7 @@ test('绑定release与原调用取消在不合作准入返回前结案，迟到�
       if (mode === 'release') action.release(); else controller.abort(reason);
       await rejected;
       assert.equal(signal.aborted, true);
-      assert.deepEqual(await firstValueFrom(action.activeInvocations$), []);
+      assert.deepEqual(await action.activeInvocations.read(), []);
       gate.resolve();
       await new Promise<void>(resolve => setImmediate(resolve));
       await assert.rejects(readFile(file), { code: 'ENOENT' });
@@ -58,7 +58,7 @@ test('绑定当前调用集合包含并发准入与执行，晚订和退订不�
   const first = action('first', execution('first'));
   await firstStarted.promise;
   const second = action('second', execution('second'));
-  const late = await firstValueFrom(action.activeInvocations$);
+  const late = await action.activeInvocations.read();
   assert.deepEqual(late, [first, second]);
   assert.deepEqual(await firstValueFrom(second.activity$), { state: 'pending' });
   assert.deepEqual(await second.activity.read(), { state: 'pending' });
@@ -75,20 +75,35 @@ test('绑定当前调用集合包含并发准入与执行，晚订和退订不�
   const receipt = second.activity$.subscribe(activity => {
     if (activity.state === 'running') runningObserved.push(effects.includes('second'));
   });
+  const running = firstValueFrom(combineResources({ active: action.activeInvocations, call: second.activity }).pipe(
+    filter(observation => observation.status === 'ready' && observation.value.call.state === 'running'),
+  ));
   secondAdmission.resolve();
   await secondStarted.promise;
+  const current = await running;
+  assert.equal(current.status, 'ready');
+  if (current.status === 'ready') assert.deepEqual(current.value.active, [second]);
   assert.deepEqual(runningObserved, [true], 'running通知前业务必须已经进入，观察者同步重入不能抢先改变准入');
   receipt.unsubscribe();
   assert.equal((await second.activity.read()).state, 'running');
   action.release();
   await assert.rejects(action('first', execution('after-release')).result, /REACTIVE_ACTION_BINDING_RELEASED/u);
-  assert.deepEqual(await firstValueFrom(action.activeInvocations$), [second]);
+  assert.deepEqual(await action.activeInvocations.read(), [second]);
+  const drained = lastValueFrom(action.activeInvocations.values$);
+  let ended = false;
+  void drained.then(() => { ended = true; });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(ended, false, 'release封住新准入，集合仍等原业务实际结算后完成');
   subscription.unsubscribe();
   secondResult.resolve('second-recorded');
   assert.equal(await second.result, 'second-recorded');
   assert.equal((await lastValueFrom(second.activity.observations$)).status, 'ready');
   assert.equal((await second.activity.read()).state, 'returned');
-  assert.deepEqual(await firstValueFrom(action.activeInvocations$), []);
+  assert.deepEqual(await drained, []);
+  assert.deepEqual(await action.activeInvocations.read(), []);
+  const empty = action.activeInvocations.peek();
+  assert.equal(empty.status, 'ready');
+  if (empty.status === 'ready') assert.deepEqual(empty.value, []);
   assert.deepEqual(effects, ['first', 'second']);
   assert.deepEqual(seen, [['first', 'second'], ['second']]);
 });

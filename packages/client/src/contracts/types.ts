@@ -96,6 +96,8 @@ export interface ProgramActionBindingRequest extends ProgramSessionAddress { rea
 export interface ProgramActionBinding { readonly bindingId: string; readonly contract: ActionIdentity; readonly scope: JsonValue; }
 export interface ProgramActionRequest extends ProgramSessionAddress { readonly name: string; readonly contract: ActionIdentity; readonly bindingId: string; readonly input: JsonValue; }
 export interface ProgramInvocationAddress extends ProgramAddress { readonly invocationId: string; }
+/** 按局部Surface投射后的精确原槽与公开合同查回；不解析当前Expose。 */
+export interface ProgramInvocationLookupRequest extends ProgramInvocationAddress { readonly name: string; readonly contract: ActionIdentity; }
 export interface ProgramOperationIdentity { readonly kind: string; readonly version: number; }
 export interface ProgramOperationRequest extends ProgramSessionAddress { readonly operation: ProgramOperationIdentity; readonly reference: JsonValue; }
 export interface ProgramOperationLocateRequest extends ProgramSessionAddress { readonly operation: ProgramOperationIdentity; readonly command: JsonValue; }

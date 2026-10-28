@@ -140,8 +140,8 @@ test('局部复合hook用同一Resource、Action和Reaction跨函数消费；组
     assert.equal(settled, false, '真实文件写入尚未完成，原运行仍拥有结算责任');
     assert.deepEqual(run.snapshot(), { status: 'draining', reason: 'stopped', pending: 1, emitted: 1 });
     assert.equal(observing, 0);
-    assert.throws(() => first.resource.read(), /REACTIVE_SCOPE_DISPOSED/);
-    assert.throws(() => next.reaction.start(), /REACTIVE_SCOPE_DISPOSED/);
+    assert.throws(() => first.resource.read(), error => error === failure);
+    assert.throws(() => next.reaction.start(), error => error === failure);
     assert.equal(await remaining.resource.read(), 33, '另一个Program的对象继续有效');
     release.resolve(); await written.promise;
     assert.equal((await run.settled).status, 'stopped');

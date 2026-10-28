@@ -26,6 +26,10 @@ Scope 子树共享父撤销的原原因，父退出后即使尚在执行其他�
 
 `useShared(factory, deps)` 返回标准 RxJS 共享查询，使用一个值的 ReplaySubject。多个观察者共享来源，最后一个观察者退出时断开尚未终止的来源；完成与错误在该来源身份下保留。它不因为某次通知或重新订阅自动重试，也不把查询变化转换成模型输入。
 
+`useSharedResource(source)` 或 `useSharedResource(factory, deps)` 返回 Program 拥有的 ResourceReader，按原 observations$ 共享，构造不订阅。普通函数、read/peek、值流与 useResource(reader) 使用同一资源；Program 退出以原原因结束本读侧，借入来源保留原 owner。Workspace 与 Program 使用同一共享机制及清理失败汇总，不建立两套事实。
+
+`action.activeInvocations` 和 `run.state` 分别提供在途集合与 Reaction 运行事实的资源读取，原 activeInvocations$/state$ 是相应 reader.values$。它们归实际绑定/run，保持执行后的 draining 与真实终态；同步事件重入中的 read/peek 读取同一当前事实，完成或停止关系不覆盖尚未结算的业务。
+
 同一查询同时供 Context 与 Expose 使用时，应先明确共享，再派生各自需要的形态。Surface 出口自身也是来源的消费者，因此组件观察退出不一定立即结束仍由出口持有的连接。工作区级共享通过 props 中的 `workspace.share(source$)` 明确持有，同一应用宿主内，同一原生工作区与同一来源对象复用连接，跨该工作区中的不同 Environment 共用；其寿命独立于页面和单个会话。Environment 的程序与 Preset 配置不拥有目录或工作区共享连接。
 
 `useRelation(factory, deps)` 在 effect 中订阅长期 RxJS 关系，依赖替换或组件退出时清理订阅。未在流内处理的错误使程序 owner 失败，后续 prepare 和调用被拒绝，公开视图进入错误。已受理业务调用继续遵循自己的执行信号。关系可以显式调用 Action 或 `conversation.submit`；组件 render、来源读取和外部观察本身不隐式执行这些命令。

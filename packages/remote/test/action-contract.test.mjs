@@ -99,8 +99,9 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
   const before = { scopes, inputs, defaults, bodies };
   for (const [session, expected] of [[renamed, wrongName], [newer, wrongVersion]]) {
     await assert.rejects(session.resolveAction('save', root), error => {
-      assert.equal(error.code, 'reactive/action-contract-mismatch');
-      assert.deepEqual(error.details, { expected: actionIdentity(expected), actual: actionIdentity(save) }); return true;
+      assert.ok(error instanceof ActionContractMismatchError);
+      assert.deepEqual(error.expected, actionIdentity(expected));
+      assert.deepEqual(error.actual, actionIdentity(save)); return true;
     });
   }
   assert.deepEqual({ scopes, inputs, defaults, bodies }, before, '拒绝合同不能解析目标、输入或触发默认值及副作用');
@@ -119,7 +120,8 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
   assert.equal(await readFile(file, 'utf8'), '7'); assert.equal(bodies, 1); assert.equal(inputs, 1);
   const wrongProgram = { sessionId: local.id, program: { name: 'another_action_program', version: 1 }, invocationId: invocation.id };
   for (const query of ['actionInvocation', 'actionResult']) {
-    const reply = await ctx.remote.reactivePrograms[query](wrongProgram, t.signal);
+    const request = query === 'actionInvocation' ? { ...wrongProgram, name: 'save', contract: actionIdentity(save) } : wrongProgram;
+    const reply = await ctx.remote.reactivePrograms[query](request, t.signal);
     assert.equal(reply.ok, false); assert.equal(reply.error.code, 'reactive/program-contract-mismatch');
   }
   const wrongObservation = ctx.remote.reactivePrograms.observeAction(wrongProgram, t.signal);

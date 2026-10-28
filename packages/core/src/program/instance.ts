@@ -6,6 +6,9 @@ import type { OperationAccessContext, OperationBindingReference, OperationContra
 import { Scope, batch, type Cell } from '../reactivity/scope.ts';
 import { abortable } from '../reactivity/observable.ts';
 import { ResourceValue } from '../resources/value.ts';
+import type { ResourceReader } from '../resources/reader.ts';
+import type { ResourceSource } from '../resources/source.ts';
+import { scopedResourceSharing } from '../resources/sharing.ts';
 import { type Observation } from '../resources/observation.ts';
 import { ProgramHookProvider, type ProgramHookOwner } from './hooks.ts';
 import type { ProgramContract, ProgramSession, ProgramWorkspace } from './definition.ts';
@@ -54,6 +57,7 @@ type StepBoundary = { readonly check: (signal: AbortSignal) => void | Promise<vo
 /** 会话拥有组件树、声明快照与查询；原生执行及已受理业务拥有各自生存期。 */
 export class ProgramInstance<P extends ProgramContract> implements ProgramHookOwner {
   readonly reactivityScope: Scope;
+  readonly shareResource: <T>(source: ResourceSource<T>) => ResourceReader<T>;
   readonly revision: Cell<number>;
   readonly contexts = new Map<string, ResourceValue<string>>();
   readonly offers = new Map<string, BoundOffer>();
@@ -81,8 +85,11 @@ export class ProgramInstance<P extends ProgramContract> implements ProgramHookOw
     this.revision = scope.state(0);
     this.signal = AbortSignal.any([scope.signal, this.#failed.signal]);
     this.reactivityScope = scope.child();
+    this.shareResource = scopedResourceSharing(this.reactivityScope, 'REACTIVE_PROGRAM_RESOURCE_CLEANUP_FAILED');
     const releaseReactivity = () => {
-      try { this.reactivityScope.dispose(); }
+      // 父撤销先交完子signal的资源释放，再由原child清理汇总；不能提前消费该回执。
+      if (scope.disposed) return;
+      try { this.reactivityScope.dispose(this.signal.reason); }
       catch (error) { scope.observerError(error); }
     };
     this.signal.addEventListener('abort', releaseReactivity, { once: true });

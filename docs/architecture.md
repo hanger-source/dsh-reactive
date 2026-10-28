@@ -119,6 +119,8 @@ renderer 在 React commit 后收集整棵树的声明，经过私有运行时品
 
 远程宿主从同一 Surface 合同分派到实际绑定，调用者身份由认证载体取得。各入口共用绑定的解析与准入链；独立调用不因参数中出现 callId 或 Goal 引用就取得原生调用权限。
 
+公开调用的实际 ActionAuthority 持有唯一有界 Invocation 回执索引，Host/Service 与本地、远程 Surface 都读取原调用。Module 和 Collection 只投射精确地址；查回核验原参与者、Program 与 Action 合同，不依赖当前声明。Gateway 负责传输，不另存回执或延长业务执行寿命。
+
 声明撤下会阻止后续受理。已经进入执行的 Action 沿原调用信号和业务 owner 继续结算；Invocation 的结果和活动观察不受消费者订阅次数控制。业务结果返回、原生工具最终结算与业务任务正式完成各有自己的事实来源。
 
 ## 长期业务操作与人工参与

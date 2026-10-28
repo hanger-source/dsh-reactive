@@ -176,7 +176,10 @@ export function prefixSurfaceSlot(prefix: string, slot: string): string {
   const address = parseSurfaceInstanceSlot(slot);
   return address ? surfaceInstanceSlot(prefix + address.collection, address.key, address.slot) : prefix + slot;
 }
-/** 普通槽与 collection 实例复用同一叶合同；未知地址不会扩大合同。 */
+/** 已知槽保留原schema类型；动态collection地址仍只查同一叶合同，未知地址不会扩大合同。 */
+export function surfaceSlotDefinition<S extends Surface, K extends keyof S['views'] & string>(surface: S, kind: 'views', name: K): S['views'][K] | undefined;
+export function surfaceSlotDefinition<S extends Surface, K extends keyof S['actions'] & string>(surface: S, kind: 'actions', name: K): S['actions'][K] | undefined;
+export function surfaceSlotDefinition<S extends Surface, K extends keyof S['operations'] & string>(surface: S, kind: 'operations', name: K): S['operations'][K] | undefined;
 export function surfaceSlotDefinition(surface: Surface, kind: 'views', name: string): ViewDefinition | undefined;
 export function surfaceSlotDefinition(surface: Surface, kind: 'actions', name: string): ActionContract | undefined;
 export function surfaceSlotDefinition(surface: Surface, kind: 'operations', name: string): OperationContract | undefined;

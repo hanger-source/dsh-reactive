@@ -1,4 +1,4 @@
-import { BehaviorSubject, ReplaySubject, Subject, firstValueFrom, takeWhile, type Observable } from 'rxjs';
+import { BehaviorSubject, ReplaySubject, Subject, firstValueFrom, map, takeWhile, type Observable } from 'rxjs';
 import { z } from 'zod';
 import { ResourceReader } from '../resources/reader.ts';
 import { abortable } from '../reactivity/observable.ts';
@@ -213,7 +213,9 @@ export interface BoundAction<D extends ActionContract, Automatic extends boolean
   readonly released: boolean;
   /** 本绑定新建立的真实调用句柄；热观察不重放、不启动或取消执行。 */
   readonly invocations$: Observable<ActionInvocation<D>>;
-  /** 本绑定当前尚未结算的调用；晚订阅取得当前集合，不保存终态历史。 */
+  /** 本绑定当前尚未结算的调用；release后仍观察实际结算，最终空集合保留供晚读。 */
+  readonly activeInvocations: ResourceReader<readonly ActionInvocation<D>[]>;
+  /** 当前调用集合的同源值流，不保存终态历史。 */
   readonly activeInvocations$: Observable<readonly ActionInvocation<D>[]>;
   invoke(input: ActionInput<D>, ...execution: ActionExecutionArguments<Automatic>): ActionInvocation<D>;
   /** 明确重连已有操作；读取权限仍由当前宿主与业务 owner 核验。 */
@@ -324,8 +326,18 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
     const lifetime = new AbortController();
     const invocations = new Subject<ActionInvocation<Definition>>();
     const active = new Set<ActionInvocation<Definition>>();
-    const activeInvocations = new ReplaySubject<readonly ActionInvocation<Definition>[]>(1);
-    const publishActive = () => activeInvocations.next(Object.freeze([...active]));
+    let currentActive: Extract<Observation<readonly ActionInvocation<Definition>[]>, { status: 'ready' }> = Object.freeze({
+      status: 'ready', generation: 0, observedAt: Date.now(), value: Object.freeze([]),
+    });
+    const activeStates = new ReplaySubject<void>(1);
+    const activeInvocations = new ResourceReader<readonly ActionInvocation<Definition>[]>({
+      peek: () => currentActive, observations$: activeStates.pipe(map(() => currentActive)),
+    });
+    const publishActive = () => {
+      currentActive = Object.freeze({ status: 'ready', generation: currentActive.generation + 1,
+        observedAt: Date.now(), value: Object.freeze([...active]) });
+      activeStates.next();
+    };
     publishActive();
     const assertActive = () => {
       if (released) throw new Error('REACTIVE_ACTION_BINDING_RELEASED');
@@ -514,7 +526,7 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
         } finally {
           finished = true;
           if (invocation && active.delete(invocation)) publishActive();
-          if (released && !active.size) activeInvocations.complete();
+          if (released && !active.size) activeStates.complete();
         }
       })();
       // activity$ 也是正式的失败观察入口；仅观察它不制造未处理 Promise 拒绝。
@@ -539,7 +551,8 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
       released: false,
       invoke,
       invocations$: invocations.asObservable(),
-      activeInvocations$: activeInvocations.asObservable(),
+      activeInvocations,
+      activeInvocations$: activeInvocations.values$,
       observe,
       attach,
       locate,
@@ -548,7 +561,7 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
         released = true;
         lifetime.abort(new Error('REACTIVE_ACTION_BINDING_RELEASED'));
         invocations.complete();
-        if (!active.size) activeInvocations.complete();
+        if (!active.size) activeStates.complete();
       },
     });
     Object.defineProperty(bound, 'released', { get: () => released });

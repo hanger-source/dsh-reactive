@@ -8,6 +8,7 @@ import { Scope } from '../reactivity/scope.ts';
 import { type Observation } from '../resources/observation.ts';
 import { bindResource, type ResourceInstance } from '../resources/binding.ts';
 import { resourceObservations, type ResourceSource } from '../resources/source.ts';
+import type { ResourceReader } from '../resources/reader.ts';
 import { isResourceImplementation, type ResourceImplementation } from '../resources/implementation.ts';
 import type { ResourceContract, ResourceParameters, ResourceData } from '../resources/definition.ts';
 import { createResource, type LocalResource, type LocalResourceOptions } from '../resources/local.ts';
@@ -22,6 +23,7 @@ export interface ProgramHookOwner {
   readonly scope: Scope;
   /** 参数化资源与反应共享此程序作用域；程序失败即释放，不取消已受理业务。 */
   readonly reactivityScope: Scope;
+  shareResource<T>(source: ResourceSource<T>): ResourceReader<T>;
   /** 程序失败或释放的查询/关系寿命；已受理业务执行保留自己的 signal。 */
   readonly signal: AbortSignal;
   execution(action: ActionReference): ActionExecutionContext;
@@ -171,6 +173,18 @@ export function useShared<T>(source: Observable<T> | (() => Observable<T>), depe
 export interface ObservedResource<T> {
   readonly state: Observation<T>;
   readonly observations$: Observable<Observation<T>>;
+}
+
+/**
+ * 将已有或派生的观察来源接为Program拥有的共享读侧，构造不读取。
+ * 相同原observations$在本Program内共用Reader；读、流与useResource观察同一事实。
+ * factory只构造来源，deps决定来源身份；Program退出只撤本读侧，不转移来源owner。
+ */
+export function useSharedResource<T>(source: ResourceSource<T>): ResourceReader<T>;
+export function useSharedResource<T>(factory: () => ResourceSource<T>, dependencies: DependencyList): ResourceReader<T>;
+export function useSharedResource<T>(source: ResourceSource<T> | (() => ResourceSource<T>), dependencies?: DependencyList): ResourceReader<T> {
+  const owner = useOwner();
+  return owner.shareResource(useSource(source, dependencies));
 }
 
 /**

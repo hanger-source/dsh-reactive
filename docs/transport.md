@@ -236,11 +236,11 @@ const created = await client.create('order', { workspaceId: authorizedWorkspaceI
 
 Action 开始回执未知时抛 `ActionAdmissionUnknownError`，保留会话和槽名。Invocation ID 来自 Host，不是跨重启 command 幂等键。没有拿到 Invocation ID 的未知受理不能自动重试；需要业务合同中的 Operation command/locate 核对实际受理。
 
-remote owner 持有真实 Invocation，`session.invocation(slot, id)`、result 和 activity 查询不再次 execute。默认保留已完成调用 5 分钟，最多 1000 个；配置为 `completedRetentionMs`、`maxCompleted`。执行中的调用不因这项保留策略淘汰，断线也不取消 body。过期、未知或服务重启后的进程内记录缺失返回 `reactive/invocation-unavailable`，不会重放 Action；长期业务恢复使用自己的 Operation identity。
+ApplicationHost 的实际 Action owner 持有唯一 Invocation 回执索引，Gateway 只编码和观察原调用。`session.invocation(slot, id)`、Module 和嵌套 Collection 的局部 invocation、result 和 activity 查询不再次 execute，也不依赖当前 Expose。查回核原参与者、Session、Program、Action 合同和完整地址；同合同的另一个地址不能取得回执。本地同步返回原 Invocation，远程异步返回同一回执的读取对象。默认保留已完成调用 5 分钟，最多 1000 个；`completedRetentionMs`、`maxCompleted` 配置属于 RuntimeOptions/HostOptions。执行中的调用不因这项保留策略淘汰，断线也不取消 body。过期、未知或服务重启后的进程内记录缺失返回 `reactive/invocation-unavailable`，不会重放 Action；长期业务恢复使用自己的 Operation identity。
 
 ## Operation 与人工参与
 
-`await invocation.operation` 从同次 Action 回执及纯 Operation 合同取得只读 core OperationHandle。客户端通过 `implementOperation` 的只读 owner 接远程 locate/observe，继续复用 core 的 state parse、共享 Observation、`settled()` 和 feedback 语义。reference/command 按对应 schema input 传输，解析后的值通过同一 schema encode 恢复 wire；身份合同须可逆。
+`await invocation.operation` 从同次 Action 回执及纯 Operation 合同取得只读 core OperationHandle。客户端以原 Invocation 地址核验并观察实际 Operation 句柄，复用 core 的 state parse、共享 Observation 与 `settled()`，不重新取得会话或通过任意 reference 定位。reference/command 按对应 schema input 传输，解析后的值通过同一 schema encode 恢复 wire；身份合同须可逆。
 
 `attachOperation(definition, reference)` 只连接既有事实，`locateOperation(definition, command)` 只查询受理事实；unknown 不是许可重发。查询错误进入 Observation.error，不改写已返回的 Action 回执，也不冒充业务失败终态。有限查询以 ready/error 完成时保留最后事实，空或 pending 完成是错误。
 

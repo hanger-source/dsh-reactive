@@ -1,5 +1,7 @@
 export { ApplicationHost } from './application.ts';
 export type { ApplicationService } from './application.ts';
+export { InvocationUnavailableError } from './execution/invocation.ts';
+export type { RetainedActionInvocation } from './execution/invocation.ts';
 export { mountApplication } from './applications/mount.ts';
 export type { ApplicationFactory } from './applications/mount.ts';
 export type { HostOptions } from './applications/options.ts';

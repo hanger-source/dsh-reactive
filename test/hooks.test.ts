@@ -8,6 +8,7 @@ import { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { observeResource } from '@hanger-source/dsh-reactive';
 import { type Observation } from '@hanger-source/dsh-reactive';
 import { ProgramHookProvider, type ProgramHookOwner } from '../packages/core/src/program/hooks.ts';
+import { scopedResourceSharing } from '../packages/core/src/resources/sharing.ts';
 import { useAction, useBeforeStep, useObservable, useRelation, useResource, useShared, type ObservedResource } from '@hanger-source/dsh-reactive/program';
 import { createDeclarationRenderer, declaration, type Frame } from '../packages/core/src/program/renderer.ts';
 
@@ -40,7 +41,7 @@ test('StrictMode 与目标替换只改变声明准入；普通调用由 owner �
   });
   const owner: ProgramHookOwner = {
     ...noOperationQueries,
-    scope, reactivityScope: scope, signal: scope.signal,
+    scope, reactivityScope: scope, shareResource: scopedResourceSharing(scope, "HOOK_RESOURCE_CLEANUP_FAILED"), signal: scope.signal,
     execution() {
       const execution: ActionExecutionContext = { invocationId: 'program-' + ++identities, sessionId: 'session',
         source: { kind: 'participant', participant: 'service', actorId: 'configured-service', entrypoint: 'program' },
@@ -116,7 +117,7 @@ test('memo 来源只在 commit 订阅，共享查询供现场与公开观察读�
   const errors: unknown[] = [];
   const publicValues: number[] = [];
   let starts = 0, stops = 0, rendering = false;
-  const owner: ProgramHookOwner = { ...noOperationQueries, scope, reactivityScope: scope, signal: scope.signal, execution() { throw new Error('UNEXPECTED_EXECUTION'); },
+  const owner: ProgramHookOwner = { ...noOperationQueries, scope, reactivityScope: scope, shareResource: scopedResourceSharing(scope, "HOOK_RESOURCE_CLEANUP_FAILED"), signal: scope.signal, execution() { throw new Error('UNEXPECTED_EXECUTION'); },
     admit() { throw new Error('UNEXPECTED_ADMISSION'); }, fail: error => errors.push(error), beforeStep: () => () => {} };
   const frames: Frame<{ observation: Observation<number>; source: Observable<number> }>[] = [];
   let published: Observable<number> | undefined;
@@ -184,7 +185,7 @@ test('长期关系的未恢复错误交还程序 owner，步骤检查随声明�
   const failure = new Error('RELATION_FAILED');
   const failures: unknown[] = [];
   const seen: number[] = [];
-  const owner: ProgramHookOwner = { ...noOperationQueries, scope, reactivityScope: scope, signal: scope.signal, execution() { throw new Error('UNEXPECTED_EXECUTION'); },
+  const owner: ProgramHookOwner = { ...noOperationQueries, scope, reactivityScope: scope, shareResource: scopedResourceSharing(scope, "HOOK_RESOURCE_CLEANUP_FAILED"), signal: scope.signal, execution() { throw new Error('UNEXPECTED_EXECUTION'); },
     admit() { throw new Error('UNEXPECTED_ADMISSION'); }, fail: error => failures.push(error),
     beforeStep(check) { checks.add(check); return () => { checks.delete(check); }; } };
   function Work() {
@@ -219,7 +220,7 @@ test('资源观察共享一次读取，失效同步撤下旧 ready，迟到读�
   const reads: { key: string; signal: AbortSignal; result: ReturnType<typeof Promise.withResolvers<Record>> }[] = [];
   const failures: unknown[] = [];
   let rendering = false, connections = 0, stops = 0;
-  const owner: ProgramHookOwner = { ...noOperationQueries, scope, reactivityScope: scope, signal: scope.signal, execution() { throw new Error('UNEXPECTED_EXECUTION'); },
+  const owner: ProgramHookOwner = { ...noOperationQueries, scope, reactivityScope: scope, shareResource: scopedResourceSharing(scope, "HOOK_RESOURCE_CLEANUP_FAILED"), signal: scope.signal, execution() { throw new Error('UNEXPECTED_EXECUTION'); },
     admit() { throw new Error('UNEXPECTED_ADMISSION'); }, fail: error => failures.push(error), beforeStep: () => () => {} };
   const frames: Frame<ObservedResource<Record>>[] = [];
   const published: Observation<Record>[] = [];
@@ -322,7 +323,7 @@ test('资源来源终止错误同时交给组件与公开观察，重渲染不�
   const scope = new Scope();
   const input = new Subject<Observation<number>>();
   const failures: unknown[] = [];
-  const owner: ProgramHookOwner = { ...noOperationQueries, scope, reactivityScope: scope, signal: scope.signal, execution() { throw new Error('UNEXPECTED_EXECUTION'); },
+  const owner: ProgramHookOwner = { ...noOperationQueries, scope, reactivityScope: scope, shareResource: scopedResourceSharing(scope, "HOOK_RESOURCE_CLEANUP_FAILED"), signal: scope.signal, execution() { throw new Error('UNEXPECTED_EXECUTION'); },
     admit() { throw new Error('UNEXPECTED_ADMISSION'); }, fail: error => failures.push(error), beforeStep: () => () => {} };
   const publicStates: Observation<number>[] = [];
   let publication: Subscription | undefined;

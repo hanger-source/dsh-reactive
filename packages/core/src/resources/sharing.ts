@@ -1,4 +1,5 @@
-import { BehaviorSubject, NEVER, Observable, concatWith, share, skip } from 'rxjs';
+import { BehaviorSubject, NEVER, Observable, UnsubscriptionError, concatWith, share, skip } from 'rxjs';
+import type { Scope } from '../reactivity/scope.ts';
 import { normalizeResource } from '../reactivity/observable.ts';
 import type { Observation } from './observation.ts';
 import { ResourceReader, type ResourceReaderOptions } from './reader.ts';
@@ -23,4 +24,29 @@ export function shareResource<T>(source: ResourceSource<T>, options: ResourceRea
     resetOnRefCountZero: true, resetOnComplete: false, resetOnError: true,
   }));
   return new ResourceReader({ observations$, peek: () => current === undefined ? pending : current.value }, options);
+}
+
+/** @internal 每个真实scope一份共享索引与释放回执；观察流仍持有唯一事实。 */
+export function scopedResourceSharing(scope: Scope, cleanupFailure: string): <T>(source: ResourceSource<T>) => ResourceReader<T> {
+  const resources = new WeakMap<Observable<unknown>, unknown>();
+  const failures: unknown[] = [];
+  const recordFailure = (error: unknown): void => {
+    if (error instanceof UnsubscriptionError && error.errors.length) {
+      for (const failure of error.errors) recordFailure(failure);
+    } else failures.push(error);
+  };
+  scope.own(() => {
+    if (failures.length === 1) throw failures[0];
+    if (failures.length) throw new AggregateError(failures, cleanupFailure);
+  });
+  return <T>(source: ResourceSource<T>): ResourceReader<T> => {
+    scope.assertActive();
+    const observations$ = resourceObservations(source);
+    const previous = resources.get(observations$);
+    if (previous) return previous as ResourceReader<T>;
+    const reader = shareResource(observations$, { signal: scope.signal,
+      onObserverError: error => scope.observerError(error), onCleanupError: recordFailure });
+    resources.set(observations$, reader);
+    return reader;
+  };
 }

@@ -3,7 +3,7 @@ import { RemoteError } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { z, actionIdentity, assertActionIdentity, type ActionIdentity, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { ProgramSessionAddress, ProgramActionBinding } from './contracts/types.ts';
-import './contracts/errors.ts';
+import { decodeProgramFailure } from './contracts/errors.ts';
 import { revokeConversationAccess, type ClientScope, type ClientLease } from './scope.ts';
 
 export interface RemoteActionCapture {
@@ -104,7 +104,7 @@ export function createActionBindings(owner: ClientScope, address: ProgramSession
       assertActive(); signal?.throwIfAborted();
       // 取得自己的 raw JSON，避免调用方在官方物理重连前改写这次解析请求。
       const connection = owner.acquire(() => connectBinding(owner.context.remote, address, name, actionIdentity(contract), z.json().parse(scope), owner.signal,
-        error => revokeConversationAccess(owner, error)),
+        error => revokeConversationAccess(owner, error instanceof RemoteError ? decodeProgramFailure(error) : error)),
         connection => connection.close(owner.signal.aborted ? owner.signal.reason : new Error('REACTIVE_REMOTE_ACTION_BINDINGS_CLOSED')),
         'program-action-binding:' + name);
       const aborted = () => { void dispose(connection, signal?.reason); };

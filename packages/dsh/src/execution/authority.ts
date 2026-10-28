@@ -5,7 +5,7 @@ import { firstValueFrom } from 'rxjs';
 import { abortable } from '@hanger-source/dsh-reactive';
 import { z } from "zod";
 import { type Continuation, type WaitReference, type SubmitOptions } from "@hanger-source/dsh-reactive/kernel";
-import { ActionBindingUnavailableError, ActionTargetMismatchError, type ActionCallContext, type ActionExecutionContext, type ActionReference, type Invocation } from "@hanger-source/dsh-reactive/kernel";
+import { ActionBindingUnavailableError, ActionTargetMismatchError, assertExpectedProgram, type ActionContract, type ActionCallContext, type ActionExecutionContext, type ActionReference, type Invocation, type ProgramContract, type ProgramExpectation } from "@hanger-source/dsh-reactive/kernel";
 import { type BoundOffer } from "@hanger-source/dsh-reactive/kernel";
 import { guardActionExecution } from "@hanger-source/dsh-reactive/kernel";
 import { dispatchHumanQuestion } from "../participation/human-dispatch.ts";
@@ -19,21 +19,77 @@ import type { ConversationObservations } from '../conversations/observations.ts'
 import type { ConversationInputs } from '../conversations/inputs.ts';
 import type { Workspaces } from '../workspaces/workspaces.ts';
 import { humanParticipant, serviceParticipant, participantActor, type ParticipantIdentity } from '../participation/identity.ts';
+import { InvocationUnavailableError, type RetainedActionInvocation } from './invocation.ts';
 type ToolExecution = ActionExecutionContext & {
     readonly source: Extract<ActionExecutionContext['source'], {
         readonly kind: 'tool';
     }>;
     readonly continuation: Continuation;
 };
+type ParticipantExecution = ActionExecutionContext & {
+    readonly source: Extract<ActionExecutionContext['source'], { readonly kind: 'participant' }>;
+};
+type RetainedEntry = {
+    readonly sessionId: string;
+    readonly program: ProgramContract;
+    readonly participant: ParticipantIdentity['participant'];
+    readonly actorId: string;
+    readonly value: RetainedActionInvocation;
+    completed?: ReturnType<typeof setTimeout>;
+};
 /** 三种真实入口共用的签发者；绑定身份和来源证明不由调用参数声明。 */
 export class ActionAuthority {
+    #invocations = new Map<string, RetainedEntry>();
+    #completed = new Set<string>();
+    readonly #retention: number;
+    readonly #maxCompleted: number;
     #toolCalls = new WeakMap<ActionExecutionContext, {
         entry: LiveConversation;
         exec: ToolRunContext;
         offer: BoundOffer;
     }>();
     #executions = new WeakMap<ActionExecutionContext, ConversationSession>();
-    constructor(private readonly ctx: Context, private readonly options: HostOptions, private readonly signal: AbortSignal, private readonly workspaces: Workspaces, private readonly sessions: ConversationSessions, private readonly facts: ConversationObservations, private readonly inputs: ConversationInputs, private readonly delegations: NativeDelegations) { }
+    constructor(private readonly ctx: Context, private readonly options: HostOptions, private readonly signal: AbortSignal, private readonly workspaces: Workspaces, private readonly sessions: ConversationSessions, private readonly facts: ConversationObservations, private readonly inputs: ConversationInputs, private readonly delegations: NativeDelegations) {
+        this.#retention = options.completedRetentionMs ?? 300_000;
+        this.#maxCompleted = options.maxCompleted ?? 1000;
+        if (!Number.isSafeInteger(this.#retention) || this.#retention < 1 || this.#retention > 2_147_483_647
+            || !Number.isSafeInteger(this.#maxCompleted) || this.#maxCompleted < 1) throw new Error('REACTIVE_ACTION_RETENTION_INVALID');
+        const release = () => { for (const id of this.#invocations.keys()) this.evictInvocation(id); };
+        signal.addEventListener('abort', release, { once: true });
+        if (signal.aborted) release();
+    }
+    private evictInvocation(id: string): void {
+        const entry = this.#invocations.get(id);
+        if (entry?.completed) clearTimeout(entry.completed);
+        this.#invocations.delete(id); this.#completed.delete(id);
+    }
+    /** 只核原受理事实，不读取会话或当前Expose，不取得新的成员资格。 */
+    readInvocation(sessionId: string, id: string, expected: ProgramExpectation, options: SubmitOptions = {}, identity: ParticipantIdentity = humanParticipant): RetainedActionInvocation {
+        this.assertActive(); options.signal?.throwIfAborted();
+        if (expected === undefined) throw new Error('REACTIVE_PROGRAM_EXPECTATION_REQUIRED');
+        const actorId = participantActor(identity, options, this.options.actorId);
+        const entry = this.#invocations.get(id);
+        if (!entry || entry.sessionId !== sessionId || entry.actorId !== actorId || entry.participant !== identity.participant) throw new InvocationUnavailableError();
+        assertExpectedProgram(entry.program, expected);
+        return entry.value;
+    }
+    private retainInvocation(session: ConversationSession, name: string, definition: ActionContract, invocation: RetainedActionInvocation['invocation'], identity: ParticipantIdentity, actorId: string): void {
+        if (this.signal.aborted) return;
+        const entry: RetainedEntry = { sessionId: session.header.id, program: session.implementation.definition,
+            participant: identity.participant, actorId, value: Object.freeze({ name, definition, invocation }) };
+        this.#invocations.set(invocation.id, entry);
+        const settle = () => {
+            if (this.signal.aborted || this.#invocations.get(invocation.id) !== entry) return;
+            this.#completed.add(invocation.id);
+            entry.completed = setTimeout(() => this.evictInvocation(invocation.id), this.#retention);
+            entry.completed.unref();
+            while (this.#completed.size > this.#maxCompleted) {
+                const oldest = this.#completed.values().next().value;
+                if (oldest !== undefined) this.evictInvocation(oldest);
+            }
+        };
+        invocation.result.then(settle, settle);
+    }
     private assertActive() { if (this.signal.aborted)
         throw new Error('REACTIVE_HOST_DISPOSED'); }
     nativeCall(execution: ActionExecutionContext) { return this.#toolCalls.get(execution); }
@@ -124,13 +180,13 @@ export class ActionAuthority {
         };
         return this.signExecution(entry.session, execution);
     }
-    participantExecution(session: ConversationSession, options: SubmitOptions, identity: ParticipantIdentity, entrypoint: string, beforeExecute?: () => void): ActionExecutionContext {
+    participantExecution(session: ConversationSession, options: SubmitOptions, identity: ParticipantIdentity, entrypoint: string, beforeExecute?: () => void): ParticipantExecution {
         this.assertActive();
         const actorId = participantActor(identity, options, this.options.actorId), participant = identity.participant;
         const signal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
         signal.throwIfAborted();
         // 独立参与调用没有继承当前模型输入或 Goal 续接权限。
-        const execution: ActionExecutionContext = { invocationId: randomUUID(), sessionId: session.header.id,
+        const execution: ParticipantExecution = { invocationId: randomUUID(), sessionId: session.header.id,
             source: { kind: 'participant', actorId, participant, entrypoint }, inputs: [], continuation: null, signal };
         return this.signExecution(session, execution, beforeExecute);
     }
@@ -169,6 +225,8 @@ export class ActionAuthority {
         };
         check();
         const execution = this.participantExecution(session, options, identity, identity.participant === 'service' ? 'service-sdk' : 'sdk', () => { program.flush(); check(); });
-        return program.invoke(action, input, execution, check);
+        const invocation = program.invoke(action, input, execution, check);
+        this.retainInvocation(session, name, action.definition, invocation, identity, execution.source.actorId);
+        return invocation;
     }
 }

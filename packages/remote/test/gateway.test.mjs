@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, realpath, rename, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -24,6 +24,7 @@ const failure = error => ({ code: error.code, message: error.message, details: e
 test('动态模块集合经真实Gateway保留Date、单向目标与独立Operation，撤挂拒旧绑定且重挂不重定向', async context => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-remote-modules-'));
   const errors = [], carrierErrors = [], executed = [];
+  const records = join(root, 'accepted-records.jsonl');
   const members = new BehaviorSubject(['a']);
   const date = z.codec(z.iso.datetime(), z.date(), { decode: value => new Date(value), encode: value => value.toISOString() });
   const instants = { a: '2026-10-27T01:00:00.000Z', b: '2026-10-27T02:00:00.000Z' };
@@ -43,20 +44,24 @@ test('动态模块集合经真实Gateway保留Date、单向目标与独立Operat
   const save = defineAction({ name: 'save_record', description: '在已捕获的模块商家保存一次',
     scope: z.string().transform(merchantId => ({ merchantId })), input: z.object({ amount: z.string().transform(Number) }),
     output: z.object({ merchantId: z.string(), amount: z.number(), at: date }) });
-  const implementation = implementAction(save, { execute(input, call) {
+  const implementation = implementAction(save, { async execute(input, call) {
     assert.equal(call.source.kind, 'participant'); assert.equal(call.source.actorId, 'module-user');
+    await appendFile(records, JSON.stringify({ merchantId: call.scope.merchantId, amount: input.amount }) + '\n');
     executed.push({ merchantId: call.scope.merchantId, amount: input.amount });
     return { merchantId: call.scope.merchantId, amount: input.amount, at: instants[call.scope.merchantId.slice(-1)] };
   } });
   const leaf = defineSurface({ views: { at: resourceView(date) }, actions: { save }, operations: { work } });
-  const child = composeSurface({ business: leaf });
+  const child = composeSurface({ business: leaf, reviews: collectionSurface(leaf) });
   const composed = composeSurface({ merchants: collectionSurface(child.surface) });
   const program = defineProgram({ name: 'gateway_test', input: z.null(), surface: composed.surface });
   function Merchant({ id }) {
     const action = useAction(implementation, () => 'merchant-' + id, [id]);
     const existing = useOperation(owner, () => ({ merchantId: 'merchant-' + id }), [id]);
-    return h(Module, { mount: child.mounts.business }, Expose({ surface: leaf, value: { views: { at: of({ status: 'ready', generation: 1,
-      observedAt: Date.now(), value: new Date(instants[id]) }) }, actions: { save: action }, operations: { work: existing } } }));
+    const value = { views: { at: of({ status: 'ready', generation: 1,
+      observedAt: Date.now(), value: new Date(instants[id]) }) }, actions: { save: action }, operations: { work: existing } };
+    return h(Fragment, null,
+      h(Module, { mount: child.mounts.business }, Expose({ surface: leaf, value })),
+      h(Module, { mount: child.mounts.reviews.instance('current') }, Expose({ surface: leaf, value })));
   }
   const definition = defineApplication({ name: 'remote-module-composition', admit: async () => {}, environments: [defineEnvironment({
     id: 'work', instructions: '读取组合模块的确切业务事实', program: implementProgram(program, { Component() {
@@ -78,7 +83,7 @@ test('动态模块集合经真实Gateway保留Date、单向目标与独立Operat
   const workspace = await runtime.application.createWorkspace({ directory: root });
   local = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
   const role = { name: 'module-reader', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/view', 'reactivePrograms/questions',
-    'reactivePrograms/resolveAction', 'reactivePrograms/startAction', 'reactivePrograms/actionResult', 'reactivePrograms/observeAction',
+    'reactivePrograms/resolveAction', 'reactivePrograms/startAction', 'reactivePrograms/actionInvocation', 'reactivePrograms/actionResult', 'reactivePrograms/observeAction',
     'reactivePrograms/resolveOperation', 'reactivePrograms/locateOperation', 'reactivePrograms/observeOperation', 'reactivePrograms/observeInvocationOperation'] };
   gateway = await mountProgramGateway(runtime.native, { application: runtime.application, model: { provider: 'remote-module', model: 'test' },
     participant: principal => ({ participant: 'human', actorId: principal.id }),
@@ -88,10 +93,11 @@ test('动态模块集合经真实Gateway保留Date、单向目标与独立Operat
       return { kind: 'module-user', id: 'module-user' };
     } },
   });
-  client = await createProgramClient(program, { baseUrl: gateway.url,
+  const connect = () => createProgramClient(program, { baseUrl: gateway.url,
     fetch: (url, init) => fetch(url, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), authorization: 'Bearer module-user' } }),
     createWebSocket: url => new WebSocket(url, { headers: { authorization: 'Bearer module-user' } }),
   });
+  client = await connect();
   const remote = await client.open(local.id);
   const localMerchants = local.collection('merchants'), remoteMerchants = remote.collection('merchants');
   assert.deepEqual(await next(remoteMerchants.instances$), ['a']);
@@ -104,7 +110,7 @@ test('动态模块集合经真实Gateway保留Date、单向目标与独立Operat
   assert.deepEqual(await next(remoteMerchants.instances$, keys => keys.length === 2), ['a', 'b']);
   assert.ok(await localB.readView('at') instanceof Date);
   await next(remoteB.observeView('at'), observed => observed.status === 'ready');
-  const captured = new Map();
+  const captured = new Map(), invocations = new Map(), originals = new Map();
   for (const id of ['a', 'b']) {
     const localInstance = localMerchants.instance(id).module(child.mounts.business);
     const remoteInstance = remoteMerchants.instance(id).module(child.mounts.business);
@@ -115,12 +121,20 @@ test('动态模块集合经真实Gateway保留Date、单向目标与独立Operat
     captured.set(id, action);
     assert.deepEqual(action.scope, { merchantId: 'merchant-' + id });
     const invocation = await action({ amount: '7' });
+    invocations.set(id, invocation);
+    const original = localInstance.invocation('save', invocation.id);
+    originals.set(id, original);
+    assert.equal(runtime.application.readInvocation(local.id, invocation.id, program).invocation, original);
     const value = await invocation.result;
     assert.equal(value.merchantId, 'merchant-' + id); assert.equal(value.amount, 7);
     assert.ok(value.at instanceof Date); assert.equal(value.at.toISOString(), instants[id]);
   }
   assert.deepEqual(executed, [{ merchantId: 'merchant-a', amount: 7 }, { merchantId: 'merchant-b', amount: 7 }]);
   const remoteA = remoteMerchants.instance('a').module(child.mounts.business);
+  const nestedA = remoteMerchants.instance('a').collection('reviews').instance('current');
+  const nestedCall = await (await nestedA.resolveAction('save', 'merchant-a'))({ amount: '9' });
+  assert.equal((await nestedCall.result).amount, 9);
+  const originalNested = localMerchants.instance('a').collection('reviews').instance('current').invocation('save', nestedCall.id);
   await assert.rejects(remoteA.resolveAction('save', 'merchant-b'), error => error.code === 'reactive/action-target-mismatch');
   const a = await remoteA.operations.work(), b = await remoteB.operations.work();
   assert.deepEqual(a.command, { merchantId: 'merchant-a' }); assert.deepEqual(b.command, { merchantId: 'merchant-b' });
@@ -132,6 +146,13 @@ test('动态模块集合经真实Gateway保留Date、单向目标与独立Operat
   await next(remoteA.observeView('at'), observed => observed.status === 'error');
   await assert.rejects(remoteA.readView('at'), error => error instanceof RemoteError);
   await assert.rejects(captured.get('a')({ amount: '8' }), error => error.code === 'reactive/action-binding-unavailable');
+  const recoveredA = await remoteA.invocation('save', invocations.get('a').id);
+  assert.deepEqual(await recoveredA.result, await invocations.get('a').result, '模块撤下仍按原精确地址查回原调用');
+  await assert.rejects(remoteB.invocation('save', invocations.get('a').id), error => error.code === 'reactive/invocation-unavailable');
+  assert.equal((await (await nestedA.invocation('save', nestedCall.id)).result).amount, 9);
+  await assert.rejects(remoteA.invocation('save', nestedCall.id), error => error.code === 'reactive/invocation-unavailable',
+    '同一Action定义也不能把嵌套集合的原地址混同为静态模块地址');
+  assert.equal(localMerchants.instance('a').module(child.mounts.business).invocation('save', invocations.get('a').id), originals.get('a'));
   assert.equal((await remoteB.resolveAction('save', 'merchant-b')).bindingId, captured.get('b').bindingId);
   const located = await a.locate(); assert.equal(located.status, 'accepted');
   const operation = a.attach(located.reference), settled = operation.settled();
@@ -148,7 +169,29 @@ test('动态模块集合经真实Gateway保留Date、单向目标与独立Operat
   assert.notEqual(remounted.bindingId, captured.get('a').bindingId);
   await assert.rejects(captured.get('a')({ amount: '8' }), error => error.code === 'reactive/action-binding-unavailable');
   assert.equal(local.surface, composed.surface);
-  assert.equal(executed.length, 2, '集合及Operation变化不重执行业务Action');
+  members.next(['b']);
+  await next(remoteMerchants.instances$, keys => keys.length === 1 && keys[0] === 'b');
+  await client.dispose();
+  client = await connect();
+  const fresh = await client.open(local.id);
+  const freshA = fresh.collection('merchants').instance('a').module(child.mounts.business);
+  const restored = await freshA.invocation('save', invocations.get('a').id);
+  const originalValue = await restored.result;
+  assert.ok(originalValue.at instanceof Date);
+  assert.equal(originalValue.at.toISOString(), instants.a);
+  assert.equal(originalValue.merchantId, 'merchant-a');
+  assert.equal(originalValue.amount, 7);
+  const restoredNested = await fresh.collection('merchants').instance('a').collection('reviews').instance('current').invocation('save', nestedCall.id);
+  assert.equal((await restoredNested.result).amount, 9);
+  const previous = local;
+  local = await runtime.application.open(previous.id, program);
+  previous.release();
+  assert.equal(local.collection('merchants').instance('a').module(child.mounts.business).invocation('save', restored.id), originals.get('a'),
+    '同进程新本地句柄取得原call对象，无需原Expose');
+  assert.equal(local.collection('merchants').instance('a').collection('reviews').instance('current').invocation('save', nestedCall.id), originalNested);
+  assert.deepEqual((await readFile(records, 'utf8')).trim().split('\n').map(value => JSON.parse(value)), executed,
+    '模块撤下、重挂、换SDK与本地句柄查回均不重复持久副作用');
+  assert.equal(executed.length, 3, '集合及Operation变化和原调用查回不重执行业务Action');
   assert.equal(modelCalls, 0); assert.deepEqual(errors, []); assert.deepEqual(carrierErrors, []);
 });
 
@@ -266,7 +309,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     } }),
   })] });
   const runtimeErrors = [], carrierErrors = [];
-  const runtime = await createRuntime(() => definition, { home: join(root, 'home'), operations: [owner], tools: 'native',
+  const runtime = await createRuntime(() => definition, { home: join(root, 'home'), operations: [owner], tools: 'native', completedRetentionMs: 500,
     onError: event => runtimeErrors.push(event.error),
     model: nativeModel({ provider: 'remote-test', model: 'test', create: () => new class extends LlmAdapter {
       async *stream(options) {
@@ -315,7 +358,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
   const bindingRole = { name: 'business-action-only', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/resolveAction',
     'reactivePrograms/startAction', 'reactivePrograms/actionResult', 'reactivePrograms/observeAction'] };
   const gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
-    model: { provider: 'remote-test', model: 'test' }, participant: principal => ({ participant: 'human', actorId: principal.id }), completedRetentionMs: 500,
+    model: { provider: 'remote-test', model: 'test' }, participant: principal => ({ participant: 'human', actorId: principal.id }),
     access: service => service.registerPolicy('remote-test-user', { bindings(principal) {
       return [{ role: principal.id === 'alice' ? globalRole : discoveryRole, resource: { kind: 'global' } }, ...[...sessions]
         .map(id => ({ role: principal.id === 'alice' ? sessionRole : readerRole, resource: { kind: 'session', id } })),

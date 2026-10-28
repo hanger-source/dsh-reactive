@@ -8,7 +8,7 @@ import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import { createProgramFailureMapper, throwProgramFailure } from './host-errors.ts';
 import { z, abortable, ConversationAccessRevokedError, actionIdentity, assertActionIdentity, programIdentity, assertSharedProgramDefinition, surfaceSlotDefinition, encodeOperationFeedback, type AnyEnvironment, type InputReference, type ConversationEvent, type HumanQuestionOrigin } from '@hanger-source/dsh-reactive';
 import { defer, endWith, firstValueFrom, fromEvent, ignoreElements, merge, take, type Observable, type Subscription } from 'rxjs';
-import type { ProgramActionRequest, ProgramActionStart, ProgramAddress, ProgramSessionAddress, ProgramCreateRequest, ProgramCompleteCreationRequest, ProgramIdentity, ProgramInputReceipt, ProgramInvocationAddress, ProgramInvocationFrame, ProgramSubmitRequest, ProgramWorkspaceRegistration, ProgramViewFrame, ProgramViewRequest, WireObservation, ProgramFailure, ProgramActionBindingRequest, ProgramActionBinding, ProgramUploadFileRequest, ProgramFileUploadValue, ProgramInputEditRequest } from '@hanger-source/dsh-reactive-client/types';
+import type { ProgramActionRequest, ProgramActionStart, ProgramAddress, ProgramSessionAddress, ProgramCreateRequest, ProgramCompleteCreationRequest, ProgramIdentity, ProgramInputReceipt, ProgramInvocationAddress, ProgramInvocationLookupRequest, ProgramInvocationFrame, ProgramSubmitRequest, ProgramWorkspaceRegistration, ProgramViewFrame, ProgramViewRequest, WireObservation, ProgramFailure, ProgramActionBindingRequest, ProgramActionBinding, ProgramUploadFileRequest, ProgramFileUploadValue, ProgramInputEditRequest } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramOperationRequest, ProgramOperationLocateRequest, ProgramInvocationOperationRequest, ProgramOperationLocation, ProgramOperationNotification, ProgramOperationNotificationResult, ProgramAnswerRequest, ProgramQuestionRequest, ProgramQuestionsFrame, ProgramWaitFrame, ProgramOperationBindingRequest, ProgramOperationBinding, ProgramOperationFeedbackRequest, ProgramOperationFeedbackRead } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramRequestAddress, ProgramRequestStatus, ProgramWorkspace, ProgramGoalControl, ProgramCancelResult, ProgramJournalOpenRequest, ProgramJournalPageRequest, ProgramJournalFrame } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramProgressFrame, ProgramConversationEvent } from '@hanger-source/dsh-reactive-client/types';
@@ -406,7 +406,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
 
   /** 只查询同一个进程 owner 持有的 Invocation；过期或未知不重放。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
-  actionInvocation(request: ProgramInvocationAddress, signal: AbortSignal): Promise<ProgramActionStart> {
+  actionInvocation(request: ProgramInvocationLookupRequest, signal: AbortSignal): Promise<ProgramActionStart> {
     return this.actions.get(request, this.principal(), signal);
   }
 

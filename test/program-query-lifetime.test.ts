@@ -5,9 +5,48 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Fragment, createElement, useLayoutEffect } from 'react';
 import { BehaviorSubject, EmptyError, Observable, Subject, defer, filter, firstValueFrom, from, lastValueFrom, map, of, timeout } from 'rxjs';
-import { Scope, ResourceReader, createResource, defineProgram, defineSurface, resourceView, z, type Observation, type Workspace } from '@hanger-source/dsh-reactive';
+import { Scope, ResourceReader, createResource, defineProgram, defineSurface, resourceView, mapResource, z, type Observation, type Workspace } from '@hanger-source/dsh-reactive';
 import { Conversation, ProgramInstance, createWorkspace } from '@hanger-source/dsh-reactive/kernel';
-import { Context, Expose, implementProgram, useObservable, useResource, useShared } from '@hanger-source/dsh-reactive/program';
+import { Context, Expose, implementProgram, useObservable, useResource, useShared, useSharedResource } from '@hanger-source/dsh-reactive/program';
+
+test('Program共享来源的真实释放失败归父退出或程序失败owner，退出回执不早于来源清理', () => {
+  for (const end of ['dispose', 'fail'] as const) {
+    const issue = new Error('SHARED_QUERY_TEARDOWN_FAILED'), reports: unknown[] = [];
+    const root = new Scope({ onObserverError: error => reports.push(error) }), sessionScope = root.child();
+    const workspace = createWorkspace(root, { id: end, directory: '/workspace' });
+    const definition = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+    const conversation = new Conversation(sessionScope, { sessionId: end, workspaceId: end, environmentId: 'work',
+      directory: '/workspace', parentSessionId: null }, workspace, definition,
+    { sessionId: end, sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });
+    let released = 0, reader!: ResourceReader<number>;
+    const source = new Observable<Observation<number>>(subscriber => {
+      subscriber.next({ status: 'ready', generation: 1, value: 42, observedAt: Date.now() });
+      return () => { released++; throw issue; };
+    });
+    const implementation = implementProgram(definition, { Component() {
+      reader = useSharedResource(source);
+      return null;
+    } });
+    const program = new ProgramInstance(sessionScope, implementation, conversation, workspace, {
+      execution() { throw new Error('READING_MUST_NOT_EXECUTE_ACTION'); },
+    });
+    program.mount();
+    const subscription = reader.observations$.subscribe();
+    try {
+      assert.equal(reader.peek().status, 'ready');
+      if (end === 'fail') {
+        program.fail(new Error('PROGRAM_FAILED'));
+        assert.equal(reports.length, 1);
+        assert.ok(reports[0] instanceof AggregateError && reports[0].errors.includes(issue));
+      } else {
+        assert.throws(() => sessionScope.dispose(), error => error instanceof AggregateError
+          && error.errors.some(child => child instanceof AggregateError && child.errors.includes(issue)));
+        assert.deepEqual(reports, []);
+      }
+      assert.equal(released, 1); assert.equal(subscription.closed, true);
+    } finally { subscription.unsubscribe(); sessionScope.dispose(); root.dispose(); }
+  }
+});
 
 test('同一外部资源在对象、原流和hook之间切换不重读，原owner退出撤下Context与公开视图', async () => {
   const scope = new Scope(), owner = new AbortController(), reason = new Error('BORROWED_FINITE_RESOURCE_ENDED');
@@ -79,10 +118,16 @@ test('复合hook的自建查询共享连接和终止缓存，Program退出不重
         starts++; const subscription = events.subscribe(subscriber);
         return () => { stops++; subscription.unsubscribe(); };
       }), []);
-      const settings = useResource(settingsSource);
+      const settings = useSharedResource(settingsSource);
+      const sameSettings = useSharedResource(() => ({ observations$: settingsSource }), []);
+      const derived = useSharedResource(() => settings.observations$.pipe(mapResource(value => value.toUpperCase())), [settings]);
+      const current = useResource(derived);
       const missing = useResource(() => observations('missing'), []);
       const shared = useResource(() => borrowed, []);
-      return { label, denied, cold, live, settings: settings.observations$, missing: missing.observations$, borrowed: shared.observations$ };
+      const borrowedReader = useSharedResource(() => borrowed, []);
+      const coldReader = useSharedResource(() => observations('cold'), []);
+      return { label, denied, cold, live, settings, sameSettings, derived, current, borrowedReader, coldReader,
+        missing: missing.observations$, borrowed: shared.observations$ };
     }
     let capability!: ReturnType<typeof useCapability>;
     const definition = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
@@ -107,7 +152,13 @@ test('复合hook的自建查询共享连接和终止缓存，Program退出不重
       assert.equal(reads.label, 0); assert.equal(reads.cold, 0, '共享构造仍不启动读取');
       assert.equal(await lastValueFrom(capability.label), 'label-first');
       assert.equal(await firstValueFrom(capability.label), 'label-first');
-      assert.equal((await read(capability.settings)).status, 'ready');
+      assert.equal(await capability.settings.read(), 'settings-first');
+      assert.equal(await capability.sameSettings.read(), 'settings-first');
+      assert.equal(await capability.derived.read(), 'SETTINGS-FIRST');
+      program.flush();
+      assert.equal(capability.derived.peek().status, 'ready');
+      assert.deepEqual(capability.current.state.status === 'ready' ? capability.current.state.value : undefined, 'SETTINGS-FIRST');
+      assert.equal(await capability.borrowedReader.read(), 'workspace-first');
       const failed = await read(capability.missing);
       assert.equal(failed.status, 'error');
       if (failed.status === 'error') assert.equal((failed.error as NodeJS.ErrnoException).code, 'ENOENT');
@@ -132,7 +183,7 @@ test('复合hook的自建查询共享连接和终止缓存，Program退出不重
       else sessionScope.dispose();
       assert.equal(completed, 1); assert.equal(stops, 1); assert.equal(two.closed, true);
       events.next(22); assert.deepEqual(second, [11]); assert.deepEqual(late, []);
-      for (const source of [capability.label, capability.denied, capability.cold, capability.live, capability.settings, capability.missing]) {
+      for (const source of [capability.label, capability.denied, capability.cold, capability.live, capability.missing]) {
         const delivered: unknown[] = [], errors: unknown[] = [];
         let ended = false;
         const subscriber = (source as Observable<unknown>).subscribe({ next: value => delivered.push(value),
@@ -140,6 +191,13 @@ test('复合hook的自建查询共享连接和终止缓存，Program退出不重
         subscriptions.push(subscriber);
         assert.equal(ended, true); assert.equal(subscriber.closed, true); assert.deepEqual(delivered, []); assert.deepEqual(errors, []);
         await assert.rejects(firstValueFrom(source as Observable<unknown>), EmptyError);
+      }
+      for (const reader of [capability.settings, capability.sameSettings, capability.derived, capability.borrowedReader, capability.coldReader]) {
+        assert.throws(() => reader.peek(), error => error === program.signal.reason);
+        assert.throws(() => reader.read(), error => error === program.signal.reason);
+        const ended = await firstValueFrom(reader.observations$);
+        assert.equal(ended.status, 'error');
+        if (ended.status === 'error') assert.equal(ended.error, program.signal.reason);
       }
       assert.deepEqual(reads, { label: 1, settings: 1, denied: 1, missing: 1, cold: 0, borrowed: 1 });
       await writeFile(paths.borrowed, 'workspace-second');

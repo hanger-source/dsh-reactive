@@ -24,6 +24,8 @@ export interface SurfaceClient<S extends Surface, Options extends CancellationOp
   readView<K extends keyof S['views'] & string>(name: K, options?: Options): Promise<ViewValue<S['views'][K]>>;
   resolveAction<K extends keyof S['actions'] & string>(name: K, expectedScope: z.input<S['actions'][K]['scope']>, options?: Options):
     CollectionResult<Async, CollectionResolvedAction<S['actions'][K], Options, Async>>;
+  /** 查回同一受理者持有的原调用；不依赖当前Expose，也不重新执行。 */
+  invocation<K extends keyof S['actions'] & string>(name: K, id: string, options?: Options): CollectionResult<Async, ActionInvocation<S['actions'][K]>>;
   readonly operations: { readonly [K in keyof S['operations']]: (options?: Options) => CollectionResult<Async, BoundOperation<S['operations'][K]>> };
   /** 借用原挂载的局部公开合同，不取得新的执行身份或寿命。 */
   module<Source extends Surface, Selected extends Surface>(mount: SurfaceMount<Source, Selected>): SurfaceClient<Selected, Options, Async>;
@@ -43,8 +45,9 @@ export interface SurfaceCollectionClient<C extends SurfaceCollectionDefinition, 
 export interface SurfaceCollectionTransport<Options extends CancellationOptions, Async extends boolean> {
   readonly asynchronous: Async;
   viewResource(name: string, definition: ViewDefinition): ResourceReader<unknown>;
-  resolveAction(name: string, definition: ActionContract, expectedScope: unknown, options?: Options):
-    CollectionResult<Async, CollectionResolvedAction<ActionContract, Options, Async>>;
+  resolveAction<D extends ActionContract>(name: string, definition: D, expectedScope: z.input<D['scope']>, options?: Options):
+    CollectionResult<Async, CollectionResolvedAction<D, Options, Async>>;
+  invocation<D extends ActionContract>(name: string, definition: D, id: string, options?: Options): CollectionResult<Async, ActionInvocation<D>>;
   resolveOperation(name: string, definition: OperationContract, options?: Options): CollectionResult<Async, BoundOperation<OperationContract>>;
 }
 
@@ -58,6 +61,7 @@ function readdress<Options extends CancellationOptions, Async extends boolean>(
     asynchronous: transport.asynchronous,
     viewResource: (slot, definition) => transport.viewResource(address('views', slot), definition),
     resolveAction: (slot, definition, scope, options) => transport.resolveAction(address('actions', slot), definition, scope, options),
+    invocation: (slot, definition, id, options) => transport.invocation(address('actions', slot), definition, id, options),
     resolveOperation: (slot, definition, options) => transport.resolveOperation(address('operations', slot), definition, options),
   };
 }
@@ -77,10 +81,15 @@ function createSurfaceClient<S extends Surface, Options extends CancellationOpti
     viewResource,
     observeView: (slot: string) => viewResource(slot).observations$,
     readView: (slot: string, options?: Options) => viewResource(slot).read(options?.signal),
-    resolveAction(slot: string, expectedScope: unknown, options?: Options) {
+    resolveAction<K extends keyof S['actions'] & string>(slot: K, expectedScope: z.input<S['actions'][K]['scope']>, options?: Options) {
       const definition = surfaceSlotDefinition(surface, 'actions', slot);
       if (!definition) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
       return transport.resolveAction(slot, definition, expectedScope, options);
+    },
+    invocation<K extends keyof S['actions'] & string>(slot: K, id: string, options?: Options) {
+      const definition = surfaceSlotDefinition(surface, 'actions', slot);
+      if (!definition) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
+      return transport.invocation(slot, definition, id, options);
     },
     operations: Object.freeze(Object.fromEntries(Object.entries(surface.operations).map(([slot, definition]) => [slot,
       (options?: Options) => transport.resolveOperation(slot, definition, options)]))),
@@ -89,7 +98,7 @@ function createSurfaceClient<S extends Surface, Options extends CancellationOpti
     },
     collection: (name: keyof S['collections'] & string) => createSurfaceCollectionClient(surface, name, transport),
   };
-  // 异构槽来自同一真实Surface；仅在此边界恢复每个槽的具体schema。
+  // Action方法已保留K对应的实际D；异构views/operations均由同一surface查得，集中恢复映射形状。
   return Object.freeze(client) as SurfaceClient<S, Options, Async>;
 }
 

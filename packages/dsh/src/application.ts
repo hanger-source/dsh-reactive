@@ -15,6 +15,7 @@ import { ConversationSessions } from './conversations/sessions.ts';
 import { ConversationObservations } from './conversations/observations.ts';
 import { ConversationInputs } from './conversations/inputs.ts';
 import { ActionAuthority } from './execution/authority.ts';
+import type { RetainedActionInvocation } from './execution/invocation.ts';
 import { ProgramTools } from './execution/tools.ts';
 import { OperationParticipation } from './operations/participation.ts';
 import { ConversationPrograms } from './programs/preparation.ts';
@@ -33,6 +34,7 @@ export interface ApplicationService<E extends readonly AnyEnvironment[] = readon
     completeCreation(reference: CreationReference, expected?: ProgramExpectation): Promise<ServiceConversation>;
     createWorkspace(input: WorkspaceRegistration): Promise<WorkspaceInfo>;
     describe(): Promise<readonly WorkspaceInfo[]>;
+    readInvocation(sessionId: string, id: string, expected: ProgramExpectation, options?: CancellationOptions): RetainedActionInvocation;
     notifyOperation(sessionId: string, followId: string, options?: CancellationOptions): Promise<OperationNotificationResult>;
 }
 /** 应用入口只组合能力域，执行和事实由对应owner持有。 */
@@ -89,6 +91,10 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
     /** 取得已有本地工作区的编程接点，不创建或恢复Session。 */
     workspace(workspaceId: string): Workspace { this.#lifetime.signal.throwIfAborted(); return this.workspaces.get(workspaceId).context; }
     describe(): Promise<readonly WorkspaceInfo[]> { return this.sessions.describe(); }
+    /** 原受理记录属于Application，读取不open会话或重新装配Program。 */
+    readInvocation(sessionId: string, id: string, expected: ProgramExpectation, options: SubmitOptions = {}): RetainedActionInvocation {
+        return this.actions.readInvocation(sessionId, id, expected, options);
+    }
     open(sessionId: string, expected?: undefined, expectedAccessId?: string): Promise<ConversationHandle>;
     open<P extends ProgramContract>(sessionId: string, expected: P, expectedAccessId?: string): Promise<ConversationHandle<P>>;
     open(sessionId: string, expected: Exclude<ProgramExpectation, ProgramContract>, expectedAccessId?: string): Promise<ConversationHandle>;
@@ -159,6 +165,7 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
             completeCreation: (reference, expected) => application.completeCreationAs(reference, participant, expected),
             createWorkspace: input => application.createWorkspace(input),
             describe: () => application.describe(),
+            readInvocation: (sessionId, id, expected, options = {}) => application.actions.readInvocation(sessionId, id, expected, options, participant),
             notifyOperation: (sessionId, followId, options = {}) => application.operations.notifyOperation(sessionId, followId, options, participant),
         };
         return Object.freeze(service);

@@ -50,6 +50,12 @@ return <>
 
 此片段置于后台组件内，并从 `/program` 导入声明与 hooks；资源 schema 应与 ItemSurface.facts 相符。`facts` 是提供 observations$ 的 ResourceSource，可直接交给另一个 useResource、Context 或 resourceView 出口；资源实例、SDK 资源与标准 Observation 流使用同一入口。Context 的 source 分支通过同一 hook 读取，已有单次快照仍可用 observation 分支。
 
+业务 hook 需要把派生能力交给普通函数时，使用 `useSharedResource(source)` 或 `useSharedResource(() => reader.observations$.pipe(mapResource(project)), dependencies)` 取得 ResourceReader，再按需 `useResource(reader)` 读 React 快照。reader 的 read、peek、subscribe、values$ 和 observations$ 共用 Program 的原流索引与寿命；构造不连接来源，退出不销毁借入资源的业务 owner。useResourceInstance 的局部 factory 仍只返回实现选项，不混合两种 factory 合同。
+
+`action.activeInvocations` 可直接参加 combineResources，activeInvocations$ 是其值流；`run.state` 同样提供 read/peek，state$ 是其值流。它们保留实际运行的 owner，Reaction 停止后的 draining 和迟到失败仍是真实可读状态。read 不等待业务结束，应分别等待 invocation.result 或 run.settled。
+
+`session.invocation(name, id)` 也适用于 `session.module(mount)` 和 `session.collection(name).instance(key)` 返回的局部 Surface；本地同步取得原对象，远程 await 取得原回执。查回只读精确原地址与 Action 合同，不要求 Expose 仍在，不重 execute；保存 Invocation.id 不能替代持久 Operation command。
+
 Context 默认 required=true：pending/error 阻止模型取得不完整现场。required=false 是显式非必需现场：pending/error 时撤掉该 Context，其他模块可以继续；公开资源仍保真实状态。不要丢弃错误后保留旧 ready。Offer 需按同一真实事实关闭相关行为。
 
 已有普通流直接交给 `useShared(standardObservable)`、`useObservable(standardObservable)` 或 `useRelation(standardObservable)`，构造管道时才使用 factory 与 deps。useRelation 在提交后持有关系，未处理的 RxJS error 使程序失败；它保留原元素，不把资源 error Observation 自动变成异常。需要显式执行/停止/观察的持续工作用 Reaction。`useBeforeStep` 用于原生步骤前必须完成的检查。渲染函数和数据投影不发命令。

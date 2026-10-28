@@ -126,6 +126,7 @@ test('动态商家集合沿嵌套模块公开同一合同，新增与重排保�
     await entered.promise;
     layout.next([b]);
     assert.throws(() => originalA({ note: 'withdrawn-a' }), ActionBindingUnavailableError);
+    assert.equal(knowledgeA.invocation('record', running.id), running, '撤下Expose仍查回同一个已受理调用');
     assert.deepEqual(await firstValueFrom(collection.instances$), [b]);
     await assert.rejects(instanceA.readView('knowledge.facts'), /REACTIVE_MODULE_INSTANCE_NOT_FOUND/u);
     await assert.rejects(firstValueFrom(instanceA.collection('reviews').instances$), /REACTIVE_MODULE_INSTANCE_NOT_FOUND/u);
@@ -133,6 +134,13 @@ test('动态商家集合沿嵌套模块公开同一合同，新增与重排保�
     assert.deepEqual(await originalB({ note: 'sdk-b' }).result, { merchantId: b, note: 'sdk-b' });
     finish.resolve();
     assert.deepEqual(await running.result, { merchantId: a, note: 'accepted-a' });
+    const reopened = await app.host.open(session.id, program);
+    try {
+      assert.equal(reopened.collection('merchants').instance(a).module(merchant.mounts.knowledge).invocation('record', running.id), running,
+        '新本地句柄按精确模块地址查回原call，不重新执行');
+      assert.throws(() => reopened.collection('merchants').instance(b).module(merchant.mounts.knowledge).invocation('record', running.id),
+        /REACTIVE_INVOCATION_UNAVAILABLE/u);
+    } finally { reopened.release(); }
     facts.get(a)!.next({ status: 'ready', generation: 2, observedAt: Date.now(), value: { merchantId: a, revision: 2 } });
     layout.next([a, b]);
     await firstValueFrom(collection.instances$.pipe(filter(keys => keys.includes(a))));

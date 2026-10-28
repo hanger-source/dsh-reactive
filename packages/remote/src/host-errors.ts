@@ -1,6 +1,6 @@
 import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-protocol';
 import type { TypertGatewayWireStream } from '@deepseek-ai/dsh-api-gateway';
-import { ChildCreationIncompleteError, CreationIncompleteError, InputFileNotStagedError } from '@hanger-source/dsh-reactive-dsh';
+import { ChildCreationIncompleteError, CreationIncompleteError, InputFileNotStagedError, InvocationUnavailableError } from '@hanger-source/dsh-reactive-dsh';
 import { isAttachmentError } from '@deepseek-ai/dsh-attachment';
 import { z, ConversationAccessRevokedError, ActionBindingUnavailableError, ActionTargetMismatchError, ActionContractMismatchError, InputEditRejectedError, ProgramContractMismatchError, SharedProgramRequiredError } from '@hanger-source/dsh-reactive';
 import '@hanger-source/dsh-reactive-client/errors';
@@ -9,7 +9,9 @@ import type { ProgramFailure } from '@hanger-source/dsh-reactive-client/types';
 /** 只有框架明确拥有的可恢复事实做业务映射；其他错误继续由官方 Gateway 归类。 */
 export function createProgramFailureMapper(wireStream: Pick<TypertGatewayWireStream, 'failure'>): (error: unknown) => ProgramFailure {
   return error => {
-    const known = error instanceof ConversationAccessRevokedError
+    const known = error instanceof InvocationUnavailableError
+      ? new RemoteError('reactive/invocation-unavailable', error.message, {})
+      : error instanceof ConversationAccessRevokedError
       ? new RemoteError('reactive/conversation-access-revoked', error.message, {
         sessionId: error.sessionId, workspaceId: error.workspaceId, reason: error.reason,
       })

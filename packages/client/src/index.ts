@@ -46,7 +46,6 @@ interface RemoteSession<P extends ProgramContract> extends ProgramSessionClient<
   /** 实际创建这个 SDK 的纯合同；UI 或模块组合不得只按相同 sessionId 猜合同。 */
   readonly definition: P;
   readonly identity: ProgramIdentity;
-  invocation<K extends keyof ProgramSurface<P>['actions'] & string>(name: K, id: string): Promise<ActionInvocation<ProgramSurface<P>['actions'][K]>>;
   readonly human$: Observable<Observation<ProgramQuestions>>;
   readonly human: ResourceReader<ProgramQuestions>;
   uploadFile(data: FileUploadSource, options?: RemoteUploadFileOptions): FileUploadInvocation;
@@ -60,7 +59,6 @@ interface RemoteSession<P extends ProgramContract> extends ProgramSessionClient<
 export interface RemoteProgramSession<P extends ProgramContract> extends HumanProgramSessionClient<P, CancellationOptions, true> {
   readonly definition: P;
   readonly identity: ProgramIdentity & { readonly participant: 'human' };
-  invocation<K extends keyof ProgramSurface<P>['actions'] & string>(name: K, id: string): Promise<ActionInvocation<ProgramSurface<P>['actions'][K]>>;
   readonly human$: Observable<Observation<ProgramQuestions>>;
   readonly human: ResourceReader<ProgramQuestions>;
   uploadFile(data: FileUploadSource, options?: RemoteUploadFileOptions): FileUploadInvocation;
@@ -227,6 +225,46 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
         const operations = Object.freeze(Object.fromEntries(Object.keys(surface.operations).map(name => [name,
           (options: CancellationOptions = {}) => resolveOperation(name, options),
         ]))) as RemoteOperations<S>;
+        const resolveActionAt = async <D extends ActionContract>(name: string, contract: D, expectedScope: z.input<D['scope']>,
+          options: CancellationOptions = {}): Promise<RemoteResolvedAction<D>> => {
+          assertActive();
+          if (!Object.is(surfaceSlotDefinition(surface, 'actions', name), contract)) throw new Error('REACTIVE_SURFACE_ACTION_CONTRACT_MISMATCH');
+          const captured = await actionBindings.resolve(name, actionIdentity(contract), json(expectedScope), options);
+          const binding = captured.descriptor;
+          // 宿主已经用该合同解析原始目标并核对真实绑定。scope 是其 JSON 输出，不能再次运行单向 transform。
+          const invoke = async (input: ActionInput<D>, options: CancellationOptions = {}): Promise<ActionInvocation<D>> => {
+            assertActive(); captured.assertActive();
+            const signal = options.signal;
+            const starting = signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal;
+            starting.throwIfAborted();
+            // input 本来就是 z.input；客户端仅核验 JSON，唯一业务解析仍在 Host。
+            const started = await remote.startAction({ ...address, name, contract: binding.contract, bindingId: binding.bindingId,
+              input: json(input) }, starting);
+            if (!started.ok) {
+              if (started.error.code === 'gateway/internal' || started.error.code === 'gateway/cancelled')
+                throw new ActionAdmissionUnknownError(identity.sessionId, name, started.error);
+              throw revokeConversationAccess(owner, started.error);
+            }
+            // ACK 已可能受理业务；矛盾回执不能被描述成确定未执行，也不能自动重发。
+            try {
+              if (started.value.name !== name) throw new Error('REACTIVE_ACTION_INVOCATION_SLOT_MISMATCH');
+              assertActionIdentity(contract, started.value.contract);
+            } catch (error) { throw new ActionAdmissionUnknownError(identity.sessionId, name, error); }
+            return invocation(ctx.remote, identity.sessionId, started.value, contract, lifetime, invocationQueries, callRemote);
+          };
+          // schema 输出只在明确合同的传输边界恢复类型；不要求 scope 支持反向 encode。
+          return Object.freeze(Object.assign(invoke, { definition: contract, bindingId: binding.bindingId,
+            scope: binding.scope as ActionScope<D> }));
+        };
+        const invocationAt = async <D extends ActionContract>(name: string, contract: D, id: string,
+          options: CancellationOptions = {}): Promise<ActionInvocation<D>> => {
+          assertActive();
+          if (!Object.is(surfaceSlotDefinition(surface, 'actions', name), contract)) throw new Error('REACTIVE_SURFACE_ACTION_CONTRACT_MISMATCH');
+          const stored = result(await callRemote(signal => remote.actionInvocation({ sessionId: identity.sessionId, program: sharedIdentity,
+            invocationId: id, name, contract: actionIdentity(contract) }, signal), options.signal ?? lifetime.signal));
+          if (stored.name !== name) throw new Error('REACTIVE_ACTION_INVOCATION_SLOT_MISMATCH');
+          return invocation(ctx.remote, identity.sessionId, stored, contract, lifetime, invocationQueries, callRemote);
+        };
         const handle: RemoteSession<P> = {
           get definition() { assertActive(); return program; },
           id: identity.sessionId, identity, surface, views, operations,
@@ -234,66 +272,39 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
           get actionManifest$() { return this.actionManifest.values$; },
           collection(name) {
             assertActive();
-            const untyped = handle as RemoteSession<ProgramContract>;
             return createSurfaceCollectionClient(surface, name, { asynchronous: true,
               viewResource: address => viewSlot(address),
-              resolveAction: (address, _definition, scope, options) => untyped.resolveAction(address, scope, options),
+              resolveAction: resolveActionAt,
+              invocation: invocationAt,
               resolveOperation: (address, _definition, options) => resolveOperation(address, options),
             });
           },
           module(mount) {
             assertActive();
-            const untyped = handle as RemoteSession<ProgramContract>;
             return createSurfaceModuleClient(surface, mount, { asynchronous: true,
               viewResource: address => viewSlot(address),
-              resolveAction: (address, _definition, scope, options) => untyped.resolveAction(address, scope, options),
+              resolveAction: resolveActionAt,
+              invocation: invocationAt,
               resolveOperation: (address, _definition, options) => resolveOperation(address, options),
             });
           },
           async resolveAction<K extends keyof S['actions'] & string>(name: K, expectedScope: z.input<S['actions'][K]['scope']>,
             options: CancellationOptions = {}): Promise<RemoteResolvedAction<S['actions'][K]>> {
             assertActive();
-            const contract = surfaceSlotDefinition(surface, 'actions', name) as S['actions'][K];
+            const contract = surfaceSlotDefinition(surface, 'actions', name);
             if (!contract) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
-            const captured = await actionBindings.resolve(name, actionIdentity(contract), json(expectedScope), options);
-            const binding = captured.descriptor;
-            // 宿主已经用该合同解析原始目标并核对真实绑定。scope 是其 JSON 输出，不能再次运行单向 transform。
-            const invoke = async (input: ActionInput<S['actions'][K]>, options: CancellationOptions = {}): Promise<ActionInvocation<S['actions'][K]>> => {
-              assertActive(); captured.assertActive();
-              const signal = options.signal;
-              const starting = signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal;
-              starting.throwIfAborted();
-              // input 本来就是 z.input；客户端仅核验 JSON，唯一业务解析仍在 Host。
-              const started = await remote.startAction({ ...address, name, contract: binding.contract, bindingId: binding.bindingId,
-                input: json(input) }, starting);
-              if (!started.ok) {
-                if (started.error.code === 'gateway/internal' || started.error.code === 'gateway/cancelled')
-                  throw new ActionAdmissionUnknownError(identity.sessionId, name, started.error);
-                throw revokeConversationAccess(owner, started.error);
-              }
-              // ACK 已可能受理业务；矛盾回执不能被描述成确定未执行，也不能自动重发。
-              try {
-                if (started.value.name !== name) throw new Error('REACTIVE_ACTION_INVOCATION_SLOT_MISMATCH');
-                assertActionIdentity(contract, started.value.contract);
-              } catch (error) { throw new ActionAdmissionUnknownError(identity.sessionId, name, error); }
-              return invocation(ctx.remote, identity.sessionId, started.value, contract, lifetime, invocationQueries, callRemote);
-            };
-            // schema 输出只在明确合同的传输边界恢复类型；不要求 scope 支持反向 encode。
-            return Object.freeze(Object.assign(invoke, { definition: contract, bindingId: binding.bindingId,
-              scope: binding.scope as ActionScope<S['actions'][K]> }));
+            return resolveActionAt(name, contract, expectedScope, options);
           },
           get progress() { return progressOwner().progress; },
           get progress$() { return progressOwner().progress$; },
           get progressFrames$() { return progressOwner().progressFrames$; },
           get events$() { return progressOwner().events$; },
           request: requestId => progressOwner().request(requestId),
-          async invocation<K extends keyof S['actions'] & string>(name: K, id: string): Promise<ActionInvocation<S['actions'][K]>> {
+          async invocation<K extends keyof S['actions'] & string>(name: K, id: string, options: CancellationOptions = {}): Promise<ActionInvocation<S['actions'][K]>> {
             assertActive();
             const contract = surfaceSlotDefinition(surface, 'actions', name);
             if (!contract) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
-            const stored = result(await remote.actionInvocation({ sessionId: identity.sessionId, program: sharedIdentity, invocationId: id }, lifetime.signal));
-            if (stored.name !== name) throw new Error('REACTIVE_ACTION_INVOCATION_SLOT_MISMATCH');
-            return invocation(ctx.remote, identity.sessionId, stored, contract as S['actions'][K], lifetime, invocationQueries, callRemote);
+            return invocationAt(name, contract, id, options);
           },
           human,
           human$: human.observations$,

@@ -1,6 +1,6 @@
 import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-protocol';
 import { z } from 'zod';
-import { ConversationAccessRevokedError, programIdentity, type ActionIdentity, type NativeChildCommand, type NativeChildReference, type ProgramContractIdentity } from '@hanger-source/dsh-reactive';
+import { ActionContractMismatchError, ConversationAccessRevokedError, programIdentity, type ActionIdentity, type NativeChildCommand, type NativeChildReference, type ProgramContractIdentity } from '@hanger-source/dsh-reactive';
 import type { ProgramCreationReference, ProgramFailure, ProgramIdentity } from './types.ts';
 export { ConversationAccessRevokedError } from '@hanger-source/dsh-reactive';
 
@@ -52,8 +52,14 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'reactive/invocation-operation-unavailable': Record<string, never>;
   }
 }
+const actionIdentitySchema = z.object({ name: z.string(), version: z.number().int().positive().safe() }).strict();
+
 /** 正式 failure 已由 Gateway/贡献合同核验，客户端保留完整公开 details。 */
-export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError | ConversationAccessRevokedError {
+export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError | ConversationAccessRevokedError | ActionContractMismatchError {
+  if (value.code === 'reactive/action-contract-mismatch') {
+    const details = z.object({ expected: actionIdentitySchema, actual: actionIdentitySchema }).strict().parse(value.details);
+    return new ActionContractMismatchError(details.expected, details.actual);
+  }
   if (value.code === 'reactive/conversation-access-revoked') {
     const details = z.object({ sessionId: z.string(), workspaceId: z.string(),
       reason: z.enum(['membership-removed', 'workspace-deleted', 'access-expired']) }).strict().parse(value.details);

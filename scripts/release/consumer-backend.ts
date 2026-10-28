@@ -4,7 +4,7 @@ import { defineApplication, defineEnvironment, defineProgram, defineSurface, def
 import { concatMap, firstValueFrom, map, type Observable } from 'rxjs';
 import { createElement } from 'react';
 import { Context, Expose, Module, Skill, NativeTools, implementProgram, useAction, useResource, useResourceInstance, useReaction, useBeforeStep,
-  useObservable, useShared, useRelation } from '@hanger-source/dsh-reactive/program';
+  useObservable, useShared, useSharedResource, useRelation } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, mountApplication, type ApplicationAssembly, type ConversationHandle, type ServiceConversation, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-reactive-dsh/tools';
@@ -70,7 +70,7 @@ export function localWorkspaceCapabilities(workspace: Workspace, options: Return
   const values: Observable<number> = resource.values$;
   return { resource, shared, reaction, values, read: (): Promise<number> => resource.read(), start() {
     const run = reaction.start(), results: Observable<number> = run.events$.pipe(map(event => event.result));
-    return { run, results };
+    return { run, results, state: run.state };
   } };
 }
 export function useLocalCapabilities(options: ReturnType<typeof localCapabilityOptions>) {
@@ -80,7 +80,7 @@ export function useLocalCapabilities(options: ReturnType<typeof localCapabilityO
 }
 export function useBackendBindings(resource: ResourceImplementation<typeof current>, reaction: ReactionImplementation<typeof changes>) {
   const instance = useResourceInstance(resource, null);
-  const composed = useShared(() => combineResources({ current: instance, same: instance.observations$ }).pipe(
+  const composed = useSharedResource(() => combineResources({ current: instance, same: instance.observations$ }).pipe(
     mapResource(value => value.current.revision + value.same.revision), switchResource(() => instance),
     mapResource(value => value.revision.toFixed())), [instance]);
   const observed = useResource(composed);
@@ -101,7 +101,8 @@ export function useLocalBackend(target: string, changes$: Observable<number>, sa
   useBeforeStep(async signal => { await resource.read(signal); }, [resource]);
   const reaction = useReaction(() => ({ event: z.number(), result: z.string(),
     observe: () => changes$, operator: concatMap, execute: revision => target + ':' + (revision + 1) }), [target, changes$]);
-  return { resource, action, reaction, observed: useResource(resource) };
+  const activity = useSharedResource(() => combineResources({ current: resource, calls: action.activeInvocations }), [resource, action]);
+  return { resource, action, reaction, activity, observed: useResource(activity) };
 }
 export const localImplementation = (save: (target: string, value: number) => Promise<number>) => implementAction({
   name: 'local_service_save', description: '直接提供局部实现', scope: z.object({ target: z.string() }),
