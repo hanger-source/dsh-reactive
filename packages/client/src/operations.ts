@@ -4,9 +4,9 @@ import { Observable, map } from 'rxjs';
 import { z, implementOperation, attachOperation, locateOperation, bindOperation, decodeOperationFeedback, type OperationContract, type OperationOwner, type OperationReference, type OperationCommand, type OperationHandle, type OperationLocation, type OperationState, type ActionSource, type Observation, type BoundOperation, type OperationFeedbackRead, type OperationFeedbackPayload } from '@hanger-source/dsh-reactive';
 import { RemoteError, type RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
-import type { ProgramViewFrame } from './types.ts';
+import type { ProgramViewFrame } from './contracts/types.ts';
 import type { ProgramContractIdentity } from '@hanger-source/dsh-reactive';
-import { decodeProgramFailure } from './errors.ts';
+import { decodeProgramFailure } from './contracts/errors.ts';
 
 function result<T>(value: RemoteResult<T>): T { if (!value.ok) throw value.error; return value.value; }
 

@@ -12,6 +12,8 @@ export interface ResourceReadable<T> {
 export interface ResourceReaderOptions {
   readonly signal: AbortSignal;
   readonly onObserverError?: (error: unknown) => void;
+  /** 来源连接的真实释放失败；由实际owner汇总，不接收消费者回调错误。 */
+  readonly onCleanupError?: (error: unknown) => void;
 }
 
 /**
@@ -28,21 +30,34 @@ export class ResourceReader<T> implements ResourceReadable<T> {
   constructor(private readonly source: Pick<ResourceReadable<T>, 'observations$' | 'peek'>,
     options?: ResourceReaderOptions) {
     const signal = options?.signal;
+    const onCleanupError = options?.onCleanupError;
     this.signal = signal;
     this.onObserverError = options?.onObserverError;
     this.observations$ = new Observable(subscriber => {
       let generation = 0, ended = false;
       let status: Observation<T>['status'] | undefined;
+      let connection: Subscriber<Observation<T>> | undefined;
+      const releaseSource = (aborting: boolean) => {
+        try { connection?.unsubscribe(); }
+        catch (error) {
+          if (onCleanupError) onCleanupError(error);
+          else if (aborting) console.error('reactive.resource.cleanup.failed', error);
+          else throw error;
+        }
+      };
       const close = () => {
         if (ended || subscriber.closed) return;
         ended = true;
-        subscriber.next({ status: 'error', generation: ++generation, error: signal!.reason });
-        subscriber.complete();
+        try { releaseSource(true); }
+        finally {
+          subscriber.next({ status: 'error', generation: ++generation, error: signal!.reason });
+          subscriber.complete();
+        }
       };
       if (signal?.aborted) { close(); return; }
       signal?.addEventListener('abort', close, { once: true });
       subscriber.add(() => signal?.removeEventListener('abort', close));
-      const connection = new Subscriber<Observation<T>>({
+      connection = new Subscriber<Observation<T>>({
         next: observation => {
           if (signal?.aborted) { close(); return; }
           generation = observation.generation;
@@ -59,7 +74,7 @@ export class ResourceReader<T> implements ResourceReadable<T> {
           }
         },
       });
-      subscriber.add(connection);
+      subscriber.add(() => releaseSource(false));
       source.observations$.subscribe(connection);
     });
     this.values$ = this.observations$.pipe(mergeMap(observation => signal?.aborted || observation.status === 'pending' ? EMPTY
@@ -86,7 +101,11 @@ export class ResourceReader<T> implements ResourceReadable<T> {
       let settled = false;
       const finish = (complete: () => void) => {
         if (settled) return;
-        settled = true; subscriber.unsubscribe(); complete();
+        settled = true;
+        // read自己结束借用，没有显式unsubscribe调用者可接收来源清理失败；读取事实仍必须结算。
+        try { subscriber.unsubscribe(); }
+        catch (error) { console.error('reactive.resource.cleanup.failed', error); }
+        finally { complete(); }
       };
       const subscriber = new Subscriber<Observation<T>>({
         next: observation => {

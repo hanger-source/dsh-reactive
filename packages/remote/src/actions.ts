@@ -3,7 +3,7 @@ import { RemoteError, type Principal } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { ApplicationHost } from '@hanger-source/dsh-reactive-dsh';
 import { z, surfaceSlotDefinition, actionIdentity, assertActionIdentity, programIdentity, assertProgramIdentity, assertSharedProgramDefinition, type ProgramContractIdentity, type ActionIdentity, type AnyEnvironment, type Invocation, type Json } from '@hanger-source/dsh-reactive';
-import { Inbox } from '@hanger-source/dsh-reactive-client/transport';
+import { Inbox } from '@hanger-source/dsh-reactive-client/inbox';
 import type { ProgramActionRequest, ProgramActionStart, ProgramInvocationAddress, ProgramInvocationFrame } from '@hanger-source/dsh-reactive-client/types';
 import { decodeProgramFailure } from '@hanger-source/dsh-reactive-client/errors';
 import { createProgramFailureMapper } from './host-errors.ts';

@@ -8,7 +8,11 @@
 
 工作区共享使用已有 implementation：workspace.resource(implementation, params) 与 workspace.reaction(implementation, params) 直接返回正式 ResourceInstance、ReactionInstance。相同工作区、实现和已解析参数复用身份，跨 Environment 和 Session 共享，不同工作区隔离；构造不读，反应显式 start。组件从 props.workspace 取得对象，本地宿主从 runtime.application.workspace(id) 取得相同接点，无需捕获内核 Scope 或另建注册表。局部关系继续使用 createResource/createReaction 或局部 hooks；它们各自保留明确的 owner。
 
-工作区登记删除或宿主退出会结束该工作区的资源与持续关系。资源先交付 owner 失效，排队反应停止，已受理的业务函数仍沿原 owner 完成；新登记产生新身份，旧对象不复活。普通 workspace.share(source$) 保留有限流完成语义，失效需要参加业务组合时直接使用正式资源的 observations$。
+工作区登记删除或宿主退出会结束该工作区的资源与持续关系。资源先交付 owner 失效，排队反应停止，已受理的业务函数仍沿原 owner 完成；新登记产生新身份，旧对象不复活。普通 workspace.share(source$) 保留有限流完成语义；共享 ResourceSource 使用 workspace.shareResource(source)，由同一原观察流和工作区读取寿命决定有效性。
+
+workspace.shareResource 接受资源对象或其 observations$，同一个原流复用同一 reader。构造不连接，不重新定义合同或解析已知领域值；普通函数、Promise、Observable 与 hooks 共用该对象。工作区退出向仍活跃的外部消费者交付原原因的 error 观察，晚读不能取得旧 ready，不需要取得 Workspace 的内部 Scope。
+
+来源释放失败与业务读取错误分别负责。workspace.shareResource 将真实来源的清理失败交给工作区退出链汇总，资源仍交付原 owner 撤销原因。直接构造 shareResource 或 ResourceReader 时，可用 onCleanupError 接收来源的释放失败；它与 onObserverError 区分，不接收消费者回调异常。没有该接点的显式退订同步抛出清理失败；AbortSignal 或 read 内部释放没有退订调用者，报告 reactive.resource.cleanup.failed 并保留原读取结算。
 
 Workspace、Conversation、Value/Cell、ResourceValue、资源实例与反应绑定不提供所属 Scope。借用者释放自己的订阅或取消一次 read，停止自己启动的 ReactionRun；创建 Scope 的 owner 才负责销毁共享关系。普通应用继续借用 Workspace 和组件 hooks，无需反向取得内部 Scope。内核装配显式持有 Scope，并通过 createWorkspace(scope, identity) 与 Conversation 的首个构造参数传入；公开对象不返回这份销毁权。
 
@@ -51,7 +55,7 @@ export function inventory(scope: Scope, service: {
 
 已有 Promise API 使用 `abortable(signal => read(signal), ownerSignal)` 接入 RxJS，也可用 `firstValueFrom` 取得同一次等待的 Promise。外部取消以原 reason 结束等待，已经取消时不进入 read；退订只撤销本订阅，迟到结果和拒绝不再交付。它不承担底层提供者的清理等待，也不取消其他消费者或已受理业务。
 
-`ResourceSource<T>` 是 `Observable<Observation<T>>` 或提供这个 observations$ 的对象；不要求对象另有 read、peek 或 subscribe。正式资源、SDK 资源和 useResource 返回的轻量对象都能直接组合。`combineResources({ stock, quote })` 可以混合对象与观察流，只有所有依赖 ready 才产生派生 ready。对象和它的 observations$ 使用同一个来源与原 owner，不调用 read/peek、不重复解析或额外持有连接。`mapResource(project)` 保留 pending/error，并将投影异常表示为 error。
+`ResourceSource<T>` 是 `Observable<Observation<T>>` 或提供这个 observations$ 的对象；不要求对象另有 read、peek 或 subscribe。正式资源、SDK 资源和 useResource 返回的轻量对象都能直接组合。`combineResources({ stock, quote })` 可以混合对象与观察流，只有所有依赖 ready 才产生派生 ready。对象和它的 observations$ 使用同一个来源与原 owner，不调用 read/peek、不重复解析或额外持有连接。`mapResource(project)` 只接受同步投影，保留 pending/error，并将投影异常或 thenable 返回表示为该代 error；异步读取使用 switchResource 选择 observeResource 的查询，不交付 ready<Promise>。
 
 需要把完整派生关系作为可读取对象传给普通函数、Promise 或其他模块时，用 `shareResource(source, { signal: scope.signal })`；source 可以直接是资源对象或 combineResources 返回的观察流。read、peek、subscribe、values$、observations$ 共用 RxJS 的唯一当前快照；已经解析的领域值不再重复 schema parse，不需要另建 Scope、合同或绑定表。构造不连接，有限来源的最终观察保留至最后消费者退出，之后显式读取再连接；signal 固定读侧寿命，取消不重新执行任何命令。
 

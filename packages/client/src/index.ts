@@ -8,10 +8,10 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { bytesToBase64 } from '@deepseek-ai/dsh-util-crypto';
 import { BehaviorSubject, map, takeWhile, type Observable } from 'rxjs';
 import { z, assertSharedProgramDefinition, programIdentity, assertProgramIdentity, surfaceSlotDefinition, createSurfaceCollectionClient, actionManifestSlot, createFileUploadInvocation, type ToolActionBinding, type ActionInput, type ActionInvocation, type ActionContract, type ActionScope, type InvocationActivity, type Observation, type Surface, type SurfaceViews, type ViewValue, type OperationContract, type OperationReference, type OperationCommand, type OperationHandle, type BoundOperation, type ProgramContract, type SharedProgramContract, type ProgramSurface, type WorkspaceRegistration, type ConversationCreateOptions, type FileUploadSource, type FileUploadInvocation, type CancellationOptions } from '@hanger-source/dsh-reactive';
-import { decodeProgramFailure } from './errors.ts';
-import './errors.ts';
+import { decodeProgramFailure, ActionAdmissionUnknownError, CreationUnknownError, CreationIncompleteError,
+  ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError } from './contracts/errors.ts';
 import contribution from '@hanger-source/dsh-reactive-client/remote';
-import type { ProgramActionStart, ProgramCreationReference, ProgramIdentity, ProgramInputReceipt, ProgramInvocationFrame, ProgramQuestions, ProgramOperationNotificationResult, ProgramWorkspace, ProgramSubmission } from './types.ts';
+import type { ProgramActionStart, ProgramCreationReference, ProgramIdentity, ProgramInputReceipt, ProgramInvocationFrame, ProgramQuestions, ProgramOperationNotificationResult, ProgramWorkspace, ProgramSubmission } from './contracts/types.ts';
 import { createAuthenticatedTransport, type AuthenticatedTransportOptions } from './transport.ts';
 import { createOperationQueries, attachRemoteOperation, locateRemoteOperation, bindRemoteOperation, readRemoteOperationFeedback, type RemoteOperationQueries } from './operations.ts';
 import { ProgramJournal, type ProgramJournalOptions, type ProgramJournalRequest } from './journal.ts';
@@ -28,6 +28,9 @@ import { createSurfaceModuleClient } from '@hanger-source/dsh-reactive';
 
 export { createAuthenticatedTransport } from './transport.ts';
 export type { AuthenticatedTransportOptions } from './transport.ts';
+export { Inbox } from './contracts/inbox.ts';
+export { decodeProgramFailure, ActionAdmissionUnknownError, CreationUnknownError, CreationIncompleteError,
+  ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError } from './contracts/errors.ts';
 export { ProgramJournal } from './journal.ts';
 export type { ProgramJournalOptions, ProgramJournalRequest } from './journal.ts';
 
@@ -86,40 +89,6 @@ type ParticipantSession<P extends ProgramContract, Participant extends ProgramId
   Participant extends 'human' ? RemoteProgramSession<P> : RemoteServiceProgramSession<P>;
 type ParticipantClient<P extends ProgramContract, Participant extends ProgramIdentity['participant']> =
   Participant extends 'human' ? ProgramClient<P> : ServiceProgramClient<P>;
-
-/** 接受状态未被确认；此错误从不触发自动重发 Action。 */
-export class ActionAdmissionUnknownError extends Error {
-  constructor(readonly sessionId: string, readonly name: string, cause: unknown) { super('REACTIVE_ACTION_ADMISSION_UNKNOWN', { cause }); }
-}
-/** 创建结果未知时保留准确引用，调用者可显式恢复，不悄悄创建另一会话。 */
-export class CreationUnknownError extends Error {
-  constructor(readonly reference: ProgramCreationReference, cause: unknown) { super('REACTIVE_CREATION_UNKNOWN', { cause }); }
-}
-/** 宿主明确报告已部分持久化；沿同一引用完成登记，不归类为未知受理。 */
-export class CreationIncompleteError extends Error {
-  constructor(readonly reference: ProgramCreationReference, cause: unknown) { super('REACTIVE_CREATION_INCOMPLETE', { cause }); }
-}
-/** 宿主已确认实际身份；保留创建或恢复结果，调用者可换用匹配端口取得原会话。 */
-export class ProgramParticipantMismatchError extends Error {
-  readonly identity: ProgramIdentity;
-  constructor(readonly expectedParticipant: ProgramIdentity['participant'], identity: ProgramIdentity) {
-    super('REACTIVE_PROGRAM_CLIENT_PARTICIPANT_MISMATCH');
-    this.identity = Object.freeze({ ...identity, program: programIdentity(identity.program) });
-  }
-}
-/** HTTP 回执未证明受理结果；保留原请求地址供只读核对和应用显式确定性重投。 */
-export class SubmissionAdmissionUnknownError extends Error {
-  constructor(readonly sessionId: string, readonly requestId: string, cause: unknown) { super('REACTIVE_SUBMISSION_ADMISSION_UNKNOWN', { cause }); }
-}
-/** 编辑可能已经持久生效；保留同一请求身份供显式读取核对，不自动重投。 */
-export class InputEditAdmissionUnknownError extends Error {
-  constructor(readonly sessionId: string, readonly requestId: string, cause: unknown) { super('REACTIVE_INPUT_EDIT_ADMISSION_UNKNOWN', { cause }); }
-}
-/** 本次传输没有取得正式上传回执；内存调用身份不能用于恢复未知的原生 receipt。 */
-export class FileUploadReceiptUnknownError extends Error {
-  override readonly name = 'FileUploadReceiptUnknownError';
-  constructor(readonly sessionId: string, cause: unknown) { super('REACTIVE_FILE_UPLOAD_RECEIPT_UNKNOWN', { cause }); }
-}
 
 function result<T>(value: RemoteResult<T>): T { if (!value.ok) throw value.error; return value.value; }
 function json(value: unknown): JsonValue { return z.json().parse(value); }

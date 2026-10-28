@@ -17,8 +17,12 @@
     },
     "./package.json": "./package.json",
     "./jobs": {
-      "types": "./lib/jobs.d.ts",
-      "import": "./lib/jobs.js"
+      "types": "./lib/jobs/index.d.ts",
+      "import": "./lib/jobs/index.js"
+    },
+    "./jobs/client": {
+      "types": "./lib/jobs/client.d.ts",
+      "import": "./lib/jobs/client.js"
     },
     "./mcp": {
       "types": "./lib/mcp.d.ts",
@@ -33,12 +37,20 @@
       "import": "./lib/time.js"
     },
     "./schedule": {
-      "types": "./lib/schedule.d.ts",
-      "import": "./lib/schedule.js"
+      "types": "./lib/schedule/index.d.ts",
+      "import": "./lib/schedule/index.js"
+    },
+    "./schedule/client": {
+      "types": "./lib/schedule/client.d.ts",
+      "import": "./lib/schedule/client.js"
     },
     "./team": {
-      "types": "./lib/team.d.ts",
-      "import": "./lib/team.js"
+      "types": "./lib/team/index.d.ts",
+      "import": "./lib/team/index.js"
+    },
+    "./team/client": {
+      "types": "./lib/team/client.d.ts",
+      "import": "./lib/team/client.js"
     },
     "./subagents": {
       "types": "./lib/subagents.d.ts",

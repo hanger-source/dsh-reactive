@@ -13,7 +13,7 @@ if (!analyzer.discoverPackages().some(entry => entry.package === name)) {
 }
 
 // 依赖贡献使用已经构建的公开声明；绝对 exports 保留 DTS 的真实模块身份，
-// 避免工作区源码推导把 lib/types.d.ts 改成未加载的 src/types.ts。
+// 避免工作区源码推导把 lib/contracts/types.d.ts 改成未加载的 src/contracts/types.ts。
 const publishedTargets = (packageRoot, value) => typeof value === 'string' ? resolve(packageRoot, value)
   : Object.fromEntries(Object.entries(value).map(([key, target]) => [key, publishedTargets(packageRoot, target)]));
 

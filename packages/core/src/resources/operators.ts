@@ -2,6 +2,7 @@ import { catchError, combineLatest, defer, filter, map, of, EMPTY, Observable, t
 import type { Observation } from './observation.ts';
 import { resourceObservations, type ResourceSource } from './source.ts';
 import { normalizeResource, switchLatest } from '../reactivity/observable.ts';
+import { synchronous } from '../reactivity/synchronous.ts';
 
 export type ResourceSources = Readonly<Record<string, ResourceSource<unknown>>>;
 export type ResourceValues<S extends ResourceSources> = {
@@ -17,7 +18,7 @@ export interface ResourceSwitchOptions<T> {
 export function mapResource<T, U>(project: (value: T) => U): OperatorFunction<Observation<T>, Observation<U>> {
   return source => normalizeResource(source).pipe(map((observation): Observation<U> => {
     if (observation.status !== 'ready') return Object.freeze({ ...observation });
-    try { return Object.freeze({ ...observation, value: project(observation.value) }); }
+    try { return Object.freeze({ ...observation, value: synchronous(project(observation.value), 'RESOURCE_MAP') }); }
     catch (error) { return Object.freeze({ status: 'error', generation: observation.generation, error }); }
   }));
 }

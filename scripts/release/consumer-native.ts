@@ -2,7 +2,7 @@ import { createNativeJobs, type JobId, type NativeJob, type NativeJobs, type Nat
 import { createNativeMcp, type NativeMcp } from '@hanger-source/dsh-reactive-dsh/mcp';
 import { createNativeApproval, type NativeSessionApproval } from '@hanger-source/dsh-reactive-dsh/approval';
 import { createNativeClock } from '@hanger-source/dsh-reactive-dsh/time';
-import { createNativeSchedule, type ScheduleId, type NativeSessionSchedule, type NativeScheduleTask,
+import { createNativeSchedule, ScheduleId, ScheduleInputError, ScheduleLogError, type NativeSessionSchedule, type NativeScheduleTask,
   type NativeScheduleUpdate, type ScheduleUpdateResult, type ScheduleDeleteResult } from '@hanger-source/dsh-reactive-dsh/schedule';
 import { createNativeTeam, type NativeSessionTeam, type NativeTeamTask, type NativeTeamTaskUpdate,
   type TeamTaskId, type TeamTaskView, type TeamMemberView, type CreateTeamTaskRequest,
@@ -29,6 +29,10 @@ export const createTeamTask = (team: NativeSessionTeam, request: CreateTeamTaskR
 export const changeTeamTask = (team: NativeSessionTeam, request: UpdateTeamTaskRequest): NativeInvocation<TeamTaskView> => team.updateTask(request);
 export const changeSchedule = (task: NativeScheduleTask, request: NativeScheduleUpdate): NativeInvocation<ScheduleUpdateResult> => task.update(request);
 export const deleteSchedule = (task: NativeScheduleTask): NativeInvocation<ScheduleDeleteResult> => task.delete();
+export const scheduleTarget = (schedule: NativeSessionSchedule, storedId: string): NativeScheduleTask => schedule.task(ScheduleId(storedId));
+export const scheduleFailure = (error: unknown) =>
+  error instanceof ScheduleInputError || error instanceof ScheduleLogError ? error.code : undefined;
+export const removeCollectedJob = (job: NativeJob, signal: AbortSignal): void => job.remove({ signal });
 export function observeNativeWrite<T>(invocation: NativeInvocation<T>, signal: AbortSignal) {
   return { invocation, result: invocation.result, wait: () => invocation.wait({ signal }),
     source: invocation.source, activity: invocation.activity, activity$: invocation.activity$ };

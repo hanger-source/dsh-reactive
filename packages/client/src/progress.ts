@@ -2,8 +2,8 @@ import type { ClientScope } from './scope.ts';
 import { RemoteSnapshotStream } from '@deepseek-ai/dsh-api-gateway/client';
 import { BehaviorSubject, Subject, map, type Observable } from 'rxjs';
 import { ResourceReader, createAssistantProgress, createRequestHandle, decodeProgramEvent, parseAssistantProgressFrame, parseConversationProgress, type AssistantProgressFrame, type ConversationActivity, type ConversationEvent, type ConversationProgressSnapshot, type Observation, type RequestHandle, type ProgramContract, type ProgramParsedInput } from '@hanger-source/dsh-reactive';
-import type { ProgramAddress, ProgramProgressFrame } from './types.ts';
-import { decodeProgramFailure } from './errors.ts';
+import type { ProgramAddress, ProgramProgressFrame } from './contracts/types.ts';
+import { decodeProgramFailure } from './contracts/errors.ts';
 
 export interface RemoteProgress<P extends ProgramContract> {
   readonly progress: ResourceReader<ConversationProgressSnapshot>;

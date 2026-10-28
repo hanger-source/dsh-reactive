@@ -1,6 +1,6 @@
 {
   "extends": "./tsconfig.contracts.json",
   "compilerOptions": { "composite": false },
-  "include": ["src/types.ts"],
+  "include": ["src/contracts/types.ts"],
   "exclude": []
 }

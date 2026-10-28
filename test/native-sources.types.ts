@@ -1,6 +1,6 @@
 import type { ProgramContract, ProgramSession, Invocation, InvocationActivity, Json } from '@hanger-source/dsh-reactive';
 import type { NativeSessionSource, NativeInvocation } from '@hanger-source/dsh-reactive-dsh';
-import type { NativeJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
+import type { NativeJob, NativeJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
 import type { NativeSchedule, NativeScheduleTask, NativeScheduleUpdate, ScheduleUpdateResult, ScheduleDeleteResult } from '@hanger-source/dsh-reactive-dsh/schedule';
 import type { NativeTeam, NativeSessionTeam, NativeTeamTask, TeamTaskView, TeamMemberView,
   CreateTeamTaskRequest, UpdateTeamTaskRequest } from '@hanger-source/dsh-reactive-dsh/team';
@@ -20,6 +20,12 @@ function programCapabilities<P extends ProgramContract>(conversation: ProgramSes
   };
 }
 void programCapabilities;
+
+function jobConsumer(job: NativeJob, signal: AbortSignal) {
+  const removed: void = job.remove({ signal });
+  return { removed, state: job.state, output: job.output };
+}
+void jobConsumer;
 
 function taskConsumer(task: NativeTeamTask) {
   const state: ResourceReadable<TeamTaskView | undefined> = task.state;

@@ -1,16 +1,18 @@
-import ScheduleService, { type Config, type ScheduleCatalogEntry, type ScheduleRecord,
+import ScheduleService, { ScheduleId as NativeScheduleId, type Config, type ScheduleCatalogEntry, type ScheduleRecord,
   type ScheduleUpdateRequest, type ScheduleUpdateResult, type ScheduleDeleteResult,
   type ScheduleDeliveryHistoryRequest, type ScheduleDeliveryHistoryResult } from '@deepseek-ai/dsh-schedule';
-import type { ScheduleId } from '@deepseek-ai/dsh-schedule/client';
 import { Observable, firstValueFrom, map } from 'rxjs';
 import { abortable, observeResource, mapResource, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { NativeCapabilityOwner, nativeResource, nativeObservationScope, ownNativeValue,
-  type NativeCapability, type NativeInvocation, type NativeSessionSource } from './native-capability.ts';
-import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
+  type NativeCapability, type NativeInvocation, type NativeSessionSource } from '../native-capability.ts';
+import { nativeSessionAccess, type NativeSessionAccess } from '../conversations/session-access.ts';
 
-export type { ScheduleId, ScheduleRecord, ScheduleCatalogEntry, ScheduleDeliveryReceipt, ScheduleDeliveryRecord,
-  ScheduleTimingChange, ScheduleUpdateResult, ScheduleDeleteResult, ScheduleDeliveryHistoryResult } from '@deepseek-ai/dsh-schedule/client';
+export const ScheduleId = NativeScheduleId;
+export type ScheduleId = import('./client.ts').ScheduleId;
+export { ScheduleInputError, ScheduleLogError } from '@deepseek-ai/dsh-schedule';
+export type { ScheduleRecord, ScheduleCatalogEntry, ScheduleDeliveryReceipt, ScheduleDeliveryRecord,
+  ScheduleTimingChange, ScheduleUpdateResult, ScheduleDeleteResult, ScheduleDeliveryHistoryResult } from './client.ts';
 
 export interface NativeScheduleOptions {
   /** install 仅安装正式管理 owner，不安装创建提醒的模型工具；宿主须提供它的全部依赖。 */
@@ -115,19 +117,21 @@ class SessionSchedule implements NativeSessionSchedule {
           return ownNativeValue(result);
         },
         update: (request: NativeScheduleUpdate, opts: CancellationOptions = {}) => {
-          const signal = this.signal(opts);
+          const executionSignal = opts.signal;
+          const waitSignal = this.signal({ signal: executionSignal });
           const selected = structuredClone(request);
           if (selected.expected.id !== id) throw new Error('REACTIVE_NATIVE_SCHEDULE_EXPECTED_MISMATCH');
           const service = this.service(), sessionId = this.access.sessionId;
-          // 原生signal保留FIFO后的执行前取消；结果与独立回执等待分别结算。
+          // 只有显式调用信号约束FIFO后的执行前取消；SDK退出只结束本调用方的等待。
           return this.owner.invoke({ sessionId, operation: 'update' }, async () =>
-            ownNativeValue(await service.update({ ...selected, id, sessionId }, signal)), signal);
+            ownNativeValue(await service.update({ ...selected, id, sessionId }, executionSignal)), waitSignal);
         },
         delete: (opts: CancellationOptions = {}) => {
-          const signal = this.signal(opts);
+          const executionSignal = opts.signal;
+          const waitSignal = this.signal({ signal: executionSignal });
           const service = this.service(), sessionId = this.access.sessionId;
           return this.owner.invoke({ sessionId, operation: 'delete' }, async () =>
-            ownNativeValue(await service.delete({ id, sessionId }, signal)), signal);
+            ownNativeValue(await service.delete({ id, sessionId }, executionSignal)), waitSignal);
         },
       });
       this.#tasks.set(id, task);

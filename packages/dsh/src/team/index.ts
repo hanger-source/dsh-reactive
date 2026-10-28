@@ -8,13 +8,14 @@ import { Observable, firstValueFrom, map, merge } from 'rxjs';
 import { abortable, observeResource, mapResource, ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { NativeCapabilityOwner, nativeResource, nativeObservationScope, ownNativeValue,
-  type NativeCapability, type NativeInvocation, type NativeSessionSource } from './native-capability.ts';
-import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
-import { nativeAgentResource } from './conversations/agent-resource.ts';
+  type NativeCapability, type NativeInvocation, type NativeSessionSource } from '../native-capability.ts';
+import { nativeSessionAccess, type NativeSessionAccess } from '../conversations/session-access.ts';
+import { nativeAgentResource } from '../conversations/agent-resource.ts';
 
-export { TeamId, TeamTaskId, TeamError } from '@deepseek-ai/dsh-experimental-agent-team';
-export type { TeamMemberView, TeamMemberProjection, TeamTaskView, TeamProjection, CreateTeamTaskRequest,
-  UpdateTeamTaskRequest, TeamTaskStatus, TeamWaitResult } from '@deepseek-ai/dsh-experimental-agent-team';
+export { TeamId, TeamTaskId } from './client.ts';
+export type { TeamMemberView, TeamMemberProjection, TeamTaskView, TeamProjection, TeamTaskStatus } from './client.ts';
+export { TeamError } from '@deepseek-ai/dsh-experimental-agent-team';
+export type { CreateTeamTaskRequest, UpdateTeamTaskRequest, TeamWaitResult } from '@deepseek-ai/dsh-experimental-agent-team';
 
 /** 剔除原生 Agent 凭据的角色快照，不授予其他会话的控制权。 */
 export interface NativeTeamMembership {

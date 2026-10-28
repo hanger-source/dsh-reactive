@@ -1,4 +1,4 @@
-import { BehaviorSubject, NEVER, concatWith, of, share, skip } from 'rxjs';
+import { BehaviorSubject, NEVER, Observable, concatWith, share, skip } from 'rxjs';
 import { normalizeResource } from '../reactivity/observable.ts';
 import type { Observation } from './observation.ts';
 import { ResourceReader, type ResourceReaderOptions } from './reader.ts';
@@ -11,11 +11,16 @@ import { resourceObservations, type ResourceSource } from './source.ts';
 export function shareResource<T>(source: ResourceSource<T>, options: ResourceReaderOptions): ResourceReader<T> {
   const pending: Observation<T> = Object.freeze({ status: 'pending', generation: 0 });
   let current: BehaviorSubject<Observation<T>> | undefined;
-  const reset = () => { current = undefined; return of(undefined); };
   // connector交付唯一初始pending；跳过normalizeResource自己的合成基线，保留来源全部真实观察。
-  const observations$ = normalizeResource(resourceObservations(source)).pipe(skip(1), concatWith(NEVER), share({
+  const upstream$ = normalizeResource(resourceObservations(source)).pipe(skip(1), concatWith(NEVER));
+  const observations$ = new Observable<Observation<T>>(subscriber => {
+    const connected = current;
+    // 先撤销本连接的快照，再释放真实来源；旧teardown重订阅不能清掉新connector。
+    subscriber.add(() => { if (current === connected) current = undefined; });
+    upstream$.subscribe(subscriber);
+  }).pipe(share({
     connector: () => current = new BehaviorSubject<Observation<T>>(pending),
-    resetOnRefCountZero: reset, resetOnComplete: false, resetOnError: reset,
+    resetOnRefCountZero: true, resetOnComplete: false, resetOnError: true,
   }));
   return new ResourceReader({ observations$, peek: () => current === undefined ? pending : current.value }, options);
 }

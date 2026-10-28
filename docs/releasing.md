@@ -59,6 +59,8 @@ npm run release -- verify-artifacts --manifest /absolute/release-candidate/relea
 
 prepare 调用工作区唯一的 Wireit 构建图，然后 npm pack（`--ignore-scripts`）。合同编译、宿主编译、Typert 跨包生成、SDK、浏览器 bundle、可选 UI 与 Skill 各有独立任务及产物清单；相同前置任务在一次构建内共享，已有有效产物可复用。对每个最终 tgz 运行 publint，不再次触发 prepack/build。每个包包含 `release.json`，记录真实源码 commit、拟用 tag、channel、registry、六包版本和锁摘要；外部 manifest 保存各 tgz 的 SHA-512 完整性。打包 staging 不修改源码树，也不在包内写入自身 tarball hash。
 
+客户端共享合同由 contracts 任务产生，运行入口和生成的远程调用分别消费该产物；生成任务跟踪宿主与客户端的实际分析配置。浏览器根入口和公共子入口由同一次拆分构建产生，共用错误类、Inbox 与外部 core。仓外消费者实际执行 Node 和浏览器条件下的 HTTP、WebSocket 与 Inbox 行为，原生消费者另行打包 Jobs、Schedule、Team 的纯客户端合同，检查其闭包不引入宿主运行时。
+
 候选验证将 tgz 安装到仓外物理目录，分别验证默认后台 React 19、选择全部可选原生域的 React 19、原生 UI React 18 消费者，以 `skipLibCheck:false` 编译并运行同一份消费者。原生域所需的 optional peers 从实际宿主 tgz 的 package.json 取得，不借工作区 node_modules 补齐；Jobs、MCP、Approval、Clock、Schedule、Team、Files 子入口均实际加载。日常 CI 与发行沿用相同环境选择和消费者源码，后台默认安装仍独立验证。Skill 通过真实 `getDeveloperSkill()` 和 `dsh-reactive-skill` CLI 定位安装内容，核对版本、入口与五个 references。这个阶段只证明候选产物可消费，不称为已发布。
 
 后台消费者直接使用的 RxJS 版本取自实际 core tgz，并显式写入消费者依赖。三类消费者的源码和编译后入口都在各自安装目录内运行 dependency-cruiser，沿用工作区的未声明依赖与未解析入口规则；间接依赖即使恰好提升到 node_modules 根部，也不能作为直接依赖使用。候选报告为每类记录 declaredDependencies、strict、runtimeImport 与实际包集合，UI 另保留浏览器构建证据。正式发布和首次登记都要求三类完整证据、精确包覆盖以及 manifest 摘要、源码、版本和 registry 一致，缺项报告不能受理。

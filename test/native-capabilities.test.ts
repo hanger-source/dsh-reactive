@@ -478,6 +478,7 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     assert.throws(() => absent.snapshot(), /unknown job/u);
     await assert.rejects(absent.state.read(), /unknown job/u);
     assert.throws(() => absent.stop('不存在的目标不能进入执行'), /unknown job/u);
+    assert.throws(() => absent.remove(), /unknown job/u);
     const launch = () => programSession.jobs.start({ kind: 'native-lifecycle', label: '隔离Node进程，显式停止前保持运行',
       run(job) {
         // 此生产方只持有实际ChildProcess；id、游标、事件与终态均由官方JobRegistry拥有。
@@ -511,6 +512,9 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     await assert.rejects(foreignReader.output.read());
     assert.throws(() => foreignReader.stop('外会话不能停止原进程'));
     assert.deepEqual(reader.readAt(0), observed, '重复SDK观察不消耗模型游标');
+    assert.throws(() => reader.remove(), /still running/u, '移除记录不能暗中停止仍活跃的生产进程');
+    assert.doesNotThrow(() => process.kill(children[0]!.child.pid!, 0));
+    assert.throws(() => foreignReader.remove(), '另一个真实owner不能移除原Job');
     assert.deepEqual(programSession.jobs.job(first).readAt(0), observed, 'Program与外部SDK消费同一原生Job，不复制输出状态');
     assert.equal(jobs.read(first, owner).chunks.map(chunk => chunk.text).join(''), 'native-job-ready\n');
     assert.equal(jobs.read(first, owner).chunks.length, 0, '只有正式consuming read才推进模型游标');
@@ -524,6 +528,25 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     const stopped = await controlling.wait(5_000);
     assert.equal(stopped.status, 'killed'); await children[0]!.closed;
     assert.throws(() => process.kill(children[0]!.child.pid!, 0), { code: 'ESRCH' });
+    assert.throws(() => reader.remove(), /REACTIVE_SCOPE_DISPOSED/u, '旧SDK退出后不能借原目标移除记录');
+    const preCancelled = new AbortController(), removalCancelled = new Error('JOB_REMOVAL_CANCELLED_BEFORE_CONTROL');
+    preCancelled.abort(removalCancelled);
+    assert.throws(() => controlling.remove({ signal: preCancelled.signal }), error => error === removalCancelled);
+    assert.equal(jobs.get(first, owner).status, 'killed', '预取消不改变正式注册表');
+    const removed = firstValueFrom(observedSession.events$.pipe(filter(event => event.type === 'removed' && event.job.id === first), timeout(3_000)));
+    const removedList = firstValueFrom(observedSession.list$.pipe(filter(rows => !rows.some(row => row.id === first)), timeout(3_000)));
+    const removedState = firstValueFrom(controlling.state.observations$.pipe(filter(value => value.status === 'error'), timeout(3_000)));
+    const removedOutput = firstValueFrom(controlling.output.observations$.pipe(filter(value => value.status === 'error'), timeout(3_000)));
+    controlling.remove();
+    assert.equal((await removed).type, 'removed');
+    assert.deepEqual(await removedList, []);
+    for (const observation of await Promise.all([removedState, removedOutput])) {
+      assert.equal(observation.status, 'error');
+      if (observation.status === 'error') assert.match(String(observation.error), /unknown job/u);
+    }
+    assert.equal(observedSession.job(first), controlling, '移除后固定目标不重定向或伪造墓碑');
+    assert.throws(() => controlling.snapshot(), /unknown job/u);
+    assert.throws(() => controlling.remove(), /unknown job/u);
 
     const otherDefinition = defineApplication({ name: 'native-installation', admit: async () => {}, environments: [defineEnvironment({
       id: 'work', instructions: '独立宿主未选择这个能力实例', program: implementProgram(program, { Component: () => null }),

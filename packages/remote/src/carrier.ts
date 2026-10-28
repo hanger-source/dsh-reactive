@@ -8,7 +8,7 @@ import type {} from '@deepseek-ai/dsh-api-gateway';
 import type { Principal } from '@deepseek-ai/dsh-typert-protocol';
 import { parseRemoteStreamClientMessage, REMOTE_STREAM_MUX_PATH, type RemoteStreamServerMessage } from '@deepseek-ai/dsh-api-gateway/stream-protocol';
 import { WebSocketServer, WebSocket } from 'ws';
-import { Inbox } from '@hanger-source/dsh-reactive-client/transport';
+import { Inbox } from '@hanger-source/dsh-reactive-client/inbox';
 
 /** 应用认证及 Host/Origin trust 边界；返回身份来自宿主，不来自 Remote 参数。 */
 export interface RemoteCarrierOptions {

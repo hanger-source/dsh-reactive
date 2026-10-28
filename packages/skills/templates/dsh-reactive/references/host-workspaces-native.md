@@ -86,6 +86,12 @@ Jobs、Schedule、Team、Files、Approval、Clock 用 `capability.forSession(con
 
 同一原来源共享 SDK 实例，Program 来源和外部句柄分别拥有观察寿命。Jobs、Schedule、Team 会话与固定任务的 `state` 是可直接传给 `useResource` 的只读资源，Job 的 `output` 独立表示非消费输出切面。`state.read(signal)`、peek、subscribe、values$、observations$ 共用现有资源机制；原 state$/list$/catalog$/projection$ 是相应值流，不能用它们推断旧值仍有效。最后一个资源消费者退出会撤销查询并撤下旧 ready，组件退订不 dispose 会话 SDK，也不停止已受理工作。SDK dispose、Program 失败或来源退出释放其会话资源观察，不杀死 Job、不撤回提醒、不取消 Team 成员；独立的有限调用活动仍沿原 result 结算。Program 来源不自动取得人工、ToolOccurrence 或 Goal 权限。
 
+Job 收到终态并收集输出后，可以显式 job.remove() 移除原生可见记录。running、未知或外会话目标仍由原生拒绝；移除不启动停止操作，不自动消费输出。列表沿正式 removed 事件更新，固定目标的 state/output 随后表示原生缺席错误。
+
+Schedule 的 update/delete 把显式 options.signal 交给原生执行前检查，SDK 退出信号只限定默认 wait 与观察。已经返回 NativeInvocation、仍在原生 FIFO 排队的写入，不因 SDK dispose 或来源 release 取消；显式调用者取消仍可在原生落盘前阻止写入。能力 owner 退出等待已登记调用结算。ScheduleId、ScheduleInputError、ScheduleLogError 从宿主 /schedule 入口取得，实际目标归属与事务资格仍由服务核验。
+
+共享原生投影时，使用 `@hanger-source/dsh-reactive-dsh/jobs/client`、`/team/client`、`/schedule/client`。前两者提供官方纯品牌值及只读投影类型；Schedule 公开 client 叶只有类型，不提供浏览器 ScheduleId 构造器。Jobs 的 JobOutputRead 仍属于宿主合同，不能从 client 叶导入或复制一份 DTO。宿主控制继续从 /jobs、/team、/schedule 取得；纯叶不安装服务，也不授予远程控制权。
+
 Team 的 `roster` 是原生 listMembers 的实时成员资源，`roster$` 直接使用它的 values$；保留原生 running、inactive、provisioning、failed 状态，不把持久 `state`、projection$ 或 members$ 的成员阶段当成当前 turn 运行态。普通函数用 roster.read(signal)、peek 或 listMembers 读取，RxJS 从 roster.observations$ 派生并保留 pending/error，hooks 用 useResource(roster) 消费同源事实；可直接与任务板、Subagents 目录或其他资源 combineResources。构造不读取，首次观察连接真实成员与 Agent 状态通知，最后消费者退出释放观察。冷会话保持 pending，实际 Agent 恢复后重新读取，读取不 resume、创建成员或启动模型。
 
 Jobs 的 jobs.job(id)、Schedule 与 Team 的 task(id) 都同步返回固定目标，同一来源与 id 复用对象。构造不读原生注册表、catalog 或投影，也不授予存在性与修改权限；可立即把它们的 state/output 交给 combineResources、useResource、Context 或资源 View。读取、历史和修改才分别进入原生存在性、所属会话、成员及 CAS 核验。Workspace、Conversation、值、资源和反应句柄同样不暴露所属 Scope；借用对象不能用于销毁共享 owner。

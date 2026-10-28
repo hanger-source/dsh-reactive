@@ -36,6 +36,12 @@ module.exports = {
       to: { path: '^packages/(client|remote|native-ui|skills)/|node_modules/@hanger-source/dsh-reactive-(client|remote|native-ui|skills)(/|$)' },
     },
     {
+      name: 'native-client-contracts-do-not-load-host', severity: 'error',
+      from: { path: '^packages/dsh/src/(jobs|schedule|team)/client\\.ts$' },
+      to: { path: '^packages/dsh/src/', pathNot: '^packages/dsh/src/(jobs|schedule|team)/client\\.ts$',
+        dependencyTypesNot: ['type-only'] },
+    },
+    {
       name: 'client-does-not-load-host-or-ui', severity: 'error',
       from: { path: '^packages/client/src/' },
       to: { path: '^packages/(dsh|remote|native-ui|skills)/|node_modules/@hanger-source/dsh-reactive-(dsh|remote|native-ui|skills)(/|$)|node_modules/(react|react-reconciler)(/|$)' },

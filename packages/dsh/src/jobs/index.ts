@@ -4,11 +4,12 @@ import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs';
 import { Observable, map, of } from 'rxjs';
 import { fromSnapshot, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
-import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, nativeResource, nativeToolNames, ownNativeValue, type NativeCapability, type NativeSessionSource } from './native-capability.ts';
-import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
+import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, nativeResource, nativeToolNames, ownNativeValue, type NativeCapability, type NativeSessionSource } from '../native-capability.ts';
+import { nativeSessionAccess, type NativeSessionAccess } from '../conversations/session-access.ts';
 
-export { JobId } from '@deepseek-ai/dsh-jobs';
-export type { JobEvent, JobView, JobOutputRead, JobSpec, JobHooks, JobOutcome, JobKind, JobKindMap } from '@deepseek-ai/dsh-jobs';
+export { JobId } from './client.ts';
+export type { JobView, JobKind, JobKindMap } from './client.ts';
+export type { JobEvent, JobOutputRead, JobSpec, JobHooks, JobOutcome } from '@deepseek-ai/dsh-jobs';
 
 export interface NativeJobsOptions {
   /** local 安装正式进程内注册表；provided 使用宿主已经安装的同一服务。 */
@@ -31,6 +32,8 @@ export interface NativeJob {
   readAt(fromByte: number): JobOutputRead;
   wait(timeoutMs: number, options?: CancellationOptions): Promise<JobView>;
   stop(reason: string, options?: CancellationOptions): 'requested' | 'already-finished';
+  /** 显式移除已经收集终态且未交给模型的记录；不停止仍在执行的Job。 */
+  remove(options?: CancellationOptions): void;
 }
 
 class NativeJobReader implements NativeJob {
@@ -66,6 +69,10 @@ class NativeJobReader implements NativeJob {
   stop(reason: string, options: CancellationOptions = {}): 'requested' | 'already-finished' {
     this.jobs.signal(options).throwIfAborted();
     return this.jobs.registry().kill(this.id, this.jobs.ownerId, reason);
+  }
+  remove(options: CancellationOptions = {}): void {
+    this.jobs.signal(options).throwIfAborted();
+    this.jobs.registry().remove(this.id, this.jobs.ownerId);
   }
 }
 

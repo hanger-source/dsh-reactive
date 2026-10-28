@@ -13,7 +13,7 @@ import type { ProgramActionRequest, ProgramActionStart, ProgramAddress, ProgramC
 import type { ProgramOperationRequest, ProgramOperationLocateRequest, ProgramOperationLocation, ProgramOperationNotification, ProgramOperationNotificationResult, ProgramAnswerRequest, ProgramQuestionRequest, ProgramQuestionsFrame, ProgramWaitFrame, ProgramOperationBindingRequest, ProgramOperationBinding, ProgramOperationFeedbackRequest, ProgramOperationFeedbackRead } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramRequestAddress, ProgramRequestStatus, ProgramWorkspace, ProgramGoalControl, ProgramCancelResult, ProgramJournalOpenRequest, ProgramJournalPageRequest, ProgramJournalFrame } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramProgressFrame, ProgramConversationEvent } from '@hanger-source/dsh-reactive-client/types';
-import { Inbox } from '@hanger-source/dsh-reactive-client/transport';
+import { Inbox } from '@hanger-source/dsh-reactive-client/inbox';
 import { createProgramActionOwner, type ProgramActionOwner, type ProgramActionOwnerOptions } from './actions.ts';
 import { resolveProgramParticipant, type ProgramParticipant } from './participant.ts';
 

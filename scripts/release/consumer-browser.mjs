@@ -1,6 +1,7 @@
 import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 
 const nativeModules = ['@deepseek-ai/dsh-client-modules', '@deepseek-ai/dsh-client-connection',
@@ -93,15 +94,47 @@ export async function buildConsumerBrowser(directory) {
   const coreRoot = await realpath(join(directory, 'node_modules/@hanger-source/dsh-reactive'));
   const clientRoot = await realpath(join(directory, 'node_modules/@hanger-source/dsh-reactive-client'));
   const client = JSON.parse(await readFile(join(clientRoot, 'package.json'), 'utf8'));
-  const browserEntry = client.exports['.'].browser;
-  if (typeof browserEntry !== 'string') throw new Error('RELEASE_BROWSER_EXPORT_REQUIRED');
+  const publicEntries = ['.', './errors', './types', './inbox', './transport', './remote'];
+  const browserEntries = publicEntries.map(key => {
+    const target = client.exports[key]?.browser;
+    if (typeof target !== 'string') throw new Error('RELEASE_BROWSER_EXPORT_REQUIRED:' + key);
+    return resolve(clientRoot, target);
+  });
   const output = 'browser/consumer.js';
   const result = await build({ absWorkingDir: directory, entryPoints: ['compiled/browser.js'], outfile: output,
     platform: 'browser', format: 'esm', target: 'es2024', conditions: ['browser', 'import'], bundle: true,
     metafile: true, logLevel: 'silent', logOverride: { 'import-is-undefined': 'error' } });
   const { inputs, emitted, coreModules } = await checkBrowserBundle(result, directory, { '@hanger-source/dsh-reactive': coreRoot });
-  if (!inputs.includes(resolve(clientRoot, browserEntry))) throw new Error('RELEASE_BROWSER_EXPORT_NOT_CONSUMED');
-  return { entry: relative(directory, resolve(clientRoot, browserEntry)), output: join(directory, output),
+  for (const entry of browserEntries) if (!inputs.includes(entry)) throw new Error('RELEASE_BROWSER_EXPORT_NOT_CONSUMED:' + entry);
+  const consumer = await import(pathToFileURL(join(directory, output)).href);
+  if (!consumer.clientEntries) throw new Error('RELEASE_BROWSER_CLIENT_ENTRIES_REQUIRED');
+  const { checkClientEntries } = await import(pathToFileURL(join(directory, 'runtime.mjs')).href);
+  const clientEntries = await checkClientEntries(directory, consumer.clientEntries);
+  return { entry: relative(directory, browserEntries[0]), entries: browserEntries.map(entry => relative(clientRoot, entry)),
+    output: join(directory, output), clientEntries,
     bytes: emitted.reduce((sum, file) => sum + file.bytes, 0), modules: inputs.length, coreModules,
     native: await buildNativeBrowser(directory, coreRoot) };
+}
+
+/** 原生领域的纯值合同单独进浏览器；不借原生 UI 或已安装 Host 的运行闭包。 */
+export async function buildNativeContractsBrowser(directory) {
+  const coreRoot = await realpath(join(directory, 'node_modules/@hanger-source/dsh-reactive'));
+  const hostRoot = await realpath(join(directory, 'node_modules/@hanger-source/dsh-reactive-dsh'));
+  const output = 'browser/native-contracts.js';
+  const result = await build({ absWorkingDir: directory, entryPoints: ['compiled/native-contracts-browser.js'], outfile: output,
+    platform: 'browser', format: 'esm', target: 'es2024', conditions: ['browser', 'import'], bundle: true,
+    metafile: true, logLevel: 'silent', logOverride: { 'import-is-undefined': 'error' } });
+  const checked = await checkBrowserBundle(result, directory, {
+    '@hanger-source/dsh-reactive': coreRoot, '@hanger-source/dsh-reactive-dsh': hostRoot,
+  });
+  const manifest = JSON.parse(await readFile(join(hostRoot, 'package.json'), 'utf8'));
+  const hostEntries = new Set(Object.entries(manifest.exports).flatMap(([key, face]) => {
+    if (key.endsWith('/client') || typeof face !== 'object') return [];
+    const target = face.node ?? face.import ?? face.default;
+    return typeof target === 'string' ? [resolve(hostRoot, target)] : [];
+  }));
+  if (checked.inputs.some(input => hostEntries.has(input))) throw new Error('RELEASE_NATIVE_CONTRACT_HOST_ENTRY');
+  await import(pathToFileURL(join(directory, output)).href);
+  return { output: join(directory, output), bytes: checked.emitted.reduce((sum, file) => sum + file.bytes, 0),
+    modules: checked.inputs.length, coreModules: checked.coreModules };
 }

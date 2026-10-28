@@ -19,7 +19,9 @@ import { operation, check, surface, program } from './browser-contracts.mjs';
 
 const assets = await mkdtemp(join(tmpdir(), 'dsh-browser-assets-'));
 const coreEntry = fileURLToPath(import.meta.resolve('@hanger-source/dsh-reactive'));
-const clientBrowserEntry = fileURLToPath(new URL('./lib/client.browser.js', import.meta.resolve('@hanger-source/dsh-reactive-client/package.json')));
+const clientManifest = new URL(import.meta.resolve('@hanger-source/dsh-reactive-client/package.json'));
+const clientPackage = JSON.parse(await readFile(clientManifest, 'utf8'));
+const clientBrowserEntry = fileURLToPath(new URL(clientPackage.exports['.'].browser, clientManifest));
 let browserClient;
 const browserAssets = new Set();
 const coreArtifact = await build({ entryPoints: { core: coreEntry }, outdir: assets,

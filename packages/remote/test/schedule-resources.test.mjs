@@ -4,14 +4,14 @@ import { mkdtemp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as immediate } from 'node:timers/promises';
-import { filter, firstValueFrom, timeout } from 'rxjs';
+import { filter, firstValueFrom, from, timeout } from 'rxjs';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
-import ScheduleService, { ScheduleId, scheduleDomain } from '@deepseek-ai/dsh-schedule';
+import ScheduleService, { scheduleDomain } from '@deepseek-ai/dsh-schedule';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, mapResource, resourceView, z } from '@hanger-source/dsh-reactive';
 import { Expose, implementProgram, useResource } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeModel, requireActivePlugin } from '@hanger-source/dsh-reactive-dsh';
-import { createNativeSchedule } from '@hanger-source/dsh-reactive-dsh/schedule';
+import { createNativeSchedule, ScheduleId, ScheduleInputError } from '@hanger-source/dsh-reactive-dsh/schedule';
 import { mountProgramGateway, RemoteAuthenticationError } from '@hanger-source/dsh-reactive-remote';
 
 const first = (source, predicate) => firstValueFrom(source.pipe(filter(predicate), timeout(8_000)));
@@ -68,6 +68,7 @@ test('Schedule同步目标沿真实CAS读取，退出等待保留原生结果，
     subscriptions.push(task.state.observations$.subscribe());
     await task.state.read(t.signal);
     assert.equal(calls, before, '绑定不读取，任务资源复用会话观察而不再查询catalog');
+    await assert.rejects(task.history({ limit: 0 }), error => error instanceof ScheduleInputError && error.code === 'invalid_rule');
     const foreignTask = capability.forSession(foreign).task(original.id);
     assert.equal(await foreignTask.read(), undefined);
     assert.equal(await foreignTask.state.read(t.signal), undefined);
@@ -193,6 +194,94 @@ test('Schedule同步目标沿真实CAS读取，退出等待保留原生结果，
     }
     assert.throws(() => task.state.peek(), /REACTIVE_SCOPE_DISPOSED/);
 
+    const headRecord = await runtime.native.schedule.create(SessionId(session.id), {
+      title: '占住正式FIFO', prompt: '仅验证写入排队，不投递输入', after_seconds: 3600,
+    });
+    const queued = [];
+    for (const exit of ['sdk', 'source', 'caller']) for (const operation of ['update', 'delete']) {
+      const record = await runtime.native.schedule.create(SessionId(session.id), {
+        title: `${exit}-${operation}`, prompt: '观察退出不取得原生写入取消权', after_seconds: 3600,
+      });
+      const handle = await runtime.application.open(session.id, program);
+      queued.push({ record, handle, sdk: capability.forSession(handle), exit, operation,
+        controller: new AbortController(), reason: new Error(`QUEUED_${operation}_${exit}_LEFT`) });
+    }
+    const headHandle = await runtime.application.open(session.id, program), headSdk = capability.forSession(headHandle);
+    const headEntered = Promise.withResolvers(), headRelease = Promise.withResolvers();
+    const fifoWrites = new Map(), fifoReceipts = [];
+    let headCall;
+    table.put = function (...args) {
+      const receipt = (async () => {
+        const result = await nativePut.apply(this, args);
+        fifoWrites.set(args[0], (fifoWrites.get(args[0]) ?? 0) + 1);
+        if (args[0] === headRecord.id) { headEntered.resolve(); await headRelease.promise; }
+        return result;
+      })();
+      fifoReceipts.push(receipt); return receipt;
+    };
+    table.delete = function (...args) {
+      const receipt = (async () => {
+        const result = await nativeDelete.apply(this, args);
+        fifoWrites.set(args[0], (fifoWrites.get(args[0]) ?? 0) + 1);
+        return result;
+      })();
+      fifoReceipts.push(receipt); return receipt;
+    };
+    try {
+      headCall = headSdk.task(headRecord.id).update({ expected: headRecord, title: '首写已落盘，FIFO回执尚未归还' });
+      await first(from(headEntered.promise), () => true);
+      for (const current of queued) {
+        const task = current.sdk.task(current.record.id);
+        const options = current.exit === 'caller' ? { signal: current.controller.signal } : {};
+        current.call = current.operation === 'update'
+          ? task.update({ expected: current.record, title: '退出观察后真实提交' }, options) : task.delete(options);
+        current.waiting = current.call.wait().then(value => { current.outcome = value; }, error => { current.outcome = error; });
+      }
+      for (const current of queued) {
+        if (current.exit === 'sdk') current.sdk.dispose();
+        else if (current.exit === 'source') current.handle.release();
+        else current.controller.abort(current.reason);
+      }
+      await first(from(Promise.all(queued.map(current => current.waiting))), () => true);
+      for (const current of queued) {
+        if (current.exit === 'caller') assert.equal(current.outcome, current.reason);
+        else { assert.ok(current.outcome instanceof Error); assert.match(current.outcome.message, /REACTIVE_SCOPE_DISPOSED/); }
+        assert.equal(fifoWrites.get(current.record.id) ?? 0, 0, '默认wait退出时写入仍在同一原生FIFO中排队');
+        assert.equal(table.get(current.record.id).record.title, current.record.title);
+      }
+      headRelease.resolve(); assert.equal((await headCall.result).updated, true);
+      for (const current of queued) {
+        if (current.exit === 'caller') {
+          await assert.rejects(current.call.result, error => error === current.reason);
+          const activity = await current.call.activity.read(t.signal);
+          assert.equal(activity.state, 'failed'); assert.equal(activity.error, current.reason);
+          assert.equal(table.get(current.record.id).record.title, current.record.title);
+          assert.equal(fifoWrites.get(current.record.id) ?? 0, 0, '显式signal保留FIFO后的执行前取消');
+        } else {
+          const result = await current.call.result;
+          if (current.operation === 'update') {
+            assert.equal(result.updated, true); assert.equal(result.record.title, '退出观察后真实提交');
+            assert.equal(table.get(current.record.id).record.title, result.record.title);
+          } else {
+            assert.deepEqual(result, { id: current.record.id, deleted: true });
+            assert.equal(table.get(current.record.id), undefined);
+          }
+          assert.equal((await current.call.activity.read(t.signal)).state, 'returned');
+          assert.equal(fifoWrites.get(current.record.id), 1, 'SDK或来源退出不取消或重发已经排队的真实写入');
+        }
+      }
+      assert.equal(fifoWrites.get(headRecord.id), 1);
+    } finally {
+      headRelease.resolve();
+      await Promise.allSettled([headCall?.result, ...queued.map(current => current.call?.result), ...fifoReceipts]);
+      table.put = nativePut; table.delete = nativeDelete;
+      for (const current of queued) { current.sdk.dispose(); current.handle.release(); }
+      headSdk.dispose(); headHandle.release();
+      for (const record of [headRecord, ...queued.map(current => current.record)]) {
+        await runtime.native.schedule.delete({ id: record.id, sessionId: SessionId(session.id) });
+      }
+    }
+
     const lateRecord = await runtime.native.schedule.create(SessionId(session.id), {
       title: '迟到结算的原提醒', prompt: '只验证实际写入与调用结算，不执行提醒', after_seconds: 3600,
     });
@@ -201,7 +290,7 @@ test('Schedule同步目标沿真实CAS读取，退出等待保留原生结果，
     const releaseLateUpdate = Promise.withResolvers(), releaseLateDelete = Promise.withResolvers();
     const lateUpdateFailure = new Error('SCHEDULE_PUT_RECEIPT_FAILED_AFTER_COMMIT');
     const lateDeleteFailure = new Error('SCHEDULE_DELETE_RECEIPT_FAILED_AFTER_COMMIT');
-    let latePutCalls = 0, lateDeleteCalls = 0, latePutReceipt, lateDeleteReceipt, lateUpdateCall, lateDeleteCall, disposing;
+    let latePutCalls = 0, lateDeleteCalls = 0, latePutReceipt, lateDeleteReceipt, lateUpdateCall, lateDeleteCall, queuedAfterDelete, disposing;
     table.put = function (...args) {
       latePutReceipt = (async () => {
         await nativePut.apply(this, args); latePutCalls++;
@@ -236,22 +325,29 @@ test('Schedule同步目标沿真实CAS读取，退出等待保留原生结果，
       await lateDeleteAtWrite.promise;
       deleteCancellation.abort(deleteReason); await deleteWait;
       assert.equal(table.get(lateRecord.id), undefined, '正式KV删除已落盘，迟到异常不恢复原记录');
+      queuedAfterDelete = lateTask.update({ expected: lateRecord, title: '原生FIFO继续交付真实缺席结果' });
+      let queuedSettled = false;
+      void queuedAfterDelete.result.then(() => { queuedSettled = true; }, () => { queuedSettled = true; });
       let disposed = false;
       disposing = capability.dispose().then(() => { disposed = true; });
       await immediate();
       assert.equal(disposed, false, '能力退出等待尚未交回的真实delete写入');
+      assert.equal(queuedSettled, false, '能力退出也加入已返回调用对象的原生FIFO等待');
       assert.equal((await lateDeleteCall.activity.read(t.signal)).state, 'running', '能力退出期间仍可观察同一次在途调用');
       releaseLateDelete.resolve();
       await assert.rejects(lateDeleteCall.result, error => error === lateDeleteFailure);
       const deleteActivity = await first(lateDeleteCall.activity$, value => value.state === 'failed');
       assert.equal(deleteActivity.error, lateDeleteFailure); assert.equal(deleteActivity.phase, 'execute');
       await disposing;
+      assert.equal(queuedSettled, true);
+      assert.equal((await queuedAfterDelete.result).code, 'schedule_not_found', 'SDK观察退出不替换原生队列最终给出的业务结果');
+      assert.equal((await queuedAfterDelete.activity.read(t.signal)).state, 'returned');
       assert.equal(disposed, true, '原生写入拒绝是调用事实，能力清理仍正常完成');
       assert.equal((await lateDeleteCall.activity.read(t.signal)).error, lateDeleteFailure, '退出完成后保留有限的原调用终态');
       assert.equal(latePutCalls, 1); assert.equal(lateDeleteCalls, 1, '迟到失败不自动重发或补写已删除提醒');
     } finally {
       releaseLateUpdate.resolve(); releaseLateDelete.resolve();
-      await Promise.allSettled([latePutReceipt, lateDeleteReceipt, lateUpdateCall?.result, lateDeleteCall?.result, disposing]);
+      await Promise.allSettled([latePutReceipt, lateDeleteReceipt, lateUpdateCall?.result, lateDeleteCall?.result, queuedAfterDelete?.result, disposing]);
       table.put = nativePut; table.delete = nativeDelete;
       lateSdk.dispose();
     }

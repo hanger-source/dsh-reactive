@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BehaviorSubject, EMPTY, EmptyError, Observable, defer, firstValueFrom, of, take, throwError } from 'rxjs';
+import { BehaviorSubject, EMPTY, EmptyError, Observable, Subject, UnsubscriptionError, defer, firstValueFrom, of, take, throwError } from 'rxjs';
 import { combineResources, mapResource, shareResource, ResourceReader, Scope, createResource, z, type Observation } from '@hanger-source/dsh-reactive';
 
 const ready = <T>(value: T): Observation<T> => ({ status: 'ready', generation: 1, observedAt: Date.now(), value });
@@ -273,6 +273,93 @@ test('有限来源的最终观察供现有消费者复用，全部退出后显�
   owner.abort();
 });
 
+test('最后消费者显式退订同步接收来源清理失败，错误接收方固定且不接管消费者自己的teardown', () => {
+  for (const owned of [false, true]) {
+    const owner = new AbortController(), source = new Subject<Observation<number>>();
+    const failure = new Error('RESOURCE_SOURCE_RELEASE_FAILED'), consumerFailure = new Error('CONSUMER_RELEASE_FAILED');
+    const observerFailure = new Error('CONSUMER_OBSERVER_FAILED'), cleanups: unknown[] = [], observers: unknown[] = [];
+    let released = 0;
+    const options = { signal: owner.signal, onObserverError: (error: unknown) => observers.push(error),
+      onCleanupError: owned ? (error: unknown) => { cleanups.push(error); } : undefined };
+    const resource = shareResource(new Observable<Observation<number>>(subscriber => {
+      source.subscribe(subscriber);
+      return () => { released++; throw failure; };
+    }), options);
+    const stop = resource.subscribe(observation => { if (observation.status === 'ready') throw observerFailure; });
+    const consumer = resource.observations$.subscribe();
+    consumer.add(() => { throw consumerFailure; });
+    options.onCleanupError = () => { assert.fail('构造后不能更换来源清理错误的owner'); };
+    source.next(ready(7));
+    assert.deepEqual(observers, [observerFailure]); assert.equal(cleanups.length, 0);
+    stop(); assert.equal(released, 0, '还有消费者时不释放共享来源');
+    assert.throws(() => consumer.unsubscribe(), error => error instanceof UnsubscriptionError
+      && error.errors.length === (owned ? 1 : 2) && error.errors.includes(consumerFailure)
+      && (owned || error.errors.includes(failure)));
+    assert.equal(released, 1); assert.equal(resource.peek().status, 'pending');
+    assert.equal(cleanups.length, owned ? 1 : 0);
+    if (owned) assert.ok(cleanups[0] instanceof UnsubscriptionError && cleanups[0].errors.length === 1 && cleanups[0].errors[0] === failure);
+    assert.deepEqual(observers, [observerFailure], '来源清理不进入消费者回调错误出口');
+    owner.abort(); source.complete();
+  }
+});
+
+test('Signal撤销先释放真实来源，清理失败单独报告而观察与迟到读取保留原owner原因', t => {
+  const reports: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { reports.push(args); });
+  const owner = new AbortController(), source = new Subject<Observation<number>>();
+  const failure = new Error('ABORT_SOURCE_RELEASE_FAILED'), reason = new Error('RESOURCE_OWNER_ABORTED');
+  let released = 0, completed = false;
+  const resource = shareResource(new Observable<Observation<number>>(subscriber => {
+    source.subscribe(subscriber);
+    return () => { released++; throw failure; };
+  }), { signal: owner.signal });
+  const observations: Observation<number>[] = [];
+  const subscription = resource.observations$.subscribe({ next: value => observations.push(value), complete: () => { completed = true; } });
+  source.next(ready(7));
+  assert.doesNotThrow(() => owner.abort(reason));
+  assert.equal(subscription.closed, true); assert.equal(completed, true); assert.equal(released, 1);
+  assert.equal(reports.length, 1); assert.equal(reports[0]![0], 'reactive.resource.cleanup.failed');
+  const reported = reports[0]![1];
+  assert.ok(reported instanceof UnsubscriptionError && reported.errors.length === 1 && reported.errors[0] === failure);
+  const ended = observations.at(-1)!;
+  assert.equal(ended.status, 'error');
+  if (ended.status === 'error') assert.equal(ended.error, reason);
+  const late: Observation<number>[] = [];
+  assert.equal(resource.observations$.subscribe(value => late.push(value)).closed, true);
+  assert.equal(late.length, 1); assert.equal(late[0]!.status, 'error');
+  if (late[0]!.status === 'error') assert.equal(late[0]!.error, reason);
+  assert.throws(() => resource.read(), error => error === reason);
+  assert.equal(released, 1); source.complete();
+});
+
+test('read取得值或被取消时即使最后连接清理失败仍按原事实结算，清理失败独立报告', { timeout: 2_000 }, async t => {
+  const reports: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { reports.push(args); });
+  for (const cancelled of [false, true]) {
+    const owner = new AbortController(), caller = new AbortController(), source = new Subject<Observation<number>>();
+    const failure = new Error('READ_SOURCE_RELEASE_FAILED'), reason = new Error('READ_CALLER_CANCELLED');
+    let released = 0;
+    const resource = shareResource(new Observable<Observation<number>>(subscriber => {
+      source.subscribe(subscriber);
+      return () => { released++; throw failure; };
+    }), { signal: owner.signal });
+    const reading = resource.read(caller.signal);
+    if (cancelled) {
+      const rejected = assert.rejects(reading, error => error === reason);
+      assert.doesNotThrow(() => caller.abort(reason)); await rejected;
+    } else {
+      source.next(ready(7)); assert.equal(await reading, 7);
+    }
+    assert.equal(released, 1); assert.equal(resource.peek().status, 'pending');
+    const reported = reports.at(-1)!;
+    assert.equal(reported[0], 'reactive.resource.cleanup.failed');
+    const error = reported[1];
+    assert.ok(error instanceof UnsubscriptionError && error.errors.length === 1 && error.errors[0] === failure);
+    owner.abort(); source.complete();
+  }
+  assert.equal(reports.length, 2);
+});
+
 test('旧连接清理中同步接入新消费者，新快照不被旧退出撤下或重复连接', async () => {
   const owner = new AbortController();
   let connections = 0, releases = 0, reconnect = true, stopNested: (() => void) | undefined;
@@ -280,7 +367,11 @@ test('旧连接清理中同步接入新消费者，新快照不被旧退出撤�
     subscriber.next(ready(++connections));
     return () => {
       releases++;
-      if (reconnect) { reconnect = false; stopNested = resource.subscribe(() => {}); }
+      if (reconnect) {
+        reconnect = false;
+        assert.equal(resource.peek().status, 'pending', '旧来源teardown开始前已撤销其缓存');
+        stopNested = resource.subscribe(() => {});
+      }
     };
   }), { signal: owner.signal });
   const first = resource.observations$.subscribe();

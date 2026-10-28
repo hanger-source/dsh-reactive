@@ -66,8 +66,9 @@ export function localCapabilityOptions(read: (signal: AbortSignal) => Promise<st
 }
 export function localWorkspaceCapabilities(workspace: Workspace, options: ReturnType<typeof localCapabilityOptions>) {
   const resource = workspace.resource(options.resource), reaction = workspace.reaction(options.reaction);
+  const shared: ResourceReadable<number> = workspace.shareResource(resource);
   const values: Observable<number> = resource.values$;
-  return { resource, reaction, values, read: (): Promise<number> => resource.read(), start() {
+  return { resource, shared, reaction, values, read: (): Promise<number> => resource.read(), start() {
     const run = reaction.start(), results: Observable<number> = run.events$.pipe(map(event => event.result));
     return { run, results };
   } };

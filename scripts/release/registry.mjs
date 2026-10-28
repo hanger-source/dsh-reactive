@@ -1,10 +1,10 @@
-import { mkdtemp, mkdir, copyFile, realpath, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { capture, run, root, configuration, save, json, independent, assertVersion, clean } from './common.mjs';
 import { artifactManifest, currentArtifacts } from './artifacts.mjs';
 import { consumerKinds, consumerPackages, consumerEnvironment, prepareConsumerSources, checkConsumerDependencies, assertConsumerVerification } from './consumer-profiles.mjs';
-import { buildConsumerBrowser } from './consumer-browser.mjs';
+import { buildConsumerBrowser, buildNativeContractsBrowser } from './consumer-browser.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 async function metadata(name, version, registry) {
@@ -107,7 +107,6 @@ export async function verify(path, source) {
       }
     }
     await prepareConsumerSources(cwd, kind);
-    await copyFile(join(root, 'scripts/release/consumer-runtime.mjs'), join(cwd, 'runtime.mjs'));
     await save(join(cwd, 'expected.json'), { kind, source, packages: names, version: manifest.version,
       commit: manifest.commit, tag: manifest.tag, registry: manifest.registry });
     await run(process.execPath, [join(cwd, 'node_modules/typescript/bin/tsc'), '-p', 'tsconfig.json'], cwd);
@@ -116,7 +115,9 @@ export async function verify(path, source) {
     await run(process.execPath, [join(cwd, 'compiled/consumer.js')], cwd);
     await run(process.execPath, [join(cwd, 'runtime.mjs')], cwd);
     const browser = kind === 'ui' ? await buildConsumerBrowser(cwd) : undefined;
-    consumers.push({ kind, directory: cwd, packages: names, strict: true, declaredDependencies: true, runtimeImport: true, ...browser ? { browser } : {} });
+    const nativeContractsBrowser = kind === 'native' ? await buildNativeContractsBrowser(cwd) : undefined;
+    consumers.push({ kind, directory: cwd, packages: names, strict: true, declaredDependencies: true, runtimeImport: true,
+      ...browser ? { browser } : {}, ...nativeContractsBrowser ? { nativeContractsBrowser } : {} });
   }
   const report = { source, commit: manifest.commit, version: manifest.version, registry: manifest.registry,
     manifestSha256: artifact.manifestSha256, consumers };

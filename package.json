@@ -44,7 +44,7 @@
     "generate:remote": {
       "command": "node packages/remote/scripts/generate.mjs",
       "dependencies": ["./packages/dsh:build:compile", "./packages/client:build:contracts"],
-      "files": ["packages/remote/src/**", "packages/remote/scripts/generate.mjs", "packages/remote/tsconfig.json", "tsconfig.base.json", "package.json", "packages/*/package.json"],
+      "files": ["packages/remote/src/**", "packages/remote/scripts/generate.mjs", "packages/remote/tsconfig.json", "tsconfig.host.json", "packages/client/tsconfig.host.json", "packages/remote/tsconfig.host.json", "tsconfig.base.json", "package.json", "packages/*/package.json"],
       "output": ["packages/remote/lib/typert.host.*", "packages/client/lib/typert.remote-client.*"],
       "clean": false
     },

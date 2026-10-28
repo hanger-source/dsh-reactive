@@ -14,25 +14,39 @@
     ".": {
       "types": "./lib/index.d.ts",
       "node": "./lib/index.js",
-      "browser": "./lib/client.browser.js",
-      "default": "./lib/client.browser.js"
+      "browser": "./lib/browser/index.js",
+      "default": "./lib/browser/index.js"
     },
     "./package.json": "./package.json",
     "./types": {
-      "types": "./lib/types.d.ts",
-      "import": "./lib/types.js"
+      "types": "./lib/contracts/types.d.ts",
+      "node": "./lib/contracts/types.js",
+      "browser": "./lib/browser/types.js",
+      "default": "./lib/browser/types.js"
     },
     "./errors": {
-      "types": "./lib/errors.d.ts",
-      "import": "./lib/errors.js"
+      "types": "./lib/contracts/errors.d.ts",
+      "node": "./lib/contracts/errors.js",
+      "browser": "./lib/browser/errors.js",
+      "default": "./lib/browser/errors.js"
+    },
+    "./inbox": {
+      "types": "./lib/contracts/inbox.d.ts",
+      "node": "./lib/contracts/inbox.js",
+      "browser": "./lib/browser/inbox.js",
+      "default": "./lib/browser/inbox.js"
     },
     "./transport": {
       "types": "./lib/transport.d.ts",
-      "import": "./lib/transport.js"
+      "node": "./lib/transport.js",
+      "browser": "./lib/browser/transport.js",
+      "default": "./lib/browser/transport.js"
     },
     "./remote": {
       "types": "./lib/typert.remote-client.d.ts",
-      "import": "./lib/typert.remote-client.js"
+      "node": "./lib/typert.remote-client.js",
+      "browser": "./lib/browser/remote.js",
+      "default": "./lib/browser/remote.js"
     }
   },
   "files": [
@@ -61,20 +75,14 @@
         "../core:build:compile"
       ],
       "files": [
-        "src/types.ts",
-        "src/errors.ts",
-        "src/transport.ts",
-        "src/inbox.ts",
+        "src/contracts/**",
         "tsconfig.contracts.json",
         "../../tsconfig.base.json",
         "../../scripts/archive-build-output.mjs",
         "package.json"
       ],
       "output": [
-        "lib/types.*",
-        "lib/errors.*",
-        "lib/transport.*",
-        "lib/inbox.*",
+        "lib/contracts/**",
         "lib/contracts.tsbuildinfo"
       ],
       "clean": false
@@ -87,10 +95,7 @@
       ],
       "files": [
         "src/**",
-        "!src/types.ts",
-        "!src/errors.ts",
-        "!src/transport.ts",
-        "!src/inbox.ts",
+        "!src/contracts/**",
         "tsconfig.json",
         "../../tsconfig.base.json",
         "../../scripts/archive-build-output.mjs",
@@ -98,18 +103,15 @@
       ],
       "output": [
         "lib/**",
-        "!lib/types.*",
-        "!lib/errors.*",
-        "!lib/transport.*",
-        "!lib/inbox.*",
+        "!lib/contracts/**",
         "!lib/contracts.tsbuildinfo",
         "!lib/typert.*",
-        "!lib/client.browser.*"
+        "!lib/browser/**"
       ],
       "clean": false
     },
     "build:browser": {
-      "command": "node scripts/browser.mjs",
+      "command": "node ../../scripts/archive-build-output.mjs build:browser && node scripts/browser.mjs",
       "dependencies": [
         "build:compile"
       ],
@@ -117,8 +119,7 @@
         "scripts/browser.mjs"
       ],
       "output": [
-        "lib/client.browser.js",
-        "lib/client.browser.js.map"
+        "lib/browser/**"
       ],
       "clean": false
     }

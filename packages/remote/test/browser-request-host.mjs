@@ -18,7 +18,9 @@ import { program } from './browser-request-contracts.mjs';
 // 从当前消费者安装的公开包入口构建；不读取仓库 dist 或源码。
 const assets = await mkdtemp(join(tmpdir(), 'dsh-browser-request-assets-'));
 const coreEntry = fileURLToPath(import.meta.resolve('@hanger-source/dsh-reactive'));
-const clientBrowserEntry = fileURLToPath(new URL('./lib/client.browser.js', import.meta.resolve('@hanger-source/dsh-reactive-client/package.json')));
+const clientManifest = new URL(import.meta.resolve('@hanger-source/dsh-reactive-client/package.json'));
+const clientPackage = JSON.parse(await readFile(clientManifest, 'utf8'));
+const clientBrowserEntry = fileURLToPath(new URL(clientPackage.exports['.'].browser, clientManifest));
 let browserClient;
 for (const [entry, name, external] of [[coreEntry, 'core.js', []], [fileURLToPath(new URL('./browser-request-consumer.mjs', import.meta.url)), 'consumer.js', ['@hanger-source/dsh-reactive']]]) {
   const artifact = await build({ entryPoints: [entry], outfile: join(assets, name), bundle: true, format: 'esm', platform: 'browser', target: 'es2024',

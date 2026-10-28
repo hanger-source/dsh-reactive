@@ -8,6 +8,8 @@
 
 跨作用域派生、Reaction 停止后的真实结算及异步准入寿命见[响应式读取与执行结算](docs/migration-reactive-lifetimes.md)。
 
+工作区资源共享、原生控制与浏览器合同入口见[原生资源与客户端边界](docs/migration-native-resource-boundaries.md)。
+
 调整公共合同时，按实际安装版本查看[共享 Program 合同迁移](docs/migration-shared-program-contracts.md)、[模块 SDK 迁移](docs/migration-sdk-modules.md)与[参与端口迁移](docs/migration-participant-ports.md)，对齐合同身份、局部模块、人工控制与服务来源。异步装配及资源寿命的变化见 [SDK 作用域迁移](docs/migration-sdk-scopes.md)、[资源有效性迁移](docs/migration-resource-ownership.md)及[来源完成与有效性迁移](docs/migration-resource-completion.md)。
 
 借用对象的生命周期权限、内核工作区装配及原生任务的同步构造见[借用能力迁移](docs/migration-borrowed-capabilities.md)。

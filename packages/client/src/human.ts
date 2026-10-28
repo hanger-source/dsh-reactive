@@ -1,7 +1,7 @@
 import type { CancellationOptions, HumanWaitFrame, ResourceReader } from '@hanger-source/dsh-reactive';
 import { remoteResource } from './resource.ts';
 import type { ClientScope } from './scope.ts';
-import type { ProgramAddress, ProgramQuestions, ProgramQuestionsFrame } from './types.ts';
+import type { ProgramAddress, ProgramQuestions, ProgramQuestionsFrame } from './contracts/types.ts';
 
 /** 只投影原生问答快照；回答和前台claim仍从会话控制端口重新准入。 */
 export function remoteHuman(owner: ClientScope, address: ProgramAddress): ResourceReader<ProgramQuestions> {

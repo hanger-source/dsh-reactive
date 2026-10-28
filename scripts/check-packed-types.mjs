@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { consumerKinds, consumerPackages, consumerEnvironment, prepareConsumerSources, checkConsumerDependencies } from './release/consumer-profiles.mjs';
-import { buildConsumerBrowser } from './release/consumer-browser.mjs';
+import { buildConsumerBrowser, buildNativeContractsBrowser } from './release/consumer-browser.mjs';
 import { lintTarball } from './release/lint.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -66,7 +66,9 @@ for (const kind of kinds) {
   await checkConsumerDependencies(directory, kind);
   // 执行同一份仓外消费者：Program 的根合同必须被 /program 接受，UI 消费不加载后台 renderer。
   await run(process.execPath, [join(directory, 'compiled/consumer.js')], directory);
+  await run(process.execPath, [join(directory, 'runtime.mjs'), '--client-entries'], directory);
   await run(process.execPath, [join(directory, 'consumer-skill.mjs'), packed.get('@hanger-source/dsh-reactive-skills').version], directory);
   const browser = kind === 'ui' ? await buildConsumerBrowser(directory) : undefined;
-  console.log(JSON.stringify({ consumer: kind, directory, packages: names, strict: true, declaredDependencies: true, runtime: true, browser, source: 'workspace-tarballs' }));
+  const nativeContractsBrowser = kind === 'native' ? await buildNativeContractsBrowser(directory) : undefined;
+  console.log(JSON.stringify({ consumer: kind, directory, packages: names, strict: true, declaredDependencies: true, runtime: true, browser, nativeContractsBrowser, source: 'workspace-tarballs' }));
 }

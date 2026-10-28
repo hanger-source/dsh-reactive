@@ -1,11 +1,41 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { BehaviorSubject, Observable, Subject, lastValueFrom, of } from 'rxjs';
 import type { Observation } from '@hanger-source/dsh-reactive';
 import { observeResource } from '@hanger-source/dsh-reactive';
 import { combineResources, mapResource, shareResource, switchResource } from '@hanger-source/dsh-reactive';
 
 const ready = <T>(value: T, generation: number): Observation<T> => ({ status: 'ready', generation, value, observedAt: Date.now() });
+
+test('同步资源投影拒绝真实异步读取，迟到I/O拒绝有观察出口且下一代同步事实仍可恢复', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-resource-map-'));
+  const upstream = new Subject<Observation<boolean>>(), rejected = Promise.withResolvers<void>();
+  const seen: Observation<string | Promise<string>>[] = [];
+  let readFailure: unknown;
+  const subscription = upstream.pipe(mapResource(reading => reading
+    ? readFile(join(directory, 'missing'), 'utf8').catch(error => { readFailure = error; rejected.resolve(); throw error; })
+    : 'current-fact')).subscribe(value => seen.push(value));
+  try {
+    upstream.next(ready(true, 1));
+    const failed = seen.at(-1)!;
+    assert.equal(failed.status, 'error');
+    if (failed.status === 'error') {
+      assert.ok(failed.error instanceof TypeError);
+      assert.match(failed.error.message, /REACTIVE_RESOURCE_MAP_MUST_BE_SYNCHRONOUS/u);
+    }
+    await rejected.promise;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal((readFailure as NodeJS.ErrnoException).code, 'ENOENT');
+    assert.equal(seen.some(value => value.status === 'ready'), false);
+    upstream.next(ready(false, 2));
+    const recovered = seen.at(-1)!;
+    assert.equal(recovered.status, 'ready');
+    if (recovered.status === 'ready') assert.equal(recovered.value, 'current-fact');
+  } finally { subscription.unsubscribe(); upstream.complete(); }
+});
 
 test('key切换和失效的取消回调再次通知，独占读取先退出且只接受最新结果', async () => {
   for (const mode of ['key', 'invalidation'] as const) {

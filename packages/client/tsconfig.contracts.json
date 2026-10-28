@@ -9,6 +9,6 @@
     "paths": {}
   },
   "references": [{ "path": "../core" }],
-  "include": ["src/types.ts", "src/errors.ts", "src/transport.ts", "src/inbox.ts"],
+  "include": ["src/contracts/**/*.ts"],
   "exclude": []
 }

@@ -2,8 +2,8 @@ import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-proto
 import { RemoteStreamCarrierError } from '@deepseek-ai/dsh-api-gateway/client';
 import { parseRemoteStreamServerMessage, REMOTE_STREAM_MUX_PATH, type RemoteStreamClientMessage } from '@deepseek-ai/dsh-api-gateway/stream-protocol';
 import type { ClientTransportHooks, ConnectionWebSocketFactory } from '@deepseek-ai/dsh-client-connection/client';
-import { Inbox } from './inbox.ts';
-export { Inbox } from './inbox.ts';
+import { Inbox } from './contracts/inbox.ts';
+export { Inbox } from './contracts/inbox.ts';
 
 /** fetch/socket factory 由应用接入认证；此层不产生或保管 owner token。 */
 export interface AuthenticatedTransportOptions {

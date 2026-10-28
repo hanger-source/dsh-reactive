@@ -253,6 +253,8 @@ const application = defineApplication({
 
 所有流仍是标准 Observable。使用 map、combineLatest、switchMap、concatMap、mergeMap、catchError 等表达业务关系，不需要框架自定义的流操作符。
 
+已有资源对象或观察流交给 workspace.shareResource(source)，同一个 observations$ 复用同一读侧，并把工作区的读取寿命带进外部组合。普通 workspace.share 继续表达标准流的连接与完成；不要借元素形状猜测资源 owner。mapResource 只做同步投影，thenable 返回进入资源 error；异步读取由 switchResource 与 observeResource 组合。
+
 跨 Scope 派生同时跟踪来源的读取资格，owner 退出即拒绝旧缓存。Value.changes$ 以标准 error 结束；持续 callback 使用 subscribe(accept, onError?) 接收读取失败并观察后续分支恢复。peek 不跟踪业务值，仍受 owner 有效性约束。
 
 - `useShared(source$)` 直接共享已有 Observable，`useShared(factory, dependencies)` memo 构造出的管道；RxJS 持有查询连接与重放值。最后一个查询观察退出时释放来源，已完成或失败的同一来源在 Program 活跃时保留终态。

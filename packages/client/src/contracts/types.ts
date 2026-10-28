@@ -1,7 +1,10 @@
-import type { ActionIdentity, ActionSource, Continuation, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity } from '@hanger-source/dsh-reactive';
+import type { ActionIdentity, ActionSource, Continuation, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
+  ProgramGoalControl as CoreProgramGoalControl, ProgramCancelResult as CoreProgramCancelResult, ProgramRequestStatus as CoreProgramRequestStatus } from '@hanger-source/dsh-reactive';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { RemoteStreamFailure } from '@deepseek-ai/dsh-api-gateway/stream-protocol';
-export type { ProgramGoalControl, ProgramCancelResult, ProgramRequestStatus } from '@hanger-source/dsh-reactive';
+export type ProgramGoalControl = CoreProgramGoalControl;
+export type ProgramCancelResult = CoreProgramCancelResult;
+export type ProgramRequestStatus = CoreProgramRequestStatus;
 
 /** 官方 failure 的 wire 形态；details 按 Typert 边界限定为 JSON 对象或数组。 */
 export type ProgramFailure = Omit<RemoteStreamFailure, 'details'> & {

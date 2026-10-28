@@ -2,19 +2,9 @@ import { signal, computed, effect, batch, untracked, type ReadonlySignal, type S
 import { Observable, Subscriber, EmptyError } from 'rxjs';
 import { ResourceValue } from '../resources/value.ts';
 import type { Observation } from '../resources/observation.ts';
+import { synchronous } from './synchronous.ts';
 export { batch };
 type Node<T> = Pick<ReadonlySignal<T>, 'value' | 'peek' | 'subscribe'>;
-
-/** 同步依赖图不能接纳 Promise；异步工作通过资源或标准 Observable 表达。 */
-function synchronous<T>(value: T, operation: string): T {
-  if (value !== null && (typeof value === 'object' || typeof value === 'function')
-    && typeof (value as { then?: unknown }).then === 'function') {
-    // 回调已经返回的异步工作不再有消费者，消费其拒绝，避免制造未处理异常。
-    void Promise.resolve(value).catch(() => {});
-    throw new TypeError('REACTIVE_' + operation + '_MUST_BE_SYNCHRONOUS');
-  }
-  return value;
-}
 
 export class ScopeDisposedError extends Error {
   constructor() { super('REACTIVE_SCOPE_DISPOSED'); }

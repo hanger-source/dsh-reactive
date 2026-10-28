@@ -12,5 +12,5 @@
   "include": [
     "src/**/*.ts"
   ],
-  "exclude": ["src/types.ts", "src/errors.ts", "src/transport.ts", "src/inbox.ts"]
+  "exclude": ["src/contracts/**"]
 }

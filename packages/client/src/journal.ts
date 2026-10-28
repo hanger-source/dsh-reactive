@@ -1,5 +1,5 @@
 import { RemoteJournalStream, type ClientRemote, type RemoteJournalFrame, type RemoteJournalStreamOptions } from '@deepseek-ai/dsh-api-gateway/client';
-import type { ProgramAddress, ProgramJournalEntry, ProgramJournalPage, ProgramJournalPageRequest } from './types.ts';
+import type { ProgramAddress, ProgramJournalEntry, ProgramJournalPage, ProgramJournalPageRequest } from './contracts/types.ts';
 import type { ClientScope } from './scope.ts';
 
 export type ProgramJournalRequest = Omit<ProgramJournalPageRequest, 'sessionId' | 'program' | 'throughSeq'>;

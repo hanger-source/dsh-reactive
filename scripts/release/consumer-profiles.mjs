@@ -58,12 +58,14 @@ export async function consumerEnvironment(config, kind, tarballs) {
     }
   }
   return { dependencies, devDependencies: { typescript: config.consumerTooling.typescript,
+    ws: config.consumerTooling.ws,
     '@types/node': config.consumerTooling.nodeTypes,
     '@types/react': ui ? config.consumerTooling.uiReactTypes : config.consumerTooling.backendReactTypes } };
 }
 
 const consumerSources = kind => [{ source: `consumer-${kind}.ts`, target: 'consumer.ts' },
   { source: 'consumer-session.ts', target: 'consumer-session.ts' },
+  ...(kind === 'native' ? [{ source: 'native-contracts-browser.ts', target: 'native-contracts-browser.ts' }] : []),
   ...(kind === 'ui' ? [{ source: 'consumer-browser.ts', target: 'browser.ts' }] : [])];
 const nativeBrowserSources = ['browser-native-consumer.mjs', 'browser-contracts.mjs'];
 
@@ -74,6 +76,7 @@ export async function prepareConsumerSources(directory, kind) {
     await copyFile(join(root, 'scripts/release', file.source), join(directory, file.target));
   }
   await copyFile(join(root, 'scripts/release/consumer-skill.mjs'), join(directory, 'consumer-skill.mjs'));
+  await copyFile(join(root, 'scripts/release/consumer-runtime.mjs'), join(directory, 'runtime.mjs'));
   if (kind === 'ui') {
     await mkdir(join(directory, 'native'));
     for (const file of nativeBrowserSources) {
@@ -90,7 +93,7 @@ export async function prepareConsumerSources(directory, kind) {
 export async function checkConsumerDependencies(directory, kind) {
   const sources = consumerSources(kind).map(file => file.target);
   await run(process.execPath, [join(root, 'node_modules/dependency-cruiser/bin/dependency-cruiser.mjs'),
-    '--config', join(root, '.dependency-cruiser.cjs'), ...sources, 'consumer-skill.mjs',
+    '--config', join(root, '.dependency-cruiser.cjs'), ...sources, 'consumer-skill.mjs', 'runtime.mjs',
     ...sources.map(file => join('compiled', file.replace(/\.ts$/u, '.js'))),
     ...(kind === 'ui' ? nativeBrowserSources.map(file => join('native', file)) : [])], directory);
 }
@@ -109,6 +112,10 @@ export function assertConsumerVerification(proof, config) {
     if (kind === 'ui' && !['bytes', 'modules', 'coreModules'].every(key =>
       Number.isInteger(consumer.browser?.[key]) && consumer.browser[key] > 0)) {
       throw new Error('RELEASE_BROWSER_VERIFICATION_REQUIRED');
+    }
+    if (kind === 'native' && !['bytes', 'modules', 'coreModules'].every(key =>
+      Number.isInteger(consumer.nativeContractsBrowser?.[key]) && consumer.nativeContractsBrowser[key] > 0)) {
+      throw new Error('RELEASE_NATIVE_CONTRACTS_VERIFICATION_REQUIRED');
     }
     if (kind === 'ui') {
       const native = consumer.browser.native;

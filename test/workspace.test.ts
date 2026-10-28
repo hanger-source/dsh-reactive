@@ -5,7 +5,7 @@ import { access, mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/pro
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createElement as h, Fragment, useLayoutEffect } from 'react';
-import { Observable, concatMap, defer, finalize, firstValueFrom, of, Subject } from 'rxjs';
+import { Observable, concatMap, defer, finalize, firstValueFrom, map, of, Subject, type Subscription } from 'rxjs';
 import { Context as NativeContext } from '@deepseek-ai/cordis';
 import SessionStore, { SessionId, pluginRecordOf } from '@deepseek-ai/dsh-session';
 import * as persistence from '@deepseek-ai/dsh-session-persistence-jsonl';
@@ -16,7 +16,7 @@ import WorkspaceRegistry, { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { Context, Expose, useAction, useResource } from '@hanger-source/dsh-reactive/program';
 import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, implementResource,
-  defineReaction, implementReaction, observeResource, programIdentity, ProgramContractMismatchError, resourceView, z, type ProgramProps, type ProgramWorkspace,
+  defineReaction, implementReaction, observeResource, programIdentity, ProgramContractMismatchError, resourceView, shareResource, Scope, z, type Observation, type ProgramProps, type ProgramWorkspace,
   type LocalResourceOptions, type LocalReactionOptions } from '@hanger-source/dsh-reactive';
 import { CreationIncompleteError, mountApplication } from '@hanger-source/dsh-reactive-dsh';
 import { boot, text } from './native-support.ts';
@@ -40,6 +40,8 @@ test('工作区共享流跨会话保活，宿主退出后活动与有限来源�
     return () => { stops++; connection.unsubscribe(); };
   });
   const sessions: Array<{ release(): void }> = [];
+  const borrowingScope = new Scope();
+  let borrowedSubscription: Subscription | undefined, resourceSubscription: Subscription | undefined;
   try {
     const one = await app.host.create('work', { workspaceId: app.workspace.workspaceId }); sessions.push(one);
     const two = await app.host.create('work', { workspaceId: app.workspace.workspaceId }); sessions.push(two);
@@ -63,28 +65,51 @@ test('工作区共享流跨会话保活，宿主退出后活动与有限来源�
     const final = first.share(of('settled-workspace-fact'));
     assert.equal(await firstValueFrom(final), 'settled-workspace-fact');
     assert.equal(await firstValueFrom(final), 'settled-workspace-fact', '有限来源的终态在owner活跃时仍可读取');
+    const resourceSource = source.pipe(map((value): Observation<number> => ({ status: 'ready', generation: value, value, observedAt: Date.now() })));
+    const sourceObject = { observations$: resourceSource }, resource = first.shareResource(sourceObject);
+    assert.equal(first.shareResource(sourceObject), resource);
+    assert.equal(sibling.shareResource(resourceSource), resource, '资源对象和原观察流取得同一工作区读侧');
+    assert.equal(starts, 2, '构造和取得共享资源不连接来源');
+    const borrowed = shareResource(resource, { signal: borrowingScope.signal });
+    const observations: Observation<number>[] = [];
+    resourceSubscription = sibling.shareResource(resourceSource).observations$.subscribe();
+    borrowedSubscription = borrowed.observations$.subscribe(value => observations.push(value));
+    assert.equal(starts, 3, '资源对象和原观察流的消费者只增加同一条真实连接');
+    changes.next(2); assert.equal(await borrowed.read(), 2);
     let completed = false, reentrant: unknown;
     shared.subscribe({ complete: () => {
       completed = true;
       try { app.host.workspace(app.workspace.workspaceId); } catch (error) { reentrant = error; }
     } });
     await app.native.workspaceRegistry.delete(WorkspaceId(app.workspace.workspaceId));
-    assert.equal(stops, 1); assert.equal(completed, true, '登记删除撤销工作区共享来源，不等待整个宿主退出');
+    assert.equal(stops, 2); assert.equal(completed, true, '登记删除撤销工作区共享来源，不等待整个宿主退出');
     assert.ok(reentrant instanceof Error && reentrant.message === 'REACTIVE_WORKSPACE_NOT_FOUND', '清理重入不能从原生尚未撤下的实体缓存复活owner');
+    const ended = borrowed.peek();
+    assert.equal(ended.status, 'error');
+    if (ended.status === 'error') {
+      assert.throws(() => resource.peek(), error => error === ended.error);
+      await assert.rejects(borrowed.read(), error => error === ended.error);
+      const late: Observation<number>[] = [];
+      assert.equal(resource.observations$.subscribe(value => late.push(value)).closed, true);
+      assert.equal(late.length, 1); assert.equal(late[0]!.status, 'error');
+      if (late[0]!.status === 'error') assert.equal(late[0]!.error, ended.error);
+    }
+    assert.equal(observations.at(-1)!.status, 'error'); assert.equal(borrowingScope.disposed, false);
     assert.equal(await firstValueFrom(foreign), 2, '另一工作区的来源仍活跃');
     assert.throws(() => first.share(source), /REACTIVE_SCOPE_DISPOSED/);
+    assert.throws(() => first.shareResource(resourceSource), /REACTIVE_SCOPE_DISPOSED/);
     assert.throws(() => app.host.workspace(app.workspace.workspaceId), /REACTIVE_WORKSPACE_NOT_FOUND/);
     await app.dispose();
-    assert.equal(stops, 2); assert.equal(completed, true);
+    assert.equal(stops, 3); assert.equal(completed, true);
     const late: Array<number | string> = [];
     assert.equal(shared.subscribe(value => late.push(value)).closed, true);
     assert.equal(foreign.subscribe(value => late.push(value)).closed, true);
     assert.equal(final.subscribe(value => late.push(value)).closed, true);
     assert.deepEqual(late, []);
-    assert.equal(starts, 2);
+    assert.equal(starts, 3);
     assert.throws(() => first.share(source), /REACTIVE_SCOPE_DISPOSED/);
     assert.equal(models, 0); assert.deepEqual(app.errors, []);
-  } finally { changes.complete(); for (const session of sessions) session.release(); await app.dispose(); }
+  } finally { borrowedSubscription?.unsubscribe(); resourceSubscription?.unsubscribe(); borrowingScope.dispose(); changes.complete(); for (const session of sessions) session.release(); await app.dispose(); }
 });
 
 test('工作区删除已经持久后共享清理失败仍撤销owner，宿主退出保留失败原因并释放其他工作区', async () => {
@@ -97,19 +122,41 @@ test('工作区删除已经持久后共享清理失败仍撤销owner，宿主退
   const failure = new Error('WORKSPACE_SOURCE_RELEASE_FAILED');
   const workspace = app.host.workspace(app.workspace.workspaceId);
   workspace.share(new Observable<never>(() => () => { throw failure; }));
+  const resourceFailures = [new Error('WORKSPACE_RESOURCE_RELEASE_FAILED'), new Error('WORKSPACE_SECOND_RESOURCE_RELEASE_FAILED')];
+  const resourceSources = resourceFailures.map(() => new Subject<Observation<number>>());
+  const resources = resourceSources.map((source, index) => workspace.shareResource(new Observable<Observation<number>>(subscriber => {
+    source.subscribe(subscriber);
+    return () => { throw resourceFailures[index]; };
+  })));
+  const observations = resources.map((): Observation<number>[] => []);
+  const resourceSubscriptions = resources.map((resource, index) => resource.observations$.subscribe(value => observations[index]!.push(value)));
+  resourceSources.forEach((source, index) => source.next({ status: 'ready', generation: 1, value: index, observedAt: Date.now() }));
   const directory = join(root, 'other'); await mkdir(directory);
   const other = app.host.workspace((await app.host.createWorkspace({ directory })).workspaceId);
   let stopped = false;
   other.share(new Observable<never>(() => () => { stopped = true; }));
-  const hasCause = (error: unknown): boolean => error === failure || error !== null && typeof error === 'object'
-    && 'errors' in error && Array.isArray(error.errors) && error.errors.some(hasCause);
+  const hasCause = (error: unknown, expected: unknown): boolean => error === expected || error !== null && typeof error === 'object'
+    && 'errors' in error && Array.isArray(error.errors) && error.errors.some(cause => hasCause(cause, expected));
   try {
     assert.equal(await app.native.workspaceRegistry.delete(WorkspaceId(workspace.id)), true);
     assert.equal(app.native.workspaceRegistry.get(WorkspaceId(workspace.id)), undefined, '观察清理失败不伪造已提交登记仍存在');
     assert.throws(() => workspace.share(of(1)), /REACTIVE_SCOPE_DISPOSED/);
-    await assert.rejects(app.dispose(), hasCause);
+    resources.forEach((resource, index) => {
+      assert.equal(resourceSubscriptions[index]!.closed, true);
+      const ended = observations[index]!.at(-1)!;
+      assert.equal(ended.status, 'error');
+      if (ended.status === 'error') {
+        assert.throws(() => resource.peek(), error => error === ended.error);
+        assert.throws(() => resource.read(), error => error === ended.error);
+        const late: Observation<number>[] = [];
+        assert.equal(resource.observations$.subscribe(value => late.push(value)).closed, true);
+        assert.equal(late.length, 1); assert.equal(late[0]!.status, 'error');
+        if (late[0]!.status === 'error') assert.equal(late[0]!.error, ended.error);
+      }
+    });
+    await assert.rejects(app.dispose(), error => [failure, ...resourceFailures].every(expected => hasCause(error, expected)));
     assert.equal(stopped, true, '一个工作区清理失败仍释放其他工作区');
-  } finally { await app.dispose().catch(() => {}); }
+  } finally { resourceSubscriptions.forEach(subscription => subscription.unsubscribe()); resourceSources.forEach(source => source.complete()); await app.dispose().catch(() => {}); }
 });
 
 test('正式与局部资源反应归真实工作区所有，跨环境共享返回对象，会话退出保活且登记删除停止排队而保留已受理文件写入', async t => {
@@ -367,7 +414,7 @@ test('环境和工作区独立组合，共享来源跨环境持有，冷恢复�
   const deliveryProgram = defineProgram({ input: z.null(), surface });
   const analysisProgram = defineProgram({ input: z.null(), surface });
   function SharedFacts({ workspace }: ProgramProps<typeof deliveryProgram>) {
-    const facts = useResource(() => defer(() => workspace.share(observations$)), [workspace]);
+    const facts = useResource(() => workspace.shareResource(observations$), [workspace]);
     return h(Fragment, null, Context({ name: 'shared-workspace-facts', observation: facts.state, render: value => value }),
       Expose({ surface, value: { views: { facts: facts.observations$ } } }));
   }

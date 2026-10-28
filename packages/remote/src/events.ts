@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { TypertRemoteEventDispatch, TypertRemoteEventSource } from '@deepseek-ai/dsh-api-gateway';
 import { API_REMOTE_FORWARDED_EVENTS } from '@deepseek-ai/dsh-api-remotes';
 import { z } from 'zod';
-import { Inbox } from '@hanger-source/dsh-reactive-client/transport';
+import { Inbox } from '@hanger-source/dsh-reactive-client/inbox';
 
 /** 只转发真实 Controller 通知；人工 waterfall 由 Program 的 HumanInput owner 接收。 */
 export function registerProgramEvents(ctx: Context): () => Promise<void> {

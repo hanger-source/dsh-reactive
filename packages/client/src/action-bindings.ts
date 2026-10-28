@@ -2,8 +2,8 @@ import { RemoteSnapshotStream, type ClientRemote } from '@deepseek-ai/dsh-api-ga
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { z, actionIdentity, assertActionIdentity, type ActionIdentity, type CancellationOptions } from '@hanger-source/dsh-reactive';
-import type { ProgramAddress, ProgramActionBinding } from './types.ts';
-import './errors.ts';
+import type { ProgramAddress, ProgramActionBinding } from './contracts/types.ts';
+import './contracts/errors.ts';
 import type { ClientScope, ClientLease } from './scope.ts';
 
 export interface RemoteActionCapture {
