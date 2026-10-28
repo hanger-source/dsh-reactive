@@ -6,6 +6,12 @@
 
 ## 定义业务行为
 
+可复用消费者通过 core 的 `ProgramSessionClient<P>` 描述所需会话能力，直接接收本地 `ConversationHandle<P>` 或远程 `RemoteProgramSession<P>`。视图、进展、原请求和人工问题继续返回各自原有的资源对象；同一模块可以用函数、Promise、RxJS 或 hooks 读取它们，框架不为跨宿主复用建立第二个会话。
+
+只需要公开模块出口时使用 `SurfaceClient<S>`，根会话与 `collection(name).instance(key)` 共用视图、动作、Operation 槽和嵌套集合合同。业务代码用 `await client.resolveAction(...)` 和 `await action(...)` 消费两种时序；具体本地类型仍保留同步解析和受理，具体远程类型仍返回 Promise。`ProgramSessionClient` 的 Async 参数只描述这部分 Surface 时序；读取或附着业务 Operation 不会变成一次 Action，原生暂停、取消和 journal 控制仍由具体 SDK 提供。
+
+`ProgramSession` 是后台组件收到的会话事实与输入接口，`ProgramSessionClient` 是外部消费者的能力接口。两者不互相伪造执行身份。消费者释放观察后，已受理的调用和业务 Operation 仍由原 owner 持有。
+
 merchantService 是应用已有的业务 owner，负责权限、修订、真实副作用与正式回执。共享合同可以由宿主、CLI 和远程消费者共同导入；实现只在宿主装配。
 
 ```ts

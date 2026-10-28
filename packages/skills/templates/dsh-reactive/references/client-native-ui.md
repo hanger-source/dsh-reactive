@@ -4,6 +4,8 @@
 
 ## 用同一纯 Program 消费
 
+独立模块从 core 导入 `ProgramSessionClient<P>`，直接借用本地 `ConversationHandle<P>` 或远程 `RemoteProgramSession<P>`，共用原来的 View、progress、human 和 request 资源。只消费模块出口时使用 `SurfaceClient<S>`；根会话和集合成员使用同一合同。普通业务函数可以 `await` 两端的 Action 解析和调用，具体 SDK 类型仍保留各自同步/异步时序。不为复用创建 SDK 代理或第二套状态，不把组件内部的 `ProgramSession` 当成外部消费者权限。
+
 `session.requestStatus(requestId)`、`pause()`、`cancel()` 的回执等待归该 Session 句柄；release 或所属 SDK dispose 后立即拒绝尚未返回的等待，公共 Context 与其他 SDK 保持原寿命。Host 在取得句柄后、进入实际读取或控制前重新检查请求取消。取消客户端等待不等于撤销已经进入原生控制的工作，也不回滚已受理业务；用另一个有效句柄观察当前事实，不因回执未知自动重发控制。
 
 远程 SDK 从 `@hanger-source/dsh-reactive-client` 导入，不是 Gateway 包的 `/client`；`@hanger-source/dsh-reactive-remote` 只装在认证 Gateway 宿主。纯 Program 文件不能导后台组件/宿主，从而让 CLI、浏览器、UI 共用定义。

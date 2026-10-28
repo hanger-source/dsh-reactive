@@ -19,7 +19,7 @@ import type { ProgramContract, ProgramInput, ProgramParsedInput } from "@hanger-
 import { surfaceSlotDefinition, type SurfaceViews } from "@hanger-source/dsh-reactive/kernel";
 import { createSurfaceCollectionClient, type SurfaceCollectionClient } from "@hanger-source/dsh-reactive/kernel";
 import { actionManifestSlot, type ToolActionBinding } from "@hanger-source/dsh-reactive/kernel";
-import type { InputReceipt } from "@hanger-source/dsh-reactive";
+import type { InputReceipt, CollectionResolvedAction, SurfaceClient, ProgramSessionClient, ViewValue } from "@hanger-source/dsh-reactive";
 import { assertServiceInputOptions } from './inputs.ts';
 import type { ConversationSession } from './session.ts';
 import type { ConversationSessions } from './sessions.ts';
@@ -28,24 +28,17 @@ import type { ConversationObservations } from './observations.ts';
 import type { ActionAuthority } from '../execution/authority.ts';
 import type { OperationParticipation } from '../operations/participation.ts';
 import type { ConversationQuestions } from '../participation/questions.ts';
-export interface ResolvedAction<D extends ActionContract> {
-    (input: ActionInput<D>, options?: SubmitOptions): ActionInvocation<D>;
-    readonly definition: D;
-    readonly bindingId: string;
-    readonly scope: ActionScope<D>;
-}
+export type ResolvedAction<D extends ActionContract> = CollectionResolvedAction<D, SubmitOptions, false>;
 export type EnvironmentOperationReaders<E extends AnyEnvironment> = {
     readonly [K in keyof EnvironmentOperations<E>]: (options?: SubmitOptions) => BoundOperation<EnvironmentOperations<E>[K]>;
 };
-export type ProgramOperationReaders<P extends ProgramContract> = {
-    readonly [K in keyof P['surface']['operations']]: (options?: SubmitOptions) => BoundOperation<P['surface']['operations'][K]>;
-};
+export type ProgramOperationReaders<P extends ProgramContract> = SurfaceClient<P['surface'], SubmitOptions, false>['operations'];
 type ProgramViews<P extends ProgramContract> = SurfaceViews<P['surface']>;
-export type ServiceConversation<P extends ProgramContract> = Pick<ConversationHandle<P>, 'id' | 'identity' | 'surface' | 'activity$' | 'progress' | 'progress$' | 'progressFrames$' | 'events$' | 'rawEvents$' | 'actionManifest$' | 'views' | 'view' | 'viewResource' | 'observeView' | 'readView' | 'collection' | 'request' | 'resolveAction' | 'invokeAction' | 'operations' | 'resolveOperation' | 'attachOperation' | 'locateOperation' | 'readOperationFeedback' | 'snapshot' | 'progressSnapshot' | 'release'> & {
+export type ServiceConversation<P extends ProgramContract> = Pick<ConversationHandle<P>, 'id' | 'definition' | 'identity' | 'surface' | 'activity$' | 'progress' | 'progress$' | 'progressFrames$' | 'events$' | 'rawEvents$' | 'actionManifest$' | 'views' | 'view' | 'viewResource' | 'observeView' | 'readView' | 'collection' | 'request' | 'resolveAction' | 'invokeAction' | 'operations' | 'resolveOperation' | 'attachOperation' | 'locateOperation' | 'readOperationFeedback' | 'snapshot' | 'progressSnapshot' | 'release'> & {
     submit(input: Submission<ProgramInput<P>>, options?: CancellationOptions): Promise<InputReceipt>;
     editQueuedInput(requestId: string, content: Submission['content'], options?: CancellationOptions): Promise<InputReceipt>;
 };
-export class ConversationHandle<P extends ProgramContract = ProgramContract> {
+export class ConversationHandle<P extends ProgramContract = ProgramContract> implements ProgramSessionClient<P, SubmitOptions, false> {
     readonly activity$: Observable<ConversationActivity>;
     readonly progress$: Observable<Observation<ConversationProgressSnapshot>>;
     readonly progress: ResourceReader<ConversationProgressSnapshot>;
@@ -55,6 +48,7 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> {
     readonly questions$: Observable<HumanInputState>;
     readonly foregroundQuestions$: Observable<readonly HumanForegroundQuestion[]>;
     readonly human: ResourceReader<HumanSnapshot>;
+    get human$(): Observable<Observation<HumanSnapshot>> { return this.human.observations$; }
     #question: HumanQuestionResolver<SubmitOptions>;
     #released = false;
     #scope: Scope;
@@ -112,6 +106,8 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> {
         if (this.participant !== 'human') throw new Error('REACTIVE_HUMAN_PARTICIPANT_REQUIRED');
     }
     get id() { return this.entry.header.id as string; }
+    /** P 由宿主创建句柄时的实际 Program 绑定确定；返回原对象，不重建合同。 */
+    get definition(): P { this.assertActive(); return this.entry.implementation.definition as P; }
     get identity() { return this.entry.conversation.identity; }
     /** 当前环境的纯 Surface 合同；远程宿主复用其 schema，不读取业务实现。 */
     get surface(): P['surface'] { this.assertActive(); return this.entry.implementation.definition.surface; }
@@ -196,10 +192,10 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> {
         }
         return resource;
     }
-    viewResource<K extends keyof ProgramViews<P> & string>(name: K): ResourceReader<ProgramViews<P>[K] extends Observable<infer U> ? U : never> {
-        return this.resource(name) as ResourceReader<ProgramViews<P>[K] extends Observable<infer U> ? U : never>;
+    viewResource<K extends keyof P['surface']['views'] & string>(name: K): ResourceReader<ViewValue<P['surface']['views'][K]>> {
+        return this.resource(name) as ResourceReader<ViewValue<P['surface']['views'][K]>>;
     }
-    observeView<K extends keyof ProgramViews<P> & string>(name: K): Observable<Observation<ProgramViews<P>[K] extends Observable<infer U> ? U : never>> {
+    observeView<K extends keyof P['surface']['views'] & string>(name: K): Observable<Observation<ViewValue<P['surface']['views'][K]>>> {
         return this.viewResource(name).observations$;
     }
     /** HTTP/Gateway 使用 Surface 已编码的 wire 值，本地 SDK 保留领域值。 */
@@ -208,7 +204,7 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> {
         const value = this.entry.program.outputs.wireView(name);
         return this.observe(value.observations$);
     }
-    async readView<K extends keyof ProgramViews<P> & string>(name: K, options: CancellationOptions = {}): Promise<ProgramViews<P>[K] extends Observable<infer U> ? U : never> {
+    async readView<K extends keyof P['surface']['views'] & string>(name: K, options: CancellationOptions = {}): Promise<ViewValue<P['surface']['views'][K]>> {
         return this.viewResource(name).read(options.signal);
     }
     submit(input: Submission<ProgramInput<P>>, options: SubmitOptions = {}) {

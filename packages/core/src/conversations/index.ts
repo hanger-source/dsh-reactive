@@ -6,3 +6,4 @@ export type { ConversationActivity, GoalActivity, RequestActivity, ToolActivity,
 export type { ConversationEvent, RequestEvent, ToolOccurrence, AssistantStream, AssistantAttemptSnapshot, AssistantProgressFrame } from './events.ts';
 export { createRequestHandle, createAssistantProgress, parseAssistantAttempt, parseConversationProgress, parseAssistantProgressFrame } from './request.ts';
 export type { ConversationProgressSnapshot, RequestSnapshot, RequestHandle, AssistantProgress } from './request.ts';
+export type { ProgramSessionClient } from './client.ts';

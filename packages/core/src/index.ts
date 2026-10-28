@@ -4,6 +4,7 @@ export type { ScopeOptions } from './reactivity/scope.ts';
 export * from './resources/index.ts';
 export * from './reactions/index.ts';
 export type { SnapshotSource } from './reactivity/observable.ts';
+export type { ProgramSessionClient } from './conversations/client.ts';
 export { defineApplication } from './applications/definition.ts';
 export { defineEnvironment } from './environments/definition.ts';
 export { z } from 'zod';
@@ -32,7 +33,7 @@ export { composeSurface, selectSurface, collectionSurface } from './surfaces/com
 export type { SurfaceMount, SurfaceCollectionMount, SurfaceMounts, SurfaceComposition, SurfaceTree, SurfaceSelection, ComposedSurface } from './surfaces/composition.ts';
 
 export { createSurfaceCollectionClient } from './surfaces/collection-client.ts';
-export type { SurfaceCollectionClient, SurfaceCollectionTransport, SurfaceInstanceClient, CollectionResolvedAction } from './surfaces/collection-client.ts';
+export type { SurfaceClient, SurfaceCollectionClient, SurfaceCollectionTransport, SurfaceInstanceClient, CollectionResolvedAction } from './surfaces/collection-client.ts';
 
 export type { NativeToolCall, NativeToolAdmission } from './tools/admission.ts';
 export { readActionPresentation, toolActionBindingSchema, actionManifestSlot } from './surfaces/presentation.ts';

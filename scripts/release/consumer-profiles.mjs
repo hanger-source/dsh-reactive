@@ -36,6 +36,7 @@ export async function consumerEnvironment(config, kind, tarballs) {
 }
 
 const consumerSources = kind => [{ source: `consumer-${kind}.ts`, target: 'consumer.ts' },
+  { source: 'consumer-session.ts', target: 'consumer-session.ts' },
   ...(kind === 'ui' ? [{ source: 'consumer-browser.ts', target: 'browser.ts' }] : [])];
 
 /** 仓外消费者与编译选项只有此处装配，日常CI和发行验收使用相同输入。 */

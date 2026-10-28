@@ -9,6 +9,7 @@ import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-r
 import { createProgramClient, type RemoteProgramSession } from '@hanger-source/dsh-reactive-client';
 import { mountProgramGateway } from '@hanger-source/dsh-reactive-remote';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
+import { sessionResources, readSessionView } from './consumer-session.js';
 
 const contract = defineProgram({ input: z.object({ subject: z.string() }).strict(), surface: defineSurface({ views: { revision: resourceView(z.number()) }, actions: {} }) });
 const program = implementProgram(contract, { Component: () => null });
@@ -17,6 +18,10 @@ const application = defineApplication({ name: 'registry-consumer', admit: async 
 ] });
 export const backend = (options: RuntimeOptions) => createRuntime(() => application, options);
 export const clientContract = () => contract;
+export const portableLocal = (session: ConversationHandle<typeof contract>) => sessionResources(session);
+export const portableRemote = (session: RemoteProgramSession<typeof contract>) => sessionResources(session);
+export const localRevision = (session: ConversationHandle<typeof contract>): Promise<number> => readSessionView(session, 'revision');
+export const remoteRevision = (session: RemoteProgramSession<typeof contract>): Promise<number> => readSessionView(session, 'revision');
 export const publicEntries = [createProgramClient, mountProgramGateway, getDeveloperSkill, createNativeSkills, createNativeTools] as const;
 export const developerSkill = getDeveloperSkill();
 export const nativeProgramSource = (conversation: ProgramSession<typeof contract>): NativeSessionSource => conversation;

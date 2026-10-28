@@ -14,8 +14,8 @@ export interface CollectionResolvedAction<D extends ActionContract, Options exte
   readonly bindingId: string;
   readonly scope: ActionScope<D>;
 }
-export interface SurfaceInstanceClient<S extends Surface, Options extends CancellationOptions = CancellationOptions, Async extends boolean = false> {
-  readonly key: string;
+/** 根会话与集合成员共用的消费合同；调用时序由实际本地或远程入口决定。 */
+export interface SurfaceClient<S extends Surface, Options extends CancellationOptions = CancellationOptions, Async extends boolean = boolean> {
   readonly surface: S;
   readonly views: SurfaceViews<S>;
   viewResource<K extends keyof S['views'] & string>(name: K): ResourceReader<ViewValue<S['views'][K]>>;
@@ -25,6 +25,10 @@ export interface SurfaceInstanceClient<S extends Surface, Options extends Cancel
     CollectionResult<Async, CollectionResolvedAction<S['actions'][K], Options, Async>>;
   readonly operations: { readonly [K in keyof S['operations']]: (options?: Options) => CollectionResult<Async, BoundOperation<S['operations'][K]>> };
   collection<K extends keyof S['collections'] & string>(name: K): SurfaceCollectionClient<S['collections'][K], Options, Async>;
+}
+export interface SurfaceInstanceClient<S extends Surface, Options extends CancellationOptions = CancellationOptions, Async extends boolean = false>
+  extends SurfaceClient<S, Options, Async> {
+  readonly key: string;
 }
 export interface SurfaceCollectionClient<C extends SurfaceCollectionDefinition, Options extends CancellationOptions = CancellationOptions, Async extends boolean = false> {
   readonly instances$: Observable<readonly string[]>;

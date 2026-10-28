@@ -1,13 +1,13 @@
 import { Context } from '@deepseek-ai/cordis';
 import * as Registry from '@deepseek-ai/dsh-typert-registry/client';
 import * as Gateway from '@deepseek-ai/dsh-api-gateway/client';
-import { RemoteSnapshotStream, type ClientRemote } from '@deepseek-ai/dsh-api-gateway/client';
+import { type ClientRemote } from '@deepseek-ai/dsh-api-gateway/client';
 import { installConnection, type ConnectionHandle, type ConnectionInstallOptions } from '@deepseek-ai/dsh-client-connection/client';
 import { type RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { bytesToBase64 } from '@deepseek-ai/dsh-util-crypto';
 import { BehaviorSubject, defer, firstValueFrom, from, fromEvent, map, mergeMap, raceWith, takeWhile, throwError, type Observable } from 'rxjs';
-import { z, assertProgramDefinition, surfaceSlotDefinition, createSurfaceCollectionClient, actionManifestSlot, type ToolActionBinding, type SurfaceCollectionClient, type ActionInput, type ActionInvocation, type ActionContract, type ActionScope, type Invocation, type InvocationActivity, type Observation, type Submission, type Surface, type SurfaceViews, type ViewValue, type OperationContract, type OperationReference, type OperationCommand, type OperationHandle, type OperationLocation, type OperationState, type HumanInputState, type HumanForegroundQuestion, type HumanAnswer, type HumanWaitFrame, type BoundOperation, type OperationFeedbackRead, type OperationFeedbackPayload, type ConversationProgressSnapshot, type ConversationEvent, type RequestHandle, type AssistantProgressFrame, type ProgramContract, type ProgramInput, type ProgramParsedInput, type ProgramSurface, type WorkspaceRegistration, type ConversationCreateOptions, type FileUploadSource, type FileUploadValue, type CancellationOptions } from '@hanger-source/dsh-reactive';
+import { z, assertProgramDefinition, surfaceSlotDefinition, createSurfaceCollectionClient, actionManifestSlot, type ToolActionBinding, type ActionInput, type ActionInvocation, type ActionContract, type ActionScope, type InvocationActivity, type Observation, type Surface, type SurfaceViews, type ViewValue, type OperationContract, type OperationReference, type OperationCommand, type OperationHandle, type BoundOperation, type ProgramContract, type ProgramSurface, type WorkspaceRegistration, type ConversationCreateOptions, type FileUploadSource, type FileUploadValue, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import { decodeProgramFailure } from './errors.ts';
 import './errors.ts';
 import contribution from '@hanger-source/dsh-reactive-client/remote';
@@ -22,7 +22,8 @@ import { remoteHuman } from './human.ts';
 import type { RemoteResourceConnection } from './resource.ts';
 import { ResourceReader } from '@hanger-source/dsh-reactive';
 import { actionIdentity, assertActionIdentity } from '@hanger-source/dsh-reactive';
-import { createHumanQuestionResolver, type HumanQuestionHandle } from '@hanger-source/dsh-reactive';
+import { createHumanQuestionResolver } from '@hanger-source/dsh-reactive';
+import type { CollectionResolvedAction, SurfaceClient, ProgramSessionClient } from '@hanger-source/dsh-reactive';
 
 export { createAuthenticatedTransport } from './transport.ts';
 export type { AuthenticatedTransportOptions } from './transport.ts';
@@ -30,47 +31,20 @@ export { ProgramJournal } from './journal.ts';
 export type { ProgramJournalOptions, ProgramJournalRequest } from './journal.ts';
 
 /** 明确目标的已捕获绑定；调用时仍核验当前声明及真实参与者权限。 */
-export interface RemoteResolvedAction<D extends ActionContract> {
-  (input: ActionInput<D>, options?: CancellationOptions): Promise<ActionInvocation<D>>;
-  readonly definition: D;
-  readonly bindingId: string;
-  readonly scope: ActionScope<D>;
-}
+export type RemoteResolvedAction<D extends ActionContract> = CollectionResolvedAction<D, CancellationOptions, true>;
 /** resolver 只捕获当前公开的只读绑定，网络边界允许异步，不受理业务或登记等待。 */
-export type RemoteOperations<S extends Surface> = {
-  readonly [K in keyof S['operations']]: (options?: CancellationOptions) => Promise<BoundOperation<S['operations'][K]>>;
-};
+export type RemoteOperations<S extends Surface> = SurfaceClient<S, CancellationOptions, true>['operations'];
 export interface ProgramClientOptions extends AuthenticatedTransportOptions {
   readonly recovery?: ConnectionInstallOptions['recovery'];
 }
 export interface RemoteUploadFileOptions extends CancellationOptions { readonly name?: string; }
-export interface RemoteProgramSession<P extends ProgramContract> {
-  readonly id: string;
+export interface RemoteProgramSession<P extends ProgramContract> extends ProgramSessionClient<P, CancellationOptions, true> {
   /** 实际创建这个 SDK 的纯合同；UI 或模块组合不得只按相同 sessionId 猜合同。 */
   readonly definition: P;
   readonly identity: ProgramIdentity;
-  readonly views: SurfaceViews<ProgramSurface<P>>;
-  viewResource<K extends keyof ProgramSurface<P>['views'] & string>(name: K): ResourceReader<ViewValue<ProgramSurface<P>['views'][K]>>;
-  readonly actionManifest$: Observable<readonly ToolActionBinding[]>;
-  collection<K extends keyof ProgramSurface<P>['collections'] & string>(name: K): SurfaceCollectionClient<ProgramSurface<P>['collections'][K], CancellationOptions, true>;
-  resolveAction<K extends keyof ProgramSurface<P>['actions'] & string>(name: K,
-    expectedScope: z.input<ProgramSurface<P>['actions'][K]['scope']>, options?: CancellationOptions): Promise<RemoteResolvedAction<ProgramSurface<P>['actions'][K]>>;
-  readonly operations: RemoteOperations<ProgramSurface<P>>;
-  readonly progress: ResourceReader<ConversationProgressSnapshot>;
-  readonly progress$: Observable<Observation<ConversationProgressSnapshot>>;
-  readonly progressFrames$: Observable<AssistantProgressFrame>;
-  readonly events$: Observable<ConversationEvent<ProgramParsedInput<P>>>;
-  request(requestId: string): RequestHandle<ProgramParsedInput<P>>;
   invocation<K extends keyof ProgramSurface<P>['actions'] & string>(name: K, id: string): Promise<ActionInvocation<ProgramSurface<P>['actions'][K]>>;
   readonly human$: Observable<Observation<ProgramQuestions>>;
   readonly human: ResourceReader<ProgramQuestions>;
-  question(callId: string, options?: CancellationOptions): Promise<HumanQuestionHandle>;
-  readonly questions$: Observable<HumanInputState>;
-  readonly foregroundQuestions$: Observable<readonly HumanForegroundQuestion[]>;
-  observeView<K extends keyof ProgramSurface<P>['views'] & string>(name: K): Observable<Observation<ViewValue<ProgramSurface<P>['views'][K]>>>;
-  readView<K extends keyof ProgramSurface<P>['views'] & string>(name: K, options?: CancellationOptions): Promise<ViewValue<ProgramSurface<P>['views'][K]>>;
-  submit(input: Submission<ProgramInput<P>>, options?: CancellationOptions): Promise<ProgramInputReceipt>;
-  editQueuedInput(requestId: string, content: Submission['content'], options?: CancellationOptions): Promise<ProgramInputReceipt>;
   uploadFile(data: FileUploadSource, options?: RemoteUploadFileOptions): Promise<FileUploadValue>;
   /** 等待归本句柄；退出结束等待，已进入原生暂停的控制仍由Host结算。 */
   pause(): Promise<ProgramGoalControl>;
@@ -78,12 +52,7 @@ export interface RemoteProgramSession<P extends ProgramContract> {
   cancel(): Promise<ProgramCancelResult>;
   /** 只读原请求事实，句柄或SDK退出立即结束尚未返回的查询。 */
   requestStatus(requestId: string): Promise<ProgramRequestStatus>;
-  answerQuestion(callId: string, answer: HumanAnswer, options?: CancellationOptions): Promise<boolean>;
-  attachWait(callId: string, options?: CancellationOptions): AsyncIterable<HumanWaitFrame>;
   attachOperation<D extends OperationContract>(definition: D, reference: OperationReference<D>, options?: CancellationOptions): OperationHandle<D>;
-  locateOperation<D extends OperationContract>(definition: D, command: OperationCommand<D>, options?: CancellationOptions): Promise<OperationLocation<OperationReference<D>, OperationState<D>>>;
-  readOperationFeedback<D extends OperationContract>(definition: D, command: OperationCommand<D>, participationId: string,
-    options?: CancellationOptions): Promise<OperationFeedbackRead<OperationReference<D>, OperationFeedbackPayload<D>>>;
   notifyOperation(followId: string, options?: CancellationOptions): Promise<ProgramOperationNotificationResult>;
   /** 原生可靠 journal；调用者消费完整 change，不另造事件 cursor 或重放引擎。 */
   openEvents(options: ProgramJournalOptions, request?: ProgramJournalRequest): Promise<ProgramJournal>;
@@ -237,7 +206,7 @@ export function bindProgramClient<const P extends ProgramContract>(program: P, c
     let released: Promise<void> | undefined;
     const handle: RemoteProgramSession<P> = {
       get definition() { assertActive(); return program; },
-      id: identity.sessionId, identity, views, operations,
+      id: identity.sessionId, identity, surface, views, operations,
       get actionManifest$() { return viewSlot(actionManifestSlot).reader.values$ as Observable<readonly ToolActionBinding[]>; },
       collection(name) {
         assertActive();
