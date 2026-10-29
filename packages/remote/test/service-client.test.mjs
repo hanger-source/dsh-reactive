@@ -135,7 +135,7 @@ test('服务SDK贯通真实认证Gateway；身份来自宿主、人工控制隔�
   const serviceClient = await createServiceProgramClient(program, ownTransport.options); clients.push(serviceClient);
   const created = await serviceClient.create('work', { workspaceId: workspace.workspaceId, sessionId });
   const local = await runtime.application.open(sessionId); handles.push(local);
-  assert.deepEqual(created.identity, { sessionId, environmentId: 'work', workspaceId: workspace.workspaceId, participant: 'service', actorId,
+  assert.deepEqual(created.identity, { sessionId, environmentId: 'work', workspaceId: workspace.workspaceId, parentSessionId: null, participant: 'service', actorId,
     program: { name: program.name, version: program.version }, accessId: local.accessId });
   const connect = async principal => {
     const ctx = new Context(), selected = transport(principal); contexts.push(ctx);
