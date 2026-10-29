@@ -4,8 +4,8 @@ import { access, lstat, mkdir, mkdtemp, readFile, realpath, writeFile } from 'no
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { consumerKinds, consumerPackages, consumerEnvironment, prepareConsumerSources, checkConsumerDependencies } from './release/consumer-profiles.mjs';
-import { buildConsumerBrowser, buildNativeContractsBrowser } from './release/consumer-browser.mjs';
+import { consumerKinds, consumerPackages, consumerEnvironment, prepareConsumerSources, checkConsumerDependencies, assertConsumerVerification } from './release/consumer-profiles.mjs';
+import { buildConsumerBrowser, buildNativeContractsBrowser, executeConsumerBrowsers } from './release/consumer-browser.mjs';
 import { lintTarball } from './release/lint.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -18,7 +18,9 @@ const selected = process.argv.slice(3).map(argument => {
   if (!consumerKinds.includes(kind)) throw new Error('REACTIVE_PACK_CONSUMER_INVALID: ' + argument);
   return kind;
 });
-const kinds = selected.length ? [...new Set(selected)] : consumerKinds;
+// UI 页面通过实际后台安装提供 Gateway；选择 UI 时显式包含该前置消费者。
+const kinds = selected.length ? consumerKinds.filter(kind => selected.includes(kind)
+  || kind === 'backend' && selected.includes('ui')) : consumerKinds;
 const artifacts = JSON.parse(await readFile(report, 'utf8'));
 assert.equal(artifacts.length, config.packages.length);
 const packed = new Map(artifacts.map(item => [item.name, item]));
@@ -44,6 +46,7 @@ const location = await realpath(await mkdtemp(join(tmpdir(), 'dsh-reactive-packe
 const tarballs = { host: join(dirname(report), packed.get('@hanger-source/dsh-reactive-dsh').filename),
   core: join(dirname(report), packed.get('@hanger-source/dsh-reactive').filename),
   nativeUi: join(dirname(report), packed.get('@hanger-source/dsh-reactive-native-ui').filename) };
+const consumers = [];
 for (const kind of kinds) {
   const directory = join(location, kind);
   await mkdir(directory);
@@ -70,5 +73,13 @@ for (const kind of kinds) {
   await run(process.execPath, [join(directory, 'consumer-skill.mjs'), packed.get('@hanger-source/dsh-reactive-skills').version], directory);
   const browser = kind === 'ui' ? await buildConsumerBrowser(directory) : undefined;
   const nativeContractsBrowser = kind === 'native' ? await buildNativeContractsBrowser(directory) : undefined;
-  console.log(JSON.stringify({ consumer: kind, directory, packages: names, strict: true, declaredDependencies: true, runtime: true, browser, nativeContractsBrowser, source: 'workspace-tarballs' }));
+  const proof = { kind, directory, packages: names, strict: true, declaredDependencies: true, runtimeImport: true, browser, nativeContractsBrowser };
+  consumers.push(proof);
+  console.log(JSON.stringify(proof));
 }
+const browserExecution = kinds.includes('ui')
+  ? await executeConsumerBrowsers(consumers, join(dirname(report), 'browser-verification')) : undefined;
+const verification = { source: 'workspace-tarballs', consumers, browserExecution };
+if (kinds.length === consumerKinds.length) assertConsumerVerification(verification, config);
+await writeFile(join(dirname(report), 'workspace-verification.json'), JSON.stringify(verification, null, 2) + '\n');
+console.log(JSON.stringify({ verification: join(dirname(report), 'workspace-verification.json'), browserExecution }));

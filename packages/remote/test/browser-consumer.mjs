@@ -4,12 +4,14 @@ import { filter, firstValueFrom, timeout } from 'rxjs';
 
 const output = document.querySelector('output');
 document.querySelector('button').addEventListener('click', async () => {
-  let client;
+  let client, session, result;
+  const failures = [];
+  const cleanup = async dispose => { try { await dispose(); } catch (error) { failures.push(error); } };
   const interaction = new AbortController(), options = { signal: interaction.signal };
   try {
     client = await createProgramClient(program, { baseUrl: location.origin });
     const { workspaceId, sessionId } = await fetch('/setup').then(response => response.json());
-    const session = await client.create('work', { workspaceId, sessionId });
+    session = await client.create('work', { workspaceId, sessionId });
     const initial = await session.readView('current', options);
     const check = await session.resolveAction('check', null, options);
     const invocation = await check({ amount: '7' }, options);
@@ -34,10 +36,21 @@ document.querySelector('button').addEventListener('click', async () => {
       || currentFailure.state !== 'failed' || !matches(currentFailure.error)) throw new Error('BROWSER_FAILURE_DETAILS_LOST');
     const failedProof = await fetch('/proof').then(response => response.json());
     if (failedProof.executions !== 2 || failedProof.parsedAmount !== 13 || failedProof.queries !== 1) throw new Error('BROWSER_FAILURE_EXECUTION_CHANGED');
-    output.textContent = JSON.stringify({ passed: true, source: invocation.source, initial: initial.toISOString(),
-      receipt: receipt.at.toISOString(), settled: settled.at.toISOString(), ...proof, failure: failure(resultError), failedProof });
-    await session.release();
-  } catch (error) { output.textContent = JSON.stringify({ passed: false, error: String(error), stack: error.stack }); }
-  finally { interaction.abort(); await client?.dispose(); }
+    result = { passed: true, source: invocation.source, initial: initial.toISOString(),
+      receipt: receipt.at.toISOString(), settled: settled.at.toISOString(), ...proof, failure: failure(resultError), failedProof };
+  } catch (error) { failures.push(error); }
+  finally {
+    await cleanup(() => interaction.abort());
+    await cleanup(() => session?.release());
+    await cleanup(() => client?.dispose());
+  }
+  if (failures.length) {
+    const error = failures.length === 1 ? failures[0] : new AggregateError(failures, 'BROWSER_CONSUMER_FAILED');
+    const describe = error => ({ error: String(error), stack: error?.stack,
+      ...(error instanceof AggregateError ? { errors: error.errors.map(describe) } : {}) });
+    console.error(error);
+    result = { passed: false, ...describe(error), errors: failures.map(describe) };
+  }
+  output.textContent = JSON.stringify(result);
 });
 output.textContent = '可以执行真实远程调用';

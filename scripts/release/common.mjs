@@ -17,9 +17,9 @@ export const configuration = () => json(join(root, 'scripts/release.config.json'
 export async function capture(command, args, cwd = root) {
   return (await execute(command, args, { cwd, maxBuffer: 64 * 1024 * 1024, env: process.env })).stdout.trim();
 }
-export async function run(command, args, cwd = root) {
+export async function run(command, args, cwd = root, env = process.env) {
   console.log('$', command, ...args);
-  const process = spawn(command, args, { cwd, stdio: 'inherit' });
+  const process = spawn(command, args, { cwd, stdio: 'inherit', env });
   await new Promise((done, reject) => {
     process.once('error', reject);
     process.once('exit', (code, signal) => code === 0 ? done() : reject(new Error(`RELEASE_COMMAND_FAILED: ${command} exit=${code} signal=${signal}`)));

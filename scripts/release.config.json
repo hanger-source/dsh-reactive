@@ -14,6 +14,8 @@
   "consumerTooling": {
     "typescript": "5.9.3",
     "ws": "8.21.3",
+    "esbuild": "0.28.2",
+    "browserDsh": "0.2.1-rc.3",
     "nodeTypes": "24.19.2",
     "backendReact": "19.3.1",
     "backendReactTypes": "19.3.0",

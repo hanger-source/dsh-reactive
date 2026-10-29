@@ -44,9 +44,9 @@ npm run release -- version --channel stable
 
 `pack:workspaces` 先通过 `prepare:packages` 完成同一构建图及打包资产，再跳过 lifecycle 打包六个 workspace；它不是带源码追溯的发行候选，也不表示 registry 已发布。正式 prepare 使用相同资产准备入口。tarball 检查同时核验 exports、CHANGELOG 和 manifest 明确声明的字面文件或目录，不能把缺少说明资产的包当成完整产物。
 
-日常 CI 将实际 tgz 安装到仓外消费者，严格编译并实际加载公开能力；原生 UI 的物理安装同时按 browser 条件完整打包纯合同、SDK 与可选 UI，核验无外部导入、后台 renderer 或另一份 core。日常 CI 与发行验收共用消费者、编译配置及 Skill 消费检查，实际运行安装包的 CLI，并核对公开入口、reference 导航与版本；示例验证单独执行，不阻断此前的框架实包证据。发行工作流额外检查来源与 receipt，并执行 registry 发布和安装验收。
+日常 CI 将实际 tgz 安装到仓外消费者，严格编译并实际加载公开能力；原生 UI 的物理安装同时按 browser 条件完整打包纯合同、SDK 与可选 UI，核验无外部导入、后台 renderer 或另一份 core。日常 CI 与发行验收共用消费者、编译配置、Skill 消费检查和 Chromium 页面流程，实际运行安装包的 CLI，并核对公开入口、reference 导航与版本。示例验证单独执行。发行工作流额外检查来源与 receipt，并执行 registry 发布和安装验收。
 
-日常 `node scripts/check-packed-types.mjs /绝对路径/workspace-pack.json` 允许保留待收口 Changesets，不改版本或发布包。修复单个消费环境后可追加 `--consumer=ui`、`--consumer=backend` 或 `--consumer=native` 仅复查该环境；不传参数时检查全部三种环境。
+日常 `node scripts/check-packed-types.mjs /绝对路径/workspace-pack.json` 允许保留待收口 Changesets，不改版本或发布包。修复单个消费环境后可追加 `--consumer=ui`、`--consumer=backend` 或 `--consumer=native`；UI 消费同时安装其真实后台 Host 前置环境，不传参数时检查全部三种环境。运行前使用 `npx playwright install chromium` 安装锁定版本的浏览器；Linux CI 使用 `npx playwright install --with-deps chromium` 安装所需系统依赖。
 
 ## 准备可审阅候选
 
@@ -63,11 +63,11 @@ prepare 调用工作区唯一的 Wireit 构建图，然后 npm pack（`--ignore-
 
 候选验证将 tgz 安装到仓外物理目录，分别验证默认后台 React 19、选择全部可选原生域的 React 19、原生 UI React 18 消费者，以 `skipLibCheck:false` 编译并运行同一份消费者。原生域所需的 optional peers 从实际宿主 tgz 的 package.json 取得，不借工作区 node_modules 补齐；Jobs、MCP、Approval、Clock、Schedule、Team、Files 子入口均实际加载。日常 CI 与发行沿用相同环境选择和消费者源码，后台默认安装仍独立验证。Skill 通过真实 `getDeveloperSkill()` 和 `dsh-reactive-skill` CLI 定位安装内容，核对版本、入口与五个 references。这个阶段只证明候选产物可消费，不称为已发布。
 
-后台消费者直接使用的 RxJS 版本取自实际 core tgz，并显式写入消费者依赖。三类消费者的源码和编译后入口都在各自安装目录内运行 dependency-cruiser，沿用工作区的未声明依赖与未解析入口规则；间接依赖即使恰好提升到 node_modules 根部，也不能作为直接依赖使用。候选报告为每类记录 declaredDependencies、strict、runtimeImport 与实际包集合，UI 另保留浏览器构建证据。正式发布和首次登记都要求三类完整证据、精确包覆盖以及 manifest 摘要、源码、版本和 registry 一致，缺项报告不能受理。
+后台消费者直接使用的 RxJS 版本取自实际 core tgz，并显式写入消费者依赖。三类消费者的源码和编译后入口都在各自安装目录内运行 dependency-cruiser，沿用工作区的未声明依赖与未解析入口规则；间接依赖即使恰好提升到 node_modules 根部，也不能作为直接依赖使用。浏览器 Host 的试验依赖同样直接声明并检查，不通过工作区链接取得。候选报告为每类记录 declaredDependencies、strict、runtimeImport 与实际包集合，UI 另保留浏览器构建证据；共同的 browserExecution 保存三种实际页面回执。正式发布和首次登记都要求三类完整证据、真实页面执行、精确包覆盖以及 manifest 摘要、源码、版本和 registry 一致，缺项报告不能受理。
 
-真实浏览器行为使用 `npm run browser:remote` 启动认证 Runtime/Gateway 试验宿主。打开输出的 url 验证 Date、Action/Operation 和错误详情。原生 UI 流程使用同一次仓外 UI 消费安装生成的 `browser/native` 目录；从包消费检查输出取得 UI 目录，运行 `npm run browser:remote -- --native-assets="/绝对路径/ui/browser/native"`，再打开 nativeUrl。未传入原生产物时该入口明确拒绝运行，避免借用工作区 React 19。
+实包检查在各消费者完成后，由同一 Playwright Test 入口实际执行 SDK、原生 UI 和请求进展页面。[webServer](https://playwright.dev/docs/test-webserver) 拥有三个独立后台 Host 进程及其退出，拒绝复用已占用端口的服务；浏览器消费实际安装的 SDK 与 UI 产物。报告写入 pack report 或发行 manifest 所在目录的 `browser-verification/`，包含 JSON 结果、页面回执，以及失败时的 trace 与截图。日常总报告为同目录 `workspace-verification.json`，正式候选与 registry 验证沿用各自报告。
 
-每个浏览器流程使用一次新启动的独立宿主。原生流程通过官方 rc.3 bootInjections、ClientModuleSystem、SlotRenderer 与真正的 Client Sessions，验证资源在正式 React root 中呈现及更新、UI 卸载后已受理调用继续完成，以及引用计数、取消和失败清理、代际重开、Context 退出和真实 WebSocket 的关闭后发送。浏览器消费者从同一 UI 物理安装构建，共用 React、ReactDOM 和 core 身份；打包与类型检查只证明消费闭包，DOM 与生命周期行为需要实际浏览器执行。这里不启动模型，不能代替真实 provider 的原生工具提问链验收。
+原生流程通过官方 rc.3 bootInjections、ClientModuleSystem、SlotRenderer 与真正的 Client Sessions，验证资源在正式 React root 中呈现及更新、UI 卸载后已受理调用继续完成，以及引用计数、取消和失败清理、代际重开、Context 退出和真实 WebSocket 的关闭后发送。浏览器消费者从同一 UI 物理安装构建，共用 React、ReactDOM 和 core 身份；页面在实际异步清理完成后才提供成功回执。打包与类型检查只证明消费闭包，DOM 与生命周期行为由真实页面执行证明。SDK 与原生 UI 流程不启动模型，请求进展流程使用受控 LlmAdapter；三者不能代替真实 provider 的原生工具提问链验收。
 
 ## GitHub CI 发布
 

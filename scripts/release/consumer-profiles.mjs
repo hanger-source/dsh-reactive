@@ -20,6 +20,12 @@ export async function consumerEnvironment(config, kind, tarballs) {
     const version = core.dependencies?.rxjs;
     if (typeof version !== 'string' || !version) throw new Error('RELEASE_CONSUMER_DEPENDENCY_REQUIRED: rxjs');
     dependencies.rxjs = version;
+    // 浏览器试验的真实宿主安装在后台消费者；不借工作区提升依赖或污染 React 18 UI 环境。
+    for (const name of ['@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-typert-protocol',
+      '@deepseek-ai/dsh-api-workspace-files', '@deepseek-ai/dsh-sandbox-policy',
+      '@deepseek-ai/dsh-typert-registry', '@deepseek-ai/dsh-client-modules', '@deepseek-ai/dsh-session']) {
+      dependencies[name] = config.consumerTooling.browserDsh;
+    }
   }
   if (ui) {
     const core = JSON.parse(await capture('tar', ['-xOf', tarballs.core, 'package/package.json']));
@@ -58,6 +64,7 @@ export async function consumerEnvironment(config, kind, tarballs) {
     }
   }
   return { dependencies, devDependencies: { typescript: config.consumerTooling.typescript,
+    ...(kind === 'backend' ? { esbuild: config.consumerTooling.esbuild } : {}),
     ws: config.consumerTooling.ws,
     '@types/node': config.consumerTooling.nodeTypes,
     '@types/react': ui ? config.consumerTooling.uiReactTypes : config.consumerTooling.backendReactTypes } };
@@ -68,6 +75,8 @@ const consumerSources = kind => [{ source: `consumer-${kind}.ts`, target: 'consu
   ...(kind === 'native' ? [{ source: 'native-contracts-browser.ts', target: 'native-contracts-browser.ts' }] : []),
   ...(kind === 'ui' ? [{ source: 'consumer-browser.ts', target: 'browser.ts' }] : [])];
 const nativeBrowserSources = ['browser-native-consumer.mjs', 'browser-contracts.mjs'];
+const backendBrowserSources = ['browser-host.mjs', 'browser-consumer.mjs', 'browser-contracts.mjs',
+  'browser-request-host.mjs', 'browser-request-consumer.mjs', 'browser-request-contracts.mjs'];
 
 /** 仓外消费者与编译选项只有此处装配，日常CI和发行验收使用相同输入。 */
 export async function prepareConsumerSources(directory, kind) {
@@ -77,6 +86,12 @@ export async function prepareConsumerSources(directory, kind) {
   }
   await copyFile(join(root, 'scripts/release/consumer-skill.mjs'), join(directory, 'consumer-skill.mjs'));
   await copyFile(join(root, 'scripts/release/consumer-runtime.mjs'), join(directory, 'runtime.mjs'));
+  if (kind === 'backend') {
+    await mkdir(join(directory, 'browser-host'));
+    for (const file of backendBrowserSources) {
+      await copyFile(join(root, 'packages/remote/test', file), join(directory, 'browser-host', file));
+    }
+  }
   if (kind === 'ui') {
     await mkdir(join(directory, 'native'));
     for (const file of nativeBrowserSources) {
@@ -101,6 +116,7 @@ export async function checkConsumerDependencies(directory, kind) {
   await run(process.execPath, [join(root, 'node_modules/dependency-cruiser/bin/dependency-cruiser.mjs'),
     '--config', join(root, '.dependency-cruiser.cjs'), ...sources, 'consumer-skill.mjs', 'runtime.mjs',
     ...sources.map(file => join('compiled', file.replace(/\.ts$/u, '.js'))),
+    ...(kind === 'backend' ? backendBrowserSources.map(file => join('browser-host', file)) : []),
     ...(kind === 'ui' ? nativeBrowserSources.map(file => join('native', file)) : [])], directory);
 }
 
@@ -137,4 +153,11 @@ export function assertConsumerVerification(proof, config) {
       }
     }
   }
+  const execution = proof.browserExecution;
+  if (execution?.runner !== '@playwright/test' || execution.browser !== 'chromium'
+    || !Array.isArray(execution.cases) || execution.cases.length !== 3
+    || ['sdk', 'native', 'requests'].some(kind => {
+      const result = execution.cases.find(entry => entry?.kind === kind);
+      return result?.passed !== true || result.proof?.passed !== true;
+    })) throw new Error('RELEASE_BROWSER_EXECUTION_REQUIRED');
 }

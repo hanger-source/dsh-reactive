@@ -50,7 +50,9 @@ const UiSession = await modules.import('@deepseek-ai/dsh-client-ui-session/clien
 document.querySelector('button').addEventListener('click', async event => {
   event.currentTarget.disabled = true;
   const ctx = new Cordis.Context(), leases = [];
-  let delayed, sendsAfterClose = 0, mounted = 0, unmounted = 0, releaseView, actionHeld = false, borrowed, borrowedUi;
+  let delayed, sendsAfterClose = 0, mounted = 0, unmounted = 0, releaseView, actionHeld = false, borrowed, borrowedUi, transport, result;
+  const failures = [];
+  const cleanup = async dispose => { try { await dispose(); } catch (error) { failures.push(error); } };
   const delayNextOpen = () => delayed = { received: Promise.withResolvers(), release: Promise.withResolvers(), entered: false };
   const mountView = session => ctx.effect(() => {
     const remove = ctx.slots.register({ name: 'root', inject: () => nativeHooks({ current: session.view('current'),
@@ -74,7 +76,7 @@ document.querySelector('button').addEventListener('click', async event => {
   try {
     check(React.version === '18.3.1' && ReactDOM.version.startsWith('18.3.1'), 'NATIVE_REACT_18_PLATFORM_REQUIRED');
     await ctx.plugin(Registry);
-    const transport = createAuthenticatedTransport({ baseUrl: location.origin,
+    transport = createAuthenticatedTransport({ baseUrl: location.origin,
       createWebSocket(url) {
         const socket = new WebSocket(url), send = socket.send;
         socket.send = function (data) {
@@ -197,17 +199,29 @@ document.querySelector('button').addEventListener('click', async event => {
     const proof = await fetch('/proof').then(response => response.json());
     check(proof.executions === 2 && proof.models === 0, 'NO_EXTRA_BUSINESS_OR_MODEL_EXECUTION');
     check(sendsAfterClose === 0, 'NO_SEND_AFTER_PHYSICAL_SOCKET_CLOSE:' + sendsAfterClose);
-    output.textContent = JSON.stringify({ passed: true, sessionId, models: proof.models, executions: proof.executions,
+    result = { passed: true, sessionId, models: proof.models, executions: proof.executions,
       sameGeneration: true, independentRelease: true, cancelledAcquisition: true, failedAcquisition: true, reopenedGeneration: true, contextClosedPending: true, sendsAfterClose, invocationActivity: true,
       nativeRenderer: true, react: React.version, domUpdated: true, unmountPreservesBusiness: true, contextUnmounted: true,
-      nativeFiles: true, uiFileReaderSharesFact: true, uiWatchClosed: true, borrowedSdkRemainsActive: true });
-  } catch (error) { output.textContent = JSON.stringify({ passed: false, error: String(error), stack: error.stack }); }
+      nativeFiles: true, uiFileReaderSharesFact: true, uiWatchClosed: true, borrowedSdkRemainsActive: true };
+  } catch (error) { failures.push(error); }
   finally {
-    delayed?.release.resolve();
-    if (actionHeld) await fetch('/native-action/release', { method: 'POST' });
-    await releaseView?.();
-    await borrowedUi?.dispose(); await borrowed?.release();
-    await Promise.all(leases.map(lease => lease.release())); await ctx.fiber.dispose();
+    await cleanup(() => delayed?.release.resolve());
+    if (actionHeld) await cleanup(() => nativeGate('release'));
+    await cleanup(() => releaseView?.());
+    await cleanup(() => borrowedUi?.dispose()); await cleanup(() => borrowed?.release());
+    const released = await Promise.allSettled(leases.map(lease => Promise.resolve().then(() => lease.release())));
+    failures.push(...released.filter(result => result.status === 'rejected').map(result => result.reason));
+    await cleanup(() => ctx.fiber.dispose());
+    await cleanup(() => transport?.dispose());
   }
+  if (failures.length) {
+    const error = failures.length === 1 ? failures[0] : new AggregateError(failures, 'BROWSER_NATIVE_CONSUMER_FAILED');
+    const describe = error => ({ error: String(error), stack: error?.stack,
+      ...(error instanceof AggregateError ? { errors: error.errors.map(describe) } : {}) });
+    console.error(error);
+    result = { passed: false, ...describe(error), errors: failures.map(describe) };
+  }
+  output.textContent = JSON.stringify(result);
 });
 output.textContent = '已装配正式 rc.3 Client Sessions 与 Slot renderer，可验证资源呈现及引用归属';
+document.querySelector('button').disabled = false;

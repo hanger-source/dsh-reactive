@@ -75,8 +75,18 @@ jobs:
           node --test --test-timeout=15000 .tmp/test/test/*.test.js
           npm run test --workspace @hanger-source/dsh-reactive-remote
           npm run test --workspace @hanger-source/dsh-reactive-native-ui
+      - name: 安装实包消费使用的 Chromium
+        run: npx playwright install --with-deps chromium
       - name: 从实际候选安装并验收后台、可选原生域、原生 UI 和 Skill
         run: npm run release -- verify-artifacts --manifest .tmp/release/release-manifest.json
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: candidate-browser-verification
+          path: .tmp/release/browser-verification/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: npm-release-candidate
@@ -113,6 +123,8 @@ jobs:
         run: npm ci --ignore-scripts --registry https://registry.npmjs.org
       - name: 使用支持 Trusted Publishing 的 npm
         run: npm install --global npm@11
+      - name: 安装 registry 消费使用的 Chromium
+        run: npx playwright install --with-deps chromium
       - uses: actions/download-artifact@v8
         with:
           name: npm-release-candidate
@@ -127,6 +139,14 @@ jobs:
           else
             npm run release -- publish --manifest .tmp/release/release-manifest.json
           fi
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: registry-browser-verification
+          path: .tmp/release/browser-verification/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
       - name: 发布 GitHub Release 与不可变产物
         env:
           GH_TOKEN: ${{ github.token }}

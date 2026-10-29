@@ -12,7 +12,9 @@ const submittedAt = '2026-10-27T00:00:07.000Z';
 output.textContent = '可以验证真实请求进展';
 button.onclick = async () => {
   button.disabled = true;
-  let client;
+  let client, journal, result;
+  const failures = [];
+  const cleanup = async dispose => { try { await dispose(); } catch (error) { failures.push(error); } };
   const interaction = new AbortController();
   const subscriptions = [];
   try {
@@ -21,9 +23,9 @@ button.onclick = async () => {
     const session = await client.open(sessionId), request = session.request('browser-request');
     const initial = await next(request.state$, value => value.status === 'ready');
     check(initial.value.source === 'durable' && initial.value.activity === null && initial.value.attempts.length === 0, 'COLD_REQUEST_BASELINE');
-    const journal = await session.openEvents({ publish() {}, failed: error => { throw error; } });
+    journal = await session.openEvents({ publish() {}, failed: error => { throw error; } });
     const cold = await (await fetch('/proof')).json(); check(!cold.agentPresent && cold.models === 0, 'COLD_JOURNAL_ACTIVATED_AGENT');
-    await journal.dispose();
+    await journal.dispose(); journal = undefined;
     await client.resume(sessionId);
     const raw = [];
     subscriptions.push(session.progressFrames$.subscribe(value => raw.push(value)));
@@ -53,10 +55,23 @@ button.onclick = async () => {
     for (const kind of ['local', 'raw']) check(proof.facts[kind].some(input => input.requestId === 'browser-request'
       && input.sourceSessionId === sessionId && input.actorId === 'browser-request-participant'
       && input.domainDate === (kind === 'local') && input.at === submittedAt), 'HOST_INPUT_' + kind);
-    output.textContent = JSON.stringify({ passed: true, coldAgent: cold.agentPresent, models: proof.models,
+    result = { passed: true, coldAgent: cold.agentPresent, models: proof.models,
       latePrefix: text(opened.value), reply: committed.text, actorId: attempt.inputs[0].actorId,
       sourceSessionId: attempt.inputs[0].sourceSessionId, typedInput: committed.inputs[0].scope.at.toISOString(),
-      rawChunkTypes: raw.filter(value => value.frame.type === 'chunk').map(value => value.frame.chunk.type) });
-  } catch (error) { output.textContent = JSON.stringify({ passed: false, message: error.message }); console.error(error); }
-  finally { interaction.abort(); subscriptions.forEach(subscription => subscription.unsubscribe()); await client?.dispose(); }
+      rawChunkTypes: raw.filter(value => value.frame.type === 'chunk').map(value => value.frame.chunk.type) };
+  } catch (error) { failures.push(error); }
+  finally {
+    await cleanup(() => interaction.abort());
+    for (const subscription of subscriptions) await cleanup(() => subscription.unsubscribe());
+    await cleanup(() => journal?.dispose());
+    await cleanup(() => client?.dispose());
+  }
+  if (failures.length) {
+    const error = failures.length === 1 ? failures[0] : new AggregateError(failures, 'BROWSER_REQUEST_CONSUMER_FAILED');
+    const describe = error => ({ error: String(error), stack: error?.stack,
+      ...(error instanceof AggregateError ? { errors: error.errors.map(describe) } : {}) });
+    console.error(error);
+    result = { passed: false, ...describe(error), errors: failures.map(describe) };
+  }
+  output.textContent = JSON.stringify(result);
 };

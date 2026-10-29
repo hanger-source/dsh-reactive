@@ -21,6 +21,10 @@ import { mountProgramGateway, RemoteAuthenticationError } from '@hanger-source/d
 import { bootInjections } from '@deepseek-ai/dsh-client-modules';
 import { operation, check, surface, program } from './browser-contracts.mjs';
 
+const ports = process.argv.slice(2).filter(value => value.startsWith('--port='));
+if (ports.length > 1 || ports.some(value => !/^--port=\d+$/u.test(value)
+  || Number(value.slice('--port='.length)) > 65535)) throw new Error('BROWSER_PORT_INVALID');
+const port = ports.length ? Number(ports[0].slice('--port='.length)) : 0;
 const assets = await mkdtemp(join(tmpdir(), 'dsh-browser-assets-'));
 const coreEntry = fileURLToPath(import.meta.resolve('@hanger-source/dsh-reactive'));
 const clientManifest = new URL(import.meta.resolve('@hanger-source/dsh-reactive-client/package.json'));
@@ -167,7 +171,7 @@ const app = createServer(async (incoming, outgoing) => {
     if (!nativeAssets) { outgoing.writeHead(503); outgoing.end('<!doctype html><html lang="zh"><meta charset="utf-8"><title>缺少原生 UI 产物</title><output>NATIVE_ASSETS_REQUIRED：请通过 --native-assets=/绝对路径/UIprofile/browser/native 传入正式 React18 浏览器产物。</output></html>'); return; }
     outgoing.end('<!doctype html><html lang="zh"><meta charset="utf-8"><title>原生 Slot 与会话引用试验</title>' + nativeHead
       + nativeManifest.files.filter(file => extname(file) === '.css').map(file => '<link rel="stylesheet" href="/native-assets/' + file + '">').join('')
-      + '<button>验证原生 Slot 与会话引用</button><output>加载中</output><main id="native-renderer"></main><script type="module" src="/native-assets/' + nativeManifest.entry + '"></script></html>'); return;
+      + '<button disabled>验证原生 Slot 与会话引用</button><output>加载中</output><main id="native-renderer"></main><script type="module" src="/native-assets/' + nativeManifest.entry + '"></script></html>'); return;
   }
   outgoing.end('<!doctype html><html lang="zh"><meta charset="utf-8"><title>远程 SDK 浏览器试验</title><script type="importmap">{"imports":{"@hanger-source/dsh-reactive":"/core.js"}}</script><button>执行真实远程调用</button><output>加载中</output><script type="module" src="/consumer.js"></script></html>');
 });
@@ -180,8 +184,27 @@ app.on('upgrade', (incoming, downstream, head) => {
   });
   upstream.on('error', () => downstream.destroy()); downstream.on('error', () => upstream.destroy());
 });
-app.listen(0, '127.0.0.1'); await once(app, 'listening'); origin = 'http://127.0.0.1:' + app.address().port;
+app.listen(port, '127.0.0.1'); await once(app, 'listening'); origin = 'http://127.0.0.1:' + app.address().port;
 console.log(JSON.stringify({ url: origin, nativeUrl: origin + '/native', coreEntry, browserClient, assets, nativeAssets }));
 let closing;
-const close = () => closing ??= (async () => { nativeActionGate?.release.resolve(); await gateway.close(); await files.dispose(); await runtime.dispose(); app.closeAllConnections(); app.close(); })();
-process.once('SIGINT', () => void close()); process.once('SIGTERM', () => void close());
+const close = () => {
+  if (closing) return closing;
+  const completion = Promise.withResolvers(); closing = completion.promise;
+  void (async () => {
+    const failures = [];
+    nativeActionGate?.release.resolve();
+    for (const cleanup of [() => gateway.close(), () => files.dispose(), () => runtime.dispose(), () => new Promise((resolve, reject) => {
+      app.close(error => error ? reject(error) : resolve()); app.closeAllConnections();
+    })]) {
+      try { await cleanup(); } catch (error) { failures.push(error); }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length) throw new AggregateError(failures, 'BROWSER_HOST_CLEANUP_FAILED');
+  })().then(completion.resolve, completion.reject);
+  return closing;
+};
+const shutdown = async () => {
+  try { await close(); }
+  catch (error) { console.error(error); process.exitCode = 1; }
+};
+process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);

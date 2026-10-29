@@ -41,11 +41,23 @@ jobs:
           node --test --test-timeout=15000 .tmp/test/test/*.test.js
           npm run test --workspace @hanger-source/dsh-reactive-remote
           npm run test --workspace @hanger-source/dsh-reactive-native-ui
-      - name: 打包并检查仓外依赖、类型与运行入口
+      - name: 安装实包消费使用的 Chromium
+        run: npx playwright install --with-deps chromium
+      - name: 打包并检查仓外依赖、类型、运行入口与真实浏览器
         run: |
           npm run prepare:packages
           npm pack --workspaces --ignore-scripts --pack-destination .tmp --json > .tmp/workspace-pack.json
           node scripts/check-packed-types.mjs .tmp/workspace-pack.json
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: browser-verification
+          path: |
+            .tmp/browser-verification/
+            .tmp/workspace-verification.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: workspace-packages

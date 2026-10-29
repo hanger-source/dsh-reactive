@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { capture, run, root, configuration, save, json, independent, assertVersion, clean } from './common.mjs';
 import { artifactManifest, currentArtifacts } from './artifacts.mjs';
 import { consumerKinds, consumerPackages, consumerEnvironment, prepareConsumerSources, checkConsumerDependencies, assertConsumerVerification } from './consumer-profiles.mjs';
-import { buildConsumerBrowser, buildNativeContractsBrowser } from './consumer-browser.mjs';
+import { buildConsumerBrowser, buildNativeContractsBrowser, executeConsumerBrowsers } from './consumer-browser.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 async function metadata(name, version, registry) {
@@ -119,8 +119,9 @@ export async function verify(path, source) {
     consumers.push({ kind, directory: cwd, packages: names, strict: true, declaredDependencies: true, runtimeImport: true,
       ...browser ? { browser } : {}, ...nativeContractsBrowser ? { nativeContractsBrowser } : {} });
   }
+  const browserExecution = await executeConsumerBrowsers(consumers, join(directory, 'browser-verification'));
   const report = { source, commit: manifest.commit, version: manifest.version, registry: manifest.registry,
-    manifestSha256: artifact.manifestSha256, consumers };
+    manifestSha256: artifact.manifestSha256, consumers, browserExecution };
   assertConsumerVerification(report, config);
   await save(join(directory, source === 'registry' ? 'registry-verification.json' : 'candidate-verification.json'), report);
   console.log(JSON.stringify(report, null, 2));

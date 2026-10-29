@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { capture } from './common.mjs';
+import { capture, root, run } from './common.mjs';
 
 const nativeModules = ['@deepseek-ai/dsh-client-modules', '@deepseek-ai/dsh-client-connection',
   '@deepseek-ai/dsh-typert-registry', '@deepseek-ai/dsh-api-gateway', '@deepseek-ai/dsh-client-file-upload',
@@ -150,4 +150,38 @@ export async function buildNativeContractsBrowser(directory) {
   await import(pathToFileURL(join(directory, output)).href);
   return { output: join(directory, output), bytes: checked.emitted.reduce((sum, file) => sum + file.bytes, 0),
     modules: checked.inputs.length, coreModules: checked.coreModules };
+}
+
+/** Playwright 拥有浏览器和独立宿主进程；日常与正式发行执行同一份实包页面。 */
+export async function executeConsumerBrowsers(consumers, output) {
+  const backend = consumers.find(consumer => consumer.kind === 'backend');
+  const ui = consumers.find(consumer => consumer.kind === 'ui');
+  if (!backend || !ui?.browser?.native?.directory) throw new Error('RELEASE_BROWSER_CONSUMERS_REQUIRED');
+  await mkdir(output, { recursive: true });
+  const reportFile = join(output, 'report.json');
+  await run(process.execPath, [join(root, 'node_modules/@playwright/test/cli.js'), 'test',
+    '--config', join(root, 'test/browser/playwright.config.mjs')], root, { ...process.env,
+    DSH_REACTIVE_BROWSER_BACKEND: backend.directory,
+    DSH_REACTIVE_BROWSER_NATIVE_ASSETS: ui.browser.native.directory,
+    DSH_REACTIVE_BROWSER_OUTPUT: output,
+  });
+  const report = JSON.parse(await readFile(reportFile, 'utf8'));
+  const tests = suite => [...(suite.specs ?? []).flatMap(spec => spec.tests), ...(suite.suites ?? []).flatMap(tests)];
+  const completed = report.suites.flatMap(tests);
+  if (report.stats.expected !== 3 || report.stats.unexpected || report.stats.flaky || report.stats.skipped) {
+    throw new Error('RELEASE_BROWSER_EXECUTION_INCOMPLETE');
+  }
+  const cases = [];
+  for (const kind of ['sdk', 'native', 'requests']) {
+    const selected = completed.filter(test => test.projectName === kind);
+    const result = selected[0]?.results?.[0];
+    const receipt = result?.attachments?.find(attachment => attachment.name === 'consumer-proof');
+    if (selected.length !== 1 || selected[0].results.length !== 1 || result.status !== 'passed' || !receipt?.path) {
+      throw new Error('RELEASE_BROWSER_EXECUTION_INCOMPLETE: ' + kind);
+    }
+    const proof = JSON.parse(await readFile(receipt.path, 'utf8'));
+    if (proof?.passed !== true) throw new Error('RELEASE_BROWSER_EXECUTION_FAILED: ' + kind);
+    cases.push({ kind, passed: true, proof });
+  }
+  return { runner: '@playwright/test', browser: 'chromium', report: reportFile, cases };
 }

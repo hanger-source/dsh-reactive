@@ -15,6 +15,10 @@ import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
 import { mountProgramGateway, RemoteAuthenticationError } from '@hanger-source/dsh-reactive-remote';
 import { program } from './browser-request-contracts.mjs';
 
+const ports = process.argv.slice(2).filter(value => value.startsWith('--port='));
+if (ports.length > 1 || ports.some(value => !/^--port=\d+$/u.test(value)
+  || Number(value.slice('--port='.length)) > 65535)) throw new Error('BROWSER_PORT_INVALID');
+const port = ports.length ? Number(ports[0].slice('--port='.length)) : 0;
 // 从当前消费者安装的公开包入口构建；不读取仓库 dist 或源码。
 const assets = await mkdtemp(join(tmpdir(), 'dsh-browser-request-assets-'));
 const coreEntry = fileURLToPath(import.meta.resolve('@hanger-source/dsh-reactive'));
@@ -108,11 +112,28 @@ app.on('upgrade', (incoming, downstream, head) => {
   });
   upstream.on('error', () => downstream.destroy()); downstream.on('error', () => upstream.destroy());
 });
-app.listen(0, '127.0.0.1'); await once(app, 'listening'); origin = 'http://127.0.0.1:' + app.address().port;
+app.listen(port, '127.0.0.1'); await once(app, 'listening'); origin = 'http://127.0.0.1:' + app.address().port;
 console.log(JSON.stringify({ url: origin, coreEntry, browserClient, assets }));
 let closing;
-const close = () => closing ??= (async () => {
-  nextChunk.resolve(); finish.resolve(); subscriptions.forEach(subscription => subscription.unsubscribe()); local.release();
-  await gateway.close(); await runtime.dispose(); app.closeAllConnections(); app.close();
-})();
-process.once('SIGINT', () => void close()); process.once('SIGTERM', () => void close());
+const close = () => {
+  if (closing) return closing;
+  const completion = Promise.withResolvers(); closing = completion.promise;
+  void (async () => {
+    const failures = [];
+    nextChunk.resolve(); finish.resolve();
+    for (const cleanup of [...subscriptions.map(subscription => () => subscription.unsubscribe()),
+      () => local.release(), () => gateway.close(), () => runtime.dispose(), () => new Promise((resolve, reject) => {
+        app.close(error => error ? reject(error) : resolve()); app.closeAllConnections();
+      })]) {
+      try { await cleanup(); } catch (error) { failures.push(error); }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length) throw new AggregateError(failures, 'BROWSER_REQUEST_HOST_CLEANUP_FAILED');
+  })().then(completion.resolve, completion.reject);
+  return closing;
+};
+const shutdown = async () => {
+  try { await close(); }
+  catch (error) { console.error(error); process.exitCode = 1; }
+};
+process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);

@@ -437,7 +437,7 @@ Program 的 conversation、本地与远程 Session SDK 提供共同 `files` 入�
 
 ```ts
 const page = session.files.text('notes.txt', { offset: 0, limit: 100 });
-const current = await page.read({ signal });
+const current = await page.read(signal);
 const metadata = session.files.metadata('notes.txt');
 const contents = session.files.directory('.');
 // 同一对象的 observations$ 保留 pending/error/ready，values$ 交给普通 RxJS。
