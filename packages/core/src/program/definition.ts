@@ -4,15 +4,23 @@ import type { Workspace } from '../workspaces/context.ts';
 import { assertSurfaceBindings, type Surface } from '../surfaces/contract.ts';
 import { assertProgramIdentity, programIdentity, SharedProgramRequiredError, type ProgramContractIdentity } from './identity.ts';
 
+/** 静态依赖的纯身份形状；具体组件类型只属于 /program 编程入口。 */
+export interface AnyModuleImplementation {
+  readonly surface: Surface;
+  readonly Component: unknown;
+}
+export type ModuleImplementations = Readonly<Record<string, AnyModuleImplementation>>;
+
 /** 组件得到对话事实与显式输入，不持有原生 Agent 或声明注册器。 */
 export type ProgramSession<P extends ProgramContract> = Pick<Conversation<ProgramParsedInput<P>, ProgramInput<P>>,
   'identity' | 'inputs$' | 'activity$' | 'goal$' | 'waits$' | 'events$' | 'progress' | 'progress$' | 'progressFrames$' | 'request'
   | 'human' | 'questions$' | 'foregroundQuestions$' | 'files' | 'journal' | 'submit'>;
 
 export type ProgramWorkspace = Workspace;
-export interface ProgramProps<P extends ProgramContract> {
+export interface ProgramProps<P extends ProgramContract, Modules extends ModuleImplementations = {}> {
   readonly conversation: ProgramSession<P>;
   readonly workspace: ProgramWorkspace;
+  readonly modules: Modules;
 }
 
 /** 可跨宿主与消费者共享的纯程序合同，不携带组件或原生执行实现。 */

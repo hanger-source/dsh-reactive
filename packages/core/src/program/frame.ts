@@ -57,7 +57,11 @@ export function collectProgramFrame(frame: Frame<ProgramDeclaration>): ProgramFr
         break;
       }
       case 'human-input':
-        if (humanInput) throw new Error('REACTIVE_HUMAN_INPUT_DUPLICATE');
+        if (humanInput) {
+          if (humanInput.admitResponder !== declaration.admitResponder)
+            throw new Error('REACTIVE_HUMAN_INPUT_CONTRIBUTION_CONFLICT');
+          break;
+        }
         humanInput = declaration;
         break;
       case 'context':

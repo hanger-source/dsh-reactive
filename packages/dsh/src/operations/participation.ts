@@ -24,9 +24,11 @@ import type { ConversationObservations } from '../conversations/observations.ts'
 import type { ConversationInputs } from '../conversations/inputs.ts';
 import type { ActionAuthority } from '../execution/authority.ts';
 import { humanParticipant, serviceParticipant, assertParticipantOptions, participantActor, type ParticipantIdentity } from '../participation/identity.ts';
+import { withOperationAccessSettlement, type OperationOwnerReference } from '@hanger-source/dsh-reactive/kernel';
 /** 可靠操作参与与精确 Goal 续接；Operation 事实仍由业务 owner 持有。 */
 export class OperationParticipation {
     #follows: OperationFollows;
+    #notifications = new Set<Promise<unknown>>();
     constructor(private readonly ctx: Context, private readonly definition: ApplicationDefinition, private readonly options: HostOptions, private readonly signal: AbortSignal, private readonly sessions: ConversationSessions, private readonly facts: ConversationObservations, private readonly inputs: ConversationInputs, private readonly authority: ActionAuthority, private readonly delegations: NativeDelegations) {
         this.#follows = new OperationFollows(ctx, [...this.options.operations ?? [], delegations.owner], {
             publisherId: () => {
@@ -54,11 +56,16 @@ export class OperationParticipation {
             },
             waiting: (agent, link) => this.facts.liveState(agent.session).activity.waits.some(item => canonical(item.wait) === canonical(link.wait)
                 && canonical(item.continuation) === canonical(link.continuation)),
-            admit: (link, source, signal) => this.definition.admit({
-                requestId: 'operation:' + link.id, content: [{ type: 'text', text: '核验原业务操作的结算状态' }], intent: 'result', scope: link.scope,
-                result: { continuation: link.continuation, wait: link.wait, ready: false },
-            }, this.sessions.get(link.continuation.sessionId)!.conversation.identity, { actorId: source.actorId, participant: source.participant, signal }),
-            deliver: (agent, input, actorId, signal) => this.inputs.submitSession(this.sessions.forAgent(agent)!.session, input, { signal }, serviceParticipant(actorId)),
+            admit: (link, source, signal) => {
+                const work = this.definition.admit({
+                    requestId: 'operation:' + link.id, content: [{ type: 'text', text: '核验原业务操作的结算状态' }], intent: 'result', scope: link.scope,
+                    result: { continuation: link.continuation, wait: link.wait, ready: false },
+                }, this.sessions.get(link.continuation.sessionId)!.conversation.identity, { actorId: source.actorId, participant: source.participant, signal });
+                this.retainNotification(work);
+                return work;
+            },
+            deliver: (agent, input, actorId, signal) => this.inputs.submitSession(this.sessions.forAgent(agent)!.session, input,
+                { signal }, serviceParticipant(actorId), work => this.retainNotification(work)),
         });
     }
     private assertActive() { if (this.signal.aborted)
@@ -259,34 +266,47 @@ export class OperationParticipation {
         if (typeof target !== 'string') this.sessions.assertSessionWorkspace(session);
         return result;
     }
-    async notifyOperation(target: string | ConversationSession, followId: string, options: SubmitOptions, identity: ParticipantIdentity): Promise<OperationNotificationResult> {
+    async notifyOperation(target: string | ConversationSession, followId: string, options: SubmitOptions, identity: ParticipantIdentity, sourceOwner?: OperationOwnerReference): Promise<OperationNotificationResult> {
         this.assertActive();
         const actorId = participantActor(identity, options, this.options.actorId);
         const callerSignal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
         callerSignal.throwIfAborted();
-        return firstValueFrom(abortable(async (): Promise<OperationNotificationResult> => {
+        const completion = Promise.withResolvers<OperationNotificationResult>();
+        const work = completion.promise;
+        this.retainNotification(work);
+        void (async (): Promise<OperationNotificationResult> => {
             const session = await this.acquireSession(target, callerSignal), sessionId = session.header.id;
             const live = session.live.value;
             const signal = AbortSignal.any([callerSignal, session.scope.signal, ...(live ? [live.scope.signal] : [])]);
             signal.throwIfAborted();
-            const inspection = live ? undefined : await firstValueFrom(abortable(() => this.facts.inspect(sessionId, signal), signal));
+            const inspection = live ? undefined : await this.facts.inspect(sessionId, signal);
             signal.throwIfAborted(); this.sessions.assertSessionWorkspace(session);
             const link = live ? this.#follows.link(live.agent, followId) : this.#follows.inspectedLink(inspection!, followId);
+            if (sourceOwner) this.#follows.assertNotificationOwner(link, sourceOwner);
             const notStarted = live ? this.#follows.isNotStarted(live.agent, followId) : this.#follows.inspectedNotStarted(inspection!, followId);
-            const access: OperationAccess = { sessionId, source: {
+            const access: OperationAccess = withOperationAccessSettlement({ sessionId, source: {
                     kind: 'participant', participant: identity.participant, actorId, entrypoint: 'operation-feedback',
-                }, signal };
+                }, signal }, work => this.retainNotification(work));
             // 冷会话在加载原生 Agent 前也须取得业务 follow 权限；纯读权不能触发激活。
             await this.#follows.admit(link, access, notStarted);
             signal.throwIfAborted(); this.sessions.assertSessionWorkspace(session);
             if (notStarted)
                 return { status: 'not-started' };
-            await firstValueFrom(abortable(() => this.sessions.activate(sessionId, session.accessId), signal));
+            await this.sessions.activate(sessionId, session.accessId);
             signal.throwIfAborted(); this.sessions.assertSessionWorkspace(session);
             const entry = this.sessions.live(session);
             return this.#follows.complete(entry.agent, followId, { ...access,
                 signal: AbortSignal.any([signal, entry.scope.signal]) });
-        }, callerSignal));
+        })().then(completion.resolve, completion.reject);
+        return firstValueFrom(abortable(() => work, callerSignal));
+    }
+    private retainNotification(pending: PromiseLike<unknown>): void {
+        const work = Promise.resolve(pending);
+        this.#notifications.add(work);
+        void work.then(() => this.#notifications.delete(work), () => this.#notifications.delete(work));
+    }
+    async settleNotifications(): Promise<void> {
+        while (this.#notifications.size) await Promise.allSettled([...this.#notifications]);
     }
     async reconcileOperations(entry: LiveConversation) {
         const links = this.#follows.links(entry.agent);
@@ -299,9 +319,9 @@ export class OperationParticipation {
         const actorId = this.options.serviceActorId;
         if (!actorId?.trim())
             throw new Error('REACTIVE_OPERATION_PUBLISHER_REQUIRED');
-        return { sessionId: entry.agent.id, source: {
+        return withOperationAccessSettlement({ sessionId: entry.agent.id, source: {
                 kind: 'participant', participant: 'service', actorId, entrypoint: 'operation-recovery',
-            }, signal: AbortSignal.any([this.signal, entry.scope.signal]) };
+            }, signal: AbortSignal.any([this.signal, entry.scope.signal]) }, work => this.retainNotification(work));
     }
     shouldWake(entry: LiveConversation, input: AdmittedSubmission): boolean {
         const result = input.result;

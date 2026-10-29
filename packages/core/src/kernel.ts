@@ -24,6 +24,12 @@ export { type HumanInputDeclaration, type SkillDeclaration } from './program/dec
 export { assertExpectedProgram, assertProgramDefinition, captureProgramExpectation, assertSharedProgramDefinition, type ProgramContract, type SharedProgramContract, type ProgramExpectation, type ProgramImplementation, type ProgramInput, type ProgramParsedInput } from './program/definition.ts';
 export { programIdentity, assertProgramIdentity, ProgramContractMismatchError, SharedProgramRequiredError, type ProgramContractIdentity } from './program/identity.ts';
 export { ProgramInstance, type BoundFollow, type BoundOffer } from './program/instance.ts';
+export { programDependencies } from './program/implementation.ts';
+export type { AnyModuleImplementation } from './program/definition.ts';
+export type { ProgramDependencies } from './program/module-implementation.ts';
+export { operationNotificationSource, withOperationAccessSettlement,
+  type OperationNotificationAcknowledgement, type OperationNotificationDelivery, type OperationNotificationConnection,
+  type OperationNotificationCleanup, type OperationNotificationSource } from './operations/contract.ts';
 export { connect } from './reactivity/observable.ts';
 export { Scope, batch, type Cell, type Value } from './reactivity/scope.ts';
 export { createWorkspace, type Workspace } from './workspaces/context.ts';

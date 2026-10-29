@@ -1,19 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { createElement as h, Fragment } from 'react';
 import { BehaviorSubject, Subject, filter, firstValueFrom, of, switchMap } from 'rxjs';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
-import { ActionBindingUnavailableError, defineAction, implementAction } from '@hanger-source/dsh-reactive';
+import { ActionBindingUnavailableError, collectionSurface, defineAction, defineOperation, implementAction, implementOperation } from '@hanger-source/dsh-reactive';
 import { defineApplication } from '@hanger-source/dsh-reactive';
 import { defineEnvironment } from '@hanger-source/dsh-reactive';
 import { Context, Expose, Offer } from '@hanger-source/dsh-reactive/program';
 import { defineProgram } from '@hanger-source/dsh-reactive';
-import { implementProgram } from '@hanger-source/dsh-reactive/program';
-import { useAction, useObservable, useResource } from '@hanger-source/dsh-reactive/program';
+import { implementModule, implementProgram } from '@hanger-source/dsh-reactive/program';
+import { useAction, useObservable, useOperation, useResource } from '@hanger-source/dsh-reactive/program';
+import { implementNativeModule, type NativeCapability } from '@hanger-source/dsh-reactive-dsh';
+import { createNativeJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
 import { composeSurface, selectSurface, type SurfaceClient } from '@hanger-source/dsh-reactive';
 import { Module } from '@hanger-source/dsh-reactive/program';
 import { defineSurface, resourceView, view, type PartialSurfaceBindings } from '@hanger-source/dsh-reactive';
@@ -51,12 +53,13 @@ test('同合同模块自动隔离原生名称与公开槽，重排保留绑定�
       h(Offer<typeof save>, { action }),
       h(Expose<typeof local, PartialSurfaceBindings<typeof local>>, { surface: local, value: { views: { record: record.observations$ }, actions: { save: action } } }));
   }
+  const merchant = implementModule(local, { Component: Merchant });
   const program = defineProgram({ input: z.null(), surface: composed.surface });
   const definition = defineApplication({ name: 'module-composition', admit: async () => {}, environments: [defineEnvironment({
-    id: 'work', instructions: '按模块现场调用对应商家的能力', program: implementProgram(program, { Component() {
+    id: 'work', instructions: '按模块现场调用对应商家的能力', program: implementProgram(program, { modules: { merchant }, Component({ modules }) {
       const order = useObservable(() => layout, [layout]);
       return order.status === 'ready' ? h(Fragment, null, order.value.map(id =>
-        h(Module, { key: id, mount: composed.mounts[id].merchant }, h(Merchant, { id })))) : null;
+        h(modules.merchant.Component, { key: id, mount: composed.mounts[id].merchant, id }))) : null;
     } }),
   })] });
   const app = await boot(join(root, 'home'), definition, async function* (options) {
@@ -101,6 +104,117 @@ test('同合同模块自动隔离原生名称与公开槽，重排保留绑定�
     assert.deepEqual(app.errors, []);
     session.release();
   } finally { finish.resolve(); layout.complete(); await app.dispose(); }
+});
+
+test('嵌套模块静态安装一次Jobs和文件owner，动态双目标与双会话隔离，撤挂后已受理操作继续结算', { timeout: 15_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-module-dependencies-'));
+  const file = join(root, 'accepted.json');
+  const state = z.discriminatedUnion('status', [z.object({ status: z.literal('running') }),
+    z.object({ status: z.literal('complete'), merchantId: z.string(), sessionId: z.string() })]);
+  const accepted = z.object({ command: z.string(), reference: z.string(), merchantId: z.string(), sessionId: z.string(), state });
+  await writeFile(file, '[]');
+  const read = async () => accepted.array().parse(JSON.parse(await readFile(file, 'utf8')));
+  const persist = async (records: readonly z.input<typeof accepted>[]) => {
+    await writeFile(file + '.next', JSON.stringify(records)); await rename(file + '.next', file);
+  };
+  const changed = new Subject<void>();
+  const operation = defineOperation({ kind: 'module-recorded-work', version: 1, command: z.string(), reference: z.string(),
+    state, settled: value => value.status === 'complete' ? value : undefined });
+  const owner = implementOperation(operation, {
+    async locate(command, access) {
+      const saved = (await read()).find(item => item.command === command);
+      if (!saved) return { status: 'unknown' };
+      if (saved.sessionId !== access.sessionId) return { status: 'rejected', reason: 'foreign-session' };
+      return { status: 'accepted', reference: saved.reference, state: saved.state };
+    },
+    observe(reference, access) {
+      return observeResource({ key$: of(reference), async read(value) {
+        const saved = (await read()).find(item => item.reference === value);
+        assert.ok(saved); assert.equal(saved.sessionId, access.sessionId);
+        return saved.state;
+      }, invalidations: () => changed });
+    },
+  });
+  const save = defineAction({ name: 'save_record', description: '文件持久受理并完成当前商家工作',
+    scope: z.object({ merchantId: z.string(), sessionId: z.string() }), input: z.string(), output: z.string(),
+    operation: { definition: operation, command: input => input, reference: reference => reference } });
+  const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  const action = implementAction(save, { operationOwner: owner, async execute(command, call) {
+    assert.equal(call.scope.sessionId, call.sessionId);
+    const reference = 'operation:' + command;
+    const record = { command, reference, ...call.scope, state: { status: 'running' as const } };
+    await persist([...(await read()), record]); changed.next();
+    if (command === 'held-a') { entered.resolve(); await finish.promise; }
+    call.signal.throwIfAborted();
+    const complete = { status: 'complete' as const, ...call.scope };
+    await persist((await read()).map(item => item.command === command ? { ...item, state: complete } : item));
+    changed.next(); return reference;
+  } });
+  const local = defineSurface({ views: {}, actions: { save }, operations: { work: operation } });
+  const jobs = createNativeJobs({ registry: { kind: 'local' } });
+  let installations = 0;
+  const native: NativeCapability = { install(ctx, home) { installations++; return jobs.install(ctx, home); }, dispose: () => jobs.dispose() };
+  function Commands({ merchantId, sessionId }: { readonly merchantId: string; readonly sessionId: string }) {
+    const bound = useAction(action, () => ({ merchantId, sessionId }), [merchantId, sessionId]);
+    const work = useOperation(owner, () => sessionId + ':' + merchantId, [sessionId, merchantId]);
+    return h(Expose<typeof local, PartialSurfaceBindings<typeof local>>, { surface: local,
+      value: { actions: { save: bound }, operations: { work } } });
+  }
+  const commands = implementNativeModule(local, { Component: Commands, operations: [owner], native: [native] });
+  const nested = composeSurface({ commands: local });
+  const merchant = implementModule(nested.surface, { modules: { commands },
+    Component({ merchantId, sessionId, modules }: { readonly merchantId: string; readonly sessionId: string;
+      readonly modules: { readonly commands: typeof commands } }) {
+      return h(modules.commands.Component, { mount: nested.mounts.commands, merchantId, sessionId });
+    } });
+  const composed = composeSurface({ merchants: collectionSurface(nested.surface) });
+  const firstLayout = new BehaviorSubject<readonly string[]>(['a', 'b']), peerLayout = new BehaviorSubject<readonly string[]>(['a', 'b']);
+  const definition = defineApplication({ name: 'module-static-dependencies', admit: async () => {}, environments: [defineEnvironment({
+    id: 'work', instructions: '显式调用各会话当前商家模块',
+    program: implementProgram(defineProgram({ input: z.null(), surface: composed.surface }), { modules: { merchant },
+      Component({ conversation, modules }) {
+        const layout = useObservable(conversation.identity.sessionId === 'first' ? firstLayout : peerLayout);
+        return layout.status === 'ready' ? h(Fragment, null, layout.value.map(merchantId => h(modules.merchant.Component, {
+          key: merchantId, mount: composed.mounts.merchants.instance(merchantId), merchantId, sessionId: conversation.identity.sessionId,
+        }))) : null;
+      } }),
+  })] });
+  let models = 0;
+  const app = await boot(join(root, 'home'), definition, async function* () { models++; throw new Error('MODULE_QUERY_MUST_NOT_START_MODEL'); });
+  try {
+    const first = await app.host.create('work', { workspaceId: app.workspace.workspaceId, sessionId: 'first' });
+    const peer = await app.host.create('work', { workspaceId: app.workspace.workspaceId, sessionId: 'peer' });
+    try {
+      assert.equal(installations, 1); assert.deepEqual(await jobs.toolNames.read(), []);
+      assert.deepEqual(await read(), [], '创建模块、查询原生资源不得受理业务');
+      const client = (session: typeof first, key: string) => session.collection('merchants').instance(key).module(nested.mounts.commands);
+      const a = client(first, 'a'), b = client(first, 'b'), peerA = client(peer, 'a');
+      const originalA = a.resolveAction('save', { merchantId: 'a', sessionId: 'first' });
+      const originalB = b.resolveAction('save', { merchantId: 'b', sessionId: 'first' });
+      const originalPeer = peerA.resolveAction('save', { merchantId: 'a', sessionId: 'peer' });
+      assert.notEqual(originalA.bindingId, originalB.bindingId); assert.notEqual(originalA.bindingId, originalPeer.bindingId);
+      assert.equal(a.operations.work().command, 'first:a'); assert.equal(peerA.operations.work().command, 'peer:a');
+      const invocation = originalA('held-a'); await entered.promise;
+      const running = await first.attachOperation(operation, 'operation:held-a');
+      const settled = running.settled();
+      firstLayout.next(['b']);
+      assert.throws(() => originalA('after-unmount'), ActionBindingUnavailableError);
+      assert.equal(b.resolveAction('save', { merchantId: 'b', sessionId: 'first' }).bindingId, originalB.bindingId);
+      assert.equal(peerA.resolveAction('save', { merchantId: 'a', sessionId: 'peer' }).bindingId, originalPeer.bindingId);
+      assert.deepEqual(await first.locateOperation(operation, 'held-a'), { status: 'accepted', reference: 'operation:held-a', state: { status: 'running' } });
+      assert.deepEqual(await peer.locateOperation(operation, 'held-a'), { status: 'rejected', reason: 'foreign-session' });
+      assert.equal(await originalPeer('peer-a').result, 'operation:peer-a');
+      finish.resolve();
+      assert.equal(await invocation.result, 'operation:held-a');
+      assert.deepEqual(await settled, { status: 'complete', merchantId: 'a', sessionId: 'first' });
+      firstLayout.next([]);
+      assert.deepEqual(await jobs.forSession(first).state.read(), [], '撤下所有模块声明仍保留应用安装的正式Jobs注册表');
+      const recovered = await first.attachOperation(operation, 'operation:held-a');
+      assert.deepEqual(await recovered.settled(), { status: 'complete', merchantId: 'a', sessionId: 'first' });
+      assert.deepEqual((await read()).map(item => [item.command, item.merchantId, item.sessionId]), [['held-a', 'a', 'first'], ['peer-a', 'a', 'peer']]);
+      assert.equal(installations, 1); assert.equal(models, 0); assert.deepEqual(app.errors, []);
+    } finally { first.release(); peer.release(); }
+  } finally { finish.resolve(); firstLayout.complete(); peerLayout.complete(); changed.complete(); await app.dispose(); }
 });
 
 test('跨模块资源关系保留pending，关联事实未完成前不把旧ready拼入下一模型步', async () => {
@@ -267,7 +381,11 @@ test('模块挂载在真实Program中拒绝其他root的token、伪token、重�
   const fake = Object.freeze({ ...composition.mounts.counter });
   const source = of(7);
   const expose = (surface: typeof local) => h(Expose<typeof local, PartialSurfaceBindings<typeof local>>, { surface, value: { views: { count: source } } });
+  let unauthorizedRenders = 0;
+  const uninstalled = implementModule(local, { Component() { unauthorizedRenders++; return expose(local); } });
   const cases = [
+    { id: 'uninstalled', code: /REACTIVE_MODULE_NOT_INSTALLED/u,
+      Component: () => h(uninstalled.Component, { mount: composition.mounts.counter }) },
     { id: 'wrong-root', code: /REACTIVE_MODULE_ROOT_MISMATCH/u,
       Component: () => h(Module, { mount: foreign.mounts.counter }, expose(local)) },
     { id: 'fake-token', code: /REACTIVE_MODULE_MOUNT_INVALID/u,
@@ -288,6 +406,7 @@ test('模块挂载在真实Program中拒绝其他root的token、伪token、重�
     for (const scenario of cases) {
       await assert.rejects(app.host.create(scenario.id, { workspaceId: app.workspace.workspaceId }), scenario.code, scenario.id);
     }
+    assert.equal(unauthorizedRenders, 0, '未列入Program静态图的模块在业务组件求值前失败');
     assert.equal(modelCalls, 0);
   } finally { await app.dispose(); }
 });

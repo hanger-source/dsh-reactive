@@ -1,10 +1,11 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { Context, Fiber } from "@deepseek-ai/cordis";
-import { type ApplicationDefinition } from "@hanger-source/dsh-reactive/kernel";
+import { programDependencies, type ApplicationDefinition } from "@hanger-source/dsh-reactive/kernel";
 import { type AnyEnvironment } from "@hanger-source/dsh-reactive/kernel";
 import { Workspaces } from "../workspaces/workspaces.ts";
-import { createApplicationAssembly, type ApplicationAssembly } from './assembly.ts';
+import { collectOperationOwners, createApplicationAssembly, type ApplicationAssembly } from './assembly.ts';
+import { moduleNativeDependencies } from '../programs/modules.ts';
 import { ApplicationHost } from '../application.ts';
 import { requireActivePlugin } from '../native-installation.ts';
 import type { HostOptions } from './options.ts';
@@ -30,6 +31,15 @@ export async function assembleApplication<E extends readonly AnyEnvironment[]>(c
     };
     try {
         const definition = factory(state.assembly);
+        const programs = [...definition.environments.map(environment => environment.program), ...state.native.programs()];
+        for (const program of programs) {
+            const dependencies = programDependencies(program);
+            for (const module of dependencies.modules) {
+                const capabilities = moduleNativeDependencies(module);
+                if (capabilities) for (const capability of capabilities) state.assembly.native(capability);
+            }
+            for (const owner of dependencies.operations) state.assembly.operation(owner);
+        }
         return { definition, native: state.native, ...state.complete(), release };
     } catch (error) {
         try { await release(); }
@@ -71,7 +81,7 @@ export async function mountAssembledApplication<E extends readonly AnyEnvironmen
             }
             environments.push({ ...environment, skills });
         }
-        const hostOptions = { ...options, operations: [...new Set([...options.operations ?? [], ...assembled.operations])] };
+        const hostOptions = { ...options, operations: collectOperationOwners([...options.operations ?? [], ...assembled.operations]) };
         const required = ['agents', 'sessions', 'sessionPersistence', 'sessionQuery', 'sessionProjections', 'workspaceRegistry', 'storageDomain',
             'goals', 'tools', 'systemPrompt', 'loader', 'agentPresets', 'skills', 'fs', 'workingDirectory', 'userQuestions', 'attachments', 'fileUploads'];
         if (delegations.programs().length) required.push('subagents');

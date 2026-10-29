@@ -13,6 +13,8 @@
 - settled(state) 返回领域终态或 undefined。阶段反馈不等于终态，业务失败/取消也可以是明确的领域终态。
 - 可靠 Follow 需要 registerFollow 在副作用前持久保存精确 link，并用业务已有投递设施可靠通知。readFeedback 必须按该 link 和 after 读**已选定节点**，不能每次返回最新节点。owner 缺这两项能力时，只提供定位/观察，不能假 ACK 宣称可靠续接。
 
+`OperationOwnerOptions.notifications.connect({ deliver, signal })` 接入业务现有的持久化、租约与重投设施，返回 cleanup 或其 Promise。交接只提供 sessionId、followId 和 acknowledge；Host 以固定 `serviceActorId` 核验真实 owner，仅 accepted 或 not-started 才 ACK，unknown、pending、拒绝或失败不 ACK。ACK 只移除 outbox 待办，follow 和 feedback 保留。signal 停止新交接；Host 等真实业务调用、投递和已开始的 ACK 结算后才 cleanup，迟到的 connect 与部分启动失败也遵循此顺序。仍可显式调用 `notifyOperation`；Host 不另造队列。
+
 Action 的 `operation: { definition, command(input, scope, origin), reference(receipt) }` 将本次调用接到同一 Operation；实现同时传 `operationOwner`。origin 保真实 invocation/session/source，不是业务 UUID 签发器。需要业务幂等键时由业务约定正式身份。
 
 显式调用后，`invocation.result` 是该次 Action 返回，`await invocation.operation` 是同一业务的 OperationHandle。`handle.state` 是稳定只读资源，可直接使用 read、peek、subscribe、values$、observations$，交给 useResource 或原生 UI；`handle.observations$` 是该资源的同一观察。`state.read(signal)` 取得当前有效业务状态，`handle.settled({ signal })` 另行等权威终态，业务失败/取消也作为领域终态值交付，查询 error/abort 才拒绝等待。所有消费者共享一次观察与 state schema 解析，退出不取消后台业务。来源结束仍没有业务终态时进入查询 error，settled 不永远等待；已有最终观察保留至最后消费者退出，之后显式读取重新查询原操作，不再次 execute 或登记 follow。
@@ -33,7 +35,7 @@ Action 的 `operation: { definition, command(input, scope, origin), reference(re
 
 ## 人工补充不是正式授权
 
-Program 根声明一项 `<HumanInput admitResponder={policy} />`。policy 按 `question.origin` 的 session、actual tool call、原始 inputs 与真实 actor 核权，不能按当前页面选择或 SDK 自报用户判断。问题观察是独立快照，修改它不会改变权威关联。
+Program 中的 `<HumanInput admitResponder={policy} />` 可由多个模块贡献，必须使用同一个必需的 policy 函数引用；不同引用冲突，最后一项退出撤资格，没有默认政策。policy 按 `question.origin` 的 session、actual tool call、原始 inputs 与真实 actor 核权，不能按当前页面选择或 SDK 自报用户判断。问题观察是独立快照，修改它不会改变权威关联。
 
 回答必须恰好覆盖原问题的所有题目，每个 id 只出现一次。框架在首次异步操作前保存解析后的答案；冷晚答先验证完整批次再准入和激活，准入期间修改原对象不会改变提交内容。响应者准入和前台 claim 的等待可取消；调用者、SDK 或 Program 退出后，迟到准入结果不会继续答题。不配合取消的政策函数不会阻止当前消费者退等，政策函数内部的外部副作用仍由其自身负责。
 

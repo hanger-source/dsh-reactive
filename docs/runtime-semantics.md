@@ -2,7 +2,7 @@
 
 ## 程序、组件与提交
 
-纯本地程序合同由 `defineProgram({ input, surface })` 定义；远程共享定义增加 name 与可选 version，version 默认 1。宿主使用 `implementProgram(program, { Component })` 提供组件，并把实现放入工作环境的 `program` 字段。会话 owner 创建后台 React 根，组件通过 props 取得对话事实、显式输入入口和工作区接点。程序不依赖页面挂载，也不产生 DOM。
+纯本地程序合同由 `defineProgram({ input, surface })` 定义；远程共享定义增加 name 与可选 version，version 默认 1。宿主使用 `implementProgram(program, { Component, modules?, operations? })` 提供组件及静态依赖，并把实现放入工作环境的 `program` 字段。会话 owner 创建后台 React 根，组件通过 props 取得对话事实、显式输入入口、工作区接点和已声明的直接模块。程序不依赖页面挂载，也不产生 DOM。
 
 四种远程 SDK 工厂与 retainNativeSession 只接受真实的 SharedProgramContract。Program 请求携带预期 name/version，宿主核实际目标，SDK 核返回身份；create、completeCreation 和 resume 在原生副作用前拒绝错合同。本地传入 Program 定义继续核 exact 对象，通用 ProgramSessionClient、RemoteProgramSession 与 NativeSession 的类型仍接受 ProgramContract。合同版本独立于 npm 版本，不证明两份 schema 或 codec 等价。
 
@@ -159,9 +159,11 @@ L1 交回 F1 后，明确调用 Follow 以 after=F1.id 登记 L2。owner 可沿�
 
 原生投递由固定的服务发布主体负责，实际通知者分别准入与审计。第一次合法通知者不能占有后续恢复发布权；配置更换到另一主体也不能静默改写已有投递身份。accepted 仅确认原生持久受理，unknown 或 pending 不能用于清除业务 outbox。
 
+`OperationOwnerOptions.notifications` 将业务已有可靠设施接入 Host：`connect({ deliver, signal })` 返回 cleanup 或其 Promise，设施负责持久化、租约与重投。`deliver` 接收 sessionId、followId 和 acknowledge，以固定 `serviceActorId` 核验真实 owner；仅 accepted 或 not-started 才调用 acknowledge，unknown、pending、拒绝或失败不 ACK。ACK 只移除业务 outbox 待办，不移除 follow 或 feedback。signal 停止新交接；Host 等真实业务调用、投递及已开始的 ACK 结算后调用 cleanup，异步连接迟到和部分启动失败也遵循此顺序。仍可显式调用 `notifyOperation`，Host 不创建另一份队列。
+
 ## 人工问题与前台等待
 
-HumanInput 声明当前程序的响应者策略，根程序最多一项。它不创建第二份问题记录或问答状态机。宿主使用实际 userQuestions waterfall、计时服务、投影与 answer：前台返回、超时 pending 和 continued 迟答仍沿原生生命周期。
+HumanInput 声明当前程序的响应者策略；多个贡献必须使用同一个必需的 `admitResponder` 函数引用，冲突时拒绝，最后一项退出时撤销资格，不设默认政策。它不创建第二份问题记录或问答状态机。宿主使用实际 userQuestions waterfall、计时服务、投影与 answer：前台返回、超时 pending 和 continued 迟答仍沿原生生命周期。
 
 Action execute 中的 askHuman 使用本次真实 ToolRunContext 发起标准 ask_user_question 子调用。它保留原 parent token、rootCallId、parentCallId、Agent 和取消信号，通过原生工具管线执行；Session 日志记录实际 programmatic 子调用的开始与最终结果，而不是制造模型直接调用。pre/post policy、附加上下文和结论当前 turn 的标记仍沿原生结果传递。
 

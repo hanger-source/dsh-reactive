@@ -106,7 +106,7 @@ export class OperationFollows {
     for (const owner of owners) {
       if (!isOperationOwner(owner)) throw new Error('REACTIVE_OPERATION_OWNER_INVALID');
       const identity = key(owner);
-      if (this.#owners.has(identity)) throw new Error('REACTIVE_OPERATION_OWNER_DUPLICATE');
+      if (this.#owners.has(identity) && this.#owners.get(identity) !== owner) throw new Error('REACTIVE_OPERATION_OWNER_DUPLICATE');
       this.#owners.set(identity, owner);
     }
   }
@@ -156,6 +156,9 @@ export class OperationFollows {
   validate(owner: OperationOwnerReference, when: 'settled' | 'feedback') {
     if (this.#owners.get(key(owner)) !== owner) throw new Error('REACTIVE_OPERATION_OWNER_MISMATCH');
     assertOperationFollowSupported(owner, when);
+  }
+  assertNotificationOwner(link: OperationFollowLink, owner: OperationOwnerReference) {
+    if (this.owner(link) !== owner) throw new Error('REACTIVE_OPERATION_OWNER_MISMATCH');
   }
   inspectedLink(inspection: SessionInspection, id: string): OperationFollowLink {
     const state = this.inspectedState(inspection);

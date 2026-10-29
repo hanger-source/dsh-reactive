@@ -62,7 +62,7 @@ export type SkillProps =
   | { readonly name?: never; readonly directory: string };
 /** name 选择原生已声明方法；directory 由原生 scoped filesystem provider 提供。 */
 export type SkillDeclaration = { readonly kind: 'skill' } & SkillProps;
-/** 一个 Program 只声明一项响应参与策略；原生问题属于该根会话。 */
+/** 会话级响应参与策略；相同 admitResponder 引用共享，最后一项贡献退出才撤下。 */
 export interface HumanInputProps extends HumanInputPolicy {}
 export interface HumanInputDeclaration extends HumanInputPolicy { readonly kind: 'human-input'; }
 export interface NativeToolsProps {

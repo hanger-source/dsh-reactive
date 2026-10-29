@@ -3,8 +3,8 @@ import { defineApplication, defineEnvironment, defineProgram, defineSurface, def
   type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, type NativeToolAdmission, z } from '@hanger-source/dsh-reactive';
 import { concatMap, firstValueFrom, map, type Observable } from 'rxjs';
 import { createElement } from 'react';
-import { Context, Expose, Module, Skill, NativeTools, implementProgram, useAction, useResource, useResourceInstance, useReaction, useBeforeStep,
-  useObservable, useShared, useSharedResource, useRelation } from '@hanger-source/dsh-reactive/program';
+import { Context, Expose, Module, Skill, NativeTools, HumanInput, implementModule, implementProgram, useAction, useResource, useResourceInstance, useReaction, useBeforeStep,
+  useObservable, useShared, useSharedResource, useRelation, type HumanInputProps } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, mountApplication, type ApplicationAssembly, type ConversationHandle, type ServiceConversation, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-reactive-dsh/tools';
@@ -21,16 +21,26 @@ const application = defineApplication({ name: 'registry-consumer', admit: async 
 ] });
 export const backend = (options: RuntimeOptions) => createRuntime(() => application, options);
 export const clientContract = () => contract;
-export function sharedDependencyProgram(skillName: string, toolNames: readonly string[], admit: NativeToolAdmission) {
+export function sharedDependencyProgram(skillName: string, toolNames: readonly string[], admit: NativeToolAdmission,
+  admitResponder: HumanInputProps['admitResponder'], owner: OperationOwner) {
   const moduleSurface = defineSurface({ views: {}, actions: {} });
-  const modules = composeSurface({ left: moduleSurface, right: moduleSurface });
   function Dependencies() {
-    return [createElement(Skill, { key: 'skill', name: skillName }), createElement(NativeTools, { key: 'native-tools', names: toolNames, enabled: true, admit })];
+    return [createElement(Skill, { key: 'skill', name: skillName }),
+      createElement(NativeTools, { key: 'native-tools', names: toolNames, enabled: true, admit }),
+      createElement(HumanInput, { key: 'human', admitResponder })];
   }
-  return implementProgram(defineProgram({ input: z.null(), surface: modules.surface }), { Component: () => [
-    createElement(Module, { key: 'left', mount: modules.mounts.left }, createElement(Dependencies)),
-    createElement(Module, { key: 'right', mount: modules.mounts.right }, createElement(Dependencies)),
-  ] });
+  const shared = implementModule(moduleSurface, { operations: [owner], Component: Dependencies });
+  const inner = composeSurface({ shared: shared.surface });
+  const parent = implementModule(inner.surface, { modules: { shared },
+    Component: ({ modules }) => createElement(modules.shared.Component, { mount: inner.mounts.shared }),
+  });
+  const layout = composeSurface({ left: parent.surface, right: parent.surface });
+  return implementProgram(defineProgram({ input: z.null(), surface: layout.surface }), {
+    modules: { parent }, Component: ({ modules }) => [
+      createElement(modules.parent.Component, { key: 'left', mount: layout.mounts.left }),
+      createElement(modules.parent.Component, { key: 'right', mount: layout.mounts.right }),
+    ],
+  });
 }
 export const portableLocal = (session: ConversationHandle<typeof contract>) => sessionResources(session);
 export const portableRemote = (session: RemoteProgramSession<typeof contract>) => sessionResources(session);

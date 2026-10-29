@@ -3,14 +3,15 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createElement as h } from 'react';
 import { symbols, type Context, type Fiber } from '@deepseek-ai/cordis';
 import LocalJobs from '@deepseek-ai/dsh-jobs-local';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { of } from 'rxjs';
-import { defineApplication, defineEnvironment, defineOperation, defineProgram, defineSurface, implementOperation, observeResource, z } from '@hanger-source/dsh-reactive';
-import { implementProgram } from '@hanger-source/dsh-reactive/program';
-import { createRuntime, mountApplication, nativeModel, requireActivePlugin, type ApplicationAssembly, type ApplicationHost, type NativeCapability } from '@hanger-source/dsh-reactive-dsh';
+import { composeSurface, defineApplication, defineEnvironment, defineOperation, defineProgram, defineSurface, implementOperation, observeResource, z } from '@hanger-source/dsh-reactive';
+import { implementModule, implementProgram } from '@hanger-source/dsh-reactive/program';
+import { createRuntime, implementNativeModule, mountApplication, nativeModel, requireActivePlugin, type ApplicationAssembly, type ApplicationHost, type NativeCapability } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
 import { createNativeSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { boot } from './native-support.ts';
@@ -45,7 +46,7 @@ function capability(name: string, beforeRelease?: () => void | Promise<void>, st
   return { selected, homes, get installed() { return installed; }, get released() { return released; }, get patches() { return patches; } };
 }
 
-test('应用模块只在factory选择原生能力与恢复owner，独立Runtime安装一次并从文件恢复业务结果', { timeout: 15_000 }, async () => {
+test('应用从嵌套模块自动装配原生能力与文件owner，依赖快照隔离外部修改且跨环境只安装一次', { timeout: 15_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-assembly-runtime-'));
   const workMethod = join(directory, 'work-method'), analysisMethod = join(directory, 'analysis-method');
   await Promise.all([workMethod, analysisMethod].map(path => mkdir(path, { recursive: true })));
@@ -53,17 +54,10 @@ test('应用模块只在factory选择原生能力与恢复owner，独立Runtime�
     writeFile(join(workMethod, 'SKILL.md'), '---\nname: assembly-work\ndescription: 工作方法\n---\n\nORIGINAL_WORK_METHOD\n'),
     writeFile(join(analysisMethod, 'SKILL.md'), '---\nname: assembly-analysis\ndescription: 分析方法\n---\n\nORIGINAL_ANALYSIS_METHOD\n'),
   ]);
-  const contract = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
-  const program = implementProgram(contract, { Component: () => null });
+  const local = defineSurface({ views: {}, actions: {} });
+  const nested = composeSurface({ record: local }), composed = composeSurface({ worker: nested.surface });
+  const contract = defineProgram({ input: z.null(), surface: composed.surface });
   const replacement = implementProgram(defineProgram({ input: contract.input, surface: contract.surface }), { Component: () => null });
-  const workSkills = [workMethod];
-  const work = defineEnvironment({ id: 'work', instructions: '使用已定义的工作方法', skills: workSkills, program });
-  // Environment必须已经捕获声明；后续Application构造不能替它延后取得Skill目录。
-  workSkills.splice(0, 1, analysisMethod);
-  const analysisSkills = [analysisMethod];
-  const analysis = { ...defineEnvironment({ id: 'analysis', instructions: '使用已定义的分析方法', program }), skills: analysisSkills };
-  const environments = [work, analysis];
-  const application = defineApplication({ name: 'assembly-runtime', admit: async () => {}, environments });
   const receiptFile = join(directory, 'accepted.json');
   const receipt = { command: 'accepted-a', reference: 'operation-a', state: { status: 'complete' as const, artifact: 'artifact-a' } };
   await writeFile(receiptFile, JSON.stringify(receipt));
@@ -84,6 +78,33 @@ test('应用模块只在factory选择原生能力与恢复owner，独立Runtime�
   });
   const native = capability('assembly-runtime-selection');
   const skills = createNativeSkills({ service: 'provided' });
+  const operations = [owner], capabilities: NativeCapability[] = [native.selected, skills];
+  const recordModule = implementNativeModule(local, { operations, native: capabilities, Component: () => null });
+  operations.splice(0); capabilities.splice(0);
+  const childModules = { record: recordModule };
+  const childrenSeen: object[] = [], rootsSeen: object[] = [];
+  const worker = implementModule(nested.surface, { modules: childModules, Component({ modules }) {
+    assert.equal(modules.record, recordModule);
+    assert.ok(Object.isFrozen(modules)); childrenSeen.push(modules);
+    return h(modules.record.Component, { mount: nested.mounts.record });
+  } });
+  childModules.record = implementModule(local, { Component: () => null });
+  const rootModules = { worker };
+  const program = implementProgram(contract, { modules: rootModules, Component({ modules }) {
+    assert.equal(modules.worker, worker);
+    assert.ok(Object.isFrozen(modules)); rootsSeen.push(modules);
+    return h(modules.worker.Component, { mount: composed.mounts.worker });
+  } });
+  rootModules.worker = implementModule(nested.surface, { Component: () => null });
+  assert.equal(native.installed, 0, '签发模块及Program不能安装原生能力');
+  const workSkills = [workMethod];
+  const work = defineEnvironment({ id: 'work', instructions: '使用已定义的工作方法', skills: workSkills, program });
+  // Environment必须已经捕获声明；后续Application构造不能替它延后取得Skill目录。
+  workSkills.splice(0, 1, analysisMethod);
+  const analysisSkills = [analysisMethod];
+  const analysis = { ...defineEnvironment({ id: 'analysis', instructions: '使用已定义的分析方法', program }), skills: analysisSkills };
+  const environments = [work, analysis];
+  const application = defineApplication({ name: 'assembly-runtime', admit: async () => {}, environments });
   let assembly!: ApplicationAssembly;
   let modelCalls = 0;
   const model = nativeModel({ provider: 'assembly', model: 'unused', create: () => new class extends LlmAdapter {
@@ -92,11 +113,6 @@ test('应用模块只在factory选择原生能力与恢复owner，独立Runtime�
   const providerEntered = Promise.withResolvers<void>(), providerReleased = Promise.withResolvers<void>();
   const starting = createRuntime(selected => {
     assembly = selected;
-    assert.equal(selected.native(native.selected), native.selected);
-    selected.native(native.selected);
-    selected.native(skills);
-    assert.equal(selected.operation(owner), owner);
-    selected.operation(owner);
     return application;
   }, {
     home: join(directory, 'home'), actorId: 'assembly-reader',
@@ -132,6 +148,9 @@ test('应用模块只在factory选择原生能力与恢复owner，独立Runtime�
       assert.equal((await skills.forSession(other).definition('assembly-analysis').read())?.content.trim(), 'ORIGINAL_ANALYSIS_METHOD');
       assert.equal(await skills.forSession(other).definition('assembly-work').read(), undefined);
     } finally { other.release(); }
+    assert.ok(rootsSeen.length >= 2); assert.ok(childrenSeen.length >= 2);
+    assert.ok(rootsSeen.every(value => value === rootsSeen[0]));
+    assert.ok(childrenSeen.every(value => value === childrenSeen[0]));
     assert.equal(modelCalls, 0);
   } finally {
     providerReleased.resolve();
@@ -157,25 +176,27 @@ test('两个嵌入应用分别拥有安装Fiber，异步退出可重入并撤销
   const secondNative = capability('assembly-second-selection');
   const firstJobs = createNativeJobs({ registry: { kind: 'provided' } });
   const secondJobs = createNativeJobs({ registry: { kind: 'provided' } });
+  const embeddedApplication = (name: string, native: readonly NativeCapability[]) => {
+    const surface = defineSurface({ views: {}, actions: {} });
+    const tools = implementNativeModule(surface, { native, Component: () => null });
+    return defineApplication({ name, admit: async () => {}, environments: [defineEnvironment({ id: 'work', instructions: '读取本应用安装的原生资源',
+      program: implementProgram(defineProgram({ input: z.null(), surface }), { modules: { tools }, Component: () => null }),
+    })] });
+  };
   try {
     await requireActivePlugin(resident.native.plugin(LocalJobs, {}));
     const providedJobs = Reflect.get(resident.native.get('jobs')!, symbols.original);
-    first = await mountApplication(resident.native, selected => {
-      selected.native(firstNative.selected); selected.native(firstNative.selected);
-      selected.native(firstJobs);
-      return definition('assembly-first');
-    }, { home: join(directory, 'home'), actorId: 'assembly-reader' });
-    second = await mountApplication(resident.native, selected => {
-      selected.native(secondNative.selected); selected.native(secondJobs);
-      return definition('assembly-second');
-    }, { home: join(directory, 'home'), actorId: 'assembly-reader' });
+    first = await mountApplication(resident.native,
+      () => embeddedApplication('assembly-first', [firstNative.selected, firstNative.selected, firstJobs]),
+      { home: join(directory, 'home'), actorId: 'assembly-reader' });
+    second = await mountApplication(resident.native,
+      () => embeddedApplication('assembly-second', [secondNative.selected, secondJobs]),
+      { home: join(directory, 'home'), actorId: 'assembly-reader' });
     assert.equal(firstNative.installed, 1); assert.equal(secondNative.installed, 1);
     assert.deepEqual(await firstJobs.toolNames.read(), []);
     assert.deepEqual(await secondJobs.toolNames.read(), []);
-    await assert.rejects(mountApplication(resident.native, selected => {
-      selected.native(firstJobs);
-      return definition('assembly-wrong-owner');
-    }, { home: join(directory, 'home') }), /REACTIVE_NATIVE_CAPABILITY_ALREADY_OWNED/u);
+    await assert.rejects(mountApplication(resident.native, () => embeddedApplication('assembly-wrong-owner', [firstJobs]),
+      { home: join(directory, 'home') }), /REACTIVE_NATIVE_CAPABILITY_ALREADY_OWNED/u);
     assert.deepEqual(await firstJobs.toolNames.read(), [], '拒绝另一应用重复取得owner不能撤销原实例');
     const firstSession = await first.create('work', { workspaceId: resident.workspace.workspaceId });
     firstSession.release();
@@ -220,6 +241,7 @@ test('后续原生插件安装失败撤回已有资源和监听，factory失败�
   });
   const failure = new Error('ASSEMBLY_SECOND_PLUGIN_STARTUP_FAILED');
   const first = capability('assembly-before-startup-failure');
+  const jobs = createNativeJobs({ registry: { kind: 'local' } });
   const failing = capability('assembly-startup-failure', undefined, async () => {
     const witness = await mountApplication(resident.native, () => definition('assembly-during-startup'));
     try { assert.ok(first.patches > 0, '失败前已安装插件必须实际参与Loader事件'); }
@@ -228,11 +250,16 @@ test('后续原生插件安装失败撤回已有资源和监听，factory失败�
   });
   let recovered: ApplicationHost | undefined;
   try {
-    await assert.rejects(mountApplication(resident.native, assembly => {
-      assembly.native(first.selected); assembly.native(failing.selected);
-      return definition('assembly-startup-rollback');
+    await assert.rejects(mountApplication(resident.native, () => {
+      const surface = defineSurface({ views: {}, actions: {} });
+      const tools = implementNativeModule(surface, { native: [jobs, first.selected, failing.selected], Component: () => null });
+      return defineApplication({ name: 'assembly-startup-rollback', admit: async () => {}, environments: [defineEnvironment({
+        id: 'work', instructions: '安装失败时回收模块携带的正式依赖',
+        program: implementProgram(defineProgram({ input: z.null(), surface }), { modules: { tools }, Component: () => null }),
+      })] });
     }, { home: join(directory, 'home') }), error => error === failure);
     assert.equal(first.released, 1); assert.equal(failing.released, 1);
+    assert.throws(() => jobs.toolNames.peek(), '后续插件失败必须关闭已安装LocalJobs能力的真实资源读侧');
     const firstPatches = first.patches, failedPatches = failing.patches;
     recovered = await mountApplication(resident.native, () => definition('assembly-startup-rollback'));
     assert.equal(first.patches, firstPatches);

@@ -1,7 +1,10 @@
 import type { Observable } from 'rxjs';
 import { composeSurface, selectSurface, defineSurface, resourceView, defineAction, defineOperation, defineProgram, z, type BoundAction, type CancellationOptions, type Observation, type SurfaceClient } from '@hanger-source/dsh-reactive';
-import { Module, Expose, Offer } from '@hanger-source/dsh-reactive/program';
-import type { ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
+import type { ComponentType, ReactNode } from 'react';
+import { Module, Expose, Offer, implementModule, implementProgram,
+  type ModuleComponentProps, type ModuleImplementationOptions } from '@hanger-source/dsh-reactive/program';
+import { implementNativeModule, type ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
+import { createNativeJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
 
 const date = z.codec(z.iso.datetime(), z.date(), { decode: value => new Date(value), encode: value => value.toISOString() });
 const work = defineOperation({ kind: 'module-types.work', version: 1,
@@ -97,3 +100,42 @@ void element; void selected;
 // @ts-expect-error Surface定义不是框架签发的模块挂载token。
 const invalid = <Module mount={local} />;
 void invalid;
+
+interface RecordPanelProps {
+  readonly merchant: { readonly id: string; readonly openedAt: Date };
+  readonly mode: { readonly kind: 'summary' } | { readonly kind: 'edit'; readonly revision: number };
+  readonly footer?: ReactNode;
+  readonly onReady: (value: { readonly done: boolean; readonly at: Date }, request: readonly [string, number]) => void;
+}
+const RecordPanel: ComponentType<RecordPanelProps> = ({ merchant, mode, footer, onReady }) => {
+  const opened: Date = merchant.openedAt;
+  if (mode.kind === 'edit') { const revision: number = mode.revision; void revision; }
+  void opened; void footer; void onReady;
+  return <Expose surface={local} value={{ views: { loadedAt: loadedAt$ }, actions: { prepare: action } }} />;
+};
+const panelOptions: ModuleImplementationOptions<typeof local, RecordPanelProps> = { Component: RecordPanel };
+const jobs = createNativeJobs({ registry: { kind: 'local' } });
+const recordModule = implementNativeModule(local, { ...panelOptions, native: [jobs] });
+const recordComposition = composeSurface({ full: local, preview: review });
+const panel = implementModule(recordComposition.surface, { modules: { record: recordModule },
+  Component({ modules, ...props }: ModuleComponentProps<RecordPanelProps, { readonly record: typeof recordModule }>) {
+    return <>
+      <modules.record.Component mount={recordComposition.mounts.full} {...props} />
+      <modules.record.Component mount={recordComposition.mounts.preview} {...props} />
+    </>;
+  } });
+const publicPanel = selectSurface(panel.surface, { views: ['full.loadedAt', 'preview.loadedAt'] });
+const panelComposition = composeSurface({ panel: publicPanel });
+const panelProgram = defineProgram({ input: z.object({ amount: z.string().transform(Number) }), surface: panelComposition.surface });
+const panelImplementation = implementProgram(panelProgram, { modules: { panel }, Component({ conversation, workspace, modules }) {
+  const sessionId: string = conversation.identity.sessionId;
+  const directory: string = workspace.directory;
+  void directory;
+  return <modules.panel.Component mount={panelComposition.mounts.panel}
+    merchant={{ id: sessionId, openedAt: new Date() }} mode={{ kind: 'edit', revision: 3 }}
+    onReady={(value, [id, amount]) => {
+      const at: Date = value.at, merchantId: string = id, parsedAmount: number = amount;
+      void at; void merchantId; void parsedAmount;
+    }} footer={<span>商家记录</span>} />;
+} });
+void panelImplementation;

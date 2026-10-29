@@ -1,6 +1,6 @@
 # Program、Action 与模块组合
 
-适用版本：`{{PACKAGE_VERSION}}`。共享合同从 `@hanger-source/dsh-reactive` 导入；React 声明、hooks 和 `implementProgram` 只从 `@hanger-source/dsh-reactive/program` 导入。
+适用版本：`{{PACKAGE_VERSION}}`。共享合同从 `@hanger-source/dsh-reactive` 导入；React 声明、hooks、`implementModule` 和 `implementProgram` 只从 `@hanger-source/dsh-reactive/program` 导入。
 
 ## 合同、实现与目标分别固定
 
@@ -68,7 +68,7 @@ Context 默认 required=true：pending/error 阻止模型取得不完整现场�
 
 `Skill({ name })` 选择原生方法正文进入步骤上下文。异步准备期间，声明、原生 catalog 或本会话工作目录变化会取消旧查询并准备当前集合，不等待旧 provider 返回。迟到结果不能写回，共享 provider 的注册及其他会话查询保持原有寿命。当前方法缺失、禁止模型调用或读取失败仍拒绝准备；步骤取消或程序退出结束等待，不把查询取消解释为业务命令。
 
-模块可自带 Skill 与 NativeTools 依赖，不要求应用中央重复装配。Skill 按相同 name 或精确 directory 共享；directory 必须是绝对路径，宿主用 path.normalize 合并词法规范化后相同的目录，cwd 仅参与原生命名 Skill 方法解析。最后一项贡献退出才撤下本声明拥有的 provider/context，不卸载外部 provider。NativeTools 按真实全局工具名逐项共享，只有 enabled 一致（省略为 true）且 admit 同函数引用或均省略才成立。政策函数从共同装配处借入，不在每个模块中重新创建；策略或参与条件不同直接失败，不能自动合并权限。最后一项退出只撤本声明贡献及其政策，内建工具仍遵循原生基础规则。与实际 Offer/Follow 同名仍冲突，HumanInput 保持根会话唯一策略。
+模块可自带 Skill 与 NativeTools 依赖，不要求应用中央重复装配。Skill 按相同 name 或精确 directory 共享；directory 必须是绝对路径，宿主用 path.normalize 合并词法规范化后相同的目录，cwd 仅参与原生命名 Skill 方法解析。最后一项贡献退出才撤下本声明拥有的 provider/context，不卸载外部 provider。NativeTools 按真实全局工具名逐项共享，只有 enabled 一致（省略为 true）且 admit 同函数引用或均省略才成立。政策函数从共同装配处借入，策略或参与条件不同直接失败。最后一项退出只撤本声明贡献及其政策，内建工具仍遵循原生基础规则。与实际 Offer/Follow 同名仍冲突；HumanInput 多贡献须共享同一个必需的 admitResponder 函数引用，最后一项退出撤资格。
 
 Program 的 Context、Tool 与 Skill 声明安装归实际 Agent 下的正式 Fiber，借用同一安装作用域。关闭 Agent 或 Program 失败会撤下注册、目录监听及准备查询，异步清理由原安装等待；已受理 Action 与业务 Operation 继续按自己的 owner 结算。公开句柄可以保留关闭后的冷 Program 图，恢复时重新安装原生声明。open、service、resume 先核对预期合同，合同不符不求值新程序；原生恢复失败只回滚本次实际取得的句柄，不销毁已有冷观察。
 
@@ -80,13 +80,18 @@ export const root = composeSurface({ items: collectionSurface(ItemSurface) });
 export const Inventory = defineProgram({ name: 'inventory', version: 1, input: Target, surface: root.surface });
 
 // program.tsx：后台实现
-return items.map(item =>
-  <Module key={item.sku} mount={root.mounts.items.instance(item.sku)}>
-    <ItemModule target={{ sku: item.sku }} />
-  </Module>);
+const itemModule = implementModule(ItemSurface, { Component: ItemWork, operations: [itemOwner] });
+const implementation = implementProgram(Inventory, {
+  modules: { item: itemModule },
+  Component({ modules }) {
+    const Item = modules.item.Component;
+    return items.map(item => <Item key={item.sku}
+      mount={root.mounts.items.instance(item.sku)} target={{ sku: item.sku }} />);
+  },
+});
 ```
 
-从核心导 `composeSurface`、`collectionSurface`；从 `/program` 导 `Module`。集合由业务 Observable 和 React 子树更新，根合同稳定。业务 key 是完整寻址身份；React key 负责重排身份，不从 key 猜 Surface。SDK 使用 `session.collection('items').instance(sku)`，不拼编码地址或工具名。
+从核心导 `composeSurface`、`collectionSurface`；从 `/program` 导模块实现函数。集合由业务 Observable 和 React 子树更新，根合同稳定。业务 key 是完整寻址身份；React key 负责重排身份，不从 key 猜 Surface。SDK 使用 `session.collection('items').instance(sku)`，不拼编码地址或工具名。
 
 纯 `mounts.items.instance(sku)` 只签发地址，不缓存历史业务key。同一Module逻辑地址的重复渲染保留工具身份；切换root、合同、路径或父挂载会结束旧动态代际，回到旧key也会重新签发工具身份。已受理Invocation仍沿原owner结算，旧捕获Action不能借新目标执行。不要用地址token的对象相等代替业务身份，或为减少token创建而在全局保存历史key。
 
@@ -98,4 +103,4 @@ return items.map(item =>
 
 Review 等选择性公开用 `selectSurface(source, { views: ['facts'], actions: ['save'] })` 后放进 composition；省略类别不公开。模块仍对自己的原 Surface Expose，框架完成选择映射。移除再加入是新绑定，旧捕获 Action 拒绝新调用；已开始执行沿原 owner 完成。
 
-最后 `implementProgram(Inventory, { Component })` 接宿主组件。业务输入解码结果 `ProgramParsedInput` 和提交的 `ProgramInput` 可以不同；不要把单向 transform 输出重新当 raw parse。远程 View/Action 输出需真实可逆 wire codec，不能承诺任意 Date transform 都可反向 encode。
+`implementModule(surface, { Component, modules?, operations? })` 捕获子模块与业务 owner，内部组件取得 `modules`；外部 `.Component` 接受业务 props 和 `mount`，自动建立局部映射。Program 静态列直接模块，递归捕获依赖并注入 `ProgramProps.modules`；未声明模块硬失败。dsh 的 `implementNativeModule` 额外捕获 `native` 能力。业务输入解码结果 `ProgramParsedInput` 和提交的 `ProgramInput` 可以不同；不要把单向 transform 输出重新当 raw parse。远程 View/Action 输出需真实可逆 wire codec，不能承诺任意 Date transform 都可反向 encode。

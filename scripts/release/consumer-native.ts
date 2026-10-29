@@ -13,12 +13,27 @@ import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh
 import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-reactive-dsh/tools';
 import { createNativeSubagents, SubagentError, type NativeSessionSubagents,
   type SubagentDescendantListEntry } from '@hanger-source/dsh-reactive-dsh/subagents';
-import { combineResources, mapResource, shareResource, type Invocation, type Json } from '@hanger-source/dsh-reactive';
-import { useResource } from '@hanger-source/dsh-reactive/program';
-import type { ConversationHandle, NativeInvocation } from '@hanger-source/dsh-reactive-dsh';
+import { combineResources, composeSurface, defineProgram, defineSurface, mapResource, shareResource, z,
+  type Invocation, type Json, type OperationOwner } from '@hanger-source/dsh-reactive';
+import { implementProgram, useResource } from '@hanger-source/dsh-reactive/program';
+import { implementNativeModule, type ConversationHandle, type NativeCapability, type NativeInvocation } from '@hanger-source/dsh-reactive-dsh';
+import { createElement } from 'react';
+export type { OperationNotificationAcknowledgement, OperationNotificationConnection, OperationNotificationDelivery,
+  OperationNotificationSource } from '@hanger-source/dsh-reactive';
 import { ConsumerModuleProgram, readSelectedRevision, sessionControls, invocationReceipt } from './consumer-session.js';
 
 export const nativeModuleRevision = (session: ConversationHandle<typeof ConsumerModuleProgram>, signal: AbortSignal) => readSelectedRevision(session, signal);
+export function nativeModuleProgram(capability: NativeCapability, owner: OperationOwner) {
+  const surface = defineSurface({ views: {}, actions: {} });
+  const shared = implementNativeModule(surface, { native: [capability], operations: [owner],
+    Component: (_props: { readonly target: string }) => null,
+  });
+  const layout = composeSurface({ target: shared.surface });
+  return implementProgram(defineProgram({ input: z.null(), surface: layout.surface }), {
+    modules: { shared }, Component: ({ modules }) => createElement(modules.shared.Component,
+      { mount: layout.mounts.target, target: 'installed-native-target' }),
+  });
+}
 export const nativeControls = (session: ConversationHandle<typeof ConsumerModuleProgram>, signal: AbortSignal) => sessionControls(session, signal);
 
 // 这些是正式npm子入口；只加载与编译，不为包检查安装Runtime或执行原生副作用。

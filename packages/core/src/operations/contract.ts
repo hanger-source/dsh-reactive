@@ -70,9 +70,29 @@ export type OperationLocation<Reference, State> =
   | { readonly status: 'unknown' };
 
 /** 通知回执只表示原生持久受理，不表示操作结算或模型已经消费。 */
-export type OperationNotificationResult =
-  | { readonly status: 'unknown' | 'pending' | 'not-started' }
+export type OperationNotificationAcknowledgement =
+  | { readonly status: 'not-started' }
   | { readonly status: 'accepted'; readonly receipt: InputReceipt };
+export type OperationNotificationResult = OperationNotificationAcknowledgement
+  | { readonly status: 'unknown' | 'pending' };
+
+/** 只传递原登记地址；通知确认只消费业务来源的待办。 */
+export interface OperationNotificationDelivery {
+  readonly sessionId: string;
+  readonly followId: string;
+  acknowledge(result: OperationNotificationAcknowledgement): void | PromiseLike<void>;
+}
+export interface OperationNotificationConnection {
+  /** 停止来源继续读取和交接；已经开始的 ACK 仍结算。 */
+  readonly signal: AbortSignal;
+  deliver(delivery: OperationNotificationDelivery): Promise<OperationNotificationResult>;
+}
+/** Host 等本次交接结算后调用；返回前必须停止来源，不清除 follow/feedback 事实。 */
+export type OperationNotificationCleanup = () => void | PromiseLike<void>;
+export interface OperationNotificationSource {
+  /** 应用原有设施继续负责持久、租约和重投；异步连接也必须在 signal 退出后返回清理。 */
+  connect(connection: OperationNotificationConnection): OperationNotificationCleanup | PromiseLike<OperationNotificationCleanup>;
+}
 
 /** wait 暂缓原工作；background 保留结果续接关系，让当前工作继续。 */
 export type OperationFollowMode = 'wait' | 'background';
@@ -111,6 +131,7 @@ export interface OperationOwnerReference { readonly definition: OperationContrac
 export interface OperationOwner<D extends OperationContract = OperationContract> extends OperationOwnerReference { readonly definition: D; }
 
 export interface OperationOwnerOptions<D extends OperationContract> {
+  readonly notifications?: OperationNotificationSource;
   locate(command: OperationParsedCommand<D>, access: OperationAccessContext):
     OperationLocation<z.input<D['reference']>, z.input<D['state']>> | PromiseLike<OperationLocation<z.input<D['reference']>, z.input<D['state']>>>;
   observe(reference: OperationParsedReference<D>, access: OperationAccessContext): Observable<Observation<z.input<D['state']>>>;
@@ -159,7 +180,10 @@ export interface OperationBindingOptions<D extends OperationContract> {
 }
 
 type AccessAdmission = () => void | PromiseLike<void>;
+const accessSettlement = Symbol('operation-access-settlement');
+type SettlingAccess = OperationAccessContext & { readonly [accessSettlement]?: (work: Promise<unknown>) => void };
 type OwnerBindings = {
+  readonly notifications?: OperationNotificationSource;
   command(raw: unknown): Json;
   reference(raw: unknown): Json;
   attach(raw: unknown, access: OperationAccessContext, admit?: AccessAdmission): OperationHandle<OperationContract>;
@@ -210,11 +234,14 @@ export function implementOperation<D extends OperationContract>(definition: D,
   if (!definitions.has(definition)) throw new Error('REACTIVE_OPERATION_DEFINITION_INVALID');
   const owner = Object.freeze({ definition });
   const locate = options.locate, observe = options.observe;
+  const source = options.notifications, connect = source?.connect;
+  if (source !== undefined && typeof connect !== 'function') throw new Error('REACTIVE_OPERATION_NOTIFICATION_SOURCE_INVALID');
   // D 来自已登记的纯合同；解析和终态投影均由该合同决定。
   const parseState = (raw: unknown): OperationState<D> => definition.state.parse(raw) as OperationState<D>;
   const settled = (state: OperationState<D>): OperationSettled<D> | undefined =>
     definition.settled(state as never) as OperationSettled<D> | undefined;
   const bindings: OwnerBindings = {
+    ...(connect ? { notifications: Object.freeze({ connect: (connection: OperationNotificationConnection) => connect.call(source, connection) }) } : {}),
     command: raw => parseIdentity(definition.command, raw).wire,
     reference: raw => parseIdentity(definition.reference, raw).wire,
     attach(raw, initialAccess, admit) {
@@ -262,7 +289,7 @@ export function implementOperation<D extends OperationContract>(definition: D,
         access.signal.throwIfAborted();
         return from(acknowledgement(admit?.())).pipe(mergeMap(() => {
           access.signal.throwIfAborted();
-          return from(Promise.resolve(locate(command.value, access)));
+          return from(retainAccessWork(access, locate(command.value, access)));
         }), map(value => {
           const location = rawLocation.parse(value);
           if (location.status === 'accepted') return { status: location.status,
@@ -282,7 +309,7 @@ export function implementOperation<D extends OperationContract>(definition: D,
     const access = ownAccess(initialAccess);
     await firstValueFrom(defer(() => {
       access.signal.throwIfAborted();
-      return from(acknowledgement(register(command.value, link, access))).pipe(untilAbort(access.signal));
+      return from(retainAccessWork(access, acknowledgement(register(command.value, link, access)))).pipe(untilAbort(access.signal));
     }));
   };
   const readFeedback = options.readFeedback;
@@ -295,7 +322,7 @@ export function implementOperation<D extends OperationContract>(definition: D,
       const access = ownAccess(initialAccess);
       return firstValueFrom(defer(() => {
         access.signal.throwIfAborted();
-        return from(Promise.resolve(readFeedback(command.value, link, access))).pipe(map(rawResult => {
+        return from(retainAccessWork(access, readFeedback(command.value, link, access))).pipe(map(rawResult => {
           const result = rawFeedback.parse(rawResult);
           if (result.status === 'unknown') return result;
           if (result.status === 'rejected') return { ...result, reason: ownJson<Json>(result.reason) };
@@ -356,6 +383,15 @@ function ownerBindings(owner: OperationOwnerReference): OwnerBindings {
   const bindings = owners.get(owner);
   if (!bindings) throw new Error('REACTIVE_OPERATION_OWNER_INVALID');
   return bindings;
+}
+
+/** @internal 只取得签发 owner 时捕获的来源，不读取外部可变配置。 */
+export function operationNotificationSource(owner: OperationOwnerReference): OperationNotificationSource | undefined {
+  return ownerBindings(owner).notifications;
+}
+/** @internal 仅为本次交接持有真实调用；不会改变业务 owner 或其他宿主的寿命。 */
+export function withOperationAccessSettlement(access: OperationAccessContext, retain: (work: Promise<unknown>) => void): OperationAccessContext {
+  return Object.freeze({ ...access, [accessSettlement]: retain });
 }
 
 /** @internal pure mapping 后的 raw 身份在此验证、编码并保存 owned JSON。 */
@@ -436,7 +472,15 @@ function parseIdentity<S extends z.ZodType<Json>>(schema: S, raw: unknown) {
 }
 
 function ownAccess(access: OperationAccessContext): OperationAccessContext {
-  return Object.freeze({ sessionId: access.sessionId, source: ownJson(access.source), signal: access.signal });
+  const retain = (access as SettlingAccess)[accessSettlement];
+  return Object.freeze({ sessionId: access.sessionId, source: ownJson(access.source), signal: access.signal,
+    ...(retain ? { [accessSettlement]: retain } : {}) });
+}
+
+function retainAccessWork<T>(access: OperationAccessContext, value: T | PromiseLike<T>): Promise<T> {
+  const work = Promise.resolve(value);
+  (access as SettlingAccess)[accessSettlement]?.(work);
+  return work;
 }
 
 function untilAbort<T>(signal: AbortSignal): MonoTypeOperatorFunction<T> {

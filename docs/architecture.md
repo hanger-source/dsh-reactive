@@ -6,7 +6,7 @@ dsh-reactive 将业务程序接入 dsh 的多工作区、多会话运行环境�
 
 ## 程序定义与组件树
 
-`defineProgram({ input, surface })` 声明纯本地程序合同；跨宿主与远程消费者共享的定义使用 `defineProgram({ name, version, input, surface })`，返回 SharedProgramContract，version 省略时为 1。`implementProgram(program, { Component })` 将宿主组件绑定到这份合同，组件不进入共享定义。`defineEnvironment` 将程序实现、静态指令与静态 Skill 目录组成可复用场景，`defineApplication` 声明环境集合及输入准入。
+`defineProgram({ input, surface })` 声明纯本地程序合同；跨宿主与远程消费者共享的定义使用 `defineProgram({ name, version, input, surface })`，返回 SharedProgramContract，version 省略时为 1。`implementProgram(program, { Component, modules?, operations? })` 将宿主组件及静态依赖绑定到合同，组件不进入共享定义。`defineEnvironment` 将程序实现、静态指令与静态 Skill 目录组成可复用场景，`defineApplication` 声明环境集合及输入准入。
 
 Program 的 name/version 由发布者声明，与 npm 包版本、Environment 名称和业务目标分开。远程工厂及自行取得 SDK 的原生 UI retain 入口要求真实共享定义；Gateway 在 Program 请求的实际目标上核验身份，创建、补齐创建和恢复先核合同再产生副作用。SDK 也核对返回身份。本地传入实际定义仍核 exact 对象；模块 Surface 和纯本地 Program 无须增加共享名称，通用会话消费者保留 ProgramContract。身份一致不证明 schema、codec 或实现等价，不替代认证和业务准入。
 
@@ -201,7 +201,7 @@ operations 槽的 resolver 从当前声明取得原 command，之后的查询保
 
 `createRuntime(assembly => definition, options)` 使用独立 Home 和显式模型配置，并持有原生附件存储、FileUploads 与所需 Connection、凭据服务；已有宿主从同样接收装配工厂的 `mountApplication` 接入，须明确提供官方 attachments、fileUploads 及其依赖。Gateway 沿用宿主这份服务，不另选 home 或建立第二个附件 owner。
 
-可复用宿主模块在同一次工厂调用中通过 `assembly.native(capability)` 登记原生能力、通过 `assembly.operation(owner)` 登记实际业务 Operation owner，并通过 `assembly.implementDelegation` 构造原生委托实现。这三个入口保留所交付对象的精确类型；native 和 operation 返回原对象，模块直接把它交给自己的 Program、hooks 或服务消费者，不要求应用另外列出安装与 owner 清单。同一原对象重复登记只取得一份装配，不同 owner 占用相同 kind/version 硬失败。工厂返回即封闭登记，组件求值与后续回调不能再追加宿主能力。
+可复用模块通过 `implementModule` 携带子模块和实际 Operation owner；dsh 的 `implementNativeModule` 同时携带原生能力。Program 静态列出直接模块，应用工厂返回后递归汇总所有 environment 和 delegation 程序的依赖。同一原对象只装配一次，不同 owner 占用相同 kind/version 在安装前失败。动态模块退出只撤声明和组件读侧，静态 owner 与能力由 App 持有。每个 App 的模块工厂须创建新的原生能力实例；业务 owner 可以显式跨 App 共享。需要直接装配时仍可使用 `assembly.native`、`assembly.operation`，原生委托通过 `assembly.implementDelegation` 构造；工厂返回后不能追加登记。
 
 应用挂载负责安装已登记能力，安装失败释放本次挂载，Host 退出等待能力实际释放；底层服务与已受理业务继续遵循原 owner。Runtime 传递其已经归一化的 home；嵌入宿主仅在登记原生能力时必须向 `mountApplication` 显式提供绝对 home。Operation 登记使恢复能找到同一实际 owner，不把业务操作寿命交给 Host。组件层已有实现和聚焦试验不等于完整框架或真实业务验收。
 
@@ -209,7 +209,7 @@ operations 槽的 resolver 从当前声明取得原 command，之后的查询保
 
 独立宿主同时安装官方 `llm-retry`、`token-meter`、`compaction-basic` 与 `compaction-image-offload`。重试策略归实际模型 adapter；失败请求的重试不重新执行已经返回的业务工具。TokenMeter 沿原生持久事件形成用量和上下文压力，自动压缩依赖该压力、模型容量及显式压缩配置；图片卸载只响应原生明确的容量错误和 occurrence，不删除原附件。它们共同使用原生取消、日志和恢复机制，不增加自己的重试队列或摘要状态。
 
-`RuntimeOptions.installNative` 保留为宿主显式选择的共享底座安装边界，在基础服务与模型装配完成后、应用能力安装前执行；`options.operations` 保留为宿主显式提供的共享业务 owner。模块自己的能力和 owner 随 assembly 收集，无须在这些选项中再列一次。安装仍使用 Cordis 的插件与作用域；`requireActivePlugin` 区分已结束 await 和实际 ACTIVE，拒绝缺依赖的 pending 安装并清理该次 fiber。独立 Runtime 启动失败会等待原生释放。普通业务组件只消费资源、Action 与 NativeTools 声明，不承担插件装配。
+`RuntimeOptions.installNative` 保留为宿主显式选择的共享底座安装边界，在基础服务与模型装配完成后、应用能力安装前执行；`options.operations` 保留为宿主显式提供的共享业务 owner。模块自己的能力和 owner 随静态依赖收集，无须在这些选项中再列一次。安装仍使用 Cordis 的插件与作用域；`requireActivePlugin` 区分已结束 await 和实际 ACTIVE，拒绝缺依赖的 pending 安装并清理该次 fiber。独立 Runtime 启动失败会等待原生释放。普通业务组件只消费资源、Action 与 NativeTools 声明，不承担插件装配。
 
 `deepseek` 直接连接官方 Messages adapter，`piAi` 安装官方多协议 provider，`nativeModel` 允许已有宿主提供自己的 adapter。Provider profile 中模型目录的容量与输入模态是部署声明，不能从网关名字推测；目录的默认值也不是已向供应商验证的能力。真实模型自主协作、正式协议传输边界和确定性故障注入各有独立验证范围。
 

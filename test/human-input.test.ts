@@ -140,9 +140,9 @@ for (const mode of ['native', 'ptc'] as const) {
     } finally { await app.dispose(); }
   });
 
-  test(`${mode} 原生 claim 跨无关帧保留，声明退出仅释放 claim，continued 冷读和晚答沿同一问题`, async () => {
+  test(`${mode} 同政策贡献共享原生 claim，最后贡献退出释放等待，continued 冷读和晚答沿同一问题`, async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-human-continued-'));
-    const mounted$ = new BehaviorSubject(true), revision$ = new BehaviorSubject(0);
+    const mounted$ = new BehaviorSubject(true), secondMounted$ = new BehaviorSubject(true), revision$ = new BehaviorSubject(0);
     const requests: GenerateOptions[] = [];
     const merchantScope = z.object({ merchantId: z.string() }).strict();
     const inspect = defineAction({ name: 'inspect_merchant', description: '核验当前明确商家',
@@ -168,12 +168,14 @@ for (const mode of ['native', 'ptc'] as const) {
     const definition = defineApplication({ name: 'human-continued', admit: async () => {}, environments: [defineEnvironment({
       id: 'work', instructions: '超时不算许可，可以先继续独立工作',
       program: implementProgram(defineProgram({ input: merchantScope.transform(value => ({ ...value, decoded: true as const })), surface }), { Component({ conversation }) {
-        const mounted = useObservable(() => mounted$, []), revision = useObservable(() => revision$, []);
+        const mounted = useObservable(() => mounted$, []), secondMounted = useObservable(() => secondMounted$, []);
+        const revision = useObservable(() => revision$, []);
         const inputs = useObservable(() => conversation.inputs$, [conversation]);
         const selected = inputs.status === 'ready' ? inputs.value.at(-1) : undefined;
         return h(Fragment, null, Context({ name: 'revision', value: revision.status === 'ready' ? revision.value : null }),
           selected ? h(Merchant, { merchantId: selected.scope.merchantId }) : null,
           mounted.status === 'ready' && mounted.value ? HumanInput({ admitResponder: policy }) : null,
+          secondMounted.status === 'ready' && secondMounted.value ? HumanInput({ admitResponder: policy }) : null,
           Expose({ surface, value: { views: { inputs: conversation.inputs$ } } }));
       } }),
     })] });
@@ -222,6 +224,11 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.equal(claimEnded, false, '无关声明帧不得释放仍获当前参与策略允许的原生 claim');
       assert.equal(requests.length, 1);
       mounted$.next(false);
+      await assert.rejects(session.answerQuestion(pending.callId, answer, { actorId: 'intruder' }), /MERCHANT_RESPONDER_DENIED/u);
+      await immediate();
+      assert.equal(claimEnded, false, '先收集的同政策贡献退出后，剩余贡献仍维持已领取的原生 claim');
+      assert.equal(requests.length, 1, '贡献数量变化不能释放超时等待并继续模型');
+      secondMounted$.next(false);
       await assert.rejects(session.answerQuestion(pending.callId, answer), /REACTIVE_HUMAN_INPUT_NOT_DECLARED/u);
       assert.equal((await ended).done, true);
       const continued = await firstValueFrom(session.questions$.pipe(filter(state => state.active.some(value => value.callId === pending.callId && value.state === 'continued'))));
@@ -288,7 +295,7 @@ for (const mode of ['native', 'ptc'] as const) {
   });
 }
 
-test('异步响应准入取消及时退出，迟到策略不回答或claim，当前声明与原答案快照决定正式受理', async () => {
+test('异步响应准入随取消或政策替换退出，迟到策略不能借新授权回答或claim，受理沿原答案快照', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-human-admission-'));
   const mounted$ = new BehaviorSubject(true);
   const gates = [{ entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>(), finished: Promise.withResolvers<void>() }];
@@ -299,11 +306,19 @@ test('异步响应准入取消及时退出，迟到策略不回答或claim，当
     const held = gate; gate = undefined;
     if (held) { held.entered.resolve(); await held.release.promise; held.finished.resolve(); }
   };
+  const policy$ = new BehaviorSubject<(admission: HumanResponderAdmission) => void | Promise<void>>(policy);
+  let replacementAttempts = 0;
+  const replacementPolicy = (admission: HumanResponderAdmission) => {
+    replacementAttempts++;
+    admitResponder(admission);
+  };
   const definition = defineApplication({ name: 'human-admission', admit: async () => {}, environments: [defineEnvironment({
     id: 'work', instructions: '取得当前正式参与许可',
     program: implementProgram(defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) }), { Component() {
       const mounted = useObservable(() => mounted$, []);
-      return mounted.status === 'ready' && mounted.value ? HumanInput({ admitResponder: policy }) : null;
+      const currentPolicy = useObservable(() => policy$, []);
+      return mounted.status === 'ready' && mounted.value && currentPolicy.status === 'ready'
+        ? HumanInput({ admitResponder: currentPolicy.value }) : null;
     } }),
   })] });
   const app = await boot(join(root, 'home'), definition, async function* () {
@@ -335,6 +350,30 @@ test('异步响应准入取消及时退出，迟到策略不回答或claim，当
     assert.equal((await firstValueFrom(session.questions$)).active[0]?.state, 'open');
     assert.equal((await firstValueFrom(session.foregroundQuestions$))[0]?.callId, pending.callId);
     mounted$.next(true);
+
+    for (const entry of ['answer', 'claim'] as const) {
+      const held = { entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>(), finished: Promise.withResolvers<void>() };
+      gates.push(held); gate = held;
+      policy$.next(policy);
+      const waiting = entry === 'answer' ? session.answerQuestion(pending.callId, answer)
+        : session.attachWait(pending.callId)[Symbol.asyncIterator]().next();
+      let rejectedBeforeRelease = false;
+      const rejected = assert.rejects(waiting, /REACTIVE_HUMAN_INPUT_CHANGED/u).then(() => { rejectedBeforeRelease = true; });
+      await held.entered.promise;
+      policy$.next(replacementPolicy);
+      const attempts = replacementAttempts;
+      await assert.rejects(session.answerQuestion(pending.callId, answer, { actorId: 'intruder' }), /MERCHANT_RESPONDER_DENIED/u);
+      await immediate();
+      assert.equal(replacementAttempts, attempts + 1, '替换后的声明已正式使用新的响应政策');
+      assert.equal(rejectedBeforeRelease, true, '新政策仍允许正式响应，也必须立即结束等待旧政策的请求');
+      await rejected;
+      held.release.resolve(); await held.finished.promise; await immediate();
+      assert.equal(attached, 0, '旧政策的迟到allow不能借新声明领取原生claim');
+      assert.equal(calls, 1, '旧政策的迟到allow不能借新声明提交答案或继续模型');
+      assert.equal((await firstValueFrom(session.questions$)).active[0]?.state, 'open');
+      assert.equal((await firstValueFrom(session.foregroundQuestions$))[0]?.callId, pending.callId);
+    }
+    policy$.next(policy);
 
     for (const entry of ['answer', 'claim'] as const) for (const ending of ['caller', 'sdk'] as const) {
       const held = { entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>(), finished: Promise.withResolvers<void>() };

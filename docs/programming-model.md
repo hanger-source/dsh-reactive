@@ -170,7 +170,7 @@ const review = composeSurface({
 
 完整模块也可以自带会话级依赖。多个模块声明相同 name 或精确 directory 的 Skill 时共享贡献；directory 必须是绝对路径，宿主通过 path.normalize 做词法规范化，合并规范化后相同的目录。cwd 仅参与原生命名 Skill 方法的解析。一个模块退出后，其他贡献继续持有这份依赖，最后一项退出才撤下本声明拥有的 provider 与上下文，不反向卸载外部 provider；应用无须在中央重新列出模块依赖。
 
-NativeTools 按真实全局工具名逐项共享，前提是 enabled 完全一致（省略视为 true），且 admit 是同一函数引用或均未提供。复用模块应从装配处借入同一政策函数；分别创建的函数即使代码相同也不等价。参与条件或政策不同明确失败，不自动取并集、交集或合并权限。最后一项退出撤下本声明贡献及其政策，原生内建工具仍遵循各自独立的基础可用性规则。与实际提交的 Offer、Follow 同名仍冲突；HumanInput 仍是根会话唯一响应政策，不能按模块共享多份。
+NativeTools 按真实全局工具名逐项共享，前提是 enabled 完全一致（省略视为 true），且 admit 是同一函数引用或均未提供。复用模块应从装配处借入同一政策函数；分别创建的函数即使代码相同也不等价。参与条件或政策不同明确失败，不自动合并权限。最后一项退出撤下本声明贡献及其政策，原生内建工具仍遵循各自独立的基础可用性规则。与实际提交的 Offer、Follow 同名仍冲突；多个 HumanInput 贡献须共享同一个必需的 admitResponder 函数引用。
 
 外部业务模块用 `session.module(merchants.mounts.a)` 取得局部 SurfaceClient，随后直接 `readView('facts', { signal })`、`resolveAction('prepare', target)`，不接收根槽名或拼接路径。module 只重定位既有入口，视图资源仍是根会话中的同一个对象，调用选项、本地同步或远程异步时序及原 owner 都保留，不产生独立 release。集合成员和局部客户端也支持 module；嵌套挂载必须属于当前父模块的原合同。
 
@@ -282,20 +282,19 @@ React commit 提交完整声明，native prepare 等待当前依赖。每次异�
 
 ## 启动宿主
 
-宿主明确选择服务发布身份、独立数据目录和模型；可复用模块在应用工厂中登记自己的 Operation owner 和原生能力。`deepseek` 使用官方 Messages 适配器，`piAi` 接入官方多协议 provider profile；业务组件不持有模型适配器。`nativeModel` 留给已有原生适配器的宿主。
+宿主明确选择服务发布身份、独立数据目录和模型；可复用模块携带自己的静态依赖。`deepseek` 使用官方 Messages 适配器，`piAi` 接入官方多协议 provider profile；业务组件不持有模型适配器。`nativeModel` 留给已有原生适配器的宿主。
 
-```ts
-import { createRuntime, deepseek, type ApplicationAssembly } from '@hanger-source/dsh-reactive-dsh';
+```tsx
+import { createRuntime, deepseek, implementNativeModule } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeTools } from '@hanger-source/dsh-reactive-dsh/tools';
+import { implementProgram } from '@hanger-source/dsh-reactive/program';
 
-function merchantModule(assembly: ApplicationAssembly) {
-  const preparation = assembly.operation(PreparationOwner);
-  const tools = assembly.native(createNativeTools({ service: 'provided' }));
-  return {
-    environment: defineEnvironment({ id: 'delivery',
-      instructions: '根据当前商家事实处理交付要求。', program: implementation }),
-    preparation, tools,
-  };
+function createMerchantModule() {
+  const tools = createNativeTools({ service: 'provided' });
+  return implementNativeModule(merchantSurface, {
+    native: [tools], operations: [PreparationOwner],
+    Component: MerchantWork,
+  });
 }
 
 const configuredModel = deepseek({
@@ -305,10 +304,18 @@ const configuredModel = deepseek({
   retryPolicy: { mode: 'normal', maxRetries: 3 },
 });
 
-const runtime = await createRuntime(assembly => {
-  const merchant = merchantModule(assembly);
+const runtime = await createRuntime(() => {
+  const merchant = createMerchantModule();
+  const implementation = implementProgram(program, {
+    modules: { merchant },
+    Component({ modules }) {
+      const Merchant = modules.merchant.Component;
+      return <Merchant mount={merchants.mounts.a} merchantId="merchant-1" />;
+    },
+  });
   return defineApplication({ name: 'operations', admit: authorizeInput,
-    environments: [merchant.environment] });
+    environments: [defineEnvironment({ id: 'delivery',
+      instructions: '根据当前商家事实处理交付要求。', program: implementation })] });
 }, {
   home: '/application/data/operations',
   actorId: authenticatedActorId,
@@ -318,9 +325,9 @@ const runtime = await createRuntime(assembly => {
 });
 ```
 
-模块取得的 preparation 和 tools 就是所登记的原对象，可直接交给其组件、hooks 或服务函数；上文 Action 的 PreparationOwner 无须在启动选项中再次列出。相同原对象登记多次只装配一次；不同 Operation owner 占用相同 kind/version 拒绝挂载。工厂返回后登记封闭，运行中的组件与回调不能再调用 assembly 追加能力。原生委托仍通过同一 assembly 的 implementDelegation 构造。
+Program 从注入的 `modules.merchant.Component` 渲染模块并传入业务 props 与 `mount`；模块内部自动取得局部映射。`implementModule(surface, { Component, modules?, operations? })` 可组合普通模块；其组件内部取得静态子模块，外部组件只需业务 props 与 mount。Program 列直接模块，依赖递归捕获；渲染未声明的模块硬失败。应用汇总所有 environment 与 delegation 程序的依赖，同一 owner 或 capability 原对象去重，不同 owner 的 kind/version 冲突在安装前失败。动态退出只撤声明和组件读侧，静态 owner 和 capability 属于 App。模块工厂每 App 创建新的原生能力实例，业务 owner 可显式共享。
 
-`assembly.native` 只登记能力，由应用挂载安装并在 Host 退出时等待释放；构造模块不会启动原生 I/O 或业务执行。已有宿主使用 `mountApplication(ctx, factory, { home })` 时，有原生能力登记才要求显式绝对 home；Runtime 使用自己的归一化 home。`options.operations` 和 `RuntimeOptions.installNative` 继续供宿主选择共享 owner 与底座服务，模块登记不要求再配置一份。
+构造模块不会启动原生 I/O 或业务执行，应用挂载安装能力并在 Host 退出时等待释放。已有宿主使用 `mountApplication(ctx, factory, { home })` 时，有原生能力才要求显式绝对 home；Runtime 使用自己的归一化 home。`assembly.native`、`assembly.operation` 仍供直接登记，`assembly.implementDelegation` 构造原生委托；`options.operations` 和 `RuntimeOptions.installNative` 继续供宿主选择共享 owner 与底座服务。
 
 serviceActorId 是持久原工作反馈的发布主体，必须由业务权限体系明确授予所需能力。它不替代独立调用者的认证，也不能从业务正文取得。
 
@@ -572,7 +579,7 @@ resolver 捕获当前公开绑定；所得句柄保持原 command。组件随后
 
 ## 人工参与
 
-程序用 HumanInput 声明真实响应者准入，问题与回答继续属于 dsh 原生问答服务：
+程序用 HumanInput 声明真实响应者准入，问题与回答继续属于 dsh 原生问答服务。多个模块可以贡献 HumanInput，但必须传同一个必需的 `admitResponder` 函数引用；冲突拒绝，最后一项退出撤销资格，不提供默认政策：
 
 ```tsx
 <HumanInput admitResponder={authorizeResponder} />

@@ -1,4 +1,8 @@
 export { implementProgram } from './implementation.ts';
+export type { ProgramImplementationOptions } from './implementation.ts';
+export { implementModule } from './module-implementation.ts';
+export type { AnyModuleImplementation, ModuleImplementations } from './definition.ts';
+export type { ModuleImplementation, ModuleImplementationOptions, ModuleComponentProps, ModuleMountProps } from './module-implementation.ts';
 export { Module } from './module.ts';
 export type { ModuleProps } from './module.ts';
 export { Context, Offer, Follow, Skill, Expose, HumanInput, NativeTools } from './declarations.ts';

@@ -18,6 +18,7 @@ import { ActionAuthority } from './execution/authority.ts';
 import type { RetainedActionInvocation } from './execution/invocation.ts';
 import { ProgramTools } from './execution/tools.ts';
 import { OperationParticipation } from './operations/participation.ts';
+import { OperationNotifications } from './operations/notifications.ts';
 import { ConversationPrograms } from './programs/preparation.ts';
 import { ConversationQuestions } from './participation/questions.ts';
 import { humanParticipant, serviceParticipant, type ParticipantIdentity } from './participation/identity.ts';
@@ -42,11 +43,14 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
     #lifetime = new AbortController();
     #closing?: Promise<void>;
     #disposing?: Promise<void>;
+    #initializing?: Promise<void>;
+    #sessionsStarting?: Promise<void>;
     private readonly sessions: ConversationSessions<E>;
     private readonly facts: ConversationObservations;
     private readonly inputs: ConversationInputs;
     private readonly actions: ActionAuthority;
     private readonly operations: OperationParticipation;
+    private readonly operationNotifications: OperationNotifications;
     private readonly questions: ConversationQuestions;
     private readonly programs: ConversationPrograms;
     private readonly stopDelegationUpdates: () => void;
@@ -58,6 +62,7 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
         this.inputs = new ConversationInputs(ctx, definition, workspaces, options, signal, this.sessions, this.facts, delegations, () => this.operations);
         this.actions = new ActionAuthority(ctx, options, signal, workspaces, this.sessions, this.facts, this.inputs, delegations);
         this.operations = new OperationParticipation(ctx, definition, options, signal, this.sessions, this.facts, this.inputs, this.actions, delegations);
+        this.operationNotifications = new OperationNotifications(options.operations ?? [], options.serviceActorId, this.operations);
         const tools = new ProgramTools(ctx, workspaces, this.sessions, this.actions, this.operations);
         this.programs = new ConversationPrograms(ctx, this.sessions, this.inputs, this.actions, this.operations, tools, delegations);
         this.questions = new ConversationQuestions(ctx, options, signal, this.sessions, this.facts);
@@ -76,7 +81,19 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
     static create<E extends readonly AnyEnvironment[]>(ctx: Context, definition: ApplicationDefinition<E>, workspaces: Workspaces, options: HostOptions, delegations: NativeDelegations, releaseInstallation: () => Promise<void>): ApplicationHost<E> {
         return new ApplicationHost(ctx, definition, workspaces, options, delegations, releaseInstallation);
     }
-    initialize(): Promise<void> { return this.sessions.initialize(); }
+    initialize(): Promise<void> {
+        if (this.#initializing) return this.#initializing;
+        const completion = Promise.withResolvers<void>();
+        this.#initializing = completion.promise;
+        void (async () => {
+            this.#lifetime.signal.throwIfAborted();
+            this.#sessionsStarting = this.sessions.initialize();
+            await this.#sessionsStarting;
+            this.#lifetime.signal.throwIfAborted();
+            await this.operationNotifications.initialize();
+        })().then(completion.resolve, completion.reject);
+        return this.#initializing;
+    }
     private handle<P extends ProgramContract = ProgramContract>(session: ConversationSession, participant: ParticipantIdentity = humanParticipant): ConversationHandle<P> {
         return ConversationHandle.create<P>(session, participant, this.sessions, this.inputs, this.actions, this.operations, this.questions, this.facts);
     }
@@ -202,9 +219,14 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
         const completion = Promise.withResolvers<void>();
         this.#closing = completion.promise;
         void (async () => {
+            const stoppingNotifications = this.operationNotifications.close();
             this.stopDelegationUpdates();
             this.#lifetime.abort(new Error('REACTIVE_HOST_DISPOSED'));
-            const failures = await this.sessions.shutdownNative();
+            const failures: unknown[] = [];
+            try { await stoppingNotifications; }
+            catch (error) { failures.push(error); }
+            await Promise.allSettled(this.#sessionsStarting ? [this.#sessionsStarting] : []);
+            failures.push(...await this.sessions.shutdownNative());
             try {
                 await this.sessions.stopPresets();
             }

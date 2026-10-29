@@ -33,8 +33,13 @@ export class ConversationInputs {
         }>;
     }>();
     constructor(private readonly ctx: Context, private readonly definition: ApplicationDefinition, private readonly workspaces: Workspaces, private readonly options: HostOptions, private readonly signal: AbortSignal, private readonly sessions: ConversationSessions, private readonly facts: ConversationObservations, private readonly delegations: NativeDelegations, private readonly operations: () => OperationParticipation) { }
-    private admit(input: AdmittedSubmission, conversation: ConversationIdentity, admission: Admission): Promise<void> {
-        return firstValueFrom(abortable(() => this.definition.admit(input, conversation, admission), admission.signal));
+    private admit(input: AdmittedSubmission, conversation: ConversationIdentity, admission: Admission,
+        retain?: (work: PromiseLike<unknown>) => void): Promise<void> {
+        return firstValueFrom(abortable(() => {
+            const work = this.definition.admit(input, conversation, admission);
+            retain?.(work);
+            return work;
+        }, admission.signal));
     }
     bindConversation(session: ConversationSession): void {
         session.conversation[conversationBindings]().setSubmit((input, options) => {
@@ -129,7 +134,8 @@ export class ConversationInputs {
             });
         }, signal));
     }
-    async submitSession(session: ConversationSession, raw: unknown, options: SubmitOptions, identity: ParticipantIdentity = humanParticipant): Promise<{
+    async submitSession(session: ConversationSession, raw: unknown, options: SubmitOptions, identity: ParticipantIdentity = humanParticipant,
+        retain?: (work: PromiseLike<unknown>) => void): Promise<{
         sessionId: string;
         requestId: string;
         accepted: true;
@@ -147,6 +153,7 @@ export class ConversationInputs {
             if (!pending) break;
             if (pending.sourceDigest !== sourceDigest)
                 throw new Error('REACTIVE_REQUEST_ID_CONFLICT');
+            retain?.(pending.promise);
             if (!pending.signal.aborted)
                 return firstValueFrom(abortable(() => pending.promise, signal));
             // 本次显式重提等待已取消发布者真正退出；不提前清表或重发仍在执行的命令。
@@ -155,7 +162,7 @@ export class ConversationInputs {
             this.sessions.assertSessionWorkspace(session);
         }
         // 在任何附件存储或准入回调之前占住同一请求；并发重试不重复提升图片。
-        const promise = Promise.resolve().then(() => this.prepareSubmission(session, input, actorId, participant, sourceDigest, signal));
+        const promise = Promise.resolve().then(() => this.prepareSubmission(session, input, actorId, participant, sourceDigest, signal, retain));
         this.#pending.set(key, { sourceDigest, signal, promise });
         const clear = () => {
             if (this.#pending.get(key)?.promise === promise)
@@ -163,6 +170,7 @@ export class ConversationInputs {
         };
         // 清表跟随真实事务；即便首个等待在订阅前已取消，worker 拒绝仍有观察者。
         void promise.then(clear, clear);
+        retain?.(promise);
         return firstValueFrom(abortable(() => promise, signal));
     }
     uploadSessionFile(session: ConversationSession, prepare: (signal: AbortSignal) => EncodedFileUploadRequest | PromiseLike<EncodedFileUploadRequest>, options: SubmitOptions, identity: ParticipantIdentity = humanParticipant, waitSignal: AbortSignal = this.signal): FileUploadInvocation {
@@ -206,7 +214,8 @@ export class ConversationInputs {
             for (const preparation of uploads.keys()) preparation.abort(new Error('REACTIVE_FILE_UPLOAD_CLOSING'));
         await Promise.all(pending.flatMap(uploads => [...uploads.values()]));
     }
-    async prepareSubmission(session: ConversationSession, input: NormalizedSubmission, actorId: string, participant: Admission['participant'], sourceDigest: string, signal: AbortSignal) {
+    async prepareSubmission(session: ConversationSession, input: NormalizedSubmission, actorId: string, participant: Admission['participant'], sourceDigest: string, signal: AbortSignal,
+        retain?: (work: PromiseLike<unknown>) => void) {
         signal.throwIfAborted();
         this.sessions.assertSessionWorkspace(session);
         const previous = session.state.record(input.requestId);
@@ -229,7 +238,7 @@ export class ConversationInputs {
         }
         const { digest: _digest, sourceDigest: _sourceDigest, actorId: _actor, participant: _participant, ...submission } = record;
         // 策略得到独立正文快照；即便策略修改参数，也不能改写已固定的投递和持久事实。
-        await this.admit(admittedSubmissionSchema.parse(submission), session.conversation.identity, { actorId, participant, signal });
+        await this.admit(admittedSubmissionSchema.parse(submission), session.conversation.identity, { actorId, participant, signal }, retain);
         signal.throwIfAborted();
         this.sessions.assertSessionWorkspace(session);
         if (receiptOwner && session.live.value?.agent !== receiptOwner)

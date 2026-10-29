@@ -1,4 +1,4 @@
-import { implementProgram } from '@hanger-source/dsh-reactive/program';
+import { implementModule, implementProgram } from '@hanger-source/dsh-reactive/program';
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
@@ -14,7 +14,7 @@ import { LlmAdapter, ToolCallId, type GenerateOptions, type StreamChunk } from '
 import { SessionId, pluginRecordOf, type SessionEvent } from '@deepseek-ai/dsh-session';
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import { defineAction, implementAction, type ActionCallContext } from '@hanger-source/dsh-reactive';
-import { defineOperation, implementOperation, operationFollowLinkSchema, type OperationAccessContext, type OperationFollowLink } from '@hanger-source/dsh-reactive';
+import { defineOperation, implementOperation, operationFollowLinkSchema, type OperationAccessContext, type OperationFollowLink, type OperationNotificationAcknowledgement, type OperationNotificationConnection, type OperationNotificationResult, type OperationOwnerReference } from '@hanger-source/dsh-reactive';
 import { ConversationAccessRevokedError, defineApplication, defineEnvironment, z } from '@hanger-source/dsh-reactive';
 import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
 import { Expose, Offer, Follow } from '@hanger-source/dsh-reactive/program';
@@ -51,9 +51,16 @@ const prepare = defineAction({ name: 'prepare_merchant', description: '可靠受
 const finish = defineAction({ name: 'finish_original_goal', description: '核验原工作交回事实后完成原 Goal',
   scope: z.null(), input: z.object({}).strict(), output: z.boolean() });
 
-/** 测试中的业务 owner 使用实际 SQLite 受理记录、状态和可靠 follow 关联；通知由测试显式投递。 */
+interface BusinessNotifications {
+  connected?(connection: OperationNotificationConnection, notify: (followId: string) => Promise<OperationNotificationResult>): void | PromiseLike<void>;
+  acknowledge?(followId: string, result: OperationNotificationAcknowledgement): void | PromiseLike<void>;
+  cleanup?(): void | PromiseLike<void>;
+}
+
+/** 业务 fixture 使用实际 SQLite 受理、follow、反馈和 outbox；设施显式选择本轮待办。 */
 function business(database: string, onRegistered?: (link: OperationFollowLink) => Promise<void>,
-  onExistingAck?: (link: OperationFollowLink, access: OperationAccessContext) => Promise<void>) {
+  onExistingAck?: (link: OperationFollowLink, access: OperationAccessContext) => Promise<void>,
+  notifications?: BusinessNotifications, definition = operation) {
   const db = new DatabaseSync(database);
   db.exec(`PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS commands (command_id TEXT PRIMARY KEY, command_json TEXT NOT NULL,
@@ -66,6 +73,7 @@ function business(database: string, onRegistered?: (link: OperationFollowLink) =
     CREATE TABLE IF NOT EXISTS reads (id INTEGER PRIMARY KEY, command_json TEXT NOT NULL, access_json TEXT NOT NULL);`);
   db.exec(`CREATE TABLE IF NOT EXISTS feedbacks (follow_id TEXT PRIMARY KEY, command_id TEXT NOT NULL, node_id TEXT NOT NULL UNIQUE, payload_json TEXT NOT NULL);`);
   const changed = new Subject<string>();
+  let connection: OperationNotificationConnection | undefined, connectionCount = 0;
   const rowSchema = z.object({ command_json: z.string(), reference_json: z.string(), state_json: z.string(), revision: z.number() });
   const read = (commandId: string) => {
     const row = db.prepare('SELECT command_json, reference_json, state_json, revision FROM commands WHERE command_id = ?').get(commandId);
@@ -80,7 +88,30 @@ function business(database: string, onRegistered?: (link: OperationFollowLink) =
     assert.ok(access.sessionId);
     if (access.source.kind === 'participant') assert.ok(['operator-test', 'operation-publisher', 'notifier-one', 'notifier-two', 'notifier-alternative'].includes(access.source.actorId));
   };
-  const owner = implementOperation(operation, {
+  const notify = async (followId: string) => {
+    assert.ok(connection, '业务来源必须已经由 Host 连接');
+    connection.signal.throwIfAborted();
+    const pending = db.prepare('SELECT f.link_json FROM outbox o JOIN follows f ON f.id = o.follow_id WHERE o.follow_id = ? AND o.delivered = 0').get(followId);
+    assert.ok(pending, '只交接 SQLite 中仍待确认的通知');
+    const link = operationFollowLinkSchema.parse(JSON.parse(z.string().parse(pending.link_json)));
+    return connection.deliver({ sessionId: link.continuation.sessionId, followId,
+      async acknowledge(result) {
+        await notifications?.acknowledge?.(followId, result);
+        assert.equal(Number(db.prepare('UPDATE outbox SET delivered = 1 WHERE follow_id = ? AND delivered = 0').run(followId).changes), 1);
+      },
+    });
+  };
+  const owner = implementOperation(definition, {
+    notifications: notifications === undefined ? undefined : {
+      async connect(connected) {
+        connectionCount++; connection = connected;
+        await notifications.connected?.(connected, notify);
+        return async () => {
+          await notifications.cleanup?.();
+          if (connection === connected) connection = undefined;
+        };
+      },
+    },
     locate(command, access) {
       authorize(command.merchantId, access);
       db.prepare('INSERT INTO reads (command_json, access_json) VALUES (?, ?)').run(JSON.stringify(command), JSON.stringify({ sessionId: access.sessionId, source: access.source }));
@@ -174,6 +205,9 @@ function business(database: string, onRegistered?: (link: OperationFollowLink) =
     bodies: () => db.prepare('SELECT command_id, source_json FROM bodies ORDER BY id').all(),
     links: () => db.prepare('SELECT link_json FROM follows ORDER BY id').all().map(row => operationFollowLinkSchema.parse(JSON.parse(z.string().parse(row.link_json)))),
     outbox: () => db.prepare('SELECT follow_id FROM outbox WHERE delivered = 0 ORDER BY follow_id').all().map(row => z.string().parse(row.follow_id)),
+    connectionCount: () => connectionCount,
+    notificationConnection() { assert.ok(connection, '业务来源必须已经由 Host 连接'); return connection; },
+    notify,
     acknowledge(followId: string) { assert.equal(Number(db.prepare('UPDATE outbox SET delivered = 1 WHERE follow_id = ?').run(followId).changes), 1); },
     allowFollow(allowed: boolean) { db.prepare('UPDATE authorization SET can_follow = ? WHERE merchant_id = ?').run(allowed ? 1 : 0, 'merchant-a'); },
     reads: () => db.prepare('SELECT command_json, access_json FROM reads ORDER BY id').all(),
@@ -191,8 +225,10 @@ async function scenario(root: string, when: 'settled' | 'feedback', options: {
   multiStage?: boolean;
   admissionUnknown?: boolean;
   backgroundThenWait?: boolean;
+  notifications?: BusinessNotifications;
+  notificationPeers?: readonly OperationOwnerReference[];
 } = {}) {
-  const store = business(join(root, 'business.sqlite'), options.registered, options.existingAck);
+  const store = business(join(root, 'business.sqlite'), options.registered, options.existingAck, options.notifications);
   const enabled$ = new BehaviorSubject(true), enabledCommits$ = new Subject<boolean>();
   const requests: GenerateOptions[] = [], errors: unknown[] = [];
   const bodyWaits: { source: string; waits: number; durable: readonly SessionEvent[] }[] = [];
@@ -231,6 +267,11 @@ async function scenario(root: string, when: 'settled' | 'feedback', options: {
   });
   const finishImplementation = implementAction(finish, { execute(_input, call) { call.completeGoal(); return true; } });
   const surface = defineSurface({ views: {}, actions: { prepare }, operations: { preparation: operation } });
+  const dependencySurface = defineSurface({ views: {}, actions: {} });
+  const operationModule = implementModule(dependencySurface, {
+    operations: [store.owner, ...options.notificationPeers ?? []], Component() { return null; },
+  });
+  const nestedModule = implementModule(dependencySurface, { modules: { operations: operationModule }, Component() { return null; } });
   const definition = defineApplication({ name: 'operation-follow-' + when,
     async admit(input, _conversation, admission) {
       assert.ok(['operator-test', 'operation-publisher', 'notifier-one', 'notifier-two', 'notifier-alternative'].includes(admission.actorId));
@@ -238,7 +279,8 @@ async function scenario(root: string, when: 'settled' | 'feedback', options: {
       if (input.result?.ready) await options.admitReady?.(admission.signal);
     },
     environments: [defineEnvironment({ id: 'work', instructions: '只根据原业务 owner 的明确事实继续原 Goal',
-      program: implementProgram(defineProgram({ input: z.object({ merchantId: z.string() }).strict(), surface }), { Component() {
+      program: implementProgram(defineProgram({ input: z.object({ merchantId: z.string() }).strict(), surface }), {
+        modules: options.notifications ? { direct: operationModule, nested: nestedModule, repeated: operationModule } : {}, Component() {
         const action = useAction(prepareImplementation, () => ({ merchantId: 'merchant-a' }), []);
         const complete = useAction(finishImplementation, () => null, []);
         const existing = useOperation(store.owner, () => ({ merchantId: 'merchant-a', commandId: 'prepare-a' }), []);
@@ -300,13 +342,15 @@ async function scenario(root: string, when: 'settled' | 'feedback', options: {
       }
     }() });
   const runtime = await createRuntime(() => definition, { home: join(root, 'home'), actorId: 'operator-test', serviceActorId: 'operation-publisher',
-    operations: [store.owner], tools: 'native', goalRounds: 3, onError: event => errors.push(event.error),
+    operations: options.notifications ? [] : [store.owner], tools: 'native', goalRounds: 3, onError: event => errors.push(event.error),
     model: { ...model, async install(ctx, home) {
       if (options.beforeWaitAck) ctx.on('session/flush', async session => {
         if (session.snapshotEvents().some(event => pluginRecordOf(event)?.type === 'plugin:reactive/wait')) await options.beforeWaitAck!();
       });
       await model.install(ctx, home);
-    } } });
+    } } }).catch(error => {
+      enabled$.complete(); enabledCommits$.complete(); store.close(); throw error;
+    });
   await mkdir(join(root, 'workspace'), { recursive: true });
   const workspace = await runtime.application.createWorkspace({ directory: join(root, 'workspace') });
   return { runtime, workspace, program: definition.environments[0].program.definition, store, requests, errors, bodyWaits, resumed, enabled$, enabledCommits$,
@@ -357,6 +401,182 @@ async function crashCheckpoint(root: string, context: TestContext, mode: 'single
 }
 
 if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-feedback-checkpoint'].includes(process.argv[2] ?? '')) {
+  test('静态Module owner连接一次，SQLite通知ACK失败后沿原请求重投，暂停结果不被模型消费且保留反馈事实', async context => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-operation-source-retry-'));
+    const ackFailure = new Error('BUSINESS_OUTBOX_ACK_FAILED');
+    const acknowledgements: OperationNotificationAcknowledgement[] = [];
+    const app = await scenario(root, 'feedback', { notifications: {
+      acknowledge(_id, result) {
+        acknowledgements.push(result);
+        if (acknowledgements.length === 1) throw ackFailure;
+      },
+    } });
+    context.after(() => app.dispose());
+    assert.equal(app.store.connectionCount(), 1, '同一owner沿直接、嵌套和重复静态依赖只连接一次');
+    const session = await app.runtime.application.create('work', { workspaceId: app.workspace.workspaceId });
+    await session.submit({ requestId: 'original-goal', content: '准备一次并等待商家的明确反馈', intent: 'goal', delivery: 'followup', scope: { merchantId: 'merchant-a' } });
+    await session.whenIdle();
+    const [link] = app.store.links(); assert.ok(link);
+    assert.deepEqual(await app.store.notify(link.id), { status: 'pending' });
+    assert.equal(acknowledgements.length, 0, '业务节点尚未就绪时不能消费outbox');
+    assert.deepEqual(app.store.outbox(), [link.id]);
+    await session.pause();
+    const paused = session.snapshot().goal; assert.ok(paused);
+    const node = { id: 'merchant-investigation:' + link.id, payload: { status: 'awaiting-command' as const, reason: '商家甲缺少正式凭据' } };
+    app.store.recordFeedback(link.id, node.id, node.payload);
+    await assert.rejects(app.store.notify(link.id), error => error === ackFailure);
+    assert.deepEqual(app.store.outbox(), [link.id], '原生受理成功但业务ACK失败，来源必须保留重投待办');
+    const retried = await app.store.notify(link.id);
+    assert.equal(retried.status, 'accepted');
+    assert.deepEqual(acknowledgements, [retried, retried], '重投确认同一次原生持久受理');
+    assert.deepEqual(app.store.outbox(), []);
+    assert.deepEqual(app.store.links(), [link], '通知确认不能移除持久follow');
+    const feedback = await session.readOperationFeedback(operation, commandSchema.parse(link.command), link.id);
+    assert.ok(feedback.status === 'ready'); assert.deepEqual(feedback.node, node, '通知ACK不能移除业务反馈节点');
+    await session.whenIdle();
+    assert.equal(app.requests.length, 1, 'accepted不代表模型已消费，旧反馈不能越过暂停后的Goal修订');
+    assert.equal(session.snapshot().goal?.phase, 'paused');
+    assert.equal(session.snapshot().goal?.revision, paused.revision);
+    assert.equal(session.snapshot().requests['operation:' + link.id]?.state, 'accepted');
+    assert.equal(app.store.bodies().length, 1, '业务ACK重投不能再次执行原Action');
+    const events = app.runtime.native.agents.get(SessionId(session.id))!.session.snapshotEvents();
+    const inputs = events.flatMap(event => {
+      const record = pluginRecordOf(event);
+      return record?.type === 'plugin:reactive/input' ? [recordSchema.parse(record.data)] : [];
+    }).filter(record => record.requestId === 'operation:' + link.id);
+    assert.equal(inputs.length, 1, '重投沿同一次持久输入关联，不生成第二份投递正文');
+    assert.deepEqual(inputs[0]!.result?.continuation.goal, link.continuation.goal);
+    assert.deepEqual(app.errors, []); session.release();
+  });
+
+  test('来源ACK尚未结算时dispose不释放来源，ACK完成后仍等待异步cleanup真正停止', { timeout: 25_000 }, async context => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-operation-source-drain-'));
+    const ackEntered = Promise.withResolvers<void>(), ackRelease = Promise.withResolvers<void>();
+    const cleanupEntered = Promise.withResolvers<void>(), cleanupRelease = Promise.withResolvers<void>();
+    let cleaning = false, disposed = false, disposing: Promise<void> | undefined;
+    const app = await scenario(root, 'feedback', { notifications: {
+      async acknowledge() { ackEntered.resolve(); await ackRelease.promise; },
+      async cleanup() { cleaning = true; cleanupEntered.resolve(); await cleanupRelease.promise; },
+    } });
+    context.after(() => { ackRelease.resolve(); cleanupRelease.resolve(); return disposing ?? app.dispose(); });
+    const session = await app.runtime.application.create('work', { workspaceId: app.workspace.workspaceId });
+    await session.submit({ requestId: 'original-goal', content: '等待来源可靠交回反馈', intent: 'goal', delivery: 'followup', scope: { merchantId: 'merchant-a' } });
+    await session.whenIdle(); await session.pause();
+    const [link] = app.store.links(); assert.ok(link);
+    app.store.recordFeedback(link.id, 'drain-feedback:' + link.id, { status: 'awaiting-command', reason: '保留通知交接的数据库连接' });
+    const connection = app.store.notificationConnection();
+    const delivery = app.store.notify(link.id);
+    await ackEntered.promise;
+    disposing = app.dispose().then(() => { disposed = true; });
+    void disposing.catch(() => {});
+    await immediate();
+    assert.equal(connection.signal.aborted, true);
+    assert.equal(disposed, false, 'Host退出必须等待已经开始的真实ACK');
+    assert.equal(cleaning, false, '来源cleanup不能提前关闭ACK仍使用的连接');
+    assert.deepEqual(app.store.outbox(), [link.id]);
+    ackRelease.resolve();
+    assert.equal((await delivery).status, 'accepted');
+    await cleanupEntered.promise;
+    assert.equal(disposed, false, 'ACK结束后仍须等待来源异步cleanup');
+    assert.deepEqual(app.store.outbox(), []);
+    assert.deepEqual(app.store.links(), [link]);
+    assert.equal(app.store.db.prepare('SELECT count(*) AS count FROM feedbacks').get()?.count, 1);
+    cleanupRelease.resolve(); await disposing;
+  });
+
+  test('部分来源连接失败时等待晚返回连接与其异步cleanup，不提前完成启动失败', { timeout: 25_000 }, async context => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-operation-source-startup-'));
+    const lateEntered = Promise.withResolvers<AbortSignal>(), aborted = Promise.withResolvers<void>(), lateReturn = Promise.withResolvers<void>();
+    const cleanupEntered = Promise.withResolvers<void>(), cleanupRelease = Promise.withResolvers<void>();
+    const connectFailure = new Error('BUSINESS_SOURCE_CONNECT_FAILED');
+    let cleaned = false, settled = false;
+    const peerDefinition = defineOperation({ kind: 'warehouse-preparation', version: 1, command: commandSchema, reference: referenceSchema,
+      state: stateSchema, settled: state => state.status === 'complete' ? state : undefined, feedback: feedbackSchema });
+    const peer = business(join(root, 'peer.sqlite'), undefined, undefined, {
+      async connected(connection) {
+        connection.signal.addEventListener('abort', () => aborted.resolve(), { once: true });
+        lateEntered.resolve(connection.signal); await lateReturn.promise;
+      },
+      async cleanup() { cleaned = true; cleanupEntered.resolve(); await cleanupRelease.promise; },
+    }, peerDefinition);
+    const starting = scenario(root, 'settled', { notificationPeers: [peer.owner], notifications: {
+      async connected() { await lateEntered.promise; throw connectFailure; },
+    } });
+    const completed = starting.then(async app => { settled = true; await app.dispose(); assert.fail('部分来源失败不能签发已安装Host'); }, error => { settled = true; return error as unknown; });
+    context.after(async () => { lateReturn.resolve(); cleanupRelease.resolve(); try { await completed; } finally { peer.close(); } });
+    const signal = await lateEntered.promise;
+    await aborted.promise; await immediate();
+    assert.equal(signal.aborted, true);
+    assert.equal(settled, false, '连接尚未交出cleanup，启动失败不能结束');
+    assert.equal(cleaned, false);
+    lateReturn.resolve(); await cleanupEntered.promise;
+    assert.equal(settled, false, '晚返回的cleanup仍未停止，启动失败不能结束');
+    cleanupRelease.resolve();
+    const failure = await completed;
+    assert.ok(failure instanceof Error);
+    assert.equal(peer.connectionCount(), 1);
+  });
+
+  test('通知恢复原wait的可靠登记忽略取消时，dispose仍等待真实owner结算后才cleanup', { timeout: 25_000 }, async context => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-operation-source-recovery-drain-'));
+    const entered = Promise.withResolvers<AbortSignal>(), release = Promise.withResolvers<void>();
+    let gate = false, cleaned = false, disposed = false, acknowledgements = 0, disposing: Promise<void> | undefined;
+    const app = await scenario(root, 'feedback', {
+      async existingAck(_link, access) {
+        if (!gate || access.source.kind !== 'participant' || access.source.entrypoint !== 'operation-recovery') return;
+        entered.resolve(access.signal); await release.promise;
+      },
+      notifications: { acknowledge() { acknowledgements++; }, cleanup() { cleaned = true; } },
+    });
+    context.after(() => { release.resolve(); return disposing ?? app.dispose(); });
+    const session = await app.runtime.application.create('work', { workspaceId: app.workspace.workspaceId });
+    await session.submit({ requestId: 'original-goal', content: '保持原工作等待并可靠交回反馈', intent: 'goal', delivery: 'followup', scope: { merchantId: 'merchant-a' } });
+    await session.whenIdle(); await session.pause();
+    const [link] = app.store.links(); assert.ok(link);
+    app.store.recordFeedback(link.id, 'recovery-drain:' + link.id, { status: 'awaiting-command', reason: '原登记正在等待业务ACK' });
+    gate = true;
+    const connection = app.store.notificationConnection();
+    const rejected = assert.rejects(app.store.notify(link.id), error => error === connection.signal.reason);
+    const recoverySignal = await entered.promise;
+    disposing = app.dispose().then(() => { disposed = true; });
+    void disposing.catch(() => {});
+    await rejected; await immediate();
+    assert.equal(recoverySignal.aborted, true);
+    assert.equal(disposed, false, '外层通知退等不能冒充原owner Promise已经退出');
+    assert.equal(cleaned, false, '原可靠登记尚未结算，cleanup不能关闭其数据库来源');
+    assert.equal(acknowledgements, 0);
+    assert.deepEqual(app.store.outbox(), [link.id]);
+    assert.equal(app.store.bodies().length, 1);
+    release.resolve(); await disposing;
+    assert.equal(cleaned, true);
+  });
+
+  test('来源误投另一owner的持久冷follow时拒绝，不激活Agent也不确认通知', async context => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-operation-source-owner-'));
+    const saved = await crashCheckpoint(root, context);
+    const [original] = saved.operations; assert.ok(original);
+    const history = new DatabaseSync(join(root, 'business.sqlite'), { readOnly: true });
+    const readsBeforeRecovery = history.prepare('SELECT command_json, access_json FROM reads ORDER BY id').all();
+    history.close();
+    let acknowledged = 0;
+    const foreignDefinition = defineOperation({ kind: 'foreign-preparation', version: 1, command: commandSchema, reference: referenceSchema,
+      state: stateSchema, settled: state => state.status === 'complete' ? state : undefined, feedback: feedbackSchema });
+    const foreign = business(join(root, 'foreign.sqlite'), undefined, undefined, {
+      async connected(connection) {
+        await assert.rejects(connection.deliver({ sessionId: saved.sessionId, followId: original.followId,
+          acknowledge() { acknowledged++; } }), /REACTIVE_OPERATION_OWNER_MISMATCH/u);
+      },
+    }, foreignDefinition);
+    const app = await scenario(root, 'settled', { recovering: true, notifications: {}, notificationPeers: [foreign.owner] });
+    context.after(async () => { try { await app.dispose(); } finally { foreign.close(); } });
+    assert.equal(foreign.connectionCount(), 1);
+    assert.equal(acknowledged, 0);
+    assert.equal(app.runtime.native.agents.get(SessionId(saved.sessionId)), undefined, '跨owner地址须在冷激活前拒绝');
+    assert.deepEqual(app.store.reads(), readsBeforeRecovery, '跨owner误投不能新增或改写原业务owner的读取');
+    assert.deepEqual(app.store.outbox(), [original.followId]);
+    assert.equal(app.store.bodies().length, 1); assert.equal(app.requests.length, 0);
+  });
+
   test('冷通知的成员资格退出及时结束业务准入，迟到ACK不取得新图且独立Operation仍结算', { timeout: 25_000 }, async context => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-operation-membership-'));
     const entered = Promise.withResolvers<AbortSignal>(), release = Promise.withResolvers<void>(), returned = Promise.withResolvers<void>();
@@ -403,7 +623,7 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
 
   test('background受理后继续同一Goal，仍受另一wait和暂停约束，冷恢复不重执且迟到结果不取得新修订权限', async context => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-operation-background-'));
-    const app = await scenario(root, 'settled', { backgroundThenWait: true });
+    const app = await scenario(root, 'settled', { backgroundThenWait: true, notifications: {} });
     context.after(() => app.dispose());
     const session = await app.runtime.application.create('work', { workspaceId: app.workspace.workspaceId });
     await session.submit({ requestId: 'original-goal', content: '后台准备甲操作，同时继续核验必须等待的乙操作', intent: 'goal',
@@ -435,7 +655,7 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     assert.deepEqual(reopened.snapshot().waits.map(value => value.wait.id), [waiting.wait.id]);
 
     app.store.update('prepare-a', { status: 'complete', artifactId: 'artifact-background-a' });
-    assert.equal((await app.runtime.application.notifyOperation(sessionId, background.id, { actorId: 'notifier-one' })).status, 'accepted');
+    assert.equal((await app.store.notify(background.id)).status, 'accepted');
     await reopened.whenIdle();
     assert.equal(app.requests.length, 2, 'background完成仍不能越过同一原Goal的B等待');
     assert.equal(reopened.snapshot().requests['operation:' + background.id]?.state, 'accepted');
@@ -448,7 +668,7 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     assert.notEqual(paused.revision, original.revision);
 
     app.store.update('prepare-b', { status: 'complete', artifactId: 'artifact-wait-b' });
-    assert.equal((await app.runtime.application.notifyOperation(sessionId, waiting.id, { actorId: 'notifier-two' })).status, 'accepted');
+    assert.equal((await app.store.notify(waiting.id)).status, 'accepted');
     await reopened.whenIdle();
     assert.equal(app.requests.length, 2, '所有业务条件满足也不能让旧反馈越过暂停或取得新Goal修订的唤醒权限');
     assert.equal(reopened.snapshot().goal?.phase, 'paused');
@@ -527,12 +747,20 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     assert.deepEqual(app.errors, []);
     const sessionId = session.id;
     session.release(); await app.dispose(); disposed = true;
-    const recovered = await scenario(root, 'settled', { recovering: true });
+    const closedNotifications: OperationNotificationAcknowledgement[] = [];
+    let initializationDelivery: OperationNotificationResult | undefined;
+    const recovered = await scenario(root, 'settled', { recovering: true, notifications: {
+      async connected(_connection, notify) { initializationDelivery = await notify(link.id); },
+      acknowledge(_id, result) { closedNotifications.push(result); },
+    } });
     context.after(() => recovered.dispose());
     const cold = await recovered.runtime.application.open(sessionId, recovered.program);
     assert.deepEqual(cold.snapshot().waits, []);
     assert.equal(recovered.runtime.native.agents.get(SessionId(sessionId)), undefined);
-    assert.deepEqual(await recovered.runtime.application.notifyOperation(sessionId, link.id, { actorId: 'notifier-one' }), { status: 'not-started' });
+    assert.deepEqual(initializationDelivery, { status: 'not-started' }, 'connect可同步开始交接，不等待Host.initialize自身');
+    assert.deepEqual(closedNotifications, [{ status: 'not-started' }]);
+    assert.deepEqual(recovered.store.outbox(), [], '冷未开始登记只确认通知待办');
+    assert.deepEqual(recovered.store.links(), [link]);
     assert.equal(recovered.runtime.native.agents.get(SessionId(sessionId)), undefined, '旧 outbox 的结案确认不加载模型 Agent');
     const resumed = await recovered.runtime.application.resume(sessionId, recovered.program);
     await resumed.whenIdle();
