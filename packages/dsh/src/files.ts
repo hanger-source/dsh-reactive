@@ -86,7 +86,6 @@ class NativeWatch implements FileWatch {
           const absolutePath = current.fs.processPath(current.resolvedTarget);
           return info === undefined ? { absolutePath, absent: true } : { absolutePath, version: info.version };
         };
-        let previous: WorkspaceFileChange | undefined;
         // for-await 的退出等待官方 generator.finally → follower.close → unwatch。
         for await (const frame of service.changes(scope, observedPath, signal)) {
           signal.throwIfAborted(); files.assertCurrent();
@@ -94,14 +93,11 @@ class NativeWatch implements FileWatch {
           const current = await observeTarget();
           if (frame.kind === 'ready') {
             // 先取得正式watch再取基线；期间失效仍由原生generator排队。
-            previous = current;
             subject.next(ownNativeValue(frame));
             continue;
           }
-          const unchanged = previous !== undefined && previous.absolutePath === current.absolutePath
-            && ('absent' in previous ? 'absent' in current : 'version' in current && previous.version === current.version);
-          previous = current;
-          if (!unchanged) subject.next(ownNativeValue({ kind: 'change', change: current }));
+          // 显式资源失效可以独立读到新事实；watch 不另存目标状态来过滤后续目录失效。
+          subject.next(ownNativeValue({ kind: 'change', change: current }));
         }
         subject.complete();
       } catch (error) {

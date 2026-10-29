@@ -513,7 +513,7 @@ const combined = combineResources({ page, metadata, contents });
 
 同一来源、路径与窗口复用资源对象，业务 hooks 直接 `useResource(page)`，派生沿 `mapResource` 或 `combineResources`。显式 `page.invalidate()` 重新取得权威切面，不重发写入。单次查询使用 `readText`、`readBytes`、`stat`、`list`；原始变化使用 `watch`，退出时等待其 `dispose()` 或 `closed`。字节不缓存为共享资源。路径与 `readBytes` 的 baseFile 都限制在实际会话 cwd；越界明确失败。
 
-资源 ready 是最近一次权威读取的切面，更新依赖原生失效通知。固定 rc.3 的本地 FS 使用 chokidar，同路径 change 在 50ms 内可能直接被抑制且没有尾通知，因此短窗口连续正文写入后不保证自动追上最终内容。已知写入完成的业务应显式 `page.invalidate()`；需要立即核验真实内容时使用单次查询。框架不增加轮询或另一套文件事实，也不把 watch 当成完整变更日志。
+资源 ready 是最近一次权威读取的切面，更新依赖原生失效通知。文件使用单个父目录观察，每个目录 change 帧重新 stat 目标并触发资源重读，允许重复，兄弟文件活动也可能触发额外重读。通知可能合并或缺失，Linux 上裸 writeFile 恢复也可能没有通知，已知裸写入后须显式 `page.invalidate()`。固定 rc.3 的本地 FS 使用 chokidar，同路径 change 在 50ms 内可能直接被抑制且没有尾通知，因此短窗口连续正文写入后不保证自动追上最终内容。已知写入完成的业务应显式 `page.invalidate()`；需要立即核验真实内容时使用单次查询。框架不增加轮询或另一套文件事实，也不把 watch 当成完整变更日志。
 
 SDK release 撤观察资格，Host 关闭等待本应用读侧的实际 I/O 和 unwatch；这与写文件业务的完成分开。远程读取沿认证 Gateway 核资格，重连先失效再等新 watch ready 重读。可选原生 UI 用 `native.resource(native.files.text(path))` 接正式资源，退出时 `await native.dispose()`；原 SDK 的销毁仍归其 owner。
 

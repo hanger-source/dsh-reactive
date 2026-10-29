@@ -233,11 +233,11 @@ NativeCapabilityOwner 只保留本实例已开始调用的结算关系，不建�
 
 Program、外部本地 SDK、远程 SDK 与可选原生 UI 通过 `session.files` 借用会话文件资格。纯 `/files` 入口提供 `SessionFiles`、`FileResource` 与 `FileWatch`；官方 WorkspaceFiles 类型只做 type-only 重导。Host 的 `files` 选项借入已安装的 NativeFiles，按 exact 来源惰性取得读侧，不重复安装或销毁整个能力。本地未配置时取得入口抛出 `SessionFilesUnavailableError`；远程入口构造不发请求，首次查询或观察交付同一错误，不隐式装配服务。
 
-资源 ready 表达最近一次已读切面，持续更新依赖正式 FS 通知。rc.3 本地 provider 的同路径 change 在 50ms 内可能被抑制且不补尾通知；连续正文写入的最终状态须由已知写入者显式 invalidate 或单次权威读取确认。框架不以轮询、第二文件状态或自建 native watcher 掩盖这项上游限制。
+资源 ready 表达最近一次已读切面，持续更新依赖正式 FS 通知。单父目录观察只消费原生通知；通知可能合并或缺失，Linux 上裸 writeFile 恢复也可能没有通知，已知裸写入后须显式 invalidate。rc.3 本地 provider 的同路径 change 在 50ms 内可能被抑制且不补尾通知；连续正文写入的最终状态须由已知写入者显式 invalidate 或单次权威读取确认。框架不以轮询、第二文件状态或自建 native watcher 掩盖这项上游限制。
 
 Files 的 text(path, range)、metadata(path)、directory(path) 固定原始路径和读取窗口，提供同一个 read、peek、values$、observations$ 与 invalidate。共同工厂复用现有资源和 RxJS，不另建 Scope。构造不做 I/O，首次观察等待正式 watch ready 后读取；同一路径的不同资源共享 watch，最后一个查询退出释放它。目录每次变更重新列举。原生读取以 exact 会话 header 的 cwd 和正式 FS resolve/contains 核目标与 baseFile 范围，文本、目录与元数据仍由 WorkspaceFiles 决定版本、限额和错误。字节读取每次持有独立缓冲区，不加入共享快照。
 
-文件及缺失文件的观察使用包含目录的唯一正式 `WorkspaceFiles.changes` 流，因为创建、删除和替换会改变目录命名空间。连接时包含目录必须存在且为目录，否则报 `REACTIVE_NATIVE_FILE_WATCH_DIRECTORY_REQUIRED`；目录资格退出时来源报错，创建或恢复目录后需显式 invalidate 重新取得目录流，不自动搜索祖先、重绑或轮询。目录来源 ready 后，通过公开 FS 的 resolve、contains、stat 取得目标基线；每个目录帧都重新核验 scope、权限和路径并读取目标的不透明 version 或缺席状态，不按目录 version 过滤。仅目标状态变化时交付目标帧，兄弟文件噪音被过滤；目录目标仍直通原流。目标帧是 FS 现态投影，不是逐次写入的持久事件，不能保证捕获所有瞬时状态或无损通知。观察沿原 owner 使用单个 watch，closed 等待唯一 generator 实际 unwatch。
+文件及缺失文件的观察使用包含目录的唯一正式 `WorkspaceFiles.changes` 流，因为创建、删除和替换会改变目录命名空间。连接时包含目录必须存在且为目录，否则报 `REACTIVE_NATIVE_FILE_WATCH_DIRECTORY_REQUIRED`；目录资格退出时来源报错，创建或恢复目录后需显式 invalidate 重新取得目录流，不自动搜索祖先、重绑或轮询。目录来源 ready 后，通过公开 FS 的 resolve、contains、stat 取得目标基线；每个目录帧都重新核验 scope、权限和路径并读取目标的不透明 version 或缺席状态，不按目录 version 过滤。每个目录 change 帧都交付真实回读的目标帧，允许相同状态重复；兄弟文件活动也可能引起额外 stat 与资源重读；目录目标仍直通原流。目标帧是 FS 现态投影，不是逐次写入的持久事件，不能保证捕获所有瞬时状态或无损通知。观察沿原 owner 使用单个 watch，closed 等待唯一 generator 实际 unwatch。
 
 观察资格退出立即结束本消费者等待；原生读侧 dispose 与 Host 关闭等待实际读取和 unwatch，不取消写文件的 Action、Job 或 Operation。Agent 关闭不结束仍有效来源的文件观察。远程端点逐次核 Program、accessId、认证主体、文件路径及交付时权限，字节沿正式 binary codec；断线撤下旧 ready，新 watch ready 后重读，不承诺补齐断线事件。客户端释放只证明本端清理，没有远端 unwatch ACK。原生 UI 借用同一资源状态，自己的 dispose 等待其创建的观察退出，不销毁借入 SDK。需要选择领域产物或授予更窄的公开内容时，仍使用 Program 的资源 View。
 
