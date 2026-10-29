@@ -153,6 +153,7 @@
     }
   },
   "dependencies": {
+    "@deepseek-ai/dsh-api-workspace-files": "0.2.1-rc.3",
     "@deepseek-ai/dsh-attachment": "0.2.1-rc.3",
     "@deepseek-ai/dsh-llm": "0.2.1-rc.3",
     "@deepseek-ai/dsh-util-crypto": "0.2.1-rc.3",

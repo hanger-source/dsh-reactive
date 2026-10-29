@@ -2,7 +2,7 @@ import { createServer, request as forward } from 'node:http';
 import { connect } from 'node:net';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,9 +10,13 @@ import { build } from 'esbuild';
 import { BehaviorSubject, of } from 'rxjs';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol';
+import WorkspaceFiles from '@deepseek-ai/dsh-api-workspace-files';
+import SandboxPolicy from '@deepseek-ai/dsh-sandbox-policy';
+import Registry from '@deepseek-ai/dsh-typert-registry';
 import { implementAction, implementOperation, defineApplication, defineEnvironment } from '@hanger-source/dsh-reactive';
 import { implementProgram, useAction, Expose } from '@hanger-source/dsh-reactive/program';
-import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
+import { createRuntime, nativeModel, requireActivePlugin } from '@hanger-source/dsh-reactive-dsh';
+import { createNativeFiles } from '@hanger-source/dsh-reactive-dsh/files';
 import { mountProgramGateway, RemoteAuthenticationError } from '@hanger-source/dsh-reactive-remote';
 import { bootInjections } from '@deepseek-ai/dsh-client-modules';
 import { operation, check, surface, program } from './browser-contracts.mjs';
@@ -63,6 +67,8 @@ if (nativeAssetsArgument) {
   }).join('');
 }
 const home = await mkdtemp(join(tmpdir(), 'dsh-reactive-browser-'));
+await writeFile(join(home, 'native.txt'), '原生文件第一份');
+const files = createNativeFiles({ service: 'provided' });
 const current = new BehaviorSubject(new Date('2026-10-26T00:00:00Z'));
 let executions = 0, queries = 0, models = 0, parsedAmount, nativeActionGate;
 const owner = implementOperation(operation, { locate: () => ({ status: 'unknown' }), observe() {
@@ -89,7 +95,13 @@ const definition = defineApplication({ name: 'browser-proof', admit: async () =>
     return Expose({ surface, value: { views: { current }, actions: { check: action } } });
   } }),
 })] });
-const runtime = await createRuntime(() => definition, { home: join(home, 'home'), operations: [owner], tools: 'native',
+const runtime = await createRuntime(() => definition, { home: join(home, 'home'), operations: [owner], files, tools: 'native',
+  async installNative(ctx) {
+    await requireActivePlugin(ctx.plugin(Registry));
+    await requireActivePlugin(ctx.plugin(SandboxPolicy, { mode: 'read-only', workspaceRoot: home }));
+    await requireActivePlugin(ctx.plugin(WorkspaceFiles, {}));
+    await files.install(ctx, join(home, 'home'));
+  },
   model: nativeModel({ provider: 'browser-proof', model: 'unused', create: () => new class extends LlmAdapter {
     async *stream() { models++; throw new Error('SDK_MUST_NOT_WAKE_MODEL'); }
   }() }) });
@@ -97,13 +109,14 @@ const workspace = await runtime.application.createWorkspace({ directory: home, t
 const sessionId = randomUUID();
 const credential = randomUUID();
 let origin;
-const gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
+const gateway = await mountProgramGateway(runtime.native, { application: runtime.application, registry: 'provided',
   model: { provider: 'browser-proof', model: 'unused' }, participant: principal => ({ participant: 'human', actorId: principal.id }),
   access: service => service.registerPolicy('browser-participant', { bindings() {
     return [{ role: { name: 'create', resource: 'workspace', actions: ['reactivePrograms/create'] }, resource: { kind: 'workspace', id: workspace.workspaceId } },
       { role: { name: 'native-client-catalog', resource: 'global', actions: ['session/control', 'session/list'] }, resource: { kind: 'global' } },
       { role: {
         name: 'participate', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/view', 'reactivePrograms/questions', 'reactivePrograms/resolveAction', 'reactivePrograms/startAction',
+          'reactivePrograms/fileRead', 'reactivePrograms/fileReadBytes', 'reactivePrograms/fileStat', 'reactivePrograms/fileList', 'reactivePrograms/fileChanges',
           'reactivePrograms/actionResult', 'reactivePrograms/observeAction', 'reactivePrograms/observeOperation', 'reactivePrograms/observeInvocationOperation', 'session/list', 'session/control', 'session/follow', 'session/projections', 'session/page', 'commands/list'],
       }, resource: { kind: 'session', id: sessionId } }];
   } }), carrier: { async authenticate(request) {
@@ -121,6 +134,11 @@ const app = createServer(async (incoming, outgoing) => {
     upstream.on('error', error => outgoing.destroy(error)); incoming.once('aborted', () => upstream.destroy()); incoming.pipe(upstream); return;
   }
   if (incoming.url === '/setup' || incoming.url === '/proof') { outgoing.setHeader('content-type', 'application/json'); outgoing.end(JSON.stringify({ workspaceId: workspace.workspaceId, sessionId, executions, queries, parsedAmount, models })); return; }
+  if (incoming.url === '/native-file/update' && incoming.method === 'POST') {
+    if (!nativeAssets) { outgoing.writeHead(503); outgoing.end('NATIVE_ASSETS_REQUIRED'); return; }
+    await writeFile(join(home, 'native.txt'), '原生文件实际更新');
+    outgoing.setHeader('content-type', 'application/json'); outgoing.end(JSON.stringify({ ok: true })); return;
+  }
   if (incoming.url?.startsWith('/native-action/')) {
     if (!nativeAssets) { outgoing.writeHead(503); outgoing.end('NATIVE_ASSETS_REQUIRED'); return; }
     outgoing.setHeader('content-type', 'application/json');
@@ -165,5 +183,5 @@ app.on('upgrade', (incoming, downstream, head) => {
 app.listen(0, '127.0.0.1'); await once(app, 'listening'); origin = 'http://127.0.0.1:' + app.address().port;
 console.log(JSON.stringify({ url: origin, nativeUrl: origin + '/native', coreEntry, browserClient, assets, nativeAssets }));
 let closing;
-const close = () => closing ??= (async () => { nativeActionGate?.release.resolve(); await gateway.close(); await runtime.dispose(); app.closeAllConnections(); app.close(); })();
+const close = () => closing ??= (async () => { nativeActionGate?.release.resolve(); await gateway.close(); await files.dispose(); await runtime.dispose(); app.closeAllConnections(); app.close(); })();
 process.once('SIGINT', () => void close()); process.once('SIGTERM', () => void close());

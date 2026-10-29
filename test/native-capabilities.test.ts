@@ -1,27 +1,34 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate as immediate } from 'node:timers/promises';
 import { Fragment, createElement as h, useLayoutEffect } from 'react';
 import { BehaviorSubject, Observable, Subject, filter, firstValueFrom, from, tap, timeout } from 'rxjs';
 import { LlmAdapter, type GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { assembleContextFor } from '@deepseek-ai/dsh-agent';
-import { Context } from '@deepseek-ai/cordis';
+import { Context, symbols } from '@deepseek-ai/cordis';
+import Registry from '@deepseek-ai/dsh-typert-registry';
+import SandboxPolicy from '@deepseek-ai/dsh-sandbox-policy';
+import WorkspaceFiles from '@deepseek-ai/dsh-api-workspace-files';
+import type { FileSystem } from '@deepseek-ai/dsh-fs';
+import type { FileUploads } from '@deepseek-ai/dsh-client-file-upload';
 import LocalJobs from '@deepseek-ai/dsh-jobs-local';
 import * as jobTools from '@deepseek-ai/dsh-tool-jobs';
 import type { JobOutcome } from '@deepseek-ai/dsh-jobs';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import type { ToolDefinition, ToolExecutionResult } from '@deepseek-ai/dsh-tools';
-import { collectionSurface, defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, composeSurface, readActionPresentation, ConversationAccessRevokedError, Scope, z, type NativeToolCall, type NativeToolAdmission, type ProgramSession } from '@hanger-source/dsh-reactive';
+import { collectionSurface, defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, composeSurface, readActionPresentation, ConversationAccessRevokedError, SessionFileOutsideWorkspaceError, Scope, ScopeDisposedError, z, type NativeToolCall, type NativeToolAdmission, type ProgramSession, type SessionFiles } from '@hanger-source/dsh-reactive';
 import { implementProgram, NativeTools, Offer, Expose, Module, useAction, useObservable, useResource, useRelation } from '@hanger-source/dsh-reactive/program';
 import { boot, text, tool } from './native-support.ts';
 import type { ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
 import { createRuntime, nativeModel, requireActivePlugin } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeJobs, JobId, type NativeSessionJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
 import { createNativeApproval } from '@hanger-source/dsh-reactive-dsh/approval';
+import { createNativeFiles } from '@hanger-source/dsh-reactive-dsh/files';
 import { NativeCapabilityOwner, nativeObservation } from '../packages/dsh/src/native-capability.ts';
 
 declare module '@deepseek-ai/dsh-jobs/view' {
@@ -408,6 +415,182 @@ test('声明未安装的原生工具在模型装配边界硬失败，不静默�
     assert.equal(session.snapshot().requests.missing?.state, 'settled');
     session.release();
   } finally { await app.dispose(); }
+});
+
+test('本地Files惰性借入精确会话，真实文件变化与取消不越过范围，Host退出等待原生I/O和unwatch', { timeout: 20_000 }, async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-reactive-local-files-')));
+  const directory = join(root, 'workspace'), subdirectory = join(directory, 'sub');
+  await mkdir(subdirectory, { recursive: true });
+  const artifact = join(directory, 'artifact.txt');
+  await writeFile(artifact, 'title\ninitial\n');
+  await writeFile(join(subdirectory, 'base.txt'), 'base');
+  await writeFile(join(subdirectory, 'artifact.bin'), new Uint8Array([7, 0, 255, 9]));
+  await writeFile(join(root, 'outside.txt'), '工作区外的真实文件');
+  const capability = createNativeFiles({ service: 'provided' });
+  const program = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+  const programFiles = new Map<string, SessionFiles>();
+  const errors: unknown[] = [];
+  let models = 0;
+  const definition = defineApplication({ name: 'local-files', admit: async () => {}, environments: [defineEnvironment({
+    id: 'work', instructions: '文件读取和观察不启动模型', program: implementProgram(program, { Component({ conversation }) {
+      const files = conversation.files;
+      useLayoutEffect(() => { programFiles.set(conversation.identity.sessionId, files); }, [conversation, files]);
+      return null;
+    } }),
+  })] });
+  const releaseResolve = Promise.withResolvers<void>(), resolveEntered = Promise.withResolvers<void>();
+  const releaseRead = Promise.withResolvers<void>(), readEntered = Promise.withResolvers<void>();
+  const releaseUnwatch = Promise.withResolvers<void>(), unwatchEntered = Promise.withResolvers<void>();
+  const releaseUpload = Promise.withResolvers<void>(), uploadEntered = Promise.withResolvers<void>();
+  const subscriptions: Array<{ unsubscribe(): void }> = [];
+  const runtime = await createRuntime(() => definition, { home: join(root, 'home'), files: capability,
+    actorId: 'local-file-reader', onError: event => errors.push(event.error),
+    async installNative(ctx, home) {
+      await requireActivePlugin(ctx.plugin(Registry));
+      await requireActivePlugin(ctx.plugin(SandboxPolicy, { mode: 'read-only', workspaceRoot: directory }));
+      await requireActivePlugin(ctx.plugin(WorkspaceFiles, { maxLines: 8, maxBytes: 4096, maxFileBytes: 4096, maxEntries: 16 }));
+      await capability.install(ctx, home);
+    },
+    model: nativeModel({ provider: 'local-files', model: 'unused', create: () => new class extends LlmAdapter {
+      stream() { models++; return text('文件读取无需模型'); }
+    }() }),
+  });
+  try {
+    const fs: FileSystem = Reflect.get(runtime.native.fs, symbols.original);
+    const service: WorkspaceFiles = Reflect.get(runtime.native.workspaceFiles, symbols.original);
+    const uploads: FileUploads = Reflect.get(runtime.native.fileUploads, symbols.original);
+    const resolve = fs.resolve.bind(fs), watch = fs.watch.bind(fs), read = service.read.bind(service), bytes = service.readBytes.bind(service);
+    const upload = uploads.upload.bind(uploads);
+    uploads.upload = async (...args) => {
+      const receipt = await upload(...args);
+      uploadEntered.resolve(); await releaseUpload.promise;
+      return receipt;
+    };
+    const resolved: string[] = [], watches: Array<{ path: string; active: boolean; closed: PromiseWithResolvers<void> }> = [];
+    let holdResolve = false, holdRead = false, holdUnwatch = false, reads = 0, requireWatch = false;
+    fs.resolve = async (path, options) => {
+      resolved.push(path);
+      const target = await resolve(path, options);
+      if (holdResolve && path === directory && options?.cwd === undefined) {
+        holdResolve = false; resolveEntered.resolve(); await releaseResolve.promise;
+      }
+      return target;
+    };
+    fs.watch = async (target, notify, signal) => {
+      const unwatch = await watch(target, notify, signal);
+      const current = { path: fs.processPath(target), active: true, closed: Promise.withResolvers<void>() };
+      watches.push(current);
+      return async () => {
+        await unwatch();
+        if (holdUnwatch) { unwatchEntered.resolve(); await releaseUnwatch.promise; }
+        current.active = false; current.closed.resolve();
+      };
+    };
+    service.read = async (scope, path, range, signal) => {
+      reads++;
+      if (requireWatch && path === 'artifact.txt')
+        assert.ok(watches.some(current => current.active && current.path === artifact), '正式watch ready前不得读取资源切面');
+      return read(scope, path, range, signal);
+    };
+    service.readBytes = async (...args) => {
+      const value = await bytes(...args);
+      if (holdRead) { holdRead = false; readEntered.resolve(); await releaseRead.promise; }
+      return value;
+    };
+    const workspace = await runtime.application.createWorkspace({ directory });
+    const session = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
+    const baseline = { resolves: resolved.length, watches: watches.length, reads };
+    const files = session.files, nativeFiles = capability.forSession(session);
+    const range = { offset: 2, limit: 1 }, page = files.text('artifact.txt', range), metadata = files.metadata('artifact.txt');
+    range.offset = 1;
+    assert.equal(session.files, files); assert.equal(files, nativeFiles);
+    assert.equal(files.text('artifact.txt', { offset: 2, limit: 1 }), page);
+    assert.deepEqual({ resolves: resolved.length, watches: watches.length, reads }, baseline, '取得Files与资源对象不开始I/O或watch');
+    assert.throws(() => capability.forSession({ id: session.id }), /REACTIVE_NATIVE_SESSION_REQUIRED/u);
+    assert.deepEqual(await files.readBytes('artifact.bin', { baseFile: 'sub/base.txt', range: { offset: 1, length: 2 } }),
+      { ...(await files.stat('sub/artifact.bin')), offset: 1, data: new Uint8Array([0, 255]), eof: false });
+    for (const [path, baseFile, denied] of [
+      ['../outside.txt', undefined, '../outside.txt'],
+      ['artifact.txt', '../outside.txt', '../outside.txt'],
+      ['../../outside.txt', 'sub/base.txt', '../../outside.txt'],
+    ] as const) {
+      await assert.rejects(files.readBytes(path, { ...(baseFile === undefined ? {} : { baseFile }) }),
+        error => error instanceof SessionFileOutsideWorkspaceError && error.path === denied);
+    }
+    const beforeWatch = watches.length;
+    requireWatch = true;
+    subscriptions.push(page.values$.subscribe(), metadata.values$.subscribe());
+    assert.equal((await page.read()).text, 'initial'); await metadata.read();
+    assert.equal(watches.length, beforeWatch + 1, '同路径文本和元数据共享一个真实watch');
+    const changed = firstValueFrom(page.values$.pipe(filter(value => value.text === 'changed'), timeout(5_000)));
+    await writeFile(artifact, 'title\nchanged\n'); await changed;
+    requireWatch = false;
+    const sharedWatch = watches.at(-1)!;
+    subscriptions.splice(0).forEach(subscription => subscription.unsubscribe());
+    await sharedWatch.closed.promise;
+    assert.equal(page.peek().status, 'pending');
+    await runtime.application.close(session.id);
+    assert.equal(runtime.native.agents.get(SessionId(session.id)), undefined);
+    assert.equal((await programFiles.get(session.id)!.readText('artifact.txt')).text, 'title\nchanged');
+    assert.equal(runtime.native.agents.get(SessionId(session.id)), undefined, '冷文件读取不激活Agent');
+
+    const cancelled = new AbortController(), reason = new Error('LOCAL_FILE_RESOLVE_CONSUMER_LEFT');
+    const beforeResolve = resolved.length, beforeRead = reads;
+    holdResolve = true;
+    const pending = files.readText('artifact.txt', {}, { signal: cancelled.signal });
+    let rejected = false;
+    const rejection = assert.rejects(pending, error => error === reason).then(() => { rejected = true; });
+    await resolveEntered.promise; cancelled.abort(reason); await immediate();
+    assert.equal(rejected, true, '不合作的真实resolve回执不能拖住消费者取消'); await rejection;
+    releaseResolve.resolve(); await immediate();
+    assert.deepEqual(resolved.slice(beforeResolve), [directory], '迟到路径解析不能继续目标解析或启动文件读取');
+    assert.equal(reads, beforeRead);
+
+    subscriptions.push(page.values$.subscribe()); await page.read();
+    const watchCaller = new AbortController(), watchReason = new Error('LOCAL_FILE_WATCH_CONSUMER_LEFT');
+    const explicitWatch = files.watch('artifact.txt', { signal: watchCaller.signal });
+    await firstValueFrom(explicitWatch.changes$.pipe(filter(frame => frame.kind === 'ready'), timeout(5_000)));
+    let watchFailure: unknown, watchClosed = false;
+    subscriptions.push(explicitWatch.changes$.subscribe({ error: error => { watchFailure = error; } }));
+    void explicitWatch.closed.then(() => { watchClosed = true; }, error => { errors.push(error); });
+    holdUnwatch = true;
+    watchCaller.abort(watchReason); await immediate();
+    assert.equal(watchFailure, watchReason, 'raw watch取消立即交原reason，不等正式unwatch');
+    await unwatchEntered.promise;
+    assert.equal(watchClosed, false, '观察退出不冒充实际watch已经释放');
+    const uploading = session.uploadFile(new Uint8Array([4, 5, 6]), { name: 'host-shutdown.bin' });
+    let uploadSettled = false;
+    void uploading.result.then(() => { uploadSettled = true; }, () => { uploadSettled = true; });
+    await uploadEntered.promise;
+    holdRead = true;
+    let readCancelled = false;
+    const reading = files.readBytes('sub/artifact.bin');
+    const stopped = assert.rejects(reading, error => error instanceof ScopeDisposedError).then(() => { readCancelled = true; });
+    await readEntered.promise;
+    const closing = runtime.application.dispose();
+    let disposed = false; void closing.then(() => { disposed = true; }, () => { disposed = true; });
+    await immediate();
+    assert.equal(uploadSettled, false, 'Host仍在等待已经持久化但尚未交付的原生上传回执');
+    assert.equal(readCancelled, true, 'Host退出先撤Files等待，不能拖到原生上传和Agent结算后');
+    assert.throws(() => files.text('artifact.txt'), error => error instanceof ScopeDisposedError, '保留的旧Files读侧不能越过Host退出继续读取');
+    assert.throws(() => page.peek(), error => error instanceof ScopeDisposedError);
+    releaseUpload.resolve(); await uploading.result; await stopped;
+    await unwatchEntered.promise; await immediate();
+    assert.equal(disposed, false, 'Host退出等待已借文件读侧的真实unwatch');
+    releaseUnwatch.resolve(); await Promise.all(watches.map(current => current.closed.promise)); await immediate();
+    assert.equal(disposed, false, 'unwatch完成后仍须等不合作的实际读取回执');
+    releaseRead.resolve(); await closing;
+    assert.equal(watchClosed, true);
+    assert.equal(nativeFiles.dispose(), nativeFiles.dispose(), '重复释放加入同一真实清理回执');
+    assert.equal((await service.stat({ sessionId: SessionId(session.id), workspaceRoot: directory }, 'artifact.txt', new AbortController().signal)).absolutePath,
+      artifact, 'Host只退出借入读侧，正式外部WorkspaceFiles仍由原宿主持有');
+    assert.throws(() => session.files);
+    assert.equal(models, 0); assert.deepEqual(errors, []);
+  } finally {
+    releaseResolve.resolve(); releaseRead.resolve(); releaseUnwatch.resolve(); releaseUpload.resolve();
+    subscriptions.forEach(subscription => subscription.unsubscribe());
+    await runtime.dispose(); await capability.dispose();
+  }
 });
 
 test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕实际Node进程持有观察、停止及owner释放', { timeout: 15_000 }, async t => {

@@ -6,7 +6,8 @@ import { assertProgramDefinition, type HumanQuestion,
   type CancellationOptions, type Invocation, type InvocationActivity, type Json,
   type ViewValue, type Observation, type HumanInputState, type HumanSnapshot, type HumanQuestionSnapshot, type HumanWaitFrame,
   type ConversationProgressSnapshot, type RequestHandle, type RequestSnapshot, type ProgramParsedInput,
-  shareResource, mapResource, type ToolActionBinding } from '@hanger-source/dsh-reactive';
+  shareResource, mapResource, ResourceReader, type SessionFiles, type FileResource, type FileWatch,
+  type ToolActionBinding } from '@hanger-source/dsh-reactive';
 import { Scope } from '@hanger-source/dsh-reactive/reactivity';
 import type { RemoteProgramSession } from '@hanger-source/dsh-reactive-client';
 import { assertProgramSessionConnection } from '@hanger-source/dsh-reactive-client';
@@ -30,11 +31,17 @@ export interface NativeRequestHandle<T = Json> {
   readonly events$: RequestHandle<T>['events$'];
 }
 
+interface NativeFileWatchLease {
+  watch?: FileWatch;
+  failure?: { readonly error: unknown };
+  readonly closed: Promise<void>;
+}
+
 /**
  * 一个明确 Program 与真实 Client Session generation 的借用绑定。
  * SDK handle / SessionReference 由取得它们的 owner 释放；本对象只拥有 UI 观察。
  */
-export class NativeSession<P extends ProgramContract> implements Disposable {
+export class NativeSession<P extends ProgramContract> implements Disposable, AsyncDisposable {
   readonly scope = new Scope();
   readonly id: string;
   readonly questions: HostObservable<Observation<HumanInputState>>;
@@ -44,6 +51,10 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
   #questions = new Map<string, NativeHumanQuestion>();
   #requests = new Map<string, NativeRequestHandle<ProgramParsedInput<P>>>();
   #progress?: HostObservable<Observation<ConversationProgressSnapshot>>;
+  #files?: SessionFiles;
+  #fileWatches = new Set<NativeFileWatchLease>();
+  #cleanupFailures = new Set<unknown>();
+  #closing?: Promise<void>;
 
   /** @internal 通过 bindNativeSession 建立并核验关联。 */
   constructor(readonly definition: P, readonly native: SessionBinding, private readonly sdk: RemoteProgramSession<P>) {
@@ -51,7 +62,7 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
     this.id = native.sessionId;
     this.assertActive();
     const release = native.ctx.effect(() => () => this.dispose(), 'reactive native Session binding');
-    this.scope.own(() => release());
+    this.scope.own(() => { void Promise.resolve(release()).catch(error => this.scope.observerError(error)); });
     this.scope.own(() => { this.#questions.clear(); this.#requests.clear(); });
     this.human = this.resource(sdk.human);
     const options = { signal: this.scope.signal, onObserverError: (error: unknown) => this.scope.observerError(error) };
@@ -108,6 +119,77 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
   get progress(): HostObservable<Observation<ConversationProgressSnapshot>> {
     this.assertActive();
     return this.#progress ??= this.resource(this.sdk.progress);
+  }
+
+  /** 借用原SDK的文件事实；UI只拥有本读侧以及从本入口创建的watch。 */
+  get files(): SessionFiles {
+    this.assertActive();
+    if (this.#files) return this.#files;
+    const files = this.sdk.files;
+    const resources = new WeakMap<object, unknown>();
+    const resource = <T>(source: FileResource<T>): FileResource<T> => {
+      this.assertActive();
+      const previous = resources.get(source);
+      if (previous) return previous as FileResource<T>;
+      const reader = new ResourceReader({
+        observations$: defer(() => { this.assertActive(); return source.observations$; }),
+        peek: () => { this.assertActive(); const value = source.peek(); this.assertActive(); return value; },
+      }, { signal: this.scope.signal, onObserverError: error => this.scope.observerError(error),
+        onCleanupError: error => this.#cleanupFailures.add(error) });
+      const borrowed = Object.assign(reader, { invalidate: () => { this.assertActive(); source.invalidate(); } });
+      resources.set(source, borrowed);
+      return borrowed;
+    };
+    return this.#files = Object.freeze({
+      text: (path, range) => { this.assertActive(); return resource(files.text(path, range)); },
+      metadata: path => { this.assertActive(); return resource(files.metadata(path)); },
+      directory: path => { this.assertActive(); return resource(files.directory(path)); },
+      readText: async (path, range, options) => {
+        const value = await files.readText(path, range, this.options(options)); this.assertActive(); return value;
+      },
+      readBytes: async (path, range, options) => {
+        const value = await files.readBytes(path, range, this.options(options)); this.assertActive(); return value;
+      },
+      stat: async (path, options) => {
+        const value = await files.stat(path, this.options(options)); this.assertActive(); return value;
+      },
+      list: async (path, options) => {
+        const value = await files.list(path, this.options(options)); this.assertActive(); return value;
+      },
+      watch: (path, options) => this.fileWatch(files, path, options),
+    } satisfies SessionFiles);
+  }
+
+  private fileWatch(files: SessionFiles, path: string, options?: CancellationOptions): FileWatch {
+    const cancellation = this.options(options);
+    const completion = Promise.withResolvers<void>();
+    const lease: NativeFileWatchLease = { closed: completion.promise };
+    // 原watch构造中可以重入退出；先登记这次实际取得，退出方才能加入它的关闭回执。
+    this.#fileWatches.add(lease);
+    void lease.closed.catch(() => {});
+    try {
+      const watch = files.watch(path, cancellation);
+      lease.watch = watch;
+      // 只记原watch的失败身份，不复制帧；业务流失败不能掩盖随后不同的实际释放错误。
+      const observation = watch.changes$.subscribe({ error: error => { lease.failure = { error }; } });
+      const finish = () => {
+        try { observation.unsubscribe(); } catch (error) { this.#cleanupFailures.add(error); }
+        this.#fileWatches.delete(lease);
+      };
+      void watch.closed.then(() => {
+        finish(); completion.resolve();
+      }, error => {
+        if (!lease.failure || error !== lease.failure.error) this.#cleanupFailures.add(error);
+        finish(); completion.reject(error);
+      });
+      if (this.scope.disposed) void watch.dispose().catch(error => {
+        if (!lease.failure || error !== lease.failure.error) this.#cleanupFailures.add(error);
+      });
+      return watch;
+    } catch (error) {
+      this.#fileWatches.delete(lease); completion.resolve();
+      throw error;
+    }
   }
 
   request(requestId: string): NativeRequestHandle<ProgramParsedInput<P>> {
@@ -190,9 +272,27 @@ export class NativeSession<P extends ProgramContract> implements Disposable {
     if (question.origin.sessionId !== this.id) throw new Error('REACTIVE_NATIVE_QUESTION_SESSION_MISMATCH');
   }
 
-  /** 只撤观察和 UI 贡献；不释放借入句柄，不取消 Action 或 Operation。 */
-  dispose(): void { this.scope.dispose(); }
-  [Symbol.dispose](): void { this.dispose(); }
+  /** 立即撤UI资格，等待本UI创建的watch实际关闭；不释放借入SDK或取消已受理业务。 */
+  dispose(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    const completion = Promise.withResolvers<void>();
+    this.#closing = completion.promise;
+    void this.#closing.catch(() => {});
+    const watches = [...this.#fileWatches];
+    try { this.scope.dispose(); } catch (error) { this.#cleanupFailures.add(error); }
+    void Promise.resolve().then(async () => {
+      await Promise.all(watches.map(async lease => {
+        const stopped = await Promise.allSettled([Promise.resolve().then(() => lease.watch?.dispose()), lease.closed]);
+        for (const result of stopped) if (result.status === 'rejected' && (!lease.failure || result.reason !== lease.failure.error))
+          this.#cleanupFailures.add(result.reason);
+      }));
+      if (this.#cleanupFailures.size === 1) throw [...this.#cleanupFailures][0];
+      if (this.#cleanupFailures.size) throw new AggregateError([...this.#cleanupFailures], 'REACTIVE_NATIVE_SESSION_DISPOSAL_FAILED');
+    }).then(completion.resolve, completion.reject);
+    return this.#closing;
+  }
+  [Symbol.dispose](): void { void this.dispose().catch(error => this.scope.observerError(error)); }
+  [Symbol.asyncDispose](): Promise<void> { return this.dispose(); }
 }
 
 export function bindNativeSession<P extends ProgramContract>(program: P, native: SessionBinding, sdk: RemoteProgramSession<P>): NativeSession<P> {

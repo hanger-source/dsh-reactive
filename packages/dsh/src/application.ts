@@ -211,7 +211,7 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
             catch (error) {
                 failures.push(error);
             }
-            failures.push(...this.sessions.releasePrograms());
+            failures.push(...await this.sessions.releasePrograms());
             this.delegations.dispose();
             try {
                 this.workspaces.dispose();

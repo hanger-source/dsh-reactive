@@ -11,7 +11,7 @@ import type { ProgramAddress } from '@hanger-source/dsh-reactive-client/types';
 import * as remote from '@hanger-source/dsh-reactive-client/remote';
 import type { NativeActionViews, NativeSession, NativeSessionReference } from '@hanger-source/dsh-reactive-native-ui';
 import type { ProgramContract } from '@hanger-source/dsh-reactive';
-export { sessionResources, sessionFileUpload, receiveFileUpload, callPublishedAction } from './consumer-session.js';
+export { sessionResources, sessionFiles, sessionFileUpload, receiveFileUpload, callPublishedAction } from './consumer-session.js';
 import { invocationReceipt } from './consumer-session.js';
 
 const date = z.codec(z.iso.datetime(), z.date(), { decode: value => new Date(value), encode: value => value.toISOString() });
@@ -31,4 +31,6 @@ export const address: ProgramAddress = { sessionId: 'release-client-entries', pr
 export const disposeTransport = (value: transport.AuthenticatedTransport): PromiseLike<void> => value[Symbol.asyncDispose]();
 export const disposeNativeReference = <P extends ProgramContract>(value: NativeSessionReference<P>): PromiseLike<void> => value[Symbol.asyncDispose]();
 export const disposeNativeSession = <P extends ProgramContract>(value: NativeSession<P>): void => value[Symbol.dispose]();
+export const closeNativeSession = <P extends ProgramContract>(value: NativeSession<P>): PromiseLike<void> => value[Symbol.asyncDispose]();
+export const nativeFile = <P extends ProgramContract>(value: NativeSession<P>, path: string) => value.resource(value.files.text(path));
 export const disposeNativeActionViews = (value: NativeActionViews): void => value[Symbol.dispose]();

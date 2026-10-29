@@ -16,6 +16,8 @@ import { serveRemoteCarrier, type RemoteCarrier, type RemoteCarrierOptions } fro
 import { registerProgramEvents } from './events.ts';
 
 export interface ProgramGatewayOptions<E extends readonly AnyEnvironment[] = readonly AnyEnvironment[]> extends ProgramRemoteOptions<E> {
+  /** local创建本Gateway的Registry；provided明确借用宿主已有Registry，不接管其寿命。 */
+  readonly registry?: 'local' | 'provided';
   readonly model: { readonly provider: string; readonly model: string; readonly reasoningEffort?: string };
   readonly carrier: RemoteCarrierOptions;
   /** 应用登记实际 principal policy；框架不授予 owner 或推测业务角色。 */
@@ -24,12 +26,15 @@ export interface ProgramGatewayOptions<E extends readonly AnyEnvironment[] = rea
 
 /** 在已有 Runtime.native 安装官方 Controller/Gateway 和应用认证的物理 carrier。 */
 export async function mountProgramGateway<E extends readonly AnyEnvironment[]>(ctx: Context, options: ProgramGatewayOptions<E>): Promise<RemoteCarrier> {
+  const registry = options.registry ?? 'local';
+  if (registry !== 'local' && registry !== 'provided') throw new Error('REACTIVE_REMOTE_REGISTRY_MODE_INVALID');
+  if (registry === 'provided' && !ctx.get('typert')) throw new Error('REACTIVE_REMOTE_REGISTRY_REQUIRED');
   for (const name of ['attachments', 'commands', 'fileUploads', 'connection', 'credentials'] as const) {
     if (!ctx.get(name)) throw new Error('REACTIVE_RUNTIME_INPUT_SERVICE_REQUIRED:' + name);
   }
   let carrier: RemoteCarrier | undefined;
   const fiber = ctx.plugin(async host => {
-    await host.plugin(Registry);
+    if (registry === 'local') await host.plugin(Registry);
     await host.plugin(RemoteAccess);
     await host.plugin(Gateway);
     await host.plugin(DefaultModel, options.model);

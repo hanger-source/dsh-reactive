@@ -21,7 +21,10 @@ import type { ConversationSession, LiveConversation } from './session.ts';
 import type { ConversationObservations } from './observations.ts';
 import type { ConversationInputs } from './inputs.ts';
 import type { ConversationPrograms } from '../programs/preparation.ts';
-import { registerNativeSession } from './session-access.ts';
+import { nativeSessionAccess, registerNativeSession } from './session-access.ts';
+import { SessionFilesUnavailableError, type SessionFiles } from '@hanger-source/dsh-reactive/files';
+import type { NativeSessionFiles } from '../files.ts';
+import type { NativeSessionSource } from '../native-capability.ts';
 export class CreationIncompleteError extends Error {
     constructor(readonly reference: CreationReference, cause: unknown) {
         super('REACTIVE_WORKSPACE_CREATION_INCOMPLETE', { cause });
@@ -35,6 +38,8 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
     #closing = new Map<string, Promise<void>>();
     #owned = new Map<string, AgentHandle>();
     #cleanupFailures = new Set<unknown>();
+    #fileReaders = new WeakMap<object, NativeSessionFiles>();
+    #fileClosings = new Set<Promise<void>>();
     #rootAdmissions = new WeakMap<Agent, {
         workspace: ManagedWorkspace;
         environment: AnyEnvironment;
@@ -154,9 +159,8 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         return failures;
     }
     stopPresets(): Promise<void> { return this.#presets.dispose(); }
-    releasePrograms(): unknown[] {
-        const failures: unknown[] = [...this.#cleanupFailures];
-        this.#cleanupFailures.clear();
+    async releasePrograms(): Promise<unknown[]> {
+        const failures: unknown[] = [];
         for (const entry of this.#sessions.values()) {
             try {
                 entry.scope.dispose();
@@ -166,6 +170,10 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             }
         }
         this.#sessions.clear();
+        // 资格退出同步发生；应用关闭仍加入自己取得读侧的实际I/O与unwatch回执。
+        while (this.#fileClosings.size) await Promise.allSettled([...this.#fileClosings]);
+        failures.push(...this.#cleanupFailures);
+        this.#cleanupFailures.clear();
         return failures;
     }
     collect(entry: ConversationSession) {
@@ -229,6 +237,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
                 workspace, environment, implementation, child, conversation, state, program, views, pins: 0, live };
             this.inputs().bindConversation(entry);
             this.registerSessionAccess(conversation, entry, program.signal, () => program.signal.throwIfAborted());
+            conversation[conversationBindings]().setFiles(() => this.filesFor(conversation));
             if (agent) this.bindAgent(entry, agent, previous);
             program.mount();
             this.#sessions.set(inspection.meta.id, entry);
@@ -346,6 +355,31 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
     assertUploadOpen(session: ConversationSession) {
         this.assertSessionWorkspace(session);
         if (this.#closing.has(session.header.id)) throw new Error('REACTIVE_CONVERSATION_CLOSING');
+    }
+    filesFor(source: NativeSessionSource): SessionFiles {
+        this.assertActive();
+        const access = nativeSessionAccess(source);
+        const cached = this.#fileReaders.get(source);
+        if (cached) return cached;
+        if (!this.options.files) throw new SessionFilesUnavailableError(access.sessionId);
+        const reader = this.options.files.forSession(source);
+        this.#fileReaders.set(source, reader);
+        const close = () => {
+            let completion: Promise<void>;
+            try { completion = reader.dispose(); }
+            catch (error) { this.#cleanupFailures.add(error); return; }
+            this.#fileClosings.add(completion);
+            void completion.then(() => this.#fileClosings.delete(completion), error => {
+                this.#cleanupFailures.add(error);
+                this.#fileClosings.delete(completion);
+            });
+        };
+        const signal = AbortSignal.any([this.signal, access.signal]);
+        signal.addEventListener('abort', close, { once: true });
+        if (signal.aborted) { close(); signal.throwIfAborted(); }
+        this.assertActive();
+        access.assertCurrent();
+        return reader;
     }
     registerSessionAccess(handle: object, session: ConversationSession, signal: AbortSignal, assertHandle: () => void) {
         const assertCurrent = () => {

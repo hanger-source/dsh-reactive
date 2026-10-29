@@ -14,7 +14,7 @@ import { type OperationContract, type OperationHandle, type OperationReference, 
 import { type ActionInvocation } from "@hanger-source/dsh-reactive/kernel";
 import { type HumanAnswer, type HumanForegroundQuestion, type HumanInputState, type HumanWaitFrame } from "@hanger-source/dsh-reactive/kernel";
 import { type ConversationActivity } from "@hanger-source/dsh-reactive/kernel";
-import { type FileUploadSource, type FileUploadInvocation, type EncodedFileUploadRequest, type UploadFileOptions, type Json } from "@hanger-source/dsh-reactive/kernel";
+import { type FileUploadSource, type FileUploadInvocation, type EncodedFileUploadRequest, type UploadFileOptions, type Json, type SessionFiles } from "@hanger-source/dsh-reactive/kernel";
 import type { AssistantProgressFrame, ConversationEvent } from "@hanger-source/dsh-reactive/kernel";
 import { createRequestHandle, type ConversationProgressSnapshot, type RequestHandle } from "@hanger-source/dsh-reactive/kernel";
 import type { ProgramContract, ProgramInput, ProgramParsedInput } from "@hanger-source/dsh-reactive/kernel";
@@ -133,6 +133,7 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
     /** P 由宿主创建句柄时的实际 Program 绑定确定；返回原对象，不重建合同。 */
     get definition(): P { this.assertActive(); return this.entry.implementation.definition as P; }
     get identity() { return this.entry.conversation.identity; }
+    get files(): SessionFiles { this.assertActive(); return this.sessions.filesFor(this); }
     /** 当前环境的纯 Surface 合同；远程宿主复用其 schema，不读取业务实现。 */
     get surface(): P['surface'] { this.assertActive(); return this.entry.implementation.definition.surface; }
     get actionManifest(): ResourceReader<readonly ToolActionBinding[]> {

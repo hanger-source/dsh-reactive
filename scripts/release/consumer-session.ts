@@ -1,5 +1,13 @@
 import type { ActionInput, CancellationOptions, FileUploadInvocation, FileUploadSource, FileUploadValue, Invocation, Json, ProgramContract, ProgramSessionClient, HumanProgramSessionClient, Surface, SurfaceClient, SurfaceMount, ViewValue } from '@hanger-source/dsh-reactive';
 import { combineResources, composeSurface, defineProgram, defineSurface, resourceView, selectSurface, shareResource, z } from '@hanger-source/dsh-reactive';
+import type { SessionFiles, FileResource, WorkspaceFileText, WorkspaceFileBytes } from '@hanger-source/dsh-reactive/files';
+
+export function sessionFiles<P extends ProgramContract>(session: ProgramSessionClient<P>, path: string) {
+  const files: SessionFiles = session.files;
+  const page: FileResource<WorkspaceFileText> = files.text(path);
+  return { page, combined: combineResources({ page, metadata: files.metadata(path) }),
+    bytes: (signal: AbortSignal): Promise<WorkspaceFileBytes> => files.readBytes(path, {}, { signal }) };
+}
 
 export function sessionControls<P extends ProgramContract>(session: HumanProgramSessionClient<P>, signal: AbortSignal) {
   return { pause: () => session.pause({ signal }), cancel: () => session.cancel({ signal }),

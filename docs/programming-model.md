@@ -431,6 +431,25 @@ views 提供领域值事件；observeView 保留当前 pending/ready/error，rea
 
 句柄 release 只结束该观察者。原生 Agent 活着时，会话程序继续存在；已进入业务 execute 的调用不因声明退出或页面断开而撤销。原生调用信号、显式调用信号及业务 owner 分别决定它们有权取消的工作。
 
+## 消费会话文件
+
+Program 的 conversation、本地与远程 Session SDK 提供共同 `files` 入口。宿主通过 `HostOptions.files` 或 `RuntimeOptions.files` 借入已安装的 NativeFiles；服务仍由宿主显式安装，不因读取文件启动模型或恢复 Agent。
+
+```ts
+const page = session.files.text('notes.txt', { offset: 0, limit: 100 });
+const current = await page.read({ signal });
+const metadata = session.files.metadata('notes.txt');
+const contents = session.files.directory('.');
+// 同一对象的 observations$ 保留 pending/error/ready，values$ 交给普通 RxJS。
+const combined = combineResources({ page, metadata, contents });
+```
+
+同一来源、路径与窗口复用资源对象，业务 hooks 直接 `useResource(page)`，派生沿 `mapResource` 或 `combineResources`。显式 `page.invalidate()` 重新取得权威切面，不重发写入。单次查询使用 `readText`、`readBytes`、`stat`、`list`；原始变化使用 `watch`，退出时等待其 `dispose()` 或 `closed`。字节不缓存为共享资源。路径与 `readBytes` 的 baseFile 都限制在实际会话 cwd；越界明确失败。
+
+资源 ready 是最近一次权威读取的切面，更新依赖原生失效通知。固定 rc.3 的本地 FS 使用 chokidar，同路径 change 在 50ms 内可能直接被抑制且没有尾通知，因此短窗口连续正文写入后不保证自动追上最终内容。已知写入完成的业务应显式 `page.invalidate()`；需要立即核验真实内容时使用单次查询。框架不增加轮询或另一套文件事实，也不把 watch 当成完整变更日志。
+
+SDK release 撤观察资格，Host 关闭等待本应用读侧的实际 I/O 和 unwatch；这与写文件业务的完成分开。远程读取沿认证 Gateway 核资格，重连先失效再等新 watch ready 重读。可选原生 UI 用 `native.resource(native.files.text(path))` 接正式资源，退出时 `await native.dispose()`；原 SDK 的销毁仍归其 owner。
+
 ## 观察一次请求
 
 输入受理后，沿原 requestId 观察实际进展。本地句柄和远程 SDK 使用相同的请求句柄：

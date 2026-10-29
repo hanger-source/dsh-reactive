@@ -38,17 +38,25 @@ export async function retainNativeSession<P extends SharedProgramContract>(
     closing = completion.promise;
     controller.abort(new Error('REACTIVE_NATIVE_SESSION_REFERENCE_RELEASED'));
     const failures: unknown[] = [];
-    try { session?.dispose(); } catch (error) { failures.push(error); }
-    try { reference?.release(); } catch (error) { failures.push(error); }
-    void Promise.resolve().then(() => client.dispose()).then(() => {
+    // UI先撤资格；它自己的watch清理失败也不能阻止归还本引用拥有的SDK与原生引用。
+    let ui: Promise<void> | undefined;
+    try { ui = session?.dispose(); } catch (error) { failures.push(error); }
+    void Promise.resolve().then(async () => {
+      try { await ui; } catch (error) { failures.push(error); }
+      try { reference?.release(); } catch (error) { failures.push(error); }
+      try { await client.dispose(); } catch (error) { failures.push(error); }
       if (failures.length) throw new AggregateError(failures, 'REACTIVE_NATIVE_SESSION_REFERENCE_RELEASE_FAILED');
-    }, error => {
-      throw new AggregateError([...failures, error], 'REACTIVE_NATIVE_SESSION_REFERENCE_RELEASE_FAILED');
     }).then(completion.resolve, completion.reject);
     return closing;
   };
   let forget: (() => Promise<void>) | undefined;
-  const release = (): Promise<void> => close().finally(() => forget?.());
+  const release = async (): Promise<void> => {
+    const failures = new Set<unknown>();
+    try { await close(); } catch (error) { failures.add(error); }
+    try { await forget?.(); } catch (error) { failures.add(error); }
+    if (failures.size === 1) throw [...failures][0];
+    if (failures.size) throw new AggregateError([...failures], 'REACTIVE_NATIVE_SESSION_REFERENCE_RELEASE_FAILED');
+  };
   const abort = (): void => controller.abort(options.signal?.reason);
   try {
     forget = ctx.effect(() => close, 'reactive native Session reference');

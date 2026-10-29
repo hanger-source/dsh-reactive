@@ -119,6 +119,8 @@ const sdk = await client.open(exactSessionBinding.sessionId);
 const native = bindNativeSession(InventoryProgram, exactSessionBinding, sdk);
 ```
 
+本地与远程 Session 的 `files` 具有同一纯 SessionFiles 合同；text/metadata/directory 可直接参与资源组合，readText/readBytes/stat/list 是显式权威读取。原生 UI 使用 `native.resource(native.files.text(path))` 将同一资源交给 HostObservable，不复制文件快照。`native.files.watch` 的退出归当前 UI，`await native.dispose()` 先同步撤资格，再等待本 UI 创建的 raw watch 实际关闭；它不销毁借入 SDK，也不取消写文件业务。NativeSession 支持 await using；同步 Symbol.dispose 只能发起退出，不能代表远端已经 unwatch。
+
 SDK 与 Session 句柄各有独立原生 Fiber。构造物理查询前登记 effect，已经开始的清理继续归同一 owner；退出要等待全部实际清理，再汇总失败。`ProgramJournal` 通过 `session.openEvents` 取得，不直接构造；手动 dispose 也不会脱离 Session 的退出等待。core Scope 仍管理同步响应图。
 
 `createAuthenticatedTransport(options)` 拥有自己建立的 socket 和 uplink。自建 Context 时，把 `transport.dispose()` 登记到该 Context 的 effect，再将同一 transport 交给 `installConnection`；Context 装配 owner 可显式等待同一个 dispose 回执取得物理清理错误。独立 createProgramClient/createServiceProgramClient 已登记并等待此回执。bindProgramClient/bindServiceProgramClient 借用已有 Connection，SDK 退出等待自己子流的实际清理；固定 rc.3 会吸收底层 iterator.return 的拒绝，外部 transport 的失败须由原装配 owner 等待 transport.dispose 取得，不能由借用 SDK 保证交付。

@@ -51,6 +51,14 @@ export function inventory(scope: Scope, service: {
 
 一次读取的 owner 使用 `read(params, { signal })` 加 `invalidations(params, context)`；推送 owner 使用 `observe` 发出完整 Observation。失效通知只表示需重新读取，不携带替代事实。写入成功后可显式 `instance.invalidate()`；这不会重发写入或唤醒模型。
 
+## 会话文件使用同一资源
+
+Program conversation、本地 SDK、远程 SDK 与可选原生 UI 均提供 `files: SessionFiles`。`const page = session.files.text(path, { offset, limit })` 与 metadata(path)、directory(path) 固定参数并复用对象；read、peek、values$、observations$、invalidate、useResource 和组合算子消费同一读侧。构造不读取；首次消费者等待正式 watch ready，变化先失效再重读，最后消费者退出释放共享监听。业务知道写入成功时可以显式 invalidate，不重发写操作。
+
+单次 readText/readBytes/stat/list 仍读权威服务；raw watch 的 dispose/closed 反映本实现实际持有的观察。范围来自 exact 会话 cwd，baseFile 同样核验。readBytes 每次返回独立缓冲区，不建共享字节缓存。远程断线撤下旧 ready，新连接正式 ready 后重读，不承诺补齐断线事件或远端 unwatch ACK。Host files 选项必须借入已安装能力；不在 hook 中安装服务，不为文件建立第二份生命周期或状态。
+
+ready 是最近一次读取切面，不是永久新鲜保证。固定 rc.3 本地 FS 的同路径 change 在 50ms 内可能被抑制且没有尾通知；已知连续写入完成后应显式 invalidate，需要立刻确认则调用 readText/stat 等权威查询。不加轮询、固定延迟或自动 retry 来伪装原生通知保证。
+
 ## 派生仍使用标准 Observable
 
 已有 Promise API 使用 `abortable(signal => read(signal), ownerSignal)` 接入 RxJS，也可用 `firstValueFrom` 取得同一次等待的 Promise。外部取消以原 reason 结束等待，已经取消时不进入 read；退订只撤销本订阅，迟到结果和拒绝不再交付。它不承担底层提供者的清理等待，也不取消其他消费者或已受理业务。

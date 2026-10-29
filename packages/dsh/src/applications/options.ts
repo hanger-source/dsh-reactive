@@ -1,4 +1,5 @@
 import { type OperationOwnerReference } from "@hanger-source/dsh-reactive/kernel";
+import type { NativeFiles } from '../files.ts';
 export interface HostOptions {
     /** 已完成SDK Action回执在本进程中的保留时间，默认五分钟；不承诺持久恢复。 */
     completedRetentionMs?: number;
@@ -8,6 +9,8 @@ export interface HostOptions {
     home?: string;
     /** 应用配置的可靠业务 owner；同 kind/version 唯一，供模块退出及进程恢复后的关联读取。 */
     operations?: readonly OperationOwnerReference[];
+    /** 借入已安装的原生文件能力；应用只释放自己取得的会话读侧。 */
+    files?: NativeFiles;
     model?: {
         provider: string;
         model: string;

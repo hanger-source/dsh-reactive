@@ -48,7 +48,7 @@ import type { OperationOwnerReference } from '@hanger-source/dsh-reactive/kernel
 import { environmentPresetId } from './programs/presets.ts';
 import type { HostOptions } from './applications/options.ts';
 
-export interface RuntimeOptions extends Pick<HostOptions, 'completedRetentionMs' | 'maxCompleted'> {
+export interface RuntimeOptions extends Pick<HostOptions, 'completedRetentionMs' | 'maxCompleted' | 'files'> {
   home: string;
   actorId?: string;
   serviceActorId?: string;
@@ -126,7 +126,7 @@ export async function createRuntime<E extends readonly AnyEnvironment[]>(factory
     });
     await options.model.install(ctx, home);
     await options.installNative?.(ctx, home);
-    host = await mountAssembledApplication(ctx, assembled, { home, actorId: options.actorId, serviceActorId: options.serviceActorId, operations: options.operations,
+    host = await mountAssembledApplication(ctx, assembled, { home, actorId: options.actorId, serviceActorId: options.serviceActorId, operations: options.operations, files: options.files,
       completedRetentionMs: options.completedRetentionMs, maxCompleted: options.maxCompleted,
       model: { provider: options.model.provider, model: options.model.model } });
   } catch (error) {

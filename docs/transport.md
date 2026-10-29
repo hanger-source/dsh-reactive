@@ -60,6 +60,12 @@ Environment 提供 Program 实现、指令与原生扩展；Workspace 是原生 
 
 ## 同一份 Program 合同
 
+文件消费沿同一 Session 地址进入 `reactivePrograms/fileRead`、`fileReadBytes`、`fileStat`、`fileList` 与 `fileChanges`。这些端点先核共享 Program 与 accessId，再借用 Host 的 `handle.files`；读取前、交付后和每个变化帧发送前复核原认证主体的 action、session resource 及请求条件。只授予需要的 Program 文件端点，不因安装服务给非 owner 授予原生 `workspaceFiles/*`。官方 Gateway 仍能发现其他已登记的原生贡献，不能把框架端点视为全局拦截层；闲置流的条件策略撤销也不具备完整即时推送保证。
+
+文件内容、字节与变化帧使用正式 WorkspaceFiles 类型和唯一 Typert 生成链，字节沿 binary attachment codec。SDK 的 `session.files` 复用原 Session ClientScope；断线撤下旧 ready，重连建立真实 watch 后重读，变化帧不承担断线补偿。服务端真实 unwatch 由原生 owner 排空，客户端退出不冒称收到远端释放确认。未配置能力使用 `reactive/files-unavailable`；范围失败保留正式 `workspace-file/outside-workspace` 及被拒绝的 path，单次文件错误不关闭整个 Session。
+
+Gateway 默认拥有本次 Registry；宿主已为 WorkspaceFiles 等贡献安装 Registry 时，显式使用 `registry: 'provided'` 借用它，缺失时启动失败，不重复安装或猜测服务。
+
 远程消费者使用 `defineProgram({ name, version, input, surface })` 声明共享 Program。省略 version 时为 1；name 使用小写字母开头的小写字母、数字或下划线，最长 80 个字符，version 为正安全整数。纯合同模块由宿主与客户端共同导入：
 
 ```ts

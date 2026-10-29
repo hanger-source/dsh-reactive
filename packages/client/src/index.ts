@@ -18,6 +18,7 @@ import { ProgramJournal, type ProgramJournalOptions, type ProgramJournalRequest 
 import { connectProgress, type RemoteProgress } from './progress.ts';
 import { createActionBindings } from './action-bindings.ts';
 import { remoteView } from './views.ts';
+import { remoteFiles } from './files.ts';
 import { createHumanWaits, remoteHuman } from './human.ts';
 import { createClientScope, revokeConversationAccess, type ClientScope } from './scope.ts';
 import { ResourceReader } from '@hanger-source/dsh-reactive';
@@ -31,7 +32,7 @@ export { createAuthenticatedTransport } from './transport.ts';
 export type { AuthenticatedTransport, AuthenticatedTransportOptions } from './transport.ts';
 export { Inbox } from './contracts/inbox.ts';
 export { decodeProgramFailure, ActionAdmissionUnknownError, CreationUnknownError, CreationIncompleteError,
-  ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError, ConversationAccessRevokedError, SessionProgramMismatchError } from './contracts/errors.ts';
+  ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFilesUnavailableError } from './contracts/errors.ts';
 export { ProgramJournal } from './journal.ts';
 export type { ProgramJournalOptions, ProgramJournalRequest } from './journal.ts';
 
@@ -218,6 +219,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
         const operationQueries = createOperationQueries(owner, address);
         const accessSource = { kind: 'participant', participant: identity.participant, actorId: identity.actorId, entrypoint: 'operation-query' } as const;
         let progress: RemoteProgress<P> | undefined;
+        let files: ReturnType<typeof remoteFiles> | undefined;
         const progressOwner = (): RemoteProgress<P> => {
           assertActive(); return progress ??= connectProgress(owner, address, program);
         };
@@ -321,6 +323,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
             return resolveActionAt(name, contract, expectedScope, options);
           },
           get progress() { return progressOwner().progress; },
+          get files() { assertActive(); return files ??= remoteFiles(owner, address); },
           get progress$() { return progressOwner().progress$; },
           get progressFrames$() { return progressOwner().progressFrames$; },
           get events$() { return progressOwner().events$; },

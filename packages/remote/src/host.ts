@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { Remote, RemoteError, TypertRemoteService, type Principal } from '@deepseek-ai/dsh-typert-protocol';
-import type { JsonValue } from '@deepseek-ai/dsh-util-values';
+import { deepFreeze, type JsonValue } from '@deepseek-ai/dsh-util-values';
 import { SessionId, SessionLogOffset, type Session, type SessionEvent } from '@deepseek-ai/dsh-session';
 import type { ProgramJournalEntry, ProgramJournalPage } from '@hanger-source/dsh-reactive-client/types';
 import { type ApplicationHost, type ConversationHandle, type ServiceConversation } from '@hanger-source/dsh-reactive-dsh';
@@ -15,6 +15,8 @@ import type { ProgramProgressFrame, ProgramConversationEvent } from '@hanger-sou
 import { Inbox } from '@hanger-source/dsh-reactive-client/inbox';
 import { createProgramActionOwner, type ProgramActionOwner, type ProgramActionOwnerOptions } from './actions.ts';
 import { resolveProgramParticipant, type ProgramParticipant } from './participant.ts';
+import type { WorkspaceFileText, WorkspaceFileBytes, WorkspaceFileStat, WorkspaceDirectoryListing, WorkspaceFileWatchFrame } from '@deepseek-ai/dsh-api-workspace-files/types';
+import type { ProgramFileRequest, ProgramFileReadRequest, ProgramFileBytesRequest } from '@hanger-source/dsh-reactive-client/types';
 
 declare module '@deepseek-ai/cordis' {
   interface Context { reactivePrograms: ProgramRemoteService; }
@@ -92,6 +94,110 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     const value = await firstValueFrom(abortable(run, reading));
     reading.throwIfAborted();
     return value;
+  }
+  /** 每次实际文件读取和帧交付均复核原认证主体；不缓存授权或从wire接受actor。 */
+  private fileAccess(method: 'fileRead' | 'fileReadBytes' | 'fileStat' | 'fileList' | 'fileChanges', request: ProgramFileRequest, principal: Principal): void {
+    const action: `reactivePrograms/${typeof method}` = `reactivePrograms/${method}`;
+    const decision = this.ctx.remoteAccess.decide({ principal, action,
+      resources: [{ kind: 'session', id: SessionId(request.sessionId) }], args: { request } });
+    if (decision.kind === 'deny') throw new RemoteError('remote-access/denied', `remote access: ${action}: access denied (${decision.reason})`, {
+      action, reason: decision.reason,
+    });
+  }
+
+  @Remote({ resources: { session: request => SessionId(request.sessionId) } })
+  async fileRead(request: ProgramFileReadRequest, signal: AbortSignal): Promise<WorkspaceFileText> {
+    request = deepFreeze(structuredClone(request));
+    const principal = this.principal();
+    const handle = await this.openSession(request);
+    try {
+      return await this.read(handle, signal, async reading => {
+        this.fileAccess('fileRead', request, principal);
+        const value = await handle.files.readText(request.path, request.range, { signal: reading });
+        reading.throwIfAborted(); this.fileAccess('fileRead', request, principal);
+        return value;
+      }).catch(this.rethrow);
+    } finally { handle.release(); }
+  }
+
+  @Remote({ resources: { session: request => SessionId(request.sessionId) } })
+  async fileReadBytes(request: ProgramFileBytesRequest, signal: AbortSignal): Promise<WorkspaceFileBytes> {
+    request = deepFreeze(structuredClone(request));
+    const principal = this.principal();
+    const handle = await this.openSession(request);
+    try {
+      return await this.read(handle, signal, async reading => {
+        this.fileAccess('fileReadBytes', request, principal);
+        const value = await handle.files.readBytes(request.path, request.range, { signal: reading });
+        reading.throwIfAborted(); this.fileAccess('fileReadBytes', request, principal);
+        return value;
+      }).catch(this.rethrow);
+    } finally { handle.release(); }
+  }
+
+  @Remote({ resources: { session: request => SessionId(request.sessionId) } })
+  async fileStat(request: ProgramFileRequest, signal: AbortSignal): Promise<WorkspaceFileStat> {
+    request = deepFreeze(structuredClone(request));
+    const principal = this.principal();
+    const handle = await this.openSession(request);
+    try {
+      return await this.read(handle, signal, async reading => {
+        this.fileAccess('fileStat', request, principal);
+        const value = await handle.files.stat(request.path, { signal: reading });
+        reading.throwIfAborted(); this.fileAccess('fileStat', request, principal);
+        return value;
+      }).catch(this.rethrow);
+    } finally { handle.release(); }
+  }
+
+  @Remote({ resources: { session: request => SessionId(request.sessionId) } })
+  async fileList(request: ProgramFileRequest, signal: AbortSignal): Promise<WorkspaceDirectoryListing> {
+    request = deepFreeze(structuredClone(request));
+    const principal = this.principal();
+    const handle = await this.openSession(request);
+    try {
+      return await this.read(handle, signal, async reading => {
+        this.fileAccess('fileList', request, principal);
+        const value = await handle.files.list(request.path, { signal: reading });
+        reading.throwIfAborted(); this.fileAccess('fileList', request, principal);
+        return value;
+      }).catch(this.rethrow);
+    } finally { handle.release(); }
+  }
+
+  /** ready只证明本代watch已登记；重连不声称补回上一代丢失的文件事件。 */
+  @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
+  async *fileChanges(request: ProgramFileRequest, signal: AbortSignal): AsyncIterable<WorkspaceFileWatchFrame> {
+    request = deepFreeze(structuredClone(request));
+    const principal = this.principal();
+    const handle = await this.openSession(request);
+    signal = this.reading(handle, signal);
+    const inbox = new Inbox<WorkspaceFileWatchFrame>(1024 * 1024);
+    const abort = (): void => inbox.fail(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    let subscription: Subscription | undefined;
+    try {
+      signal.throwIfAborted(); this.fileAccess('fileChanges', request, principal);
+      const watch = handle.files.watch(request.path, { signal });
+      subscription = watch.changes$.subscribe({
+        next: frame => {
+          try { signal.throwIfAborted(); this.fileAccess('fileChanges', request, principal); inbox.push(frame); }
+          catch (error) { inbox.fail(error); }
+        },
+        error: (error: unknown) => inbox.fail(signal.aborted ? signal.reason : error),
+        complete: () => signal.aborted ? inbox.fail(signal.reason) : inbox.end(),
+      });
+      for await (const frame of inbox) {
+        signal.throwIfAborted(); this.fileAccess('fileChanges', request, principal);
+        yield frame;
+      }
+      signal.throwIfAborted();
+    } catch (error) { this.rethrow(error); }
+    finally {
+      signal.removeEventListener('abort', abort); subscription?.unsubscribe(); inbox.end();
+      // Handle退出撤下本次观察；真实I/O与unwatch仍由NativeFiles的原owner drain。
+      handle.release();
+    }
   }
   /** 注册身份可以返回；成员读取仍按当前 endpoint 的 Workspace 与 Session grant 逐项核对。 */
   private visibleWorkspace(workspace: ProgramWorkspace): ProgramWorkspace {

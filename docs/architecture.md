@@ -225,7 +225,13 @@ Team 的 roster 与 roster$ 读取原生 listMembers 的运行态，和持久 st
 
 NativeCapabilityOwner 只保留本实例已开始调用的结算关系，不建立原生写入队列。调用的原始拒绝进入自身 result 与 failed 活动；正常业务拒绝不会污染能力清理。SDK 退出只撤本消费者等待和读侧，有限调用事实继续保留终态。正式 Cordis effect 收拢实际 Fiber 的 disposer，在退出时先截新调用、撤观察并等写入结算，再释放读依赖与自有 provider。provided 服务仍由外部宿主持有，框架不延长其寿命；它提前退出引起的调用拒绝仍沿原调用报告。
 
-Files 的 text(path, range)、metadata(path)、directory(path) 返回既有 ResourceInstance，固定原始路径和读取窗口，提供同一个 read、peek、values$、observations$ 与失效入口。构造只建立参数身份，首次观察等待正式 watch 的 ready 后读取；同一 SDK、同一原始路径的不同资源共享原生 watch，最后一个查询退出触发原生异步 unwatch，SDK dispose 等待实际退出。文本页、目录与元数据仍由 WorkspaceFiles 决定版本、范围、限额和错误，目录每次变更都重新列举，不因目录版本相同忽略子项变化。文件范围直接来自已核验会话 header，不为文件读取冲刷会话日志，也不因关闭 Agent 停止仍有效来源的文件观察。字节读取保留每次独立缓冲区，不加入共享快照。公开产物通过 Program 的资源 View 选择内容并沿原权限提供，本地与远程不维护另一份文件状态。
+Program、外部本地 SDK、远程 SDK 与可选原生 UI 通过 `session.files` 借用会话文件资格。纯 `/files` 入口提供 `SessionFiles`、`FileResource` 与 `FileWatch`；官方 WorkspaceFiles 类型只做 type-only 重导。Host 的 `files` 选项借入已安装的 NativeFiles，按 exact 来源惰性取得读侧，不重复安装或销毁整个能力。本地未配置时取得入口抛出 `SessionFilesUnavailableError`；远程入口构造不发请求，首次查询或观察交付同一错误，不隐式装配服务。
+
+资源 ready 表达最近一次已读切面，持续更新依赖正式 FS 通知。rc.3 本地 provider 的同路径 change 在 50ms 内可能被抑制且不补尾通知；连续正文写入的最终状态须由已知写入者显式 invalidate 或单次权威读取确认。框架不以轮询、第二文件状态或自建 native watcher 掩盖这项上游限制。
+
+Files 的 text(path, range)、metadata(path)、directory(path) 固定原始路径和读取窗口，提供同一个 read、peek、values$、observations$ 与 invalidate。共同工厂复用现有资源和 RxJS，不另建 Scope。构造不做 I/O，首次观察等待正式 watch ready 后读取；同一路径的不同资源共享 watch，最后一个查询退出释放它。目录每次变更重新列举。原生读取以 exact 会话 header 的 cwd 和正式 FS resolve/contains 核目标与 baseFile 范围，文本、目录与元数据仍由 WorkspaceFiles 决定版本、限额和错误。字节读取每次持有独立缓冲区，不加入共享快照。
+
+观察资格退出立即结束本消费者等待；原生读侧 dispose 与 Host 关闭等待实际读取和 unwatch，不取消写文件的 Action、Job 或 Operation。Agent 关闭不结束仍有效来源的文件观察。远程端点逐次核 Program、accessId、认证主体、文件路径及交付时权限，字节沿正式 binary codec；断线撤下旧 ready，新 watch ready 后重读，不承诺补齐断线事件。客户端释放只证明本端清理，没有远端 unwatch ACK。原生 UI 借用同一资源状态，自己的 dispose 等待其创建的观察退出，不销毁借入 SDK。需要选择领域产物或授予更窄的公开内容时，仍使用 Program 的资源 View。
 
 创建根会话时，宿主持久写入原工作区 binding 并完成原生 workspace 成员登记，之后才构造 Program；最终创建回执仍在实际 Agent setup 成功后写入并确认持久 flush。登记失败保留原 CreationIncompleteError 引用；只有成员、或完成记录仍在等待创建 ACK 的会话不能经普通 open、resume、conversation 或 service 取得外部句柄，须沿原创建引用完成登记。创建和已有会话激活由同一启动 owner 区分，普通只读访问不等待或借用新会话的创建许可。已有完整回执的恢复只核成员，不重新加入已被撤销的成员关系。
 

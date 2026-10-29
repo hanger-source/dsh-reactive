@@ -14,7 +14,7 @@ import subagents from '@deepseek-ai/dsh-subagent/remote';
 import { SessionId } from '@deepseek-ai/dsh-session/types';
 import { bindProgramClient, createAuthenticatedTransport } from '@hanger-source/dsh-reactive-client';
 import remotes from '@hanger-source/dsh-reactive-client/remote';
-import { nativeHooks, retainNativeSession } from '@hanger-source/dsh-reactive-native-ui';
+import { bindNativeSession, nativeHooks, retainNativeSession } from '@hanger-source/dsh-reactive-native-ui';
 import { program } from './browser-contracts.mjs';
 
 const output = document.querySelector('output');
@@ -50,14 +50,17 @@ const UiSession = await modules.import('@deepseek-ai/dsh-client-ui-session/clien
 document.querySelector('button').addEventListener('click', async event => {
   event.currentTarget.disabled = true;
   const ctx = new Cordis.Context(), leases = [];
-  let delayed, sendsAfterClose = 0, mounted = 0, unmounted = 0, releaseView, actionHeld = false;
+  let delayed, sendsAfterClose = 0, mounted = 0, unmounted = 0, releaseView, actionHeld = false, borrowed, borrowedUi;
   const delayNextOpen = () => delayed = { received: Promise.withResolvers(), release: Promise.withResolvers(), entered: false };
   const mountView = session => ctx.effect(() => {
-    const remove = ctx.slots.register({ name: 'root', inject: () => nativeHooks({ current: session.view('current') }) }, function NativeCurrent({ useCurrent }) {
+    const remove = ctx.slots.register({ name: 'root', inject: () => nativeHooks({ current: session.view('current'),
+      file: session.resource(session.files.text('native.txt')) }) }, function NativeCurrent({ useCurrent, useFile }) {
       const current = useCurrent(value => value);
+      const file = useFile(value => value);
       React.useLayoutEffect(() => { mounted++; return () => { unmounted++; }; }, []);
       return React.createElement('section', { 'aria-label': '原生资源观察' },
-        React.createElement('time', { 'data-native-current': true }, current.status === 'ready' ? current.value.toISOString() : current.status));
+        React.createElement('time', { 'data-native-current': true }, current.status === 'ready' ? current.value.toISOString() : current.status),
+        React.createElement('p', { 'data-native-file': true }, file.status === 'ready' ? file.value.text : file.status));
     });
     try {
       const unmount = ctx.uiRenderer.mount(container);
@@ -114,6 +117,27 @@ document.querySelector('button').addEventListener('click', async event => {
     check(first.session.native === second.session.native, 'RETAIN_SAME_NATIVE_GENERATION');
     check(counts(sessionId).referenceCount === 2 && counts(sessionId).retainedBy.reactiveProgram === 2, 'TWO_EXACT_NATIVE_REFERENCES');
     check(await first.session.readView('current') instanceof Date, 'NATIVE_RESOURCE_DECODES_DATE');
+    borrowed = await sdk.open(sessionId);
+    borrowedUi = bindNativeSession(program, first.session.native, borrowed);
+    const originalPage = borrowed.files.text('native.txt'), uiPage = borrowedUi.files.text('native.txt');
+    check(borrowedUi.files.text('native.txt') === uiPage, 'UI_REUSES_ONE_READER_FOR_THE_SAME_SDK_RESOURCE');
+    const observedFile = [];
+    const stopFile = uiPage.observations$.subscribe(observation => observedFile.push(observation));
+    check((await uiPage.read()).text === '原生文件第一份', 'UI_FILE_READ_USES_REAL_HOST_CONTENT');
+    check(uiPage.peek() === originalPage.peek(), 'UI_BORROWS_ORIGINAL_FILE_OBSERVATION');
+    const watch = borrowedUi.files.watch('native.txt');
+    await firstValueFrom(watch.changes$.pipe(filter(frame => frame.kind === 'ready'), timeout(8000)));
+    let watchClosed = false;
+    const watchClosing = watch.closed.then(() => { watchClosed = true; });
+    const closingUi = borrowedUi.dispose();
+    check(borrowedUi.scope.disposed && borrowedUi.dispose() === closingUi, 'UI_REVOKES_IMMEDIATELY_AND_JOINS_ONE_CLOSE');
+    try { uiPage.peek(); throw new Error('EXITED_UI_FILE_MUST_REJECT'); }
+    catch (error) { check(error === borrowedUi.scope.signal.reason, 'UI_FILE_READER_RETAINS_EXACT_EXIT_REASON'); }
+    await closingUi; await watchClosing;
+    check(watchClosed && observedFile.at(-1).status === 'error', 'UI_CLOSE_JOINS_OWNED_WATCH_AND_ENDS_ITS_READER');
+    stopFile.unsubscribe();
+    check((await borrowed.files.readText('native.txt')).text === '原生文件第一份', 'UI_CLOSE_PRESERVES_BORROWED_SDK');
+    await borrowed.release(); borrowed = undefined; borrowedUi = undefined;
     let notifications = 0;
     const view = first.session.view('current');
     const stop = view.subscribe(() => notifications++);
@@ -124,6 +148,9 @@ document.querySelector('button').addEventListener('click', async event => {
     await rejects(Promise.resolve().then(() => first.session.readView('current')), error => String(error).includes('REACTIVE_SCOPE_DISPOSED'));
     releaseView = mountView(second.session);
     await rendered(() => container.querySelector('time')?.textContent === '2026-10-26T00:00:00.000Z', 'NATIVE_ROOT_RESOURCE_BASELINE');
+    await rendered(() => container.querySelector('[data-native-file]')?.textContent === '原生文件第一份', 'NATIVE_FILE_SLOT_BASELINE');
+    check((await fetch('/native-file/update', { method: 'POST' })).ok, 'REAL_NATIVE_FILE_UPDATE');
+    await rendered(() => container.querySelector('[data-native-file]')?.textContent === '原生文件实际更新', 'NATIVE_FILE_SLOT_FOLLOWS_ACTUAL_FS');
     const action = await second.session.resolveAction('check', null);
     const invocation = await action({ amount: '7' });
     const nativeActivity = second.session.invocation(invocation);
@@ -172,12 +199,14 @@ document.querySelector('button').addEventListener('click', async event => {
     check(sendsAfterClose === 0, 'NO_SEND_AFTER_PHYSICAL_SOCKET_CLOSE:' + sendsAfterClose);
     output.textContent = JSON.stringify({ passed: true, sessionId, models: proof.models, executions: proof.executions,
       sameGeneration: true, independentRelease: true, cancelledAcquisition: true, failedAcquisition: true, reopenedGeneration: true, contextClosedPending: true, sendsAfterClose, invocationActivity: true,
-      nativeRenderer: true, react: React.version, domUpdated: true, unmountPreservesBusiness: true, contextUnmounted: true });
+      nativeRenderer: true, react: React.version, domUpdated: true, unmountPreservesBusiness: true, contextUnmounted: true,
+      nativeFiles: true, uiFileReaderSharesFact: true, uiWatchClosed: true, borrowedSdkRemainsActive: true });
   } catch (error) { output.textContent = JSON.stringify({ passed: false, error: String(error), stack: error.stack }); }
   finally {
     delayed?.release.resolve();
     if (actionHeld) await fetch('/native-action/release', { method: 'POST' });
     await releaseView?.();
+    await borrowedUi?.dispose(); await borrowed?.release();
     await Promise.all(leases.map(lease => lease.release())); await ctx.fiber.dispose();
   }
 });

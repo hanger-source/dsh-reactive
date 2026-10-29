@@ -1,5 +1,6 @@
 import type { ActionIdentity, ActionSource, Continuation, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
   ProgramGoalControl as CoreProgramGoalControl, ProgramCancelResult as CoreProgramCancelResult, ProgramRequestStatus as CoreProgramRequestStatus } from '@hanger-source/dsh-reactive';
+import type { WorkspaceFileRange, WorkspaceByteReadOptions } from '@deepseek-ai/dsh-api-workspace-files/types';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { RemoteStreamFailure } from '@deepseek-ai/dsh-api-gateway/stream-protocol';
 export type ProgramGoalControl = CoreProgramGoalControl;
@@ -51,6 +52,10 @@ export interface ProgramInputEditRequest extends ProgramRequestAddress { readonl
 /** 单次有界 unary 上传；canonical base64 与 exact-Session receipt 继续由原生 Host 核验。 */
 export interface ProgramUploadFileRequest extends ProgramSessionAddress, EncodedFileUploadRequest {}
 export type ProgramFileUploadValue = FileUploadValue;
+/** 只寻址原Session资格内的文件；工作区根和参与者不能由请求选择。 */
+export interface ProgramFileRequest extends ProgramSessionAddress { readonly path: string; }
+export interface ProgramFileReadRequest extends ProgramFileRequest { readonly range: WorkspaceFileRange; }
+export interface ProgramFileBytesRequest extends ProgramFileRequest { readonly range: WorkspaceByteReadOptions; }
 export interface ProgramInputReceipt { readonly sessionId: string; readonly requestId: string; readonly accepted: true; }
 export interface ProgramRequestAddress extends ProgramSessionAddress { readonly requestId: string; }
 /** Program journal 的纯 wire 合同；Host 的 Controller 页直接按此结构核验。 */

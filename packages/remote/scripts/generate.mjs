@@ -17,9 +17,13 @@ if (!analyzer.discoverPackages().some(entry => entry.package === name)) {
 const publishedTargets = (packageRoot, value) => typeof value === 'string' ? resolve(packageRoot, value)
   : Object.fromEntries(Object.entries(value).map(([key, target]) => [key, publishedTargets(packageRoot, target)]));
 
-// 官方分析器用注册目录确认 Remote/JsonValue 的声明归属。公开 inventory
+// 官方分析器用注册目录确认 Remote/JsonValue/文件合同的声明归属。公开 inventory
 // 补入实际 npm 包；源码、符号、exports 和所有 endpoint metadata 仍由官方分析器读取。
-const dependencies = ['@deepseek-ai/dsh-typert-protocol', '@deepseek-ai/dsh-util-values'].map(dependency => {
+const dependencies = [
+  { name: '@deepseek-ai/dsh-typert-protocol' },
+  { name: '@deepseek-ai/dsh-util-values' },
+  { name: '@deepseek-ai/dsh-api-workspace-files', exportSubpaths: ['./types'] },
+].map(({ name: dependency, exportSubpaths }) => {
   const manifestPath = fileURLToPath(import.meta.resolve(`${dependency}/package.json`));
   const packageRoot = realpathSync(dirname(manifestPath));
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -28,6 +32,7 @@ const dependencies = ['@deepseek-ai/dsh-typert-protocol', '@deepseek-ai/dsh-util
   if (manifest.name !== dependency || parsed.errors.length) throw new Error(`REACTIVE_REMOTE_TYPERT_DEPENDENCY_INVALID:${dependency}`);
   // npm 的 public types 是实际分析输入，不把 lib/*.d.ts 当作尚未构建的 src/*.ts。
   return { face: 'host', name: dependency, root: packageRoot,
+    ...(exportSubpaths ? { exportSubpaths } : {}),
     manifest: { ...manifest, exports: publishedTargets(packageRoot, manifest.exports) },
     config: { path: entry, parsed } };
 });

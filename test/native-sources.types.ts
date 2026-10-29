@@ -5,6 +5,7 @@ import type { NativeSchedule, NativeScheduleTask, NativeScheduleUpdate, Schedule
 import type { NativeTeam, NativeSessionTeam, NativeTeamTask, TeamTaskView, TeamMemberView,
   CreateTeamTaskRequest, UpdateTeamTaskRequest } from '@hanger-source/dsh-reactive-dsh/team';
 import type { NativeFiles, NativeSessionFiles, WorkspaceFileText } from '@hanger-source/dsh-reactive-dsh/files';
+import type { SessionFiles, FileResource, FileWatch } from '@hanger-source/dsh-reactive/files';
 import type { ResourceReadable } from '@hanger-source/dsh-reactive';
 import type { NativeApproval } from '@hanger-source/dsh-reactive-dsh/approval';
 import type { NativeClock } from '@hanger-source/dsh-reactive-dsh/time';
@@ -76,10 +77,19 @@ function scheduleConsumer(task: NativeScheduleTask, update: NativeScheduleUpdate
 void scheduleConsumer;
 
 function fileConsumer(files: NativeSessionFiles) {
-  const page: ResourceReadable<WorkspaceFileText> = files.text('report.txt', { offset: 2, limit: 5 });
-  return { page, directory: files.directory('.'), metadata: files.metadata('report.txt') };
+  const shared: SessionFiles = files;
+  const page: FileResource<WorkspaceFileText> = shared.text('report.txt', { offset: 2, limit: 5 });
+  const watch: FileWatch = shared.watch('report.txt');
+  const closing: Promise<void> = files.dispose();
+  return { page, watch, closing, directory: shared.directory('.'), metadata: shared.metadata('report.txt') };
 }
 void fileConsumer;
+
+function programFileConsumer<P extends ProgramContract>(conversation: ProgramSession<P>) {
+  const files: SessionFiles = conversation.files;
+  return { page: files.text('report.txt'), bytes: files.readBytes('report.txt', { range: { offset: 0, length: 32 } }) };
+}
+void programFileConsumer;
 
 function subagentConsumer(subagents: NativeSessionSubagents, target: SubagentDescendantListEntry['id'], signal: AbortSignal) {
   const descendants: ResourceReadable<readonly SubagentDescendantListEntry[]> = subagents.descendants;

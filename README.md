@@ -26,6 +26,8 @@ Action、原生写入与上传共用 Invocation.wait({ signal })；调用者准�
 
 `@hanger-source/dsh-reactive-client` 提供独立客户端与远程数据合同；`@hanger-source/dsh-reactive-remote` 负责认证 Gateway 宿主。选择扩展 dsh 原生界面时安装 `@hanger-source/dsh-reactive-native-ui`。纯资源程序、后台服务和 CLI 无需安装原生 UI。
 
+Program、本地与远程 SDK 通过共同 `session.files` 读取会话文件：text、metadata、directory 提供可组合资源，readText、readBytes、stat、list 与 watch 提供显式查询和观察。Host 借入已安装的文件能力，原生 UI 按需消费同一资源；范围、权限、重连与实际清理边界见[编程模型](docs/programming-model.md#消费会话文件)和[外部参与](docs/transport.md#同一份-program-合同)。
+
 原生扩展用 `retainNativeSession(Program, clientContext, sessionId)` 取得拥有原生代际引用、独立 SDK 和 UI 观察的对象，使用 `reference.session` 并在退出时 `await reference.release()`。共享客户端装配、目录和 Host 工作仍由原 owner 管理；已经持有原生 binding 与 SDK 的消费者继续用同步 `bindNativeSession` 借用它们。
 
 远程 SDK 工厂与 retainNativeSession 要求 `defineProgram({ name, version, input, surface })` 签发的共享 Program；合同 version 默认 1，与 npm 版本分开。宿主在创建、补齐创建、恢复及会话请求前核验目标合同，SDK 复核返回身份。纯本地 Program 可以保持无名，本地实际定义仍核 exact 对象；通用会话与模块消费者不因此要求共享名称。

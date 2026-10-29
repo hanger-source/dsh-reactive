@@ -13,6 +13,8 @@ import { ResourceReader } from '../resources/reader.ts';
 import { createAssistantProgress, createRequestHandle, type ConversationProgressSnapshot, type RequestHandle } from './request.ts';
 import type { Observation } from '../resources/observation.ts';
 import type { Workspace } from '../workspaces/context.ts';
+import type { SessionFiles } from '../files/contract.ts';
+import { SessionFilesUnavailableError } from '../files/errors.ts';
 
 export { z };
 export type { Json, InputReference, GoalReference, Continuation, WaitReference, Submission, NormalizedSubmission, AdmittedSubmission, InputDelivery, PromptContentPart, AdmittedPromptContentPart, FileUploadValue, FileUploadReceiptId, EncodedFileUploadRequest, FileUploadSource, UploadFileOptions, Admission, CancellationOptions, SubmitOptions, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions } from './protocol.ts';
@@ -56,6 +58,7 @@ export class Conversation<T = Json, Raw = T> {
   #questions: Cell<HumanInputState | undefined>;
   #foregroundQuestions: Cell<readonly HumanForegroundQuestion[]>;
   #submit?: (input: Submission<Raw>, options: CancellationOptions) => Promise<InputReceipt>;
+  #files?: () => SessionFiles;
 
   constructor(
     scope: Scope,
@@ -128,6 +131,12 @@ export class Conversation<T = Json, Raw = T> {
     this.#progressSnapshot = undefined;
     this.#progressVersion.update(value => value + 1);
   }
+  /** 借用当前会话的文件资格；取得入口不会读取或监听文件。 */
+  get files(): SessionFiles {
+    this.#scope.assertActive();
+    if (!this.#files) throw new SessionFilesUnavailableError(this.identity.sessionId);
+    return this.#files();
+  }
   /** 显式投递到原生输入协议；订阅和组件求值不会重新投递。 */
   submit(input: Submission<Raw>, options: CancellationOptions = {}): Promise<InputReceipt> {
     this.#scope.assertActive();
@@ -140,6 +149,7 @@ export class Conversation<T = Json, Raw = T> {
       assistantProgress: this.#assistant,
       activity: this.#activity,
       setSubmit: (submit: (input: Submission<Raw>, options: CancellationOptions) => Promise<InputReceipt>) => { this.#submit = submit; },
+      setFiles: (files: () => SessionFiles) => { this.#files = files; },
       accept: (inputs: readonly InputReference[]) => this.#inputs.set(decodeProgramInputs(this.program, this.identity.sessionId, inputs)),
       emit: (event: ConversationEvent) => {
         if (this.#scope.disposed) return;

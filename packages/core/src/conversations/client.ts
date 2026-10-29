@@ -10,7 +10,7 @@ import type { OperationContract, OperationHandle, OperationReference, OperationC
   OperationLocation, OperationState, OperationFeedbackRead, OperationFeedbackPayload, OperationNotificationResult } from '../operations/contract.ts';
 import type { ConversationIdentity, InputReceipt } from './conversation.ts';
 import type { CancellationOptions, Submission, FileUploadSource } from './protocol.ts';
-import type { FileUploadInvocation } from '../files/contract.ts';
+import type { FileUploadInvocation, SessionFiles } from '../files/contract.ts';
 import type { AssistantProgressFrame, ConversationEvent } from './events.ts';
 import type { ConversationProgressSnapshot, RequestHandle } from './request.ts';
 
@@ -39,6 +39,7 @@ export interface ProgramSessionClient<P extends ProgramContract,
   /** 原 Program 纯合同；保留模块身份和输入/出口的完整类型。 */
   readonly definition: P;
   readonly identity: Pick<ConversationIdentity, 'sessionId' | 'environmentId' | 'workspaceId'>;
+  readonly files: SessionFiles;
   readonly actionManifest: ResourceReader<readonly ToolActionBinding[]>;
   readonly actionManifest$: Observable<readonly ToolActionBinding[]>;
   readonly progress: ResourceReader<ConversationProgressSnapshot>;

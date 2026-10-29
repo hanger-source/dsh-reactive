@@ -12,6 +12,8 @@ export { admittedSubmissionSchema, continuationSchema, conversationCreateOptions
 export { createRequestHandle, type ConversationProgressSnapshot, type RequestHandle } from './conversations/request.ts';
 export { createFileUploadInvocation } from './files/invocation.ts';
 export type { FileUploadInvocation, FileUploadInvocationSource } from './files/contract.ts';
+export type { SessionFiles, FileResource, FileWatch } from './files/contract.ts';
+export { SessionFilesUnavailableError, SessionFileOutsideWorkspaceError } from './files/errors.ts';
 export { type AnyEnvironment, type EnvironmentAt, type EnvironmentOperations } from './environments/definition.ts';
 export { assertOperationFollowSupported, attachOperation, bindOperation, encodeOperationFeedback, implementOperation, isOperationOwner, locateOperation, operationBindingCommand, operationBindingOwner, operationFollowLinkSchema, readOperationFeedback, registerOperationFollow, settledOperation, type BoundOperation, type OperationAccessContext, type OperationBindingReference, type OperationCommand, type OperationContract, type OperationFeedbackNode, type OperationFeedbackPayload, type OperationFeedbackRead, type OperationFollowLink, type OperationHandle, type OperationLocation, type OperationNotificationResult, type OperationOwner, type OperationOwnerReference, type OperationReference, type OperationState } from './operations/contract.ts';
 export { humanAnswerSchema, type HumanAnswer, type HumanAskOptions, type HumanAskResult, type HumanForegroundQuestion, type HumanInputState, type HumanPrompt, type HumanQuestion, type HumanQuestionOrigin, type HumanResponderOptions, type HumanWaitFrame } from './participation/contract.ts';

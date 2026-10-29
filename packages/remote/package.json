@@ -76,6 +76,7 @@
     "@deepseek-ai/dsh-api-remote-access": "0.2.1-rc.3",
     "@deepseek-ai/dsh-api-remotes": "0.2.1-rc.3",
     "@deepseek-ai/dsh-api-session-controller": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-api-workspace-files": "0.2.1-rc.3",
     "@deepseek-ai/dsh-attachment": "0.2.1-rc.3",
     "@deepseek-ai/dsh-attachment-local": "0.2.1-rc.3",
     "@deepseek-ai/dsh-client-connection": "0.2.1-rc.3",
@@ -101,7 +102,6 @@
   },
   "devDependencies": {
     "@deepseek-ai/dsh-schedule": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-api-workspace-files": "0.2.1-rc.3",
     "@deepseek-ai/dsh-sandbox-policy": "0.2.1-rc.3",
     "@hanger-source/dsh-reactive": "file:../core",
     "@types/ws": "8.18.1",
