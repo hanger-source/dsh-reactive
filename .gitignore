@@ -14,3 +14,4 @@ coverage/
 .tmp/
 .trash/
 *.log
+/examples/fog-harbor/
