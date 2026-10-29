@@ -2,6 +2,21 @@
 
 此文件保留源码版本准备记录；条目和版本号本身不表示 npm 已发布或公共 API 已稳定。
 
+## 0.23.0
+
+### Patch Changes
+
+- Updated dependencies [0a8fcdd]
+- Updated dependencies [eff2825]
+- Updated dependencies [df85eac]
+- Updated dependencies [35dce22]
+- Updated dependencies [df03bbc]
+- Updated dependencies [2a103b4]
+- Updated dependencies [f3f7b42]
+- Updated dependencies [de77251]
+  - @hanger-source/dsh-reactive@0.23.0
+  - @hanger-source/dsh-reactive-client@0.23.0
+
 ## 0.22.0
 
 ### Minor Changes
