@@ -438,6 +438,39 @@ views 提供领域值事件；observeView 保留当前 pending/ready/error，rea
 
 句柄 release 只结束该观察者。原生 Agent 活着时，会话程序继续存在；已进入业务 execute 的调用不因声明退出或页面断开而撤销。原生调用信号、显式调用信号及业务 owner 分别决定它们有权取消的工作。
 
+## 按业务工作观察进展
+
+应用定义工作键，并将已经取得的会话作为显式来源。键可以是 JSON 值；同一商户可以有多个工作，同一个工作也可以涉及多个会话。下面约定输入的原始 scope 含 `workId`：
+
+```ts
+import { createWorkSelector, type WorkSource } from '@hanger-source/dsh-reactive';
+
+const workSelector = createWorkSelector({
+  identify(origin) {
+    const scope = origin.scope;
+    if (scope === null || typeof scope !== 'object' || Array.isArray(scope) || !('workId' in scope)) return undefined;
+    return typeof scope.workId === 'string' ? scope.workId : undefined;
+  },
+});
+
+function observeWork(workId: string, sessions: readonly WorkSource[], signal: AbortSignal) {
+  const work = workSelector.observe(workId, sessions, { signal });
+  const subscription = work.state$.subscribe(observation => {
+    if (observation.status === 'ready') {
+      for (const session of observation.value.sessions) {
+        for (const call of session.calls) console.log(call.value, call.matchedInputs);
+        for (const condition of session.conditions) console.log(condition);
+      }
+    }
+  });
+  return { work, subscription };
+}
+```
+
+本地和远程、人工和服务会话均可作为 `WorkSource`，来源提供 identity、progress、human、rawEvents$ 与 progressFrames$。来源列表必须非空，sessionId 不得重复。`select(key, snapshots)` 同步纯投影已取得的快照；`observe(key, sources, options?)` 提供共享的 `state`、同一观察的 `state$`、新事件 `events$` 和助手帧 `progressFrames$`。识别使用原始 JSON scope，不执行任何 Program 的输入 transform。选择器不发现或打开会话、不启动 Agent，也不授予其他会话的 Goal 或人工答复权限。
+
+每项保留完整 `value` 和解释命中依据的 `matchedInputs`；一次调用或回复可能因多条输入同时属于多个工作。调用保留正式 start 事件序号 `callSequence`，回复保留 `messageId` 和完整 inputs；provider 的 callId 可跨轮复用，不能用它合并不同发生。matchedInputs 只解释观察分组，不裁剪事实或授予续接权限。声明是持久请求事实，可在尚无 messageId 时命中，但它不是已受理的 InputReference。缺少输入关联证据的回复不归组。条件表达暂停、阻塞、等待、待答、调用失败及原续接资格，不能据此判断整个工作忙碌或完成。业务 Operation 阶段与资源错误可用现有 RxJS 资源组合表达。
+
 ## 读取原生日志
 
 本地、远程的人工与服务会话，以及后台 Program 的 conversation，共用 `session.journal`。`page({ throughSeq, beforeSeq, maxMessages, turnWindow }, { signal })` 读取包含式原生水位内的消息对齐历史；`follow(window, { signal })` 返回一次独立的异步连接，先交付 `opened` 的 cursor 和 page，之后交付该水位后的原生 entry。这些持久事件与只通知新事实的 `events$` 各有责任，不从 ConversationEvent 重建历史。

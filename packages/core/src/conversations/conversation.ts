@@ -1,4 +1,4 @@
-import { Observable, Subject, asapScheduler, of, observeOn, shareReplay, mergeAll, map, filter, distinctUntilChanged, combineLatest } from 'rxjs';
+import { Observable, Subject, asapScheduler, of, observeOn, shareReplay, mergeAll, map, distinctUntilChanged, combineLatest } from 'rxjs';
 import { z } from 'zod';
 import { batch, type Scope, type Cell } from '../reactivity/scope.ts';
 import type { ProgramDefinition } from '../program/definition.ts';
@@ -57,7 +57,7 @@ export class Conversation<T = Json, Raw = T> {
   #progressVersion: Cell<number>;
   #progressSnapshot?: Observation<ConversationProgressSnapshot>;
   #requests = new Map<string, RequestHandle<T>>();
-  #questions: Cell<HumanInputState | undefined>;
+  #questions: Cell<Observation<HumanInputState>>;
   #foregroundQuestions: Cell<readonly HumanForegroundQuestion[]>;
   #submit?: (input: Submission<Raw>, options: CancellationOptions) => Promise<InputReceipt>;
   #files?: () => SessionFiles;
@@ -76,18 +76,20 @@ export class Conversation<T = Json, Raw = T> {
     this.#inputs = scope.state([]);
     this.#activity = scope.state(ownConversationActivity(initial));
     this.#progressVersion = scope.state(0);
-    this.#questions = scope.state<HumanInputState | undefined>(undefined);
+    this.#questions = scope.state<Observation<HumanInputState>>(Object.freeze({ status: 'pending', generation: 0 }));
     this.#foregroundQuestions = scope.state<readonly HumanForegroundQuestion[]>([]);
     this.inputs$ = this.#inputs.changes$;
     this.activity$ = this.#activity.changes$;
     this.goal$ = this.activity$.pipe(map(activity => activity.goal), distinctUntilChanged());
     this.waits$ = this.activity$.pipe(map(activity => activity.waits), distinctUntilChanged());
     this.human = shareResource(combineLatest([
-      this.#questions.changes$.pipe(filter((value): value is HumanInputState => value !== undefined)),
+      this.#questions.changes$,
       this.#foregroundQuestions.changes$,
-    ]).pipe(map(([questions, foreground], index): Observation<HumanSnapshot> => ({
-      status: 'ready', generation: index + 1, observedAt: Date.now(), value: Object.freeze({ questions, foreground }),
-    }))), { signal: scope.signal, onObserverError: error => scope.observerError(error) });
+    ]).pipe(map(([questions, foreground], index): Observation<HumanSnapshot> => {
+      if (questions.status !== 'ready') return Object.freeze({ ...questions, generation: index + 1 });
+      return Object.freeze({ status: 'ready', generation: index + 1, observedAt: Date.now(),
+        value: Object.freeze({ questions: questions.value, foreground }) });
+    })), { signal: scope.signal, onObserverError: error => scope.observerError(error) });
     this.questions$ = this.human.values$.pipe(map(snapshot => snapshot.questions), distinctUntilChanged());
     this.foregroundQuestions$ = this.human.values$.pipe(map(snapshot => snapshot.foreground), distinctUntilChanged());
     this.rawEvents$ = this.observeFacts(this.#events.pipe(map(event => event.raw$), mergeAll()));
@@ -183,7 +185,12 @@ export class Conversation<T = Json, Raw = T> {
         this.#frames.next(owned);
       },
       resetProgress: () => { this.#assistant.replace([]); this.notifyProgress(); },
-      publishQuestions: (questions: HumanInputState) => this.#questions.set(questions),
+      publishQuestions: (questions: HumanInputState) => this.#questions.update(previous => Object.freeze({
+        status: 'ready', generation: previous.generation + 1, observedAt: Date.now(), value: questions,
+      })),
+      publishQuestionError: (error: unknown) => this.#questions.update(previous => Object.freeze({
+        status: 'error', generation: previous.generation + 1, error,
+      })),
       publishForegroundQuestions: (questions: readonly HumanForegroundQuestion[]) => this.#foregroundQuestions.set(questions),
     };
   }

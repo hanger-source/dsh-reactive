@@ -79,7 +79,8 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     const definition = handle.definition;
     try { assertSharedProgramDefinition(definition); }
     catch (error) { return this.rethrow(error); }
-    return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId, accessId: handle.accessId,
+    return { sessionId: handle.id, environmentId: handle.identity.environmentId, workspaceId: handle.identity.workspaceId,
+      parentSessionId: handle.identity.parentSessionId, accessId: handle.accessId,
       program: programIdentity(definition), ...identity };
   }
   private callOptions(identity: ProgramParticipant, signal: AbortSignal) {
@@ -228,6 +229,8 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
       continuation: { ...value.continuation, inputs: this.wireInputs(value.continuation.inputs) },
       wait: { ...value.wait, operation: z.json().parse(value.wait.operation) } };
     if ('inputs' in value) return { ...value, inputs: this.wireInputs(value.inputs) };
+    if (value.kind === 'goal.changed') return { ...value,
+      goal: value.goal === null ? null : { ...value.goal, inputs: this.wireInputs(value.goal.inputs) } };
     return structuredClone(value);
   }
 

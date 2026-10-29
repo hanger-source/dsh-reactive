@@ -1,7 +1,7 @@
 import { revokeConversationAccess, type ClientScope } from './scope.ts';
 import { RemoteSnapshotStream } from '@deepseek-ai/dsh-api-gateway/client';
-import { BehaviorSubject, Subject, defer, EMPTY, fromEvent, map, takeUntil, type Observable } from 'rxjs';
-import { ResourceReader, createAssistantProgress, createRequestHandle, decodeProgramEvent, parseAssistantProgressFrame, parseConversationProgress, type AssistantProgressFrame, type ConversationActivity, type ConversationEvent, type ConversationProgressSnapshot, type Observation, type RequestHandle, type ProgramContract, type ProgramParsedInput } from '@hanger-source/dsh-reactive';
+import { BehaviorSubject, Subject, defer, EMPTY, fromEvent, map, mergeAll, of, shareReplay, takeUntil, type Observable } from 'rxjs';
+import { ResourceReader, createAssistantProgress, createRequestHandle, decodeProgramEvent, ownConversationEvent, parseAssistantProgressFrame, parseConversationProgress, type AssistantProgressFrame, type ConversationActivity, type ConversationEvent, type ConversationProgressSnapshot, type Observation, type RequestHandle, type ProgramContract, type ProgramParsedInput } from '@hanger-source/dsh-reactive';
 import type { ProgramSessionAddress, ProgramProgressFrame } from './contracts/types.ts';
 import { decodeProgramFailure } from './contracts/errors.ts';
 
@@ -10,6 +10,7 @@ export interface RemoteProgress<P extends ProgramContract> {
   readonly progress$: Observable<Observation<ConversationProgressSnapshot>>;
   readonly progressFrames$: Observable<AssistantProgressFrame>;
   readonly events$: Observable<ConversationEvent<ProgramParsedInput<P>>>;
+  readonly rawEvents$: Observable<ConversationEvent>;
   request(id: string): RequestHandle<ProgramParsedInput<P>>;
 }
 
@@ -19,7 +20,9 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
   const { context: ctx, signal: lifetime } = owner;
   const assistant = createAssistantProgress();
   const current = new BehaviorSubject<Observation<ConversationActivity>>({ status: 'pending', generation: 0 });
-  const events = new Subject<ConversationEvent<ProgramParsedInput<P>>>();
+  const facts = new Subject<{ raw$: Observable<ConversationEvent>; typed$: Observable<ConversationEvent<ProgramParsedInput<P>>> }>();
+  const rawEvents = facts.pipe(map(fact => fact.raw$), mergeAll());
+  const events = facts.pipe(map(fact => fact.typed$), mergeAll());
   const progressFrames = new Subject<AssistantProgressFrame>();
   const requests = new Map<string, RequestHandle<ProgramParsedInput<P>>>();
   let terminated = false;
@@ -79,7 +82,12 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
         } else {
           const event = frame.event;
           if (event.sessionId !== sessionId) throw new Error('REACTIVE_REQUEST_SESSION_MISMATCH');
-          events.next(decodeProgramEvent(program, event.kind === 'execution.error' ? { ...event, error: decodeProgramFailure(event.error) } : event));
+          // 同一事实 cut 固定当前订阅者；raw-only 不执行业务 input transform。
+          // 此处已经离开宿主 append，消费者共享本次自有快照和领域解码，不回放历史。
+          const raw$ = defer(() => of(ownConversationEvent(event.kind === 'execution.error'
+            ? { ...event, error: decodeProgramFailure(event.error) } : event))).pipe(shareReplay({ bufferSize: 1, refCount: true }));
+          const typed$ = raw$.pipe(map(value => decodeProgramEvent(program, value)), shareReplay({ bufferSize: 1, refCount: true }));
+          facts.next({ raw$, typed$ });
         }
       },
       failed: error => {
@@ -89,7 +97,7 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
         // 官方snapshot consumer已经终止；先固定事实，通知中的重入reset也不能假装重新观察。
         terminated = true;
         assistant.replace([]); current.next({ status: 'error', generation: current.value.generation + 1, error });
-        events.error(error); progressFrames.error(error);
+        facts.error(error); progressFrames.error(error);
       },
     });
     const reset = ctx.on('connection/reset', () => { if (!terminated) { invalidate(); stream.restart(); } });
@@ -97,13 +105,14 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
   }, async ({ stream, reset }) => {
     reset();
     try { await stream.dispose(); }
-    finally { assistant.replace([]); current.complete(); events.complete(); progressFrames.complete(); requests.clear(); cached = undefined; }
+    finally { assistant.replace([]); current.complete(); facts.complete(); progressFrames.complete(); requests.clear(); cached = undefined; }
   }, 'program-progress:' + sessionId);
   if (owner.active) lease.value.stream.start();
   return {
     progress, progress$: progress.observations$,
     progressFrames$: defer(() => lifetime.aborted ? EMPTY : progressFrames.pipe(takeUntil(fromEvent(lifetime, 'abort')))),
     events$: defer(() => lifetime.aborted ? EMPTY : events.pipe(takeUntil(fromEvent(lifetime, 'abort')))),
+    rawEvents$: defer(() => lifetime.aborted ? EMPTY : rawEvents.pipe(takeUntil(fromEvent(lifetime, 'abort')))),
     request(id) {
       lifetime.throwIfAborted();
       let request = requests.get(id);

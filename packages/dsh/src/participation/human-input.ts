@@ -9,7 +9,7 @@ import { humanAnswerSchema, type HumanAnswer, type HumanInputState, type HumanQu
 import type { HumanInputDeclaration } from '@hanger-source/dsh-reactive/kernel';
 import { Scope, type Value } from '@hanger-source/dsh-reactive/kernel';
 import type { ReactiveProjectionState } from '../conversations/projections.ts';
-import { canonical } from '../conversations/records.ts';
+import { canonical, humanQuestionCall, occurrenceOf } from '../conversations/records.ts';
 
 interface HumanInputProgram {
   readonly humanInput: HumanInputDeclaration | undefined;
@@ -35,9 +35,8 @@ function ownHumanFact<T>(value: T): T {
 }
 
 function questionOrigin(source: Pick<ReactiveProjectionState, 'sessionId' | 'calls'>, callId: string): HumanQuestionOrigin {
-  const call = Object.hasOwn(source.calls, callId) ? source.calls[callId] : undefined;
-  if (!call || call.callId !== callId) throw new Error('REACTIVE_HUMAN_QUESTION_CALL_NOT_FOUND');
-  return ownHumanFact({ sessionId: source.sessionId, ...call });
+  const call = humanQuestionCall(source, callId);
+  return ownHumanFact({ sessionId: source.sessionId, ...occurrenceOf(call) });
 }
 
 /** live 与 cold 以同一原生投影切面关联真实调用；不从当前输入推测旧问题来源。 */

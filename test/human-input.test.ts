@@ -34,6 +34,79 @@ function admitResponder(admission: HumanResponderAdmission, actors: readonly str
   if (admission.answer && admission.answer.answers[0]?.selected[0] !== '允许') throw new Error('MERCHANT_ANSWER_DENIED');
 }
 
+test('提问后复用callId的普通工具不改写旧问题来源，再次同ID提问明确拒绝歧义来源', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-human-call-occurrence-'));
+  let modelCalls = 0, executions = 0;
+  const admitted: HumanQuestionOrigin[] = [];
+  const actionDefinition = defineAction({ name: 'ordinary_business', description: '处理另一项独立业务', scope: z.null(),
+    input: z.object({}).strict(), output: z.boolean() });
+  const implementation = implementAction(actionDefinition, { execute() { executions++; return true; } });
+  const definition = defineApplication({ name: 'human-call-occurrence', admit: async () => {}, environments: [defineEnvironment({
+    id: 'work', instructions: '向人询问当前工作，普通业务保持独立',
+    program: implementProgram(defineProgram({ input: z.object({ merchantId: z.string(), workId: z.string() }),
+      surface: defineSurface({ views: {}, actions: {} }) }), { Component() {
+      const action = useAction(implementation, () => null, []);
+      return h(Fragment, null, HumanInput({ admitResponder(admission) {
+        admitResponder(admission);
+        if (admission.answer) admitted.push(structuredClone(admission.question.origin));
+      } }), h(Offer<typeof actionDefinition>, { name: 'ordinary_business', action }));
+    } }),
+  })] });
+  const app = await boot(join(root, 'home'), definition, async function* () {
+    modelCalls++;
+    if (modelCalls === 1 || modelCalls === 5) yield* tool('ask_user_question', 'reused-question-id', { questions, timeout: 30 });
+    else if (modelCalls === 3 || modelCalls === 7) yield* tool('ordinary_business', 'reused-question-id', {});
+    else yield* text('本轮正式结束');
+  });
+  try {
+    const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+    const foreground = firstValueFrom(session.foregroundQuestions$.pipe(filter(value => value.length === 1)));
+    await session.submit({ requestId: 'original-question', content: '询问第一项工作的授权', intent: 'question', delivery: 'followup',
+      scope: { merchantId: 'merchant-a', workId: 'original' } });
+    const [pending] = await foreground;
+    assert.ok(pending);
+    const native = app.native.sessions.get(SessionId(session.id));
+    assert.ok(native);
+    const originalStart = native.snapshotEvents().find(event => event.type === 'tool/call' && event.data.name === 'ask_user_question');
+    assert.ok(originalStart);
+    assert.equal(pending.origin.callSequence, originalStart.seq);
+    assert.equal(await session.answerQuestion(pending.callId, answer), true);
+    await session.whenIdle();
+    const original = (await session.human.read()).questions.settled[0];
+    assert.ok(original);
+    assert.deepEqual(original.origin, pending.origin);
+    await session.submit({ requestId: 'ordinary-work', content: '处理第二项独立业务', intent: 'question', delivery: 'followup',
+      scope: { merchantId: 'merchant-a', workId: 'ordinary' } });
+    await session.whenIdle();
+    assert.equal(executions, 1);
+    const ordinaryStart = native.snapshotEvents().find(event => event.type === 'tool/call' && event.data.name === 'ordinary_business');
+    assert.ok(ordinaryStart);
+    assert.notEqual(ordinaryStart.seq, originalStart.seq);
+    const preserved = (await session.human.read()).questions.settled[0];
+    assert.deepEqual(preserved, original, '普通同ID工具不能成为历史问题的新来源');
+    assert.deepEqual(preserved!.origin.inputs.map(input => [input.requestId, input.scope]),
+      [['original-question', { merchantId: 'merchant-a', workId: 'original' }]]);
+    await session.submit({ requestId: 'ambiguous-question', content: '为第三项工作再次询问', intent: 'question', delivery: 'followup',
+      scope: { merchantId: 'merchant-a', workId: 'ambiguous' } });
+    await session.whenIdle();
+    assert.equal(native.snapshotEvents().filter(event => event.type === 'tool/call' && event.data.name === 'ask_user_question').length, 2,
+      '歧义来自两次真实原生提问发生');
+    await assert.rejects(async () => session.human.read(), /REACTIVE_HUMAN_QUESTION_ORIGIN_AMBIGUOUS/u);
+    await assert.rejects(session.answerQuestion(pending.callId, answer), /REACTIVE_HUMAN_QUESTION_ORIGIN_AMBIGUOUS/u);
+    assert.deepEqual(admitted, [original.origin], '歧义问题不能以新work来源进入响应政策');
+    assert.equal(executions, 1);
+    await session.submit({ requestId: 'ordinary-after-ambiguity', content: '问题来源不明确时继续处理独立业务',
+      intent: 'question', delivery: 'followup', scope: { merchantId: 'merchant-a', workId: 'after-ambiguity' } });
+    await session.whenIdle();
+    assert.equal(executions, 2, 'human读侧错误不撤销可执行的独立Action');
+    assert.equal(modelCalls, 8);
+    assert.equal(session.snapshot().requests['ordinary-after-ambiguity']?.reply, '本轮正式结束');
+    await assert.rejects(async () => session.human.read(), /REACTIVE_HUMAN_QUESTION_ORIGIN_AMBIGUOUS/u,
+      '独立业务完成后仍保留原human来源错误，不恢复旧ready');
+    session.release();
+  } finally { await app.dispose(); }
+});
+
 for (const mode of ['native', 'ptc'] as const) {
   test(`${mode} 正式问答前台响应审核完整问题、答案及响应者，PTC 不伪造 open 投影`, async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-human-foreground-'));
@@ -76,7 +149,7 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.deepEqual(pending.questions, questions);
       const initialAccepted = await acceptedInput;
       assert.ok(initialAccepted.kind === 'input.accepted');
-      const origin: HumanQuestionOrigin = { sessionId: session.id, callId: pending.callId,
+      const origin: HumanQuestionOrigin = { sessionId: session.id, callId: pending.callId, callSequence: pending.origin.callSequence,
         rootCallId: mode === 'native' ? 'human-foreground' : 'human-foreground-root',
         parentCallId: mode === 'native' ? null : 'human-foreground-root', name: 'ask_user_question',
         inputs: [{ sourceSessionId: session.id, messageId: initialAccepted.messageId, requestId: 'merchant-question', source: 'user',
@@ -199,7 +272,7 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.ok(pending);
       const initialAccepted = await acceptedInput;
       assert.ok(initialAccepted.kind === 'input.accepted');
-      const origin: HumanQuestionOrigin = { sessionId: session.id, callId: pending.callId,
+      const origin: HumanQuestionOrigin = { sessionId: session.id, callId: pending.callId, callSequence: pending.origin.callSequence,
         rootCallId: mode === 'native' ? 'human-continued' : 'human-continued-root',
         parentCallId: mode === 'native' ? null : 'human-continued-root', name: 'ask_user_question',
         inputs: [{ sourceSessionId: session.id, messageId: initialAccepted.messageId, requestId: 'merchant-question', source: 'user',

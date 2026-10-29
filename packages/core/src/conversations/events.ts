@@ -5,7 +5,7 @@ import type { AssistantStreamRecord } from '@deepseek-ai/dsh-llm/assistant-strea
 /** sequence 只对已追加的会话事实有值；瞬态流和驱动状态没有持久序号。 */
 export interface EventOrigin { sessionId: string; time: number; sequence: number | null; }
 export interface ToolOccurrence<T = Json> {
-  callId: string; rootCallId: string; parentCallId: string | null; name: string;
+  callId: string; callSequence: number; rootCallId: string; parentCallId: string | null; name: string;
   inputs: readonly InputReference<T>[];
 }
 export type AssistantStream =
@@ -44,7 +44,7 @@ export type ConversationEvent<T = Json> = EventOrigin & (
   | { kind: 'assistant.message'; messageId: string; turn: number; step: number; inputs?: readonly InputReference<T>[]; text: string; interrupted: boolean }
   | { kind: 'assistant.stream'; inputs: readonly InputReference<T>[]; frame: AssistantStream }
   | { kind: 'goal.changed'; goal: GoalActivity | null }
-  | { kind: 'goal.activation'; goalId: string; revision: number; activation: 'armed' | 'disarmed' }
+  | { kind: 'goal.activation'; goalId: string; revision: number; activation: 'armed' | 'disarmed'; inputs: readonly InputReference<T>[] }
   | { kind: 'execution.changed'; execution: 'idle' | 'running' }
   | { kind: 'execution.error'; error: unknown; turn: number | null; step: number | null; inputs?: readonly InputReference<T>[] }
   | { kind: 'wait.opened' | 'wait.resolved'; continuation: Continuation; wait: WaitReference }

@@ -24,6 +24,11 @@ export interface Continuation {
 }
 export const waitSchema = z.object({ id: z.string().min(1), operation: z.json() }).strict();
 export interface WaitReference { readonly id: string; readonly operation: Json; }
+export interface InputResult {
+  readonly continuation: Continuation;
+  readonly wait: WaitReference;
+  readonly ready: boolean;
+}
 /** 原始文件输入只接受同会话上传签发的 receipt，不接受客户端提供持久文件引用。 */
 export type PromptContentPart = NativePromptContentPart | { readonly type: 'file'; readonly receiptId: FileUploadReceiptId };
 export type InputDelivery = 'followup' | 'steer' | 'inject';
@@ -82,31 +87,54 @@ export interface SubmitOptions extends CancellationOptions { actorId?: string; }
 export type FileUploadSource = Uint8Array | Blob;
 export interface UploadFileOptions extends SubmitOptions { name?: string; }
 
-export const toolActivitySchema = z.object({ callId: z.string(), rootCallId: z.string(), parentCallId: z.string().nullable(), name: z.string(),
+export const toolActivitySchema = z.object({ callId: z.string(), callSequence: z.number().int().nonnegative(), rootCallId: z.string(), parentCallId: z.string().nullable(), name: z.string(),
   state: z.enum(['running', 'returned', 'failed']), inputs: inputReferenceSchema.array().readonly(),
   observedAt: z.number(), result: z.json().optional() }).strict();
 export type ToolActivity = Readonly<Omit<z.infer<typeof toolActivitySchema>, 'inputs' | 'result'>> & {
   readonly inputs: readonly InputReference[];
   readonly result?: Json;
 };
+/** 持久声明的原请求；尚无原生 messageId，不等于已进入模型的 InputReference。 */
+export const requestDeclarationSchema = z.object({ scope: z.json(), intent: z.enum(['question', 'goal', 'followup', 'result']),
+  actorId: z.string().min(1), participant: z.enum(['human', 'service']), result: resultFields.result.nullable() }).strict();
+export type RequestDeclaration = Readonly<Omit<z.infer<typeof requestDeclarationSchema>, 'scope' | 'result'>> & {
+  readonly scope: Json;
+  readonly result: InputResult | null;
+};
+/** 原生回复发生身份；null 表示未取得该步骤的输入关联证据。 */
+export const replyActivitySchema = z.object({ messageId: z.string().min(1), turn: z.number().int().nonnegative(),
+  step: z.number().int().nonnegative(), sequence: z.number().int().nonnegative(), observedAt: z.number(),
+  text: z.string(), interrupted: z.boolean(), inputs: inputReferenceSchema.array().readonly().nullable() }).strict();
+export type ReplyActivity = Readonly<Omit<z.infer<typeof replyActivitySchema>, 'inputs'>> & {
+  readonly inputs: readonly InputReference[] | null;
+};
 export const requestActivitySchema = z.object({ requestId: z.string(), state: z.enum(['declared', 'accepted', 'consumed', 'settled']),
+  declaration: requestDeclarationSchema.nullable(), inputs: inputReferenceSchema.array().readonly(),
   reply: z.string().nullable(), outcome: z.string().nullable(), tools: toolActivitySchema.array().readonly() }).strict();
-export type RequestActivity = Readonly<Omit<z.infer<typeof requestActivitySchema>, 'tools'>> & {
+export type RequestActivity = Readonly<Omit<z.infer<typeof requestActivitySchema>, 'tools' | 'declaration' | 'inputs'>> & {
+  readonly declaration: RequestDeclaration | null;
+  readonly inputs: readonly InputReference[];
   readonly tools: readonly ToolActivity[];
 };
 export const goalActivitySchema = z.object({ id: z.string(), revision: z.number().int().positive(), objective: z.string(),
+  inputs: inputReferenceSchema.array().readonly(),
   phase: z.enum(['active', 'paused', 'blocked', 'complete']), blockedReason: z.object({ code: z.string(), message: z.string() }).optional(),
   maxGoalRounds: z.number().int().positive(), roundsStarted: z.number().int().nonnegative(),
   activation: z.enum(['armed', 'disarmed']).nullable() }).strict();
-export type GoalActivity = Readonly<Omit<z.infer<typeof goalActivitySchema>, 'blockedReason'>> & {
+export type GoalActivity = Readonly<Omit<z.infer<typeof goalActivitySchema>, 'blockedReason' | 'inputs'>> & {
+  readonly inputs: readonly InputReference[];
   readonly blockedReason?: { readonly code: string; readonly message: string };
 };
 export const conversationActivitySchema = z.object({ sessionId: z.string(), sequence: z.number().int(),
+  inputs: inputReferenceSchema.array().readonly(), calls: toolActivitySchema.array().readonly(), replies: replyActivitySchema.array().readonly(),
   source: z.enum(['live', 'durable']), execution: z.enum(['idle', 'running', 'unavailable']),
   goal: goalActivitySchema.nullable(),
   requests: z.record(z.string(), requestActivitySchema),
   waits: z.object({ continuation: continuationSchema, wait: waitSchema }).array().readonly() }).strict();
-export type ConversationActivity = Readonly<Omit<z.infer<typeof conversationActivitySchema>, 'goal' | 'requests' | 'waits'>> & {
+export type ConversationActivity = Readonly<Omit<z.infer<typeof conversationActivitySchema>, 'goal' | 'requests' | 'waits' | 'inputs' | 'calls' | 'replies'>> & {
+  readonly inputs: readonly InputReference[];
+  readonly calls: readonly ToolActivity[];
+  readonly replies: readonly ReplyActivity[];
   readonly goal: GoalActivity | null;
   readonly requests: Readonly<Record<string, RequestActivity>>;
   readonly waits: readonly { readonly continuation: Continuation; readonly wait: WaitReference }[];

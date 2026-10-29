@@ -63,7 +63,10 @@ export class ConversationPrograms {
         });
         const nativeScope = entry.scope;
         nativeScope.own(() => { entry.nativeMask?.(); entry.nativeMask = undefined; });
-        const questions = entry.human.questions$.subscribe({ next: value => conversation[conversationBindings]().publishQuestions(value), error: error => program.fail(error) });
+        const questions = entry.human.questions$.subscribe({
+            next: value => conversation[conversationBindings]().publishQuestions(value),
+            error: error => conversation[conversationBindings]().publishQuestionError(error),
+        });
         const foreground = entry.human.foreground$.subscribe({ next: value => conversation[conversationBindings]().publishForegroundQuestions(value), error: error => program.fail(error) });
         nativeScope.own(() => { questions.unsubscribe(); foreground.unsubscribe(); });
         nativeScope.effect(() => { program.revision.get(); entry.skills.commit(program.skills); });

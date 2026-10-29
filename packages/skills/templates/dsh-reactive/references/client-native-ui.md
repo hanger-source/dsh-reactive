@@ -6,6 +6,10 @@
 
 独立模块从 core 导入 `ProgramSessionClient<P>`，直接借用本地 `ConversationHandle<P>` 或远程 `RemoteProgramSession<P>`，共用原来的 View、progress、human 和 request 资源。只消费模块出口时使用 `SurfaceClient<S>`；根会话和集合成员使用同一合同。普通业务函数可以 `await` 两端的 Action 解析和调用，具体 SDK 类型仍保留各自同步/异步时序。不为复用创建 SDK 代理或第二套状态，不把组件内部的 `ProgramSession` 当成外部消费者权限。
 
+本地或远程的人工、服务会话可直接作为 `WorkSource` 交给 `createWorkSelector` 的 `observe(key, sources, options?)`；`select(key, snapshots)` 同步投影已有快照。工作读侧的 `state` 与 `state$` 共用一个 reader，events$ 和 progressFrames$ 只交付新事实。所有来源 ready 才交付完整快照；pending/error 撤下旧 ready，来源退出保留原错误，各会话 generation 不组成事务。最后观察退出只释放观察。identity 的 parentSessionId 来自真实 Session；观察不会打开会话、启动 Agent 或补充权限。
+
+输入目录、调用、回复及 Goal 的输入关联来自 Activity；请求的工具和最后回复由这些事实派生。每次调用保留正式 start 事件序号 callSequence，provider callId 可跨轮复用；回复保留 messageId。声明含 `result: { continuation, wait, ready } | null`，无 messageId 不等于已受理输入；回复 inputs 为 null 时不归组。每个匹配项保完整 value、原身份和 inputs，matchedInputs 只解释观察分组，不裁剪事实或授予续接权限；多输入调用或回复可同时出现在多个工作。原始 scope 在两端均不执行 Program transform。
+
 `session.module(mount)` 供业务消费者使用局部槽名；返回 SurfaceClient 的合同是 mount.selected，mount.surface 保留组件实现的原合同。资源对象、调用选项和同步/异步时序继续来自原客户端，不增加连接、owner 或 release。根会话、集合成员及局部模块均支持 module；继续选择嵌套模块时，须属于父原合同且保持父已公开的子集，不能用更宽的挂载恢复隐藏槽。
 
 `session.requestStatus(requestId, { signal })` 是共同 ProgramSessionClient 方法；`pause({ signal })`、`cancel({ signal })` 和问答控制属于 HumanProgramSessionClient。ProgramRequestStatus、ProgramGoalControl、ProgramCancelResult 从 core 导入。暂停回执提供原 Goal 的 id/revision/phase；canceled:true 表示原生处理已 idle 并完成持久 flush，不代表外部业务 Operation 已取消。requestStatus 核验原生日志、投影、成员及代际，不把客户端缺项或读取失败当 absent；冷查询不激活 Agent。服务参与者可以读取问题与请求状态，不能控制 Goal 或答复人工问题。

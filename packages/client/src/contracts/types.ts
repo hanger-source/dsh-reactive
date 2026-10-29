@@ -1,4 +1,4 @@
-import type { ActionIdentity, ActionSource, Continuation, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
+import type { ActionIdentity, ActionSource, Continuation, GoalActivity, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
   ProgramGoalControl as CoreProgramGoalControl, ProgramCancelResult as CoreProgramCancelResult, ProgramRequestStatus as CoreProgramRequestStatus,
   ProgramJournalEvent as CoreProgramJournalEvent, ProgramJournalEntry as CoreProgramJournalEntry,
   ProgramJournalPage as CoreProgramJournalPage, ProgramJournalWindow as CoreProgramJournalWindow,
@@ -36,6 +36,7 @@ export interface ProgramIdentity {
   readonly sessionId: string;
   readonly environmentId: string;
   readonly workspaceId: string;
+  readonly parentSessionId: string | null;
   readonly accessId: string;
   readonly actorId: string;
   readonly participant: 'human' | 'service';
@@ -73,9 +74,12 @@ export interface ProgramJournalPageRequest extends ProgramSessionAddress, Progra
 export type ProgramJournalFrame = CoreProgramJournalFrame;
 /** 异常通过 Gateway 正式 error 投影，不能把本地 Error 当 JSON 对象发送。 */
 type WireEvent = ConversationEvent<JsonValue>;
-export type ProgramConversationEvent = Exclude<WireEvent, { kind: 'execution.error' | 'tool.settled' | 'wait.opened' | 'wait.resolved' }>
+export type ProgramConversationEvent = Exclude<WireEvent, { kind: 'execution.error' | 'tool.settled' | 'goal.changed' | 'wait.opened' | 'wait.resolved' }>
   | (Omit<Extract<WireEvent, { kind: 'execution.error' }>, 'error'> & { readonly error: ProgramFailure })
   | (Omit<Extract<WireEvent, { kind: 'tool.settled' }>, 'result' | 'meta'> & { readonly result?: JsonValue; readonly meta?: JsonValue })
+  | (Omit<Extract<WireEvent, { kind: 'goal.changed' }>, 'goal'> & {
+    readonly goal: (Omit<GoalActivity, 'inputs'> & { readonly inputs: readonly InputReference<JsonValue>[] }) | null;
+  })
   | (Omit<Extract<WireEvent, { kind: 'wait.opened' | 'wait.resolved' }>, 'continuation' | 'wait'> & {
     readonly continuation: Omit<Continuation, 'inputs'> & { readonly inputs: readonly InputReference<JsonValue>[] };
     readonly wait: { readonly id: string; readonly operation: JsonValue };

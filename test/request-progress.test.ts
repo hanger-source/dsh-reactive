@@ -6,10 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createElement as h } from 'react';
 import { firstValueFrom, tap, type Subscription } from 'rxjs';
-import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
+import { createAssistantMessage, type GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { expandAssistantStream } from '@deepseek-ai/dsh-llm/assistant-stream';
 import { SessionId } from '@deepseek-ai/dsh-session';
-import { defineApplication } from '@hanger-source/dsh-reactive';
+import { createWorkSelector, defineApplication } from '@hanger-source/dsh-reactive';
 import { defineEnvironment } from '@hanger-source/dsh-reactive';
 import { z } from '@hanger-source/dsh-reactive';
 import { defineAction, implementAction } from '@hanger-source/dsh-reactive';
@@ -117,6 +117,35 @@ test('晚订阅取得真实活动前缀，排队的新请求不会改写原 atte
     assert.ok(boundaryEvents.some(event => event.kind === 'assistant.stream' && event.frame.phase === 'end'
       && event.frame.outcome.kind === 'committed' && event.frame.outcome.seq === boundarySequence));
     boundarySubscription.unsubscribe(); stopBoundary();
+    const selector = createWorkSelector({ identify(origin) {
+      const scope = origin.scope;
+      return scope !== null && typeof scope === 'object' && !Array.isArray(scope) && 'ticket' in scope && typeof scope.ticket === 'string'
+        ? scope.ticket : undefined;
+    } });
+    const work = selector.observe('one', [session]);
+    const unrelated = createAssistantMessage({ content: [{ type: 'text', text: '外部发布者追加的独立说明' }],
+      source: { provider: 'external-publisher', model: 'published-message' } });
+    const externalObserved = Promise.withResolvers<void>();
+    const rawSubscription = session.rawEvents$.subscribe(event => {
+      if (event.kind === 'assistant.message' && event.messageId === unrelated.id) {
+        assert.equal(event.inputs, undefined); externalObserved.resolve();
+      }
+    });
+    const workMessages: string[] = [];
+    const workSubscription = work.events$.subscribe(value => {
+      if (value.event.kind === 'assistant.message') workMessages.push(value.event.messageId);
+    });
+    // 真正的外部日志发布发生在原生step结束之后；沿用已有turn/step数字也不构成输入归属证据。
+    native.append('assistant/message', { turn: active.turn, step: active.step, message: unrelated, stream: [] }, { surfaceOp: 'append' });
+    await externalObserved.promise;
+    const externalReply = session.snapshot().replies.find(reply => reply.messageId === unrelated.id);
+    assert.ok(externalReply);
+    assert.equal(externalReply.inputs, null);
+    assert.equal((await first.state.read()).activity?.reply, 'first-response');
+    assert.ok(!(await work.state.read()).sessions[0]!.replies.some(reply => reply.value.messageId === unrelated.id));
+    assert.deepEqual(workMessages, []);
+    assert.equal(calls, 2);
+    rawSubscription.unsubscribe(); workSubscription.unsubscribe();
     assert.equal(app.errors.length, 0);
     const releasedRequest = late.request('first');
     late.release();
@@ -257,8 +286,9 @@ test('注入的供应商边界错误沿原生step关联请求，后续装配失�
     assert.equal(Reflect.set(changedTool.inputs[0]!, 'requestId', 'model-error'), false);
     assert.equal(Reflect.set(activity.tools, 'length', 0), false);
     assert.equal(projected.requests['business-changed']?.state, 'settled');
-    assert.equal(projected.requests['business-changed']?.tools.find(value => value.callId === 'change-call')?.state, 'returned');
-    assert.equal(projected.requests['business-changed']?.tools.find(value => value.callId === 'change-call')?.inputs[0]?.requestId, 'business-changed');
+    const originalCall = Object.values(projected.calls).find(call => call.callId === 'change-call');
+    assert.equal(originalCall?.state, 'returned');
+    assert.equal(originalCall?.inputs[0]?.requestId, 'business-changed');
     // 同一请求的显式确定性重投仍依原生已消费事实去重，不因观察者写入重新执行业务。
     await session.submit({ requestId: 'business-changed', content: '改变下一步骤的业务准入', intent: 'question', delivery: 'followup' as const, scope: null });
     await session.whenIdle();

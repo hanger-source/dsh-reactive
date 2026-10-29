@@ -34,7 +34,8 @@ export class ConversationObservations {
         const goal = native ? this.ctx.goals.get(native.agent) : undefined;
         const activity: ConversationActivity = native ? { ...entry.state.activity, source: 'live', execution: native.agent.status,
             goal: goal ? { id: goal.id, revision: goal.revision, objective: goal.objective, phase: goal.phase,
-                ...(goal.blockedReason ? { blockedReason: goal.blockedReason } : {}), maxGoalRounds: goal.maxGoalRounds, roundsStarted: goal.roundsStarted, activation: goal.activation } : null }
+                ...(goal.blockedReason ? { blockedReason: goal.blockedReason } : {}), maxGoalRounds: goal.maxGoalRounds, roundsStarted: goal.roundsStarted,
+                activation: goal.activation, inputs: entry.state.goalInputs(goal.id) } : null }
             : entry.state.activity;
         entry.conversation[conversationBindings]().publish(activity);
     }
@@ -95,7 +96,7 @@ export class ConversationObservations {
             if (entry.session.scope.disposed) return;
             entry.session.state = this.liveState(session);
             this.publish(entry.session);
-            for (const occurrence of sessionOccurrences(session.id, event, previous, entry.session.state, (turn, step) => entry.progress.inputs(turn, step)))
+            for (const occurrence of sessionOccurrences(session.id, event, previous, entry.session.state))
                 this.emit(entry.session, occurrence);
         });
         this.ctx.on('agent/status', ({ agent, status }) => {
@@ -120,7 +121,7 @@ export class ConversationObservations {
             this.publish(entry);
             if (goal)
                 this.emit(entry, { sessionId, time: Date.now(), sequence: null, kind: 'goal.activation',
-                    goalId: goal.id, revision: goal.revision, activation: goal.activation });
+                    goalId: goal.id, revision: goal.revision, activation: goal.activation, inputs: entry.state.goalInputs(goal.id) });
         });
         this.ctx.on('agent/assistant-stream', ({ agent, frame }) => {
             const entry = sessions.forAgent(agent);

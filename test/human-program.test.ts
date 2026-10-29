@@ -135,7 +135,7 @@ for (const mode of ['native', 'ptc'] as const) {
       const invocation = scene.invocations[0]!;
       const input = await accepted;
       assert.ok(input.kind === 'input.accepted');
-      const origin: HumanQuestionOrigin = { sessionId: session.id, callId: question.callId, rootCallId,
+      const origin: HumanQuestionOrigin = { sessionId: session.id, callId: question.callId, callSequence: question.origin.callSequence, rootCallId,
         parentCallId: invocation.id, name: 'ask_user_question', inputs: [{ sourceSessionId: session.id,
           messageId: input.messageId, requestId: 'original-merchant', source: 'user', intent: 'question',
           scope: submittedScope, actorId: 'request-author', participant: 'human' }] };

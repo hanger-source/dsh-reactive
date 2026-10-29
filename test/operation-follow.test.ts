@@ -18,7 +18,7 @@ import { defineOperation, implementOperation, operationFollowLinkSchema, type Op
 import { ConversationAccessRevokedError, defineApplication, defineEnvironment, z } from '@hanger-source/dsh-reactive';
 import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
 import { Expose, Offer, Follow } from '@hanger-source/dsh-reactive/program';
-import { defineProgram } from '@hanger-source/dsh-reactive';
+import { createWorkSelector, defineProgram } from '@hanger-source/dsh-reactive';
 import { useAction, useObservable, useOperation } from '@hanger-source/dsh-reactive/program';
 import { defineSurface } from '@hanger-source/dsh-reactive';
 import { text, tool } from './native-support.ts';
@@ -438,6 +438,25 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     assert.equal(session.snapshot().goal?.phase, 'paused');
     assert.equal(session.snapshot().goal?.revision, paused.revision);
     assert.equal(session.snapshot().requests['operation:' + link.id]?.state, 'accepted');
+    const work = createWorkSelector({ identify(origin) {
+      const scope = origin.scope;
+      return scope !== null && typeof scope === 'object' && !Array.isArray(scope)
+        && 'merchantId' in scope && typeof scope.merchantId === 'string' ? scope.merchantId : undefined;
+    } }).observe('merchant-a', [session], { signal: context.signal });
+    const progress = await work.state.read(context.signal);
+    const observed = progress.sessions[0]!;
+    const heldFeedback = observed.conditions.find(condition => condition.kind === 'continuation.superseded'
+      && condition.request.value.requestId === 'operation:' + link.id);
+    assert.ok(heldFeedback?.kind === 'continuation.superseded');
+    assert.deepEqual(heldFeedback.continuation, link.continuation, '原因保留业务原follow的正式继续关联');
+    assert.equal(heldFeedback.currentGoal?.revision, paused.revision);
+    assert.equal(heldFeedback.currentGoal?.phase, 'paused');
+    assert.ok(observed.conditions.some(condition => condition.kind === 'goal.paused'
+      && condition.matchedInputs.some(input => input.requestId === 'original-goal')));
+    assert.ok(heldFeedback.request.matchedDeclaration, '未消费的反馈仍可按正式请求声明归入原业务工作');
+    assert.equal(heldFeedback.request.value.state, 'accepted');
+    assert.ok(observed.inputs.some(input => input.value.requestId === 'operation:' + link.id
+      && input.value.messageId.length > 0), '暂停的反馈保留原生inbox已受理输入，不能误报为模型已消费');
     assert.equal(app.store.bodies().length, 1, '业务ACK重投不能再次执行原Action');
     const events = app.runtime.native.agents.get(SessionId(session.id))!.session.snapshotEvents();
     const inputs = events.flatMap(event => {

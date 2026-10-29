@@ -329,6 +329,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
           get progress$() { return progressOwner().progress$; },
           get progressFrames$() { return progressOwner().progressFrames$; },
           get events$() { return progressOwner().events$; },
+          get rawEvents$() { return progressOwner().rawEvents$; },
           request: requestId => progressOwner().request(requestId),
           async invocation<K extends keyof S['actions'] & string>(name: K, id: string, options: CancellationOptions = {}): Promise<ActionInvocation<S['actions'][K]>> {
             assertActive();

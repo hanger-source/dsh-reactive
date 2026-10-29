@@ -1,5 +1,5 @@
 import type { ActionInput, CancellationOptions, FileUploadInvocation, FileUploadSource, FileUploadValue, Invocation, Json, ProgramContract, ProgramSessionClient, HumanProgramSessionClient, Surface, SurfaceClient, SurfaceMount, ViewValue } from '@hanger-source/dsh-reactive';
-import { combineResources, composeSurface, defineProgram, defineSurface, resourceView, selectSurface, shareResource, z } from '@hanger-source/dsh-reactive';
+import { combineResources, composeSurface, createWorkSelector, defineProgram, defineSurface, resourceView, selectSurface, shareResource, z } from '@hanger-source/dsh-reactive';
 import type { SessionFiles, FileResource, WorkspaceFileText, WorkspaceFileBytes } from '@hanger-source/dsh-reactive/files';
 import type { SessionJournal, ProgramJournalFrame, ProgramJournalPage } from '@hanger-source/dsh-reactive/journal';
 import { SessionJournalUnavailableError } from '@hanger-source/dsh-reactive/journal';
@@ -52,6 +52,17 @@ export function sessionResources<P extends ProgramContract>(session: ProgramSess
 
 export function sharedSessionFacts<P extends ProgramContract>(session: ProgramSessionClient<P>, signal: AbortSignal) {
   return shareResource(combineResources({ progress: session.progress, human: session.human }), { signal });
+}
+
+const workKey = z.object({ merchantId: z.string(), workId: z.string() });
+const merchantWork = createWorkSelector({ identify(origin) {
+  const selected = workKey.safeParse(origin.scope);
+  return selected.success ? selected.data : undefined;
+} });
+export function sessionWork<P extends ProgramContract, Q extends ProgramContract>(
+  first: ProgramSessionClient<P>, second: ProgramSessionClient<Q>, key: z.output<typeof workKey>, signal: AbortSignal,
+) {
+  return merchantWork.observe(key, [first, second], { signal });
 }
 
 // 退等只针对回执；原Invocation、结果Promise和有限活动保持同一身份与owner。

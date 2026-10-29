@@ -208,7 +208,7 @@ for (const mode of ['native', 'ptc'] as const) {
       const agent = app.native.agents.get(SessionId(session.id))!;
       assert.equal(Reflect.set(admissions[0]!.inputs[0]!.scope as object, 'merchantId', 'changed-policy-copy'), true);
       const nativeInputs = app.native.sessionProjections.stateOf(agent.session, 'reactiveInputs');
-      assert.deepEqual(nativeInputs?.calls[written]?.inputs[0]?.scope, { merchantId: 'merchant-a' },
+      assert.deepEqual(Object.values(nativeInputs?.calls ?? {}).find(call => call.callId === written)?.inputs[0]?.scope, { merchantId: 'merchant-a' },
         '政策收到独立的输入快照，不能修改原生调用的原请求权限事实');
       assert.equal(agent.ctx.tools.schemas(agent).filter(value => value.name === 'native_tool').length, 1);
       assert.ok(!agent.ctx.tools.schemas(agent).some(value => value.name === 'undeclared_tool'), '同一registry可见性决定PTC SDK，不仅过滤模型列表');

@@ -39,7 +39,7 @@ export interface ProgramSessionClient<P extends ProgramContract,
   readonly id: string;
   /** 原 Program 纯合同；保留模块身份和输入/出口的完整类型。 */
   readonly definition: P;
-  readonly identity: Pick<ConversationIdentity, 'sessionId' | 'environmentId' | 'workspaceId'>;
+  readonly identity: Pick<ConversationIdentity, 'sessionId' | 'environmentId' | 'workspaceId' | 'parentSessionId'>;
   readonly files: SessionFiles;
   readonly journal: SessionJournal;
   readonly actionManifest: ResourceReader<readonly ToolActionBinding[]>;
@@ -48,6 +48,7 @@ export interface ProgramSessionClient<P extends ProgramContract,
   readonly progress$: Observable<Observation<ConversationProgressSnapshot>>;
   readonly progressFrames$: Observable<AssistantProgressFrame>;
   readonly events$: Observable<ConversationEvent<ProgramParsedInput<P>>>;
+  readonly rawEvents$: Observable<ConversationEvent>;
   request(requestId: string): RequestHandle<ProgramParsedInput<P>>;
   /** 只读核对当前宿主事实；读取取消不会投递输入或激活 Agent。 */
   requestStatus(requestId: string, options?: CancellationOptions): Promise<ProgramRequestStatus>;

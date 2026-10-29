@@ -17,7 +17,7 @@ test('Program共享来源的真实释放失败归父退出或程序失败owner�
     const definition = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
     const conversation = new Conversation(sessionScope, { sessionId: end, workspaceId: end, environmentId: 'work',
       directory: '/workspace', parentSessionId: null }, workspace, definition,
-    { sessionId: end, sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });
+    { sessionId: end, sequence: -1, source: 'live', execution: 'idle', inputs: [], calls: [], replies: [], goal: null, requests: {}, waits: [] });
     let released = 0, reader!: ResourceReader<number>;
     const source = new Observable<Observation<number>>(subscriber => {
       subscriber.next({ status: 'ready', generation: 1, value: 42, observedAt: Date.now() });
@@ -59,7 +59,7 @@ test('同一外部资源在对象、原流和hook之间切换不重读，原owne
   const resource = new ResourceReader({ peek: () => frame, observations$: defer(() => { reads++; return of(frame); }) }, { signal: owner.signal });
   const identity = { sessionId: 'finite-reader', workspaceId: workspace.id, environmentId: 'work', directory: workspace.directory, parentSessionId: null };
   const conversation = new Conversation(sessionScope, identity, workspace, definition, { sessionId: identity.sessionId,
-    sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });
+    sequence: -1, source: 'live', execution: 'idle', inputs: [], calls: [], replies: [], goal: null, requests: {}, waits: [] });
   const implementation = implementProgram(definition, { Component() {
     const mode = useObservable(selected);
     const observed = useResource(() => resource, []);
@@ -133,7 +133,7 @@ test('复合hook的自建查询共享连接和终止缓存，Program退出不重
     const definition = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
     const conversation = new Conversation(sessionScope, { sessionId: end, workspaceId: workspace.id, environmentId: 'work',
       directory: root, parentSessionId: null }, workspace, definition, {
-      sessionId: end, sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [],
+      sessionId: end, sequence: -1, source: 'live', execution: 'idle', inputs: [], calls: [], replies: [], goal: null, requests: {}, waits: [],
     });
     const implementation = implementProgram(definition, { Component() {
       const current = useCapability();

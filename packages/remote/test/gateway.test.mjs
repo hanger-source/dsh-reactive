@@ -12,7 +12,7 @@ import { LlmAdapter, ToolCallId } from '@deepseek-ai/dsh-llm';
 import { expandAssistantStream } from '@deepseek-ai/dsh-llm/assistant-stream';
 import { SessionId, pluginRecordOf } from '@deepseek-ai/dsh-session';
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol';
-import { z, defineAction, implementAction, defineOperation, implementOperation, defineApplication, defineEnvironment, defineProgram, defineSurface, composeSurface, collectionSurface, view, resourceView, operationFollowLinkSchema } from '@hanger-source/dsh-reactive';
+import { z, defineAction, implementAction, defineOperation, implementOperation, defineApplication, defineEnvironment, defineProgram, defineSurface, composeSurface, collectionSurface, view, resourceView, operationFollowLinkSchema, createWorkSelector } from '@hanger-source/dsh-reactive';
 import { implementProgram, Module, Expose, Offer, Follow, HumanInput, useAction, useOperation, useObservable } from '@hanger-source/dsh-reactive/program';
 import { ChildCreationIncompleteError, createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
 import { mountProgramGateway, RemoteAuthenticationError } from '@hanger-source/dsh-reactive-remote';
@@ -706,7 +706,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     assert.equal(deliveryQuestion.timed, true); assert.deepEqual(deliveryQuestion.questions, preferenceQuestions);
     assert.notEqual(deliveryQuestion.callId, 'remote-delivery-preferences');
     assert.equal(preferenceCalls.length, 2);
-    assert.deepEqual(deliveryQuestion.origin, { sessionId, callId: deliveryQuestion.callId,
+    assert.deepEqual(deliveryQuestion.origin, { sessionId, callId: deliveryQuestion.callId, callSequence: deliveryQuestion.origin.callSequence,
       rootCallId: 'remote-delivery-preferences', parentCallId: 'remote-delivery-preferences', name: 'ask_user_question',
       inputs: preferenceCalls[1].inputs });
     assert.deepEqual(deliveryQuestion.origin.inputs.map(input => ({ sourceSessionId: input.sourceSessionId, requestId: input.requestId,
@@ -1157,13 +1157,17 @@ test('远程只读 Operation 槽捕获原命令，F1 后新 Follow 等 F2，Date
   assert.deepEqual(errors, []); assert.deepEqual(carrierErrors, []);
 });
 
-test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；请求、重连及冷 journal 保持真实身份', async context => {
+test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；Work、请求、重连及冷 journal 保持真实身份', async context => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-request-progress-'));
   const prefix = Promise.withResolvers(), continueChunk = Promise.withResolvers(), secondChunk = Promise.withResolvers(), finish = Promise.withResolvers();
   const maintenanceGate = Promise.withResolvers();
   const errors = [], carrierErrors = [], clients = [], sockets = [], wire = [];
   const surface = defineSurface({ views: {}, actions: {} });
   const program = defineProgram({ name: 'gateway_test', input: z.object({ at: z.iso.datetime().transform(value => new Date(value)) }).strict(), surface });
+  let remoteInputDecodes = 0;
+  // 独立的消费者合同仅计数 SDK transform，宿主仍使用原 Program 的相同单向 Date 合同。
+  const remoteProgram = defineProgram({ name: program.name, version: program.version, surface,
+    input: z.object({ at: z.iso.datetime().transform(value => { remoteInputDecodes++; return new Date(value); }) }).strict() });
   const scopes = { 'request-a': { at: '2026-10-27T00:00:07.000Z' }, 'request-b': { at: '2026-10-27T00:00:08.000Z' } };
   const definition = defineApplication({ name: 'request-progress', admit: async (input, _identity, access) => {
     assert.equal(access.actorId, 'request-observer');
@@ -1199,7 +1203,7 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；请
   });
   const connect = async () => {
     const group = crypto.randomUUID();
-    const client = await createProgramClient(program, { baseUrl: gateway.url, createWebSocket: url => {
+    const client = await createProgramClient(remoteProgram, { baseUrl: gateway.url, createWebSocket: url => {
       const socket = new WebSocket(url), tracked = { group, socket, endpoint: undefined };
       sockets.push(tracked);
       const send = socket.send.bind(socket);
@@ -1221,7 +1225,12 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；请
   const early = await connect(), a = early.session.request('request-a'), b = early.session.request('request-b');
   assert.equal(early.session.request('request-a'), a);
   const occurrences = [], raw = [], changes = [];
-  const events = a.events$.subscribe(value => occurrences.push(value)), frames = early.session.progressFrames$.subscribe(value => raw.push(value));
+  const selector = createWorkSelector({ identify: origin => origin.requestId });
+  const remoteWork = selector.observe('request-b', [early.session]), localWork = selector.observe('request-b', [local]);
+  const workEvents = [];
+  let workCompleted = false;
+  const workSubscription = remoteWork.events$.subscribe({ next: value => workEvents.push(value), complete: () => { workCompleted = true; } });
+  const frames = early.session.progressFrames$.subscribe(value => raw.push(value));
   const cold = await a.state.read();
   assert.equal(cold.source, 'durable'); assert.equal(cold.execution, 'unavailable'); assert.equal(cold.activity, null);
   assert.deepEqual(cold.attempts, []);
@@ -1235,7 +1244,16 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；请
   const native = runtime.native.agents.get(SessionId(sessionId)); assert.ok(native);
   // 两份输入都经真实 Host 准入；原生 maintenance 暂存唤醒，公开 inbox 接口安排同一步消费。
   const maintenance = native.runMaintenance(() => maintenanceGate.promise);
+  const acceptedWork = next(remoteWork.events$, value => value.event.kind === 'input.accepted');
   await early.session.submit({ requestId: 'request-b', content: '另一个真实已受理输入', delivery: 'followup', intent: 'question', scope: scopes['request-b'] });
+  const accepted = await acceptedWork;
+  assert.equal(remoteInputDecodes, 0, '真实远程 raw-only Work 消费不执行业务 input transform');
+  assert.deepEqual(accepted.matchedInputs.map(input => input.requestId), ['request-b']);
+  assert.deepEqual(accepted.event.inputs[0].scope, scopes['request-b']);
+  assert.deepEqual(accepted.source, { sessionId, workspaceId: local.identity.workspaceId,
+    environmentId: local.identity.environmentId, parentSessionId: local.identity.parentSessionId });
+  assert.equal(early.session.identity.parentSessionId, local.identity.parentSessionId);
+  const events = a.events$.subscribe(value => occurrences.push(value));
   const position = native.inbox.nextTurn.findIndex(message => message.source.kind === 'user' && message.source.rpcId === 'request-b');
   assert.ok(position >= 0);
   const [coInput] = native.inbox.splice('next-turn', position, 1, []);
@@ -1254,6 +1272,17 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；请
     assert.deepEqual(input.scope, scopes[input.requestId], '当前 progress 保留真正消费的原始 JSON');
   }
   assert.equal(activeA.value.attempts[0].attemptId, activeB.value.attempts[0].attemptId);
+  const activeWork = value => value.status === 'ready' && value.value.sessions[0].attempts.length === 1;
+  const [remoteActiveWork, localActiveWork] = await Promise.all([next(remoteWork.state$, activeWork), next(localWork.state$, activeWork)]);
+  for (const observed of [remoteActiveWork, localActiveWork]) {
+    const session = observed.value.sessions[0], occurrence = session.attempts[0];
+    assert.deepEqual(session.identity, accepted.source);
+    assert.equal(occurrence.value.attemptId, activeA.value.attempts[0].attemptId);
+    assert.deepEqual(occurrence.value.inputs.map(input => input.requestId).sort(), ['request-a', 'request-b']);
+    assert.deepEqual(occurrence.matchedInputs.map(input => input.requestId), ['request-b']);
+    for (const input of occurrence.value.inputs) assert.deepEqual(input.scope, scopes[input.requestId]);
+  }
+  assert.ok(remoteInputDecodes > 0, 'typed 消费者恢复后才执行 SDK 领域解码');
 
   const late = await connect(), lateA = late.session.request('request-a'), lateEvents = [];
   const lateSubscription = lateA.events$.subscribe(value => lateEvents.push(value));
@@ -1278,6 +1307,7 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；请
   assert.equal(increment.value.progress.frame.chunk.text, '两个输入');
 
   const beforeReconnect = occurrences.length;
+  const workBeforeReconnect = workEvents.length;
   const disconnected = next(a.state$, value => value.status === 'pending');
   const originalSocket = sockets.find(item => item.group === early.group && item.endpoint === 'reactivePrograms/progress').socket;
   originalSocket.terminate(); await disconnected;
@@ -1289,6 +1319,8 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；请
   assert.equal((await early.session.progress.read()).attempts[0]?.attemptId, attempt.attemptId);
   await next(a.state$, extended);
   assert.equal(occurrences.length, beforeReconnect, '重连全 prefix 不重放已发生事件');
+  assert.equal(workEvents.length, workBeforeReconnect, 'Work 同样把重连 prefix 当基线，不重放事件');
+  assert.equal(workCompleted, false);
   assert.ok(sockets.filter(item => item.group === early.group && item.endpoint === 'reactivePrograms/progress').length >= 2);
   assert.equal(sockets.filter(item => item.group === early.group && item.endpoint === 'reactivePrograms/progress' && item.socket.readyState === WebSocket.OPEN).length, 1);
   events.unsubscribe(); frames.unsubscribe(); lateSubscription.unsubscribe();
@@ -1297,10 +1329,14 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；请
   const messagesA = next(a.events$, value => value.kind === 'assistant.message'), messagesB = next(b.events$, value => value.kind === 'assistant.message');
   const localMessage = next(local.request('request-a').events$, value => value.kind === 'assistant.message');
   const rawMessage = next(local.rawEvents$, value => value.kind === 'assistant.message');
+  const workMessage = next(remoteWork.events$, value => value.event.kind === 'assistant.message');
   finish.resolve();
-  const [messageA, messageB, localFact, rawFact] = await Promise.all([messagesA, messagesB, localMessage, rawMessage]);
+  const [messageA, messageB, localFact, rawFact, workFact] = await Promise.all([messagesA, messagesB, localMessage, rawMessage, workMessage]);
   assert.equal(messageA.messageId, messageB.messageId); assert.equal(messageA.text, '共同处理两个输入');
   assert.equal(localFact.messageId, messageA.messageId); assert.equal(rawFact.messageId, messageA.messageId);
+  assert.deepEqual(workFact.event, rawFact);
+  assert.deepEqual(workFact.source, accepted.source);
+  assert.deepEqual(workFact.matchedInputs.map(input => input.requestId), ['request-b']);
   for (const fact of [messageA, messageB, localFact]) {
     assert.deepEqual(fact.inputs.map(input => input.requestId).sort(), ['request-a', 'request-b']);
     for (const input of fact.inputs) {
@@ -1322,6 +1358,15 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；请
   const settled = await next(a.state$, value => value.status === 'ready' && value.value.activity?.state === 'settled');
   assert.equal(settled.value.activity.reply, messageA.text); assert.deepEqual(settled.value.attempts, []);
   assert.equal((await next(b.state$, value => value.status === 'ready' && value.value.activity?.state === 'settled')).value.activity.reply, messageA.text);
+  const repliedWork = value => value.status === 'ready' && value.value.sessions[0].replies.some(reply => reply.value.messageId === messageA.messageId);
+  const [remoteReplyWork, localReplyWork] = await Promise.all([next(remoteWork.state$, repliedWork), next(localWork.state$, repliedWork)]);
+  const remoteReply = remoteReplyWork.value.sessions[0].replies.find(reply => reply.value.messageId === messageA.messageId);
+  const localReply = localReplyWork.value.sessions[0].replies.find(reply => reply.value.messageId === messageA.messageId);
+  assert.deepEqual(remoteReply, localReply, '网络与本地 Work 保留同一真实 reply occurrence');
+  assert.equal(remoteReply.value.sequence, rawFact.sequence);
+  assert.equal(remoteReply.value.text, messageA.text);
+  assert.deepEqual(remoteReply.value.inputs.map(input => input.requestId).sort(), ['request-a', 'request-b']);
+  assert.deepEqual(remoteReply.matchedInputs.map(input => input.requestId), ['request-b']);
   await local.whenIdle();
   const persisted = native.session.snapshotEvents().flatMap(event => {
     const record = pluginRecordOf(event); return record?.type === 'plugin:reactive/input' ? [record.data] : [];
@@ -1343,9 +1388,10 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；请
   const pendingRequest = assert.rejects(a.state.read(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
   const pendingProgress = assert.rejects(early.session.progress.read(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
   await early.session.release(); await Promise.all([pendingRequest, pendingProgress]);
+  assert.equal(workCompleted, true, 'Work 借用来源，Session release 完成其事件观察');
   assert.throws(() => a.state.peek(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
   await late.session.release(); await resumed.release();
-  completion.unsubscribe(); assert.equal(completed, true);
+  completion.unsubscribe(); workSubscription.unsubscribe(); assert.equal(completed, true);
   await Promise.all(sockets.filter(item => item.endpoint === 'reactivePrograms/progress').map(({ socket }) => socket.readyState === WebSocket.CLOSED
     ? undefined : new Promise(resolve => socket.once('close', resolve))));
   assert.deepEqual(errors, []); assert.deepEqual(carrierErrors, []);

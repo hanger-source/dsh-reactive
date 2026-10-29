@@ -67,7 +67,7 @@ ready 是最近一次读取切面，不是永久新鲜保证。固定 rc.3 本�
 
 `ResourceSource<T>` 是 `Observable<Observation<T>>` 或提供这个 observations$ 的对象；不要求对象另有 read、peek 或 subscribe。正式资源、SDK 资源和 useResource 返回的轻量对象都能直接组合。`combineResources({ stock, quote })` 可以混合对象与观察流，只有所有依赖 ready 才产生派生 ready。对象和它的 observations$ 使用同一个来源与原 owner，不调用 read/peek、不重复解析或额外持有连接。`mapResource(project)` 只接受同步投影，保留 pending/error，并将投影异常或 thenable 返回表示为该代 error；异步读取使用 switchResource 选择 observeResource 的查询，不交付 ready<Promise>。
 
-需要把完整派生关系作为可读取对象传给普通函数、Promise 或其他模块时，用 `shareResource(source, { signal: scope.signal })`；source 可以直接是资源对象或 combineResources 返回的观察流。read、peek、subscribe、values$、observations$ 共用 RxJS 的唯一当前快照；已经解析的领域值不再重复 schema parse，不需要另建 Scope、合同或绑定表。构造不连接，有限来源的最终观察保留至最后消费者退出，之后显式读取再连接；signal 固定读侧寿命，取消不重新执行任何命令。
+需要把完整派生关系作为可读取对象传给普通函数、Promise 或其他模块时，用 `shareResource(source, { signal: scope.signal })`；source 可以直接是资源对象或 combineResources 返回的观察流，options 也可省略。read、peek、subscribe、values$、observations$ 共用 RxJS 的唯一当前快照；已经解析的领域值不再重复 schema parse，不需要另建 Scope、合同或绑定表。构造不连接，有限来源的最终观察保留至最后消费者退出，之后显式读取再连接；显式 signal 固定读侧寿命，无显式 owner 时遵循 refCount 和来源有效性，取消不重新执行任何命令。
 
 `workspace.share(source$)` 则由工作区持续持有来源连接，同一来源跨会话共享，消费者全部退订也不停止来源。构造共享连接会立即订阅，应放在 defer 等订阅边界，不在 render 中执行。有限来源的最后值和错误仅在工作区 owner 活跃时重放；owner 退出后已有观察完成，之前捕获的流在迟到订阅时直接完成，不交付旧值或旧错误，也不重新连接来源。业务结果需要跨 owner 留存时，由业务自身的持久事实负责。
 

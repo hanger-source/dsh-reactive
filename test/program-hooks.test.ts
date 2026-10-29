@@ -51,7 +51,7 @@ test('Program fatal 在同次广播中停止其他关系与查询，已受理的
   const surface = defineSurface({ views: { current: resourceView(z.number()) }, actions: { save } });
   const definition = defineProgram({ input: z.null(), surface });
   const conversation = new Conversation(sessionScope, identity, workspace, definition, { sessionId: identity.sessionId,
-    sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });
+    sequence: -1, source: 'live', execution: 'idle', inputs: [], calls: [], replies: [], goal: null, requests: {}, waits: [] });
   const bindings: BoundAction<typeof save, true>[] = [];
   const implementation = implementProgram(definition, { Component() {
     const changed = useObservable(trigger);
@@ -147,7 +147,7 @@ test('程序 hooks 跨组件共享资源和反应，跨会话隔离，目标切�
   const programs = ['one', 'two'].map(sessionId => {
     const sessionScope = scope.child();
     const identity = { sessionId, workspaceId: workspace.id, environmentId: 'work', directory: workspace.directory, parentSessionId: null };
-    const conversation = new Conversation(sessionScope, identity, workspace, definition, { sessionId, sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });
+    const conversation = new Conversation(sessionScope, identity, workspace, definition, { sessionId, sequence: -1, source: 'live', execution: 'idle', inputs: [], calls: [], replies: [], goal: null, requests: {}, waits: [] });
     return new ProgramInstance(sessionScope, implementation, conversation, workspace, {
       execution() { throw new Error('UNEXPECTED_EXECUTION'); },
     });
@@ -212,7 +212,7 @@ test('nullable Operation 只撤下当前绑定，恢复和换目标不重定向�
   const surface = defineSurface({ views: {}, actions: {}, operations: { preparation: operation } });
   const definition = defineProgram({ input: z.null(), surface });
   const conversation = new Conversation(sessionScope, identity, workspace, definition, { sessionId: identity.sessionId,
-    sequence: -1, source: 'live', execution: 'idle', goal: null, requests: {}, waits: [] });
+    sequence: -1, source: 'live', execution: 'idle', inputs: [], calls: [], replies: [], goal: null, requests: {}, waits: [] });
   const committed: (BoundOperation<typeof operation> | null)[] = [];
   const implementation = implementProgram(definition, { Component() {
     const choice = useObservable(() => selected, []);

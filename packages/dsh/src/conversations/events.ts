@@ -2,12 +2,10 @@ import { z } from 'zod';
 import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent';
 import { pluginRecordOf, type SessionEvent } from '@deepseek-ai/dsh-session';
 import type { AssistantStream, ConversationEvent } from '@hanger-source/dsh-reactive/kernel';
-import type { InputReference } from '@hanger-source/dsh-reactive/kernel';
 import { childInputRecordSchema, recordSchema, waitRecordSchema, type NativeState } from './records.ts';
 
 /** 只转换新的 append。历史读取只消费原生投影，不调用此入口。 */
-export function sessionOccurrences(sessionId: string, event: SessionEvent, previous: NativeState, current: NativeState,
-  inputsForStep: (turn: number, step: number) => readonly InputReference[] | undefined): ConversationEvent[] {
+export function sessionOccurrences(sessionId: string, event: SessionEvent, previous: NativeState, current: NativeState): ConversationEvent[] {
   const origin = { sessionId, time: event.time, sequence: event.seq };
   const events: ConversationEvent[] = [];
   const record = pluginRecordOf(event);
@@ -26,7 +24,7 @@ export function sessionOccurrences(sessionId: string, event: SessionEvent, previ
     // Goal 与恢复控制负责原生推进，不是一次新的外部输入受理。
     if (!['user', 'agent-message', 'subagent-settled'].includes(message.source.kind)) continue;
     const inputs = current.reference(message);
-    const original = inputs.find(input => input.messageId === message.id);
+    const original = inputs.find(input => input.sourceSessionId === sessionId && input.messageId === message.id);
     const before = original?.requestId && Object.hasOwn(previous.activity.requests, original.requestId)
       ? previous.activity.requests[original.requestId] : undefined;
     const restored = Object.hasOwn(previous.value.proposed, message.id);
@@ -39,13 +37,11 @@ export function sessionOccurrences(sessionId: string, event: SessionEvent, previ
     if (inputs.length) events.push({ ...origin, kind: 'input.entered', messageId: event.data.id, inputs });
   }
   if (event.type === 'tool/call' || event.type === 'tool/ptc-dispatch-start') {
-    const id = event.type === 'tool/call' ? event.data.callId : event.data.subCallId;
-    const call = current.call(id);
+    const call = current.callAtSequence(event.seq);
     if (call) events.push({ ...origin, kind: 'tool.started', ...call });
   }
   if (event.type === 'tool/result' || event.type === 'tool/ptc-dispatch') {
-    const id = event.type === 'tool/result' ? event.data.message.source.callId : event.data.subCallId;
-    const call = current.call(id);
+    const call = current.resultCall(event);
     const failed = event.type === 'tool/result' ? event.data.message.isError : event.data.isError;
     const meta = z.object({ reactive: z.json() }).safeParse(event.data.meta);
     if (call) events.push({ ...origin, kind: 'tool.settled', ...call, outcome: failed ? 'failed' : 'returned',
@@ -53,10 +49,12 @@ export function sessionOccurrences(sessionId: string, event: SessionEvent, previ
       ...(meta.success ? { result: meta.data.reactive } : {}) });
   }
   if (event.type === 'assistant/message' && event.surfaceOp === 'append') {
-    const inputs = inputsForStep(event.data.turn, event.data.step);
+    const reply = current.value.replies.find(reply => reply.messageId === event.data.message.id);
+    if (!reply) throw new Error('REACTIVE_ASSISTANT_REPLY_NOT_FOUND');
+    const inputs = reply.inputs;
     events.push({ ...origin, kind: 'assistant.message', messageId: event.data.message.id,
-      // 外部追加若没有本宿主的原生 step 证据，仍是会话事实，但不归任何请求。
-      turn: event.data.turn, step: event.data.step, ...(inputs === undefined ? {} : { inputs }),
+      // 公开事件与冷恢复读取同一原生 step 关联；未知关联仍是会话事实。
+      turn: event.data.turn, step: event.data.step, ...(inputs === null ? {} : { inputs }),
       text: event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n'),
       interrupted: event.data.interrupted === true });
   }

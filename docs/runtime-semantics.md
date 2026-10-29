@@ -175,6 +175,8 @@ questions$ 提供持久问题视图，foregroundQuestions$ 提供当前真实 wa
 
 公开问题、已回答问题与前台问题的 origin 从同一原调用记录取得，包含原会话和 ToolOccurrence 的完整输入集合。原生工具使用真实 tool/call，PTC 使用真实子调用；冷读取在恢复的原生投影切面中关联 userQuestions 与 reactiveInputs.calls。问题生命周期仍由 userQuestions 拥有，框架只派生归属，不另存一份问题状态。缺少原调用时明确失败，不使用当前输入、当前商家选择或另一会话的调用补齐。
 
+rc.3 的原生问题只按 callId 寻址，没有公开调用发生序号。框架只在同一会话里存在唯一的同 ID `ask_user_question` 发生时签发 origin；同 ID 普通工具不会改变原问题来源。同 ID 多次提问产生无法核验的来源歧义时，明确报 `REACTIVE_HUMAN_QUESTION_ORIGIN_AMBIGUOUS`；问题观察会终止，本框架的前台接入或响应准入也可能拒绝，不宣称能自动恢复或回答其中某一代问题。原生问题状态仍由原生服务持有。
+
 answerQuestion 和 attachWait 都核验真实 actor、原问题、响应通道和当前策略。claim 准入的 answer 为 null，提交准入取得完整答案批次；异步准入后再次核验策略身份、问题和 signal，避免撤下策略后迟到答复进入原生服务。无声明硬拒，不委派其他 answerer 绕过准入。
 
 当前策略通过 admission.question.origin 核验原工作的参与范围；观察与准入各取得自有快照，消费者不能通过修改问题对象改变权威关联。origin.inputs 保留原始 JSON 与 sourceSessionId，不重复执行 Program 的输入转换。它不携带 Goal 的继续权限，也不使回答者继承原请求者的授权。
@@ -194,6 +196,14 @@ continued 答复按原问题的 callId 恢复工具调用保存的输入集合�
 声明提交只更新期望集合，不读文件。ready 等待原生 provider 与 context 注册就绪，prepare 加载正文并返回稳定性校验。装配期间的名称、目录、catalog 或 cwd 变化会使读取重新核验；其他 Agent 和全局层不会因当前 Agent 挂载一个目录而获得它。
 
 ## 当前状态、新事件与输入
+
+`createWorkSelector({ identify })` 用应用定义的 JSON 键选择原始输入或持久请求声明；返回 undefined 表示不属于该工作。`select` 同步投影显式快照，`observe` 组合显式会话来源的 progress 与 human，并共享一个 ResourceReader。`state$` 是该 reader 的观察，`events$` 和 `progressFrames$` 只交付订阅后的匹配事实，不重放历史。冷观察不复活 assistant attempt 草稿，也不发现会话、启动 Agent 或取得权限。
+
+Activity 的 inputs 是输入目录，calls 和 replies 是完整发生事实，Goal.inputs 保存关联；Request.tools 与最后回复由这些事实派生。calls 保留每次真实发生，ToolActivity 和 ToolOccurrence 的 `callSequence` 是该次正式 start 事件的序号；provider 的 callId 可以跨轮复用。RequestDeclaration 是真实持久声明，包含 `result: { continuation, wait, ready } | null`；没有 messageId 的声明不是已受理输入。回复 `inputs: null` 表示关联未知，不按工作归组。每个命中项保留完整 value、原 callSequence 或 messageId 及完整 inputs；matchedInputs 只解释分组，不裁剪事实或授予续接权限。多输入共同调用或回复可出现在多个工作。原始 scope 在本地与远程均不执行 Program transform。
+
+每个来源保留 sessionId、workspaceId、environmentId 和真实 Session 的 parentSessionId。会话中的 source、execution 是背景，不表示工作独占会话。条件只表达 `goal.paused`、`goal.blocked`、`wait.pending`、`question.pending`、`call.failed`，以及 accepted 且 ready 的原结果所引用 Goal id/revision 已被替换或不再 active 的续接约束；不判定整个工作 busy 或完成。跨会话观察不共享 Goal 或答复权限。
+
+所有必需来源 ready 才有完整工作 ready；任一来源 pending 或 error 撤下旧 ready，来源退出保留原错误，不替换为空数组。不同会话 generation 不构成事务快照。options 可省略：无显式 owner 时读侧遵循 refCount 与来源有效性；最后观察退出只释放观察，不停止会话或业务。需要业务 Operation 阶段或资源错误时使用现有 RxJS 组合。
 
 `activity$` 交付当前原生活动；`request(id).state$` 从会话进展派生该请求的受理、消费、工具、持久回复与活跃 attempt；`events$` 及 `request(id).events$` 只交付订阅后新发生的事实。请求句柄固定 sessionId/requestId，只读构造与观察不提交输入。ready 的 activity:null 表示当前事实中没有该请求，不能用 pending 或空成功冒充。
 

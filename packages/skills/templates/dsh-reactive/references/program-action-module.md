@@ -4,6 +4,8 @@
 
 ## 合同、实现与目标分别固定
 
+业务以原始输入 scope 定义工作键；同一商户可有多个工作，不以会话或商户身份代替工作身份。`createWorkSelector({ identify })` 接受输入和真实持久声明，返回 JSON 键或 undefined。它不执行 Program input transform，也不发现会话或取得控制权限。
+
 ```ts
 import { defineAction, defineProgram, defineSurface, resourceView, z } from '@hanger-source/dsh-reactive';
 

@@ -56,9 +56,13 @@ export { readActionPresentation, toolActionBindingSchema, actionManifestSlot } f
 export type { ActionPresentation, ActionPresentationMetadata, ToolActionBinding } from './surfaces/presentation.ts';
 
 export type { ConversationActivity, GoalActivity, RequestActivity, ToolActivity, CreationReference, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions } from './conversations/protocol.ts';
+export type { RequestDeclaration, ReplyActivity, InputResult } from './conversations/protocol.ts';
 export type { ConversationEvent, RequestEvent, ToolOccurrence, AssistantStream, AssistantAttemptSnapshot, AssistantProgressFrame } from './conversations/events.ts';
+export { ownConversationEvent } from './conversations/events.ts';
 export { createRequestHandle, createAssistantProgress, parseAssistantAttempt, parseConversationProgress, parseAssistantProgressFrame } from './conversations/request.ts';
 export type { ConversationProgressSnapshot, RequestSnapshot, RequestHandle, AssistantProgress } from './conversations/request.ts';
+export { createWorkSelector } from './conversations/work.ts';
+export type { WorkOrigin, WorkSourceIdentity, WorkSource, WorkSourceSnapshot, WorkOccurrence, WorkRequestOccurrence, WorkWait, WorkCondition, WorkSessionSnapshot, WorkSnapshot, WorkEvent, WorkProgressFrame, WorkHandle, WorkSelector } from './conversations/work.ts';
 export { AssistantStreamAccumulator, expandAssistantStream, assembleAssistantStream, joinAssistantStreamText, isTokenDelta, isVisibleChunk, chunkHasVisibleText, runFirstTokenTime, runFirstVisibleTime, assistantStreamFirstTokenTime, assistantStreamHasVisibleContent, assistantStreamHasVisibleText, lastAssistantStreamChunk, assistantStreamChunks } from '@deepseek-ai/dsh-llm/assistant-stream';
 export type { AssistantStreamRecord, AssistantStreamRun, TimedStreamChunk, RawStreamChunkType } from '@deepseek-ai/dsh-llm/assistant-stream';
 export type { StreamChunk } from '@deepseek-ai/dsh-llm/types';

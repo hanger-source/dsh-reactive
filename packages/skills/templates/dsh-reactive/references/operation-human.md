@@ -23,6 +23,8 @@ Action 的 `operation: { definition, command(input, scope, origin), reference(re
 
 ## Follow 参与由原生 Goal 精确关联
 
+工作范围的条件只解释匹配的 Goal 暂停或阻塞、等待、待答、调用失败，以及 accepted 且 ready 的结果所引用 Goal 修订被替换或不再 active 的续接约束；它不判断整个工作 busy 或完成。多个会话观察同一工作不会共享 Goal 或答复权限。业务 Operation 阶段和资源错误用已有 RxJS 资源组合，不另建状态引擎。
+
 ```tsx
 <Offer action={start} follow={{ when: 'feedback', scope: target, mode: 'background' }} />
 {existing && <Follow name="observe_delivery" description="参与原交付操作"
@@ -36,6 +38,8 @@ Action 的 `operation: { definition, command(input, scope, origin), reference(re
 ## 人工补充不是正式授权
 
 Program 中的 `<HumanInput admitResponder={policy} />` 可由多个模块贡献，必须使用同一个必需的 policy 函数引用；不同引用冲突，最后一项退出撤资格，没有默认政策。policy 按 `question.origin` 的 session、actual tool call、原始 inputs 与真实 actor 核权，不能按当前页面选择或 SDK 自报用户判断。问题观察是独立快照，修改它不会改变权威关联。
+
+origin 保留真实 start 事件的 callSequence。rc.3 原生问题只提供 callId，框架要求同一会话中有唯一的同 ID `ask_user_question` 发生；后来同 ID 普通工具不改变旧问题来源。同 ID 多次提问无法核验代际时，明确报 `REACTIVE_HUMAN_QUESTION_ORIGIN_AMBIGUOUS`，问题观察终止，前台接入或响应准入也可能拒绝；不能猜最新调用或宣称能够自动恢复。
 
 回答必须恰好覆盖原问题的所有题目，每个 id 只出现一次。框架在首次异步操作前保存解析后的答案；冷晚答先验证完整批次再准入和激活，准入期间修改原对象不会改变提交内容。响应者准入和前台 claim 的等待可取消；调用者、SDK 或 Program 退出后，迟到准入结果不会继续答题。不配合取消的政策函数不会阻止当前消费者退等，政策函数内部的外部副作用仍由其自身负责。
 

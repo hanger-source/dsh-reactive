@@ -13,7 +13,7 @@ export type ModuleImplementations = Readonly<Record<string, AnyModuleImplementat
 
 /** 组件得到对话事实与显式输入，不持有原生 Agent 或声明注册器。 */
 export type ProgramSession<P extends ProgramContract> = Pick<Conversation<ProgramParsedInput<P>, ProgramInput<P>>,
-  'identity' | 'inputs$' | 'activity$' | 'goal$' | 'waits$' | 'events$' | 'progress' | 'progress$' | 'progressFrames$' | 'request'
+  'identity' | 'inputs$' | 'activity$' | 'goal$' | 'waits$' | 'events$' | 'rawEvents$' | 'progress' | 'progress$' | 'progressFrames$' | 'request'
   | 'human' | 'questions$' | 'foregroundQuestions$' | 'files' | 'journal' | 'submit'>;
 
 export type ProgramWorkspace = Workspace;
