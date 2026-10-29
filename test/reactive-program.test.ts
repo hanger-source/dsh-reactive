@@ -7,14 +7,14 @@ import { join } from 'node:path';
 import { createElement as h, Fragment } from 'react';
 import { BehaviorSubject, combineLatest, defer, distinctUntilChanged, filter, firstValueFrom, from, map, mergeMap, tap } from 'rxjs';
 import { Context, Expose, Offer, useAction, useObservable, useRelation, useShared } from '@hanger-source/dsh-reactive/program';
-import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, view, z, type PartialSurfaceBindings, type ProgramProps } from '@hanger-source/dsh-reactive';
+import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, view, z, type ActionCallContext, type ActionInvocation, type PartialSurfaceBindings, type ProgramProps } from '@hanger-source/dsh-reactive';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { boot, text, tool } from './native-support.ts';
 
 test('原生输入和真实绑定的调用结果经标准流改变业务事实、上下文和视图，观察释放不撤销动作，冷读不重放反应', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-feedback-'));
   const business$ = new BehaviorSubject({ merchantId: null as string | null, revision: 0,
-    editable: false, phase: 'awaiting-input', completedCallId: null as string | null });
+    editable: false, phase: 'awaiting-input', completedInvocationId: null as string | null });
   const entered = Promise.withResolvers<void>();
   const finish = Promise.withResolvers<void>();
   const requests: GenerateOptions[] = [];
@@ -24,12 +24,15 @@ test('原生输入和真实绑定的调用结果经标准流改变业务事实�
   let resultReactions = 0;
   let saves = 0;
   const input = z.object({ merchantId: z.string() });
+  const calls: ActionCallContext<z.output<typeof input>>[] = [];
   const business = z.object({ merchantId: z.string().nullable(), revision: z.number(), editable: z.boolean(), phase: z.string(),
-    completedCallId: z.string().nullable() });
+    completedInvocationId: z.string().nullable() });
   const save = defineAction({ name: 'save_delivery', description: '保存业务交付', scope: input, input: z.object({}).strict(),
     output: z.object({ merchantId: z.string(), saved: z.literal(true) }), observe: output => output });
+  const invocations: ActionInvocation<typeof save>[] = [];
   const saveImplementation = implementAction(save, {
     async execute(_input, call) {
+      calls.push(call);
       saves++;
       assert.equal(call.scope.merchantId, 'merchant-a');
       assert.deepEqual(call.inputs[0]!.scope, { merchantId: 'merchant-a' });
@@ -44,11 +47,11 @@ test('原生输入和真实绑定的调用结果经标准流改变业务事实�
   const Public = Expose<typeof surface, PartialSurfaceBindings<typeof surface>>;
   function Save(props: { merchantId: string; editable: boolean }) {
     const action = useAction(saveImplementation, () => ({ merchantId: props.merchantId }), [props.merchantId]);
-    useRelation(() => action.invocations$.pipe(mergeMap(invocation => from(invocation.result).pipe(tap(result => {
+    useRelation(() => action.invocations$.pipe(tap(invocation => invocations.push(invocation)), mergeMap(invocation => from(invocation.result).pipe(tap(result => {
       assert.equal(invocation.source.kind, 'tool');
       resultReactions++;
       business$.next({ ...business$.value, merchantId: result.merchantId,
-        revision: business$.value.revision + 1, phase: 'returned', completedCallId: invocation.id });
+        revision: business$.value.revision + 1, phase: 'returned', completedInvocationId: invocation.id });
     })))), [action]);
     if (!props.editable) return null;
     return h(Fragment, null, h(Offer<typeof save>, { name: 'save_delivery', action }),
@@ -96,7 +99,15 @@ test('原生输入和真实绑定的调用结果经标准流改变业务事实�
     finish.resolve();
     await observer.whenIdle();
     const board = await firstValueFrom(observer.views.board);
-    assert.equal(board.state.completedCallId, 'reactive-save-call');
+    assert.equal(calls.length, 1);
+    assert.equal(invocations.length, 1);
+    const call = calls[0]!, invocation = invocations[0]!;
+    assert.ok(call.source.kind === 'tool');
+    assert.equal(call.source.callId, 'reactive-save-call');
+    assert.deepEqual(invocation.source, call.source);
+    assert.equal(invocation.id, call.invocationId);
+    assert.deepEqual(await invocation.result, { merchantId: 'merchant-a', saved: true });
+    assert.equal(board.state.completedInvocationId, invocation.id);
     assert.equal(board.state.revision, 2);
     assert.equal(board.state.phase, 'returned');
     assert.equal(acceptedReactions, 1);
@@ -118,7 +129,7 @@ test('原生输入和真实绑定的调用结果经标准流改变业务事实�
     await app.host.close(id);
     observer.release();
     const cold = await app.host.open(id, definition.environments[0].program.definition);
-    assert.equal((await firstValueFrom(cold.views.board)).state.completedCallId, 'reactive-save-call');
+    assert.equal((await firstValueFrom(cold.views.board)).state.completedInvocationId, invocation.id);
     assert.equal(acceptedReactions, 1);
     assert.equal(inputReactions, 1);
     assert.equal(resultReactions, 1);

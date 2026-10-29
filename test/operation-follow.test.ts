@@ -15,7 +15,7 @@ import { SessionId, pluginRecordOf, type SessionEvent } from '@deepseek-ai/dsh-s
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import { defineAction, implementAction, type ActionCallContext } from '@hanger-source/dsh-reactive';
 import { defineOperation, implementOperation, operationFollowLinkSchema, type OperationAccessContext, type OperationFollowLink, type OperationNotificationAcknowledgement, type OperationNotificationConnection, type OperationNotificationResult, type OperationOwnerReference } from '@hanger-source/dsh-reactive';
-import { ConversationAccessRevokedError, defineApplication, defineEnvironment, z } from '@hanger-source/dsh-reactive';
+import { ConversationAccessRevokedError, defineApplication, defineEnvironment, z, type ConversationEvent } from '@hanger-source/dsh-reactive';
 import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
 import { Expose, Offer, Follow } from '@hanger-source/dsh-reactive/program';
 import { createWorkSelector, defineProgram } from '@hanger-source/dsh-reactive';
@@ -225,12 +225,14 @@ async function scenario(root: string, when: 'settled' | 'feedback', options: {
   multiStage?: boolean;
   admissionUnknown?: boolean;
   backgroundThenWait?: boolean;
+  reuseProviderCallId?: boolean;
   notifications?: BusinessNotifications;
   notificationPeers?: readonly OperationOwnerReference[];
 } = {}) {
   const store = business(join(root, 'business.sqlite'), options.registered, options.existingAck, options.notifications);
   const enabled$ = new BehaviorSubject(true), enabledCommits$ = new Subject<boolean>();
   const requests: GenerateOptions[] = [], errors: unknown[] = [];
+  const invocationIds: string[] = [];
   const bodyWaits: { source: string; waits: number; durable: readonly SessionEvent[] }[] = [];
   const resumed = Promise.withResolvers<void>();
   const prepareImplementation = implementAction(prepare, { operationOwner: store.owner,
@@ -282,6 +284,10 @@ async function scenario(root: string, when: 'settled' | 'feedback', options: {
       program: implementProgram(defineProgram({ input: z.object({ merchantId: z.string() }).strict(), surface }), {
         modules: options.notifications ? { direct: operationModule, nested: nestedModule, repeated: operationModule } : {}, Component() {
         const action = useAction(prepareImplementation, () => ({ merchantId: 'merchant-a' }), []);
+        useLayoutEffect(() => {
+          const subscription = action.invocations$.subscribe(invocation => invocationIds.push(invocation.id));
+          return () => subscription.unsubscribe();
+        }, [action]);
         const complete = useAction(finishImplementation, () => null, []);
         const existing = useOperation(store.owner, () => ({ merchantId: 'merchant-a', commandId: 'prepare-a' }), []);
         const permission = useObservable(() => enabled$, []);
@@ -303,6 +309,12 @@ async function scenario(root: string, when: 'settled' | 'feedback', options: {
         const latest = request.messages.at(-1);
         if (latest?.role === 'tool' && latest.isError) {
           yield* text('本次调用失败，沿原操作核验事实，不自动重试');
+          return;
+        }
+        if (options.reuseProviderCallId) {
+          if (requests.length <= 2) yield* tool('prepare_merchant', 'native-reused-provider-id', { commandId: 'prepare-a' });
+          else if (requests.length === 3) yield* tool('finish_original_goal', 'finish-repeated-occurrences', {});
+          else yield* text('两次真实参与已分别交回事实');
           return;
         }
         if (options.backgroundThenWait) {
@@ -353,7 +365,7 @@ async function scenario(root: string, when: 'settled' | 'feedback', options: {
     });
   await mkdir(join(root, 'workspace'), { recursive: true });
   const workspace = await runtime.application.createWorkspace({ directory: join(root, 'workspace') });
-  return { runtime, workspace, program: definition.environments[0].program.definition, store, requests, errors, bodyWaits, resumed, enabled$, enabledCommits$,
+  return { runtime, workspace, program: definition.environments[0].program.definition, store, requests, invocationIds, errors, bodyWaits, resumed, enabled$, enabledCommits$,
     async dispose() { try { await runtime.dispose(); } finally { enabled$.complete(); enabledCommits$.complete(); store.close(); } },
   };
 }
@@ -401,6 +413,63 @@ async function crashCheckpoint(root: string, context: TestContext, mode: 'single
 }
 
 if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-feedback-checkpoint'].includes(process.argv[2] ?? '')) {
+  test('同会话跨turn复用provider callId时真实Invocation与follow分离，原inputs和Goal修订独立且冷读不重执', async context => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-operation-reused-call-'));
+    const app = await scenario(root, 'feedback', { reuseProviderCallId: true });
+    context.after(() => app.dispose());
+    const session = await app.runtime.application.create('work', { workspaceId: app.workspace.workspaceId });
+    const events: ConversationEvent[] = [];
+    const subscription = session.events$.subscribe(event => events.push(event));
+    context.after(() => subscription.unsubscribe());
+    await session.submit({ requestId: 'original-goal', content: '先后核验同一商家命令的两次实际参与', intent: 'goal',
+      delivery: 'followup', scope: { merchantId: 'merchant-a' } });
+    await session.whenIdle();
+    const first = app.store.links()[0]!;
+    assert.ok(first);
+    const firstSnapshot = structuredClone(session.snapshot().operationFollows);
+    app.store.recordFeedback(first.id, 'first-occurrence-feedback', { status: 'awaiting-command', reason: '第一次参与需要进一步核验' });
+    assert.equal((await app.runtime.application.notifyOperation(session.id, first.id, { actorId: 'notifier-one' })).status, 'accepted');
+    await session.whenIdle();
+    const second = app.store.links().find(link => link.id !== first.id);
+    assert.ok(second, '相同provider标签、owner和command必须形成第二个真实follow');
+    assert.equal(second.source.callId, first.source.callId);
+    assert.deepEqual(second.command, first.command);
+    assert.deepEqual(second.operation, first.operation);
+    assert.equal(app.invocationIds.length, 2);
+    assert.notEqual(app.invocationIds[0], app.invocationIds[1]);
+    const calls = session.snapshot().calls.filter(call => call.callId === first.source.callId);
+    assert.equal(calls.length, 2);
+    assert.notEqual(calls[0]!.callSequence, calls[1]!.callSequence);
+    assert.deepEqual(first.continuation.inputs, calls[0]!.inputs);
+    assert.deepEqual(second.continuation.inputs, calls[1]!.inputs);
+    assert.deepEqual(first.continuation.inputs.map(input => input.requestId), ['original-goal']);
+    assert.ok(second.continuation.inputs.some(input => input.requestId === 'operation:' + first.id));
+    assert.ok(first.continuation.goal && second.continuation.goal);
+    assert.equal(first.continuation.goal.id, second.continuation.goal.id);
+    assert.ok(second.continuation.goal.revision > first.continuation.goal.revision);
+    assert.deepEqual(session.snapshot().operationFollows.find(follow => follow.link.id === first.id)?.link,
+      firstSnapshot[0]!.link, '第二次同名发生不能改写第一次参与的来源和Goal');
+    const intents = events.filter(event => event.kind === 'operation.follow.changed' && event.change === 'intent');
+    assert.equal(intents.length, 2);
+    assert.deepEqual(intents.map(event => event.kind === 'operation.follow.changed' ? event.follow.link.id : null), [first.id, second.id]);
+    assert.deepEqual(session.snapshot().waits.map(item => item.wait.id), [second.wait.id]);
+    assert.equal(app.store.bodies().length, 2, '真实第二次调用确实进入业务，不能由provider标签去重');
+    const saved = structuredClone(session.snapshot().operationFollows);
+    const sessionId = session.id;
+    session.release(); await app.runtime.application.close(sessionId);
+    const cold = await app.runtime.application.open(sessionId, app.program);
+    assert.deepEqual(cold.snapshot().operationFollows, saved);
+    assert.deepEqual(app.store.links().map(link => link.id).sort(), [first.id, second.id].sort());
+    await cold.locateOperation(operation, commandSchema.parse(second.command));
+    const feedback = await cold.readOperationFeedback(operation, commandSchema.parse(first.command), first.id);
+    assert.equal(feedback.status, 'ready');
+    assert.equal(app.runtime.native.agents.get(SessionId(sessionId)), undefined, '冷读持久关联不能激活模型Agent');
+    assert.equal(app.store.bodies().length, 2);
+    assert.equal(app.requests.length, 2);
+    assert.equal(app.invocationIds.length, 2);
+    assert.deepEqual(app.errors, []); cold.release();
+  });
+
   test('静态Module owner连接一次，SQLite通知ACK失败后沿原请求重投，暂停结果不被模型消费且保留反馈事实', async context => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-operation-source-retry-'));
     const ackFailure = new Error('BUSINESS_OUTBOX_ACK_FAILED');
@@ -414,9 +483,14 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     context.after(() => app.dispose());
     assert.equal(app.store.connectionCount(), 1, '同一owner沿直接、嵌套和重复静态依赖只连接一次');
     const session = await app.runtime.application.create('work', { workspaceId: app.workspace.workspaceId });
+    const followEvents: ConversationEvent[] = [];
+    const followSubscription = session.events$.subscribe(event => { if (event.kind === 'operation.follow.changed') followEvents.push(event); });
+    context.after(() => followSubscription.unsubscribe());
     await session.submit({ requestId: 'original-goal', content: '准备一次并等待商家的明确反馈', intent: 'goal', delivery: 'followup', scope: { merchantId: 'merchant-a' } });
     await session.whenIdle();
     const [link] = app.store.links(); assert.ok(link);
+    assert.deepEqual(session.snapshot().operationFollows, [{ link, receipt: { reference: app.store.read('prepare-a')!.reference },
+      preparedDelivery: null, notStarted: null }]);
     assert.deepEqual(await app.store.notify(link.id), { status: 'pending' });
     assert.equal(acknowledgements.length, 0, '业务节点尚未就绪时不能消费outbox');
     assert.deepEqual(app.store.outbox(), [link.id]);
@@ -425,6 +499,10 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     const node = { id: 'merchant-investigation:' + link.id, payload: { status: 'awaiting-command' as const, reason: '商家甲缺少正式凭据' } };
     app.store.recordFeedback(link.id, node.id, node.payload);
     await assert.rejects(app.store.notify(link.id), error => error === ackFailure);
+    const acknowledgedFollow = session.snapshot().operationFollows[0]!;
+    assert.deepEqual(acknowledgedFollow.preparedDelivery?.node, node);
+    assert.equal(acknowledgedFollow.preparedDelivery?.requestId, 'operation:' + link.id);
+    assert.equal(session.snapshot().requests['operation:' + link.id]?.state, 'accepted');
     assert.deepEqual(app.store.outbox(), [link.id], '原生受理成功但业务ACK失败，来源必须保留重投待办');
     const retried = await app.store.notify(link.id);
     assert.equal(retried.status, 'accepted');
@@ -438,6 +516,22 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     assert.equal(session.snapshot().goal?.phase, 'paused');
     assert.equal(session.snapshot().goal?.revision, paused.revision);
     assert.equal(session.snapshot().requests['operation:' + link.id]?.state, 'accepted');
+    assert.deepEqual(session.snapshot().operationFollows, [acknowledgedFollow], '来源ACK重试不产生第二份准备正文或改写关联');
+    assert.deepEqual(followEvents.map(event => event.kind === 'operation.follow.changed' ? event.change : null),
+      ['intent', 'receipt', 'delivery-prepared']);
+    const intentEvent = followEvents[0]!, receiptEvent = followEvents[1]!, deliveryEvent = followEvents[2]!;
+    assert.ok(intentEvent.kind === 'operation.follow.changed' && receiptEvent.kind === 'operation.follow.changed'
+      && deliveryEvent.kind === 'operation.follow.changed');
+    assert.equal(intentEvent.follow.receipt, null);
+    assert.equal(intentEvent.follow.preparedDelivery, null);
+    assert.deepEqual(receiptEvent.follow.receipt, acknowledgedFollow.receipt);
+    assert.equal(receiptEvent.follow.preparedDelivery, null);
+    assert.deepEqual(deliveryEvent.follow, acknowledgedFollow, '每次事件保留当时事实切面，后续受理不改写历史事件');
+    for (const event of followEvents) {
+      assert.ok(event.kind === 'operation.follow.changed');
+      assert.deepEqual(event.inputs, link.continuation.inputs);
+      assert.equal(event.follow.link.id, link.id);
+    }
     const work = createWorkSelector({ identify(origin) {
       const scope = origin.scope;
       return scope !== null && typeof scope === 'object' && !Array.isArray(scope)
@@ -445,6 +539,15 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     } }).observe('merchant-a', [session], { signal: context.signal });
     const progress = await work.state.read(context.signal);
     const observed = progress.sessions[0]!;
+    const operationProgress = observed.operationFollows.find(follow => follow.value.link.id === link.id);
+    assert.ok(operationProgress);
+    assert.deepEqual(operationProgress.value.preparedDelivery?.node, node);
+    assert.equal(operationProgress.resultRequest?.requestId, 'operation:' + link.id);
+    assert.equal(operationProgress.resultRequest?.state, 'accepted');
+    assert.ok(observed.conditions.some(condition => condition.kind === 'continuation.unconsumed'
+      && condition.request.value.requestId === 'operation:' + link.id));
+    assert.equal(observed.conditions.some(condition => condition.kind === 'operation.delivery-prepared'), false,
+      '原生已受理后不能继续报告为仅准备正文');
     const heldFeedback = observed.conditions.find(condition => condition.kind === 'continuation.superseded'
       && condition.request.value.requestId === 'operation:' + link.id);
     assert.ok(heldFeedback?.kind === 'continuation.superseded');
@@ -734,6 +837,9 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     let disposed = false;
     context.after(() => { acknowledge.resolve(); return disposed ? undefined : app.dispose(); });
     const session = await app.runtime.application.create('work', { workspaceId: app.workspace.workspaceId });
+    const followChanges: ConversationEvent[] = [];
+    const changes = session.events$.subscribe(event => { if (event.kind === 'operation.follow.changed') followChanges.push(event); });
+    context.after(() => changes.unsubscribe());
     await session.submit({ requestId: 'original-goal', content: '在当前许可下受理商家甲的准备操作', intent: 'goal', delivery: 'followup' as const, scope: { merchantId: 'merchant-a' } });
     const link = await registered.promise;
     assert.equal(app.store.bodies().length, 0);
@@ -755,6 +861,14 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     assert.deepEqual(session.snapshot().waits, []);
     assert.equal(session.snapshot().requests['operation:' + link.id], undefined);
     assert.equal(session.snapshot().goal?.phase, 'active');
+    const closedFollow = session.snapshot().operationFollows[0]!;
+    assert.deepEqual(closedFollow, { link, receipt: null, preparedDelivery: null,
+      notStarted: { id: link.id, continuation: link.continuation, wait: link.wait } });
+    assert.deepEqual(followChanges.map(event => event.kind === 'operation.follow.changed' ? event.change : null), ['intent', 'not-started']);
+    const closure = followChanges.at(-1)!;
+    assert.ok(closure.kind === 'operation.follow.changed');
+    assert.deepEqual(closure.follow, closedFollow);
+    assert.deepEqual(closure.inputs, link.continuation.inputs);
     const agent = app.runtime.native.agents.get(SessionId(session.id))!;
     const events = agent.session.snapshotEvents();
     const result = events.find(event => event.type === 'tool/result' && event.data.message.toolCallId === link.source.callId);
@@ -774,6 +888,12 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     } });
     context.after(() => recovered.dispose());
     const cold = await recovered.runtime.application.open(sessionId, recovered.program);
+    assert.deepEqual(cold.snapshot().operationFollows, [closedFollow], '冷恢复读取原未开始事实及原关联身份');
+    const coldEvents: ConversationEvent[] = [];
+    const coldChanges = cold.events$.subscribe(event => coldEvents.push(event));
+    context.after(() => coldChanges.unsubscribe());
+    await immediate();
+    assert.deepEqual(coldEvents, [], '读取已有持久follow不重放发生事件');
     assert.deepEqual(cold.snapshot().waits, []);
     assert.equal(recovered.runtime.native.agents.get(SessionId(sessionId)), undefined);
     assert.deepEqual(initializationDelivery, { status: 'not-started' }, 'connect可同步开始交接，不等待Host.initialize自身');
@@ -958,6 +1078,11 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
       assert.equal(app.runtime.native.agents.get(SessionId(saved.sessionId)), undefined);
       assert.equal(cold.snapshot().waits.length, 1);
       assert.equal(cold.snapshot().goal?.phase, 'active');
+      const originalFollow = cold.snapshot().operationFollows[0]!;
+      assert.equal(originalFollow.link.id, accepted.followId);
+      assert.deepEqual(originalFollow.receipt, { reference: accepted.reference });
+      assert.equal(originalFollow.preparedDelivery, null);
+      assert.equal(originalFollow.notStarted, null);
       const location = await cold.locateOperation(operation, { merchantId: 'merchant-a', commandId: 'prepare-a' });
       assert.deepEqual(location, { status: 'accepted', reference: accepted.reference,
         state: { status: 'awaiting-command', reason: '商家甲需要补交凭据' } });
@@ -968,7 +1093,12 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
       assert.equal((await firstValueFrom(existing.observations$.pipe(filter(value => value.status === 'ready')))).status, 'ready');
       assert.equal(domainSettled, false);
       assert.equal(app.runtime.native.agents.get(SessionId(saved.sessionId)), undefined, '业务操作冷读不加载 Agent');
+      assert.deepEqual(cold.snapshot().operationFollows, [originalFollow]);
+      assert.equal(app.store.bodies().length, 1, '冷读取原receipt和关联不重执命令');
       const resumed = await app.runtime.application.resume(saved.sessionId, app.program);
+      const followChanges: ConversationEvent[] = [];
+      const changes = resumed.events$.subscribe(event => { if (event.kind === 'operation.follow.changed') followChanges.push(event); });
+      context.after(() => changes.unsubscribe());
       assert.equal(app.requests.length, 0);
       app.store.update('prepare-a', { status: 'complete', artifactId: 'artifact-after-restart' });
       assert.deepEqual(await domainTerminal, { status: 'complete', artifactId: 'artifact-after-restart' });
@@ -982,6 +1112,26 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
         return record?.type === 'plugin:reactive/input' && recordSchema.parse(record.data).requestId === 'operation:' + accepted.followId;
       });
       assert.equal(readyInput(), false);
+      const prepared = resumed.snapshot().operationFollows[0]!;
+      assert.deepEqual(prepared.link, originalFollow.link);
+      assert.deepEqual(prepared.receipt, originalFollow.receipt);
+      assert.equal(prepared.preparedDelivery?.requestId, 'operation:' + accepted.followId);
+      assert.deepEqual(prepared.preparedDelivery?.reference, accepted.reference);
+      assert.equal(resumed.snapshot().requests['operation:' + accepted.followId], undefined,
+        '业务正文已持久准备，准入尚未完成，不能报告为原生已受理');
+      assert.equal(app.requests.length, 0);
+      assert.deepEqual(followChanges.map(event => event.kind === 'operation.follow.changed' ? event.change : null), ['delivery-prepared']);
+      const preparedEvent = followChanges[0]!;
+      assert.ok(preparedEvent.kind === 'operation.follow.changed');
+      assert.deepEqual(preparedEvent.follow, prepared);
+      assert.deepEqual(preparedEvent.inputs, originalFollow.link.continuation.inputs);
+      const preparedWork = await createWorkSelector({ identify: origin => origin.scope })
+        .observe({ merchantId: 'merchant-a' }, [resumed], { signal: context.signal }).state.read(context.signal);
+      const preparedCondition = preparedWork.sessions[0]!.conditions.find(condition => condition.kind === 'operation.delivery-prepared');
+      assert.ok(preparedCondition?.kind === 'operation.delivery-prepared');
+      assert.equal(preparedCondition.value.link.id, accepted.followId);
+      assert.equal(preparedCondition.resultRequest, null);
+      assert.equal(preparedWork.sessions[0]!.conditions.some(condition => condition.kind === 'continuation.unconsumed'), false);
       await app.runtime.application.close(saved.sessionId);
       assert.equal(admittedSignal.aborted, true);
       assert.equal(app.runtime.native.agents.get(SessionId(saved.sessionId)), undefined);
@@ -997,6 +1147,7 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
       assert.equal(resumed.snapshot().goal?.id, saved.goalId);
       assert.equal(resumed.snapshot().goal?.phase, 'complete');
       assert.equal(resumed.snapshot().requests['operation:' + accepted.followId]?.state, 'settled');
+      assert.deepEqual(resumed.snapshot().operationFollows, [prepared], '重启继续使用原持久关联和已准备正文，不重签身份');
       const reads = app.store.db.prepare('SELECT command_json, access_json FROM reads ORDER BY id').all();
       assert.ok(reads.some(row => JSON.parse(z.string().parse(row.access_json)).source.entrypoint === 'operation-recovery'));
       assert.ok(reads.every(row => JSON.parse(z.string().parse(row.command_json)).commandId === 'prepare-a'));

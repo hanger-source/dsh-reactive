@@ -1,7 +1,9 @@
 import { Observable, EMPTY, EmptyError, concatWith, defer, filter, firstValueFrom, from, fromEvent, isObservable, map, mergeMap, takeUntil, tap, throwError, type MonoTypeOperatorFunction } from 'rxjs';
 import { z } from 'zod';
 import type { ActionSource, ActionTarget } from '../actions/contract.ts';
-import { continuationSchema, waitSchema, type Continuation, type Json, type WaitReference } from '../conversations/protocol.ts';
+import type { Json } from '../conversations/protocol.ts';
+import { operationFollowLinkSchema, type OperationFollowLink } from './follows.ts';
+export { operationFollowLinkSchema, type OperationFollowLink, type OperationFollowMode } from './follows.ts';
 import type { InputReceipt } from '../conversations/conversation.ts';
 import type { Observation } from '../resources/observation.ts';
 import { shareResource } from '../resources/sharing.ts';
@@ -94,38 +96,7 @@ export interface OperationNotificationSource {
   connect(connection: OperationNotificationConnection): OperationNotificationCleanup | PromiseLike<OperationNotificationCleanup>;
 }
 
-/** wait 暂缓原工作；background 保留结果续接关系，让当前工作继续。 */
-export type OperationFollowMode = 'wait' | 'background';
-
-/** 持久化的是业务命令与精确原工作的关联，不是订阅或 JavaScript 调用栈。 */
-interface OperationFollowBase {
-  readonly id: string;
-  readonly operation: { readonly kind: string; readonly version: number };
-  readonly command: Json;
-  readonly continuation: Continuation;
-  readonly wait: WaitReference;
-  readonly scope: Json;
-  readonly target: Json;
-  readonly source: Extract<ActionSource, { readonly kind: 'tool' }>;
-  readonly mode: OperationFollowMode;
-}
-export type OperationFollowLink = OperationFollowBase & (
-  | { readonly when: 'settled'; readonly after: null }
-  | { readonly when: 'feedback'; readonly after: string | null }
-);
-
 const identity = z.string().min(1);
-const followBaseSchema = z.object({
-  id: identity,
-  operation: z.object({ kind: identity, version: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }).strict(),
-  command: z.json(), continuation: continuationSchema, wait: waitSchema, scope: z.json(), target: z.json(),
-  mode: z.enum(['wait', 'background']),
-  source: z.object({ kind: z.literal('tool'), callId: identity, rootCallId: identity, parentCallId: identity.nullable() }).strict(),
-}).strict();
-export const operationFollowLinkSchema = z.discriminatedUnion('when', [
-  followBaseSchema.extend({ when: z.literal('settled'), after: z.null() }),
-  followBaseSchema.extend({ when: z.literal('feedback'), after: identity.nullable() }),
-]);
 
 export interface OperationOwnerReference { readonly definition: OperationContract; }
 export interface OperationOwner<D extends OperationContract = OperationContract> extends OperationOwnerReference { readonly definition: D; }

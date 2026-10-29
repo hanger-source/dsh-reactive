@@ -68,6 +68,8 @@ return <>
 
 `action.activeInvocations` 可直接参加 combineResources，activeInvocations$ 是其值流；`run.state` 同样提供 read/peek，state$ 是其值流。它们保留实际运行的 owner，Reaction 停止后的 draining 和迟到失败仍是真实可读状态。read 不等待业务结束，应分别等待 invocation.result 或 run.settled。
 
+Invocation.id 是不透明身份。原生 tool 入口的新 ID 按真实 session 和 start 事件序号区分调用，即使 provider 复用 callId；source.callId 仍是 provider 标签。participant 入口继续使用原 UUID 机制。读取持久旧 link 时保留原 ID，不重命名。
+
 `session.invocation(name, id)` 也适用于 `session.module(mount)` 和 `session.collection(name).instance(key)` 返回的局部 Surface；本地同步取得原对象，远程 await 取得原回执。查回只读精确原地址与 Action 合同，不要求 Expose 仍在，不重 execute；保存 Invocation.id 不能替代持久 Operation command。
 
 Context 默认 required=true：pending/error 阻止模型取得不完整现场。required=false 是显式非必需现场：pending/error 时撤掉该 Context，其他模块可以继续；公开资源仍保真实状态。不要丢弃错误后保留旧 ready。Offer 需按同一真实事实关闭相关行为。

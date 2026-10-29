@@ -15,6 +15,8 @@
 
 `OperationOwnerOptions.notifications.connect({ deliver, signal })` 接入业务现有的持久化、租约与重投设施，返回 cleanup 或其 Promise。交接只提供 sessionId、followId 和 acknowledge；Host 以固定 `serviceActorId` 核验真实 owner，仅 accepted 或 not-started 才 ACK，unknown、pending、拒绝或失败不 ACK。ACK 只移除 outbox 待办，follow 和 feedback 保留。signal 停止新交接；Host 等真实业务调用、投递和已开始的 ACK 结算后才 cleanup，迟到的 connect 与部分启动失败也遵循此顺序。仍可显式调用 `notifyOperation`；Host 不另造队列。
 
+ConversationActivity.operationFollows 从原生投影读取 link、receipt|null、preparedDelivery|null 和 notStarted|null；preparedDelivery 包含 requestId、actorId、notifierId 及可选 reference、node。读取不调用 locate、register 或 notifier；intent 不证明 register ACK，receipt 缺失不证明未执行，prepared 不代表受理、消费或结算。operation.follow.changed 在直播追加时携带完整 inputs，change 为 intent、receipt、delivery-prepared 或 not-started；冷恢复不重放事件。
+
 Action 的 `operation: { definition, command(input, scope, origin), reference(receipt) }` 将本次调用接到同一 Operation；实现同时传 `operationOwner`。origin 保真实 invocation/session/source，不是业务 UUID 签发器。需要业务幂等键时由业务约定正式身份。
 
 显式调用后，`invocation.result` 是该次 Action 返回，`await invocation.operation` 是同一业务的 OperationHandle。`handle.state` 是稳定只读资源，可直接使用 read、peek、subscribe、values$、observations$，交给 useResource 或原生 UI；`handle.observations$` 是该资源的同一观察。`state.read(signal)` 取得当前有效业务状态，`handle.settled({ signal })` 另行等权威终态，业务失败/取消也作为领域终态值交付，查询 error/abort 才拒绝等待。所有消费者共享一次观察与 state schema 解析，退出不取消后台业务。来源结束仍没有业务终态时进入查询 error，settled 不永远等待；已有最终观察保留至最后消费者退出，之后显式读取重新查询原操作，不再次 execute 或登记 follow。

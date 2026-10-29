@@ -5,6 +5,7 @@ import type { AssistantAttemptSnapshot, AssistantProgressFrame, ConversationEven
 import type { ConversationProgressSnapshot } from './request.ts';
 import type { HumanForegroundQuestion, HumanQuestion, HumanSettledQuestion, HumanSnapshot } from '../participation/contract.ts';
 import type { Observation } from '../resources/observation.ts';
+import type { OperationFollowSnapshot } from '../operations/follows.ts';
 import type { ResourceReader, ResourceReadable, ResourceReaderOptions } from '../resources/reader.ts';
 import { combineResources, mapResource } from '../resources/operators.ts';
 import { shareResource } from '../resources/sharing.ts';
@@ -44,15 +45,22 @@ export interface WorkRequestOccurrence extends WorkOccurrence<RequestActivity> {
 
 export type WorkWait = ConversationActivity['waits'][number];
 
+/** 关联准备、受理与消费各自保留原事实；观察不查询业务owner或签发续接权。 */
+export interface WorkOperationFollow extends WorkOccurrence<OperationFollowSnapshot> {
+  readonly resultRequest: RequestActivity | null;
+}
+
 /** 条件只描述原事实，不判定整个业务是否可以继续，也不把执行 busy 当作阻塞。 */
 export type WorkCondition =
   | ({ readonly kind: 'goal.paused' } & WorkOccurrence<GoalActivity>)
   | ({ readonly kind: 'goal.blocked'; readonly blockedReason: GoalActivity['blockedReason'] } & WorkOccurrence<GoalActivity>)
+  | ({ readonly kind: 'goal.round-limit' } & WorkOccurrence<GoalActivity>)
   | ({ readonly kind: 'wait.pending' } & WorkOccurrence<WorkWait>)
   | ({ readonly kind: 'call.failed' } & WorkOccurrence<ToolActivity>)
-  | { readonly kind: 'continuation.superseded' | 'continuation.inactive';
+  | { readonly kind: 'continuation.unconsumed' | 'continuation.superseded' | 'continuation.inactive';
       readonly request: WorkRequestOccurrence; readonly continuation: Continuation;
       readonly currentGoal: GoalActivity | null; readonly matchedInputs: readonly InputReference[] }
+  | ({ readonly kind: 'operation.not-started' | 'operation.delivery-prepared' } & WorkOperationFollow)
   | { readonly kind: 'question.pending'; readonly callId: HumanQuestion['callId'];
       readonly active: WorkOccurrence<HumanQuestion> | null;
       readonly foreground: WorkOccurrence<HumanForegroundQuestion> | null;
@@ -77,6 +85,7 @@ export interface WorkSessionSnapshot {
   };
   readonly foreground: readonly WorkOccurrence<HumanForegroundQuestion>[];
   readonly waits: readonly WorkOccurrence<WorkWait>[];
+  readonly operationFollows: readonly WorkOperationFollow[];
   /** 只包含当前权威 Goal 且其 inputs 明确命中的事实；不沿历史 wait 猜当前 Goal。 */
   readonly goals: readonly WorkOccurrence<GoalActivity>[];
   readonly conditions: readonly WorkCondition[];
@@ -102,8 +111,18 @@ export interface WorkProgressFrame<K extends Json = Json> {
 }
 
 export interface WorkHandle<K extends Json = Json> {
+  /** 显式来源各有自己的有效性；完整state仍要求全部来源可读。 */
+  readonly sessions: readonly WorkSessionHandle<K>[];
   readonly state: ResourceReader<WorkSnapshot<K>>;
   readonly state$: Observable<Observation<WorkSnapshot<K>>>;
+  readonly events$: Observable<WorkEvent<K>>;
+  readonly progressFrames$: Observable<WorkProgressFrame<K>>;
+}
+
+export interface WorkSessionHandle<K extends Json = Json> {
+  readonly identity: WorkSourceIdentity;
+  readonly state: ResourceReader<WorkSessionSnapshot>;
+  readonly state$: Observable<Observation<WorkSessionSnapshot>>;
   readonly events$: Observable<WorkEvent<K>>;
   readonly progressFrames$: Observable<WorkProgressFrame<K>>;
 }
@@ -139,6 +158,9 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
       for (const wait of activity.waits) {
         if (wait.continuation.sessionId !== identity.sessionId) throw new Error('REACTIVE_WORK_WAIT_SESSION_MISMATCH');
       }
+      for (const follow of activity.operationFollows) {
+        if (follow.link.continuation.sessionId !== identity.sessionId) throw new Error('REACTIVE_WORK_OPERATION_SESSION_MISMATCH');
+      }
       const occurrences = <T>(values: readonly T[], inputOf: (value: T) => readonly InputReference[] | null): readonly WorkOccurrence<T>[] =>
         Object.freeze(values.flatMap(value => {
           const matchedInputs = match.inputs(inputOf(value) ?? []);
@@ -161,15 +183,26 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
       const foreground = occurrences(human.foreground, value => value.origin.inputs);
       const waits = occurrences(activity.waits, value => value.continuation.inputs);
       const goals = occurrences(activity.goal === null ? [] : [activity.goal], value => value.inputs);
+      const operationFollows: readonly WorkOperationFollow[] = Object.freeze(activity.operationFollows.flatMap(value => {
+        const matchedInputs = match.inputs(value.link.continuation.inputs);
+        if (!matchedInputs.length) return [];
+        const resultRequestId = value.preparedDelivery?.requestId ?? 'operation:' + value.link.id;
+        const resultRequest = Object.hasOwn(activity.requests, resultRequestId) ? activity.requests[resultRequestId]! : null;
+        return [Object.freeze({ value, matchedInputs, resultRequest })];
+      }));
       const conditions: WorkCondition[] = [];
       for (const goal of goals) {
         if (goal.value.phase === 'paused') conditions.push(Object.freeze({ kind: 'goal.paused', ...goal }));
         if (goal.value.phase === 'blocked') conditions.push(Object.freeze({ kind: 'goal.blocked', ...goal, blockedReason: goal.value.blockedReason }));
+        if (goal.value.phase === 'active' && goal.value.roundsStarted >= goal.value.maxGoalRounds)
+          conditions.push(Object.freeze({ kind: 'goal.round-limit', ...goal }));
       }
       for (const request of requests) {
         const result = request.value.declaration?.result;
         if (request.value.state !== 'accepted' || result?.ready !== true) continue;
         const continuation = result.continuation, expectedGoal = continuation.goal;
+        conditions.push(Object.freeze({ kind: 'continuation.unconsumed', request, continuation,
+          currentGoal: activity.goal, matchedInputs: request.matchedInputs }));
         if (expectedGoal === null) continue;
         const currentGoal = activity.goal;
         if (currentGoal === null || currentGoal.id !== expectedGoal.id || currentGoal.revision !== expectedGoal.revision) {
@@ -181,6 +214,12 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
         }
       }
       for (const wait of waits) conditions.push(Object.freeze({ kind: 'wait.pending', ...wait }));
+      for (const follow of operationFollows) {
+        if (follow.value.notStarted !== null) conditions.push(Object.freeze({ kind: 'operation.not-started', ...follow }));
+        else if (follow.value.preparedDelivery !== null
+          && (follow.resultRequest === null || follow.resultRequest.state === 'declared'))
+          conditions.push(Object.freeze({ kind: 'operation.delivery-prepared', ...follow }));
+      }
       for (const call of calls) if (call.value.state === 'failed') conditions.push(Object.freeze({ kind: 'call.failed', ...call }));
       const unanswered = new Map<HumanQuestion['callId'], { active: WorkOccurrence<HumanQuestion> | null; foreground: WorkOccurrence<HumanForegroundQuestion> | null }>();
       for (const question of active) unanswered.set(question.value.callId, { active: question, foreground: null });
@@ -193,7 +232,7 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
       return Object.freeze({ identity: captureIdentity(identity), sessionId: identity.sessionId,
         source: activity.source, live: activity.source === 'live', execution: activity.execution, sequence: activity.sequence,
         requests, inputs, calls, replies, attempts: activeAttempts, questions: Object.freeze({ active, settled }),
-        foreground, waits, goals, conditions: Object.freeze(conditions) });
+        foreground, waits, operationFollows, goals, conditions: Object.freeze(conditions) });
     });
     return Object.freeze({ key, sessions: Object.freeze(sessions) });
   };
@@ -208,25 +247,27 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
         progress: source.progress, human: source.human, rawEvents$: source.rawEvents$, progressFrames$: source.progressFrames$ })));
       assertDistinctSources(captured);
       const match = matcher(capturedKey);
-      const combined = captured.map(source => combineResources({ progress: source.progress, human: source.human }).pipe(
-        mapResource(value => Object.freeze({ identity: source.identity, ...value })),
-      ));
-      const observations$ = combineResources(Object.fromEntries(combined.map((source, index) => [String(index), source]))).pipe(
-        mapResource(value => project(capturedKey, Object.values(value))),
-      );
-      // 唯一共享读侧；冷态与最后消费者退出后的 pending 沿用 ResourceReader 语义。
-      const state = shareResource(observations$, readerOptions);
-      const events$ = merge(...captured.map(source => source.rawEvents$.pipe(map(event => {
-        if (event.sessionId !== source.identity.sessionId) throw new Error('REACTIVE_WORK_EVENT_SESSION_MISMATCH');
-        const matchedInputs = match.inputs(eventInputs(event));
-        return matchedInputs.length ? Object.freeze({ key: capturedKey, source: source.identity, event, matchedInputs }) : null;
-      }), filter((value): value is WorkEvent<K> => value !== null))));
-      const progressFrames$ = merge(...captured.map(source => source.progressFrames$.pipe(map(frame => {
-        const matchedInputs = match.inputs(frame.inputs);
-        return matchedInputs.length ? Object.freeze({ key: capturedKey, source: source.identity, frame, matchedInputs }) : null;
-      }), filter((value): value is WorkProgressFrame<K> => value !== null))));
-      return Object.freeze({ state, state$: state.observations$,
-        events$: borrowEvents(events$, readerOptions?.signal), progressFrames$: borrowEvents(progressFrames$, readerOptions?.signal) });
+      const sessions: readonly WorkSessionHandle<K>[] = Object.freeze(captured.map(source => {
+        const state = shareResource(combineResources({ progress: source.progress, human: source.human }).pipe(
+          mapResource(value => project(capturedKey, [{ identity: source.identity, ...value }]).sessions[0]!),
+        ), readerOptions);
+        const events$ = source.rawEvents$.pipe(map(event => {
+          if (event.sessionId !== source.identity.sessionId) throw new Error('REACTIVE_WORK_EVENT_SESSION_MISMATCH');
+          const matchedInputs = match.inputs(eventInputs(event));
+          return matchedInputs.length ? Object.freeze({ key: capturedKey, source: source.identity, event, matchedInputs }) : null;
+        }), filter((value): value is WorkEvent<K> => value !== null));
+        const progressFrames$ = source.progressFrames$.pipe(map(frame => {
+          const matchedInputs = match.inputs(frame.inputs);
+          return matchedInputs.length ? Object.freeze({ key: capturedKey, source: source.identity, frame, matchedInputs }) : null;
+        }), filter((value): value is WorkProgressFrame<K> => value !== null));
+        return Object.freeze({ identity: source.identity, state, state$: state.observations$,
+          events$: borrowEvents(events$, readerOptions?.signal), progressFrames$: borrowEvents(progressFrames$, readerOptions?.signal) });
+      }));
+      const state = shareResource(combineResources(Object.fromEntries(sessions.map((source, index) => [String(index), source.state]))).pipe(
+        mapResource(value => Object.freeze({ key: capturedKey, sessions: Object.freeze(Object.values(value)) })),
+      ), readerOptions);
+      return Object.freeze({ sessions, state, state$: state.observations$,
+        events$: merge(...sessions.map(session => session.events$)), progressFrames$: merge(...sessions.map(session => session.progressFrames$)) });
     },
   });
 }

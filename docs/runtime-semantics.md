@@ -211,9 +211,11 @@ continued 答复按原问题的 callId 恢复工具调用保存的输入集合�
 
 `createWorkSelector({ identify })` 用应用定义的 JSON 键选择原始输入或持久请求声明；返回 undefined 表示不属于该工作。`select` 同步投影显式快照，`observe` 组合显式会话来源的 progress 与 human，并共享一个 ResourceReader。`state$` 是该 reader 的观察，`events$` 和 `progressFrames$` 只交付订阅后的匹配事实，不重放历史。冷观察不复活 assistant attempt 草稿，也不发现会话、启动 Agent 或取得权限。
 
+Activity.operationFollows 包含原 link、receipt|null、preparedDelivery|null 和 notStarted|null；preparedDelivery 保留 requestId、actorId、notifierId 及可选 reference、node。这些是同一原生投影的持久事实，读取不触发 locate、register 或 notifier。intent 不证明 register ACK，缺少 receipt 不证明未执行，prepared 不代表结果已受理、消费或结算。直播追加产生 operation.follow.changed，change 为 intent、receipt、delivery-prepared 或 not-started，携带完整 inputs；冷恢复读取投影，不重放这些事件。
+
 Activity 的 inputs 是输入目录，calls 和 replies 是完整发生事实，Goal.inputs 保存关联；Request.tools 与最后回复由这些事实派生。calls 保留每次真实发生，ToolActivity 和 ToolOccurrence 的 `callSequence` 是该次正式 start 事件的序号；provider 的 callId 可以跨轮复用。RequestDeclaration 是真实持久声明，包含 `result: { continuation, wait, ready } | null`；没有 messageId 的声明不是已受理输入。回复 `inputs: null` 表示关联未知，不按工作归组。每个命中项保留完整 value、原 callSequence 或 messageId 及完整 inputs；matchedInputs 只解释分组，不裁剪事实或授予续接权限。多输入共同调用或回复可出现在多个工作。原始 scope 在本地与远程均不执行 Program transform。
 
-每个来源保留 sessionId、workspaceId、environmentId 和真实 Session 的 parentSessionId。会话中的 source、execution 是背景，不表示工作独占会话。条件只表达 `goal.paused`、`goal.blocked`、`wait.pending`、`question.pending`、`call.failed`，以及 accepted 且 ready 的原结果所引用 Goal id/revision 已被替换或不再 active 的续接约束；不判定整个工作 busy 或完成。跨会话观察不共享 Goal 或答复权限。
+每个来源保留 sessionId、workspaceId、environmentId 和真实 Session 的 parentSessionId。会话中的 source、execution 是背景，不表示工作独占会话。条件表达 `goal.paused`、`goal.blocked`、`wait.pending`、`question.pending`、`call.failed` 及原续接约束。`continuation.unconsumed` 表示结果请求已 accepted、result.ready 为 true，但尚未推进到 consumed，不代表模型已处理；`continuation.superseded` 和 `continuation.inactive` 表达其所引用 Goal 已被替换或不再 active。`goal.round-limit` 只在 active Goal 已用尽轮数时出现；`operation.not-started` 表示已知业务未进入，`operation.delivery-prepared` 表示投递已准备而结果请求不存在或仍为 declared。不据此判定整个工作 busy 或完成。跨会话观察不共享 Goal 或答复权限。
 
 所有必需来源 ready 才有完整工作 ready；任一来源 pending 或 error 撤下旧 ready，来源退出保留原错误，不替换为空数组。不同会话 generation 不构成事务快照。options 可省略：无显式 owner 时读侧遵循 refCount 与来源有效性；最后观察退出只释放观察，不停止会话或业务。需要业务 Operation 阶段或资源错误时使用现有 RxJS 组合。
 

@@ -107,10 +107,10 @@ function nestedEnd(events: readonly SessionEvent[], callId: string) {
   assert.ok(event?.type === 'tool/ptc-dispatch', '真实嵌套调用必须有正式结算日志');
   return event;
 }
-function parentEnd(events: readonly SessionEvent[], mode: 'native' | 'ptc', invocationId: string) {
+function parentEnd(events: readonly SessionEvent[], mode: 'native' | 'ptc', callId: string) {
   const event = events.find(event => mode === 'native'
-    ? event.type === 'tool/result' && event.data.message.toolCallId === invocationId
-    : event.type === 'tool/ptc-dispatch' && event.data.subCallId === invocationId);
+    ? event.type === 'tool/result' && event.data.message.toolCallId === callId
+    : event.type === 'tool/ptc-dispatch' && event.data.subCallId === callId);
   assert.ok(event?.type === 'tool/result' || event?.type === 'tool/ptc-dispatch');
   return event;
 }
@@ -133,10 +133,14 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.equal(scene.calls.length, 1);
       assert.deepEqual(scene.effects, [], '没有人工答案时业务副作用不能开始');
       const invocation = scene.invocations[0]!;
+      const call = scene.calls[0]!;
+      assert.ok(call.source.kind === 'tool');
+      assert.equal(call.invocationId, invocation.id);
+      assert.deepEqual(invocation.source, call.source);
       const input = await accepted;
       assert.ok(input.kind === 'input.accepted');
       const origin: HumanQuestionOrigin = { sessionId: session.id, callId: question.callId, callSequence: question.origin.callSequence, rootCallId,
-        parentCallId: invocation.id, name: 'ask_user_question', inputs: [{ sourceSessionId: session.id,
+        parentCallId: call.source.callId, name: 'ask_user_question', inputs: [{ sourceSessionId: session.id,
           messageId: input.messageId, requestId: 'original-merchant', source: 'user', intent: 'question',
           scope: submittedScope, actorId: 'request-author', participant: 'human' }] };
       assert.deepEqual(question.origin, origin, 'Action 内部提问必须是实际子调用，并保留未解码的原输入');
@@ -161,7 +165,7 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.equal(starts.length, 1);
       assert.ok(starts[0]?.type === 'tool/ptc-dispatch-start');
       assert.deepEqual({ rootCallId: starts[0].data.rootCallId, parentCallId: starts[0].data.parentCallId, name: starts[0].data.name },
-        { rootCallId, parentCallId: invocation.id, name: 'ask_user_question' });
+        { rootCallId, parentCallId: call.source.callId, name: 'ask_user_question' });
       await assert.rejects(bound.answer(deliveryDetails, { actorId: 'intruder' }), /REVIEWER_REQUIRED/u);
       assert.deepEqual(scene.effects, []);
       assert.equal(await bound.answer(deliveryDetails, { actorId: 'reviewer' }), true);
@@ -174,7 +178,7 @@ for (const mode of ['native', 'ptc'] as const) {
       const child = nestedEnd(events, question.callId);
       assert.equal(child.data.isError, false);
       assert.deepEqual(JSON.parse(child.data.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('')), deliveryDetails);
-      assert.ok(child.seq < parentEnd(events, mode, invocation.id).seq);
+      assert.ok(child.seq < parentEnd(events, mode, call.source.callId).seq);
       const beforeStale = agent.session.snapshotEvents().length;
       await assert.rejects(scene.calls[0]!.askHuman(prompts), /REACTIVE_ACTION_CONTROL_INACTIVE/u);
       assert.equal(agent.session.snapshotEvents().length, beforeStale, '保存已结束 call 不能制造新的子调用');
@@ -185,6 +189,10 @@ for (const mode of ['native', 'ptc'] as const) {
       const [unfinished] = await unawaited;
       assert.ok(unfinished);
       const draining = scene.invocations.at(-1)!;
+      const drainCall = scene.calls.at(-1)!;
+      assert.ok(drainCall.source.kind === 'tool');
+      assert.equal(drainCall.invocationId, draining.id);
+      assert.equal(unfinished.origin.parentCallId, drainCall.source.callId);
       scene.drainReturn.resolve();
       assert.deepEqual(await draining.result, { step: 'drain', outcome: 'returned-without-answer' });
       await session.whenIdle();
@@ -192,7 +200,7 @@ for (const mode of ['native', 'ptc'] as const) {
       const drainedEvents = agent.session.snapshotEvents();
       const drained = nestedEnd(drainedEvents, unfinished.callId);
       assert.equal(drained.data.isError, true);
-      const parent = parentEnd(drainedEvents, mode, draining.id);
+      const parent = parentEnd(drainedEvents, mode, drainCall.source.callId);
       assert.ok(drained.seq < parent.seq, '未等待子问结算并退出后，父工具才发布原业务返回');
       if (parent.type === 'tool/result') assert.notEqual(parent.data.message.isError, true);
       else assert.equal(parent.data.isError, false);
@@ -220,6 +228,11 @@ for (const mode of ['native', 'ptc'] as const) {
           assert.ok(unlogged);
           failedQuestionId = unlogged.callId;
           const failedInvocation = scene.invocations.at(-1)!;
+          const failedCall = scene.calls.at(-1)!;
+          assert.ok(failedCall.source.kind === 'tool');
+          const failedCallId = failedCall.source.callId;
+          assert.equal(failedCall.invocationId, failedInvocation.id);
+          assert.equal(unlogged.origin.parentCallId, failedCallId);
           const rejected = assert.rejects(failedInvocation.result, error => {
             assert.ok(error instanceof Error);
             assert.equal(Reflect.get(error, 'code'), 'REACTIVE_HUMAN_DISPATCH_LOG_FAILED');
@@ -241,9 +254,9 @@ for (const mode of ['native', 'ptc'] as const) {
           assert.equal(loggedContent.includes(JSON.stringify(deliveryDetails)), false);
           assert.equal(loggedContent.includes('delivery-mode'), false, '不能将未经日志策略许可的答案正文存入失败 end');
           assert.equal(failedEvents.filter(event => event.type === 'tool/ptc-dispatch-start'
-            && event.data.parentCallId === failedInvocation.id && event.data.name === 'ask_user_question').length, 1);
+            && event.data.parentCallId === failedCallId && event.data.name === 'ask_user_question').length, 1);
           assert.equal(failedEvents.filter(event => event.type === 'tool/ptc-dispatch' && event.data.subCallId === unlogged.callId).length, 1);
-          const failedParent = parentEnd(failedEvents, mode, failedInvocation.id);
+          const failedParent = parentEnd(failedEvents, mode, failedCallId);
           assert.ok(failedChild.seq < failedParent.seq);
           if (failedParent.type === 'tool/result') assert.equal(failedParent.data.message.isError, true);
           else assert.equal(failedParent.data.isError, true);
@@ -290,8 +303,11 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.ok(question);
       assert.equal(question.timed, true);
       const timed = scene.invocations[0]!;
+      const timedCall = scene.calls[0]!;
+      assert.ok(timedCall.source.kind === 'tool');
+      assert.equal(timedCall.invocationId, timed.id);
       assert.equal(question.origin.rootCallId, rootCallId);
-      assert.equal(question.origin.parentCallId, timed.id);
+      assert.equal(question.origin.parentCallId, timedCall.source.callId);
       const bound = await session.question(question.callId);
       assert.deepEqual((await bound.state.read()).foreground, question);
       assert.deepEqual(scene.effects, []);
@@ -319,7 +335,7 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.equal((await bound.state.read()).foreground, undefined);
       const agent = app.native.agents.get(SessionId(session.id))!;
       const timedEvents = agent.session.snapshotEvents();
-      assert.ok(nestedEnd(timedEvents, question.callId).seq < parentEnd(timedEvents, mode, timed.id).seq);
+      assert.ok(nestedEnd(timedEvents, question.callId).seq < parentEnd(timedEvents, mode, timedCall.source.callId).seq);
       await app.host.close(session.id);
       const cold = await app.host.open(session.id, scene.program);
       const late = await cold.question(question.callId);
@@ -430,6 +446,10 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.ok(cancelledQuestion);
       const cancelledHandle = await session.question(cancelledQuestion.callId);
       const cancelled = scene.invocations.at(-1)!;
+      const cancelledCall = scene.calls.at(-1)!;
+      assert.ok(cancelledCall.source.kind === 'tool');
+      assert.equal(cancelledCall.invocationId, cancelled.id);
+      assert.equal(cancelledQuestion.origin.parentCallId, cancelledCall.source.callId);
       const rejection = assert.rejects(cancelled.result);
       await session.cancel();
       await rejection;
@@ -442,7 +462,7 @@ for (const mode of ['native', 'ptc'] as const) {
       const cancelledEvents = resumedAgent.session.snapshotEvents();
       const child = nestedEnd(cancelledEvents, cancelledQuestion.callId);
       assert.equal(child.data.isError, true);
-      assert.ok(child.seq < parentEnd(cancelledEvents, mode, cancelled.id).seq, '取消也必须先 drain 实际子调用再结束父调用');
+      assert.ok(child.seq < parentEnd(cancelledEvents, mode, cancelledCall.source.callId).seq, '取消也必须先 drain 实际子调用再结束父调用');
 
       scene.next('foreground');
       const nextQuestion = firstValueFrom(session.foregroundQuestions$.pipe(filter(value => value.length === 1)));

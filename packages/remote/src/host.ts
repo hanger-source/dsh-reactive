@@ -212,6 +212,8 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   }
   /** 直接消费原始事实；只核验 JSON 字段，不逆编码或再次解析业务 input。 */
   private occurrence(value: ConversationEvent): ProgramConversationEvent {
+    if (value.kind === 'operation.follow.changed') return { ...value,
+      follow: z.json().parse(value.follow), inputs: this.wireInputs(value.inputs) };
     if (value.kind === 'execution.error') {
       const { inputs: references, ...event } = value;
       return { ...event, error: this.failure(value.error), ...(references ? { inputs: this.wireInputs(references) } : {}) };

@@ -17,7 +17,7 @@ function programFor(Component: ComponentType<ProgramProps<typeof contract>>, dir
   const sessionScope = scope.child();
   const sessionId = crypto.randomUUID();
   const conversation = new Conversation(sessionScope, { sessionId, workspaceId: workspace.id, environmentId: 'work', directory, parentSessionId: null },
-    workspace, contract, { sessionId, sequence: -1, source: 'live', execution: 'idle', inputs: [], calls: [], replies: [], goal: null, requests: {}, waits: [] });
+    workspace, contract, { sessionId, sequence: -1, source: 'live', execution: 'idle', inputs: [], calls: [], replies: [], goal: null, requests: {}, waits: [], operationFollows: [] });
   const program = new ProgramInstance(sessionScope, implementProgram(contract, { Component }), conversation, workspace, {
     execution() { throw new Error('PREPARATION_MUST_NOT_EXECUTE_ACTION'); },
   });

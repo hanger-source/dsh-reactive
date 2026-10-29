@@ -476,6 +476,8 @@ function observeWork(workId: string, sessions: readonly WorkSource[], signal: Ab
 
 本地和远程、人工和服务会话均可作为 `WorkSource`，来源提供 identity、progress、human、rawEvents$ 与 progressFrames$。来源列表必须非空，sessionId 不得重复。`select(key, snapshots)` 同步纯投影已取得的快照；`observe(key, sources, options?)` 提供共享的 `state`、同一观察的 `state$`、新事件 `events$` 和助手帧 `progressFrames$`。识别使用原始 JSON scope，不执行任何 Program 的输入 transform。选择器不发现或打开会话、不启动 Agent，也不授予其他会话的 Goal 或人工答复权限。
 
+`WorkHandle.sessions` 为每个显式来源提供 WorkSessionHandle，其 identity、state、state$、events$ 和 progressFrames$ 对应该来源；通过 `sessions[i].state.read()` 读取局部 ResourceReader；整体资源只有全部来源 ready 才 ready，某来源退出后其他局部资源仍可继续，不以其他来源兜底，也不授予权限。每个 WorkSessionSnapshot 的 operationFollows 保留匹配事实及 resultRequest；条件包括 operation.not-started、operation.delivery-prepared、continuation.unconsumed 和 goal.round-limit。
+
 每项保留完整 `value` 和解释命中依据的 `matchedInputs`；一次调用或回复可能因多条输入同时属于多个工作。调用保留正式 start 事件序号 `callSequence`，回复保留 `messageId` 和完整 inputs；provider 的 callId 可跨轮复用，不能用它合并不同发生。matchedInputs 只解释观察分组，不裁剪事实或授予续接权限。声明是持久请求事实，可在尚无 messageId 时命中，但它不是已受理的 InputReference。缺少输入关联证据的回复不归组。条件表达暂停、阻塞、等待、待答、调用失败及原续接资格，不能据此判断整个工作忙碌或完成。业务 Operation 阶段与资源错误可用现有 RxJS 资源组合表达。
 
 ## 读取原生日志

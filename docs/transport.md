@@ -213,6 +213,8 @@ Uint8Array 在调用时复制，Blob 的异步转换在准备阶段响应取消�
 
 ## 请求、流式进展与新事件
 
+会话活动及事件在本地与远程保留同一 operationFollows 持久事实和 operation.follow.changed 直播追加；冷恢复读取当前投影而不重放事件。跨会话工作观察的整体资源要求所有显式来源 ready，每个来源也有独立局部资源；来源退出不使其他局部资源失效，也不改变权限。
+
 `session.request(requestId).state` 与本地句柄提供相同的资源读侧，支持当前 read、peek、observations$ 和 useResource；`state$` 是该对象的完整 Observation 流。其 `events$` 从同一会话事件流选择精确关联的新事实，保留 Program 的领域输入类型。会话级 `progress` 资源提供当前活动与活跃 attempt 前缀，`progress$` 是同源观察，`progressFrames$` 提供原生 start/chunk/end 增量。当前活动、attempt、原始流帧及 wait continuation 内的输入范围保持 JSON，只有本会话 typed 事件与组件输入读侧按 Program.input 解析。
 
 一个 Session 的这些入口共享一条进展连接，首次取得任一进展入口时建立，连接由会话句柄持有到 release。只消费视图或 Action 不额外连接进展，也不要求 progress grant。某一个观察者退出不重启连接或取消工作。

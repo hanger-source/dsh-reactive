@@ -8,6 +8,7 @@ import { humanInputSnapshot } from "../participation/human-input.ts";
 import { NativeState, type ConversationActivity } from "./records.ts";
 import type { ConversationEvent } from "@hanger-source/dsh-reactive/kernel";
 import { reactiveProjectionSchema } from "./projections.ts";
+import { followsSchema, operationFollowSnapshots } from '../operations/projection.ts';
 import { sessionOccurrences, assistantFrame } from "./events.ts";
 import { readNativeInspection } from "../delegations.ts";
 import type { ConversationSession, LiveConversation } from './session.ts';
@@ -40,14 +41,15 @@ export class ConversationObservations {
         entry.conversation[conversationBindings]().publish(activity);
     }
     liveState(session: Session) {
+        const cursor = this.ctx.sessionProjections.snapshot(session, []).asOfSeq;
         const state = this.ctx.sessionProjections.stateOf(session, 'reactiveInputs');
         const goal = this.ctx.sessionProjections.stateOf(session, 'goal');
-        if (!state || !goal)
+        const operations = this.ctx.sessionProjections.stateOf(session, 'reactiveOperations');
+        if (!state || !goal || !operations)
             throw new Error('REACTIVE_DSH_PROJECTION_REQUIRED');
         if (goal.failure)
             throw new Error('REACTIVE_GOAL_PROJECTION_INVALID: ' + goal.failure);
-        const cursor = this.ctx.sessionProjections.snapshot(session, []).asOfSeq;
-        return new NativeState(state, goal.current, cursor);
+        return new NativeState(state, goal.current, cursor, operationFollowSnapshots(operations));
     }
     stateOf(inspection: SessionInspection) {
         const live = this.ctx.sessions.get(inspection.meta.id);
@@ -60,7 +62,8 @@ export class ConversationObservations {
         const goal = goalProjectionDefinition.stateSchema.parse(restored.checkpoint.goal?.val);
         if (goal.failure)
             throw new Error('REACTIVE_GOAL_PROJECTION_INVALID: ' + goal.failure);
-        return { state: new NativeState(state, goal.current, restored.snapshot.asOfSeq),
+        const operations = followsSchema.parse(restored.checkpoint.reactiveOperations?.val);
+        return { state: new NativeState(state, goal.current, restored.snapshot.asOfSeq, operationFollowSnapshots(operations)),
             questions: humanInputSnapshot(restored.snapshot, state) };
     }
     async inspect(sessionId: string, signal?: AbortSignal): Promise<SessionInspection> {

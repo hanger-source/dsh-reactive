@@ -10,5 +10,6 @@ export { createRequestHandle, createAssistantProgress, parseAssistantAttempt, pa
 export type { ConversationProgressSnapshot, RequestSnapshot, RequestHandle, AssistantProgress } from './request.ts';
 export { createWorkSelector } from './work.ts';
 export type { WorkOrigin, WorkSourceIdentity, WorkSource, WorkSourceSnapshot, WorkOccurrence, WorkRequestOccurrence, WorkWait, WorkCondition, WorkSessionSnapshot, WorkSnapshot, WorkEvent, WorkProgressFrame, WorkHandle, WorkSelector } from './work.ts';
+export type { WorkOperationFollow, WorkSessionHandle } from './work.ts';
 export type { ProgramSessionClient, HumanProgramSessionClient, ProgramGoalControl, ProgramCancelResult, ProgramRequestStatus } from './client.ts';
 export * from '../journal/index.ts';

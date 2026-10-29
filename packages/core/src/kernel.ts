@@ -42,3 +42,4 @@ export { createSurfaceCollectionClient, createSurfaceModuleClient, type SurfaceC
 export { surfaceSlotDefinition, type SurfaceViews } from './surfaces/contract.ts';
 export { actionManifestSlot, type ToolActionBinding } from './surfaces/presentation.ts';
 export type { InputParticipant } from './conversations/protocol.ts';
+export { operationFollowSnapshotSchema, type OperationFollowSnapshot } from './operations/follows.ts';

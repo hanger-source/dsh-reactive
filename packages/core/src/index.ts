@@ -65,6 +65,7 @@ export { createRequestHandle, createAssistantProgress, parseAssistantAttempt, pa
 export type { ConversationProgressSnapshot, RequestSnapshot, RequestHandle, AssistantProgress } from './conversations/request.ts';
 export { createWorkSelector } from './conversations/work.ts';
 export type { WorkOrigin, WorkSourceIdentity, WorkSource, WorkSourceSnapshot, WorkOccurrence, WorkRequestOccurrence, WorkWait, WorkCondition, WorkSessionSnapshot, WorkSnapshot, WorkEvent, WorkProgressFrame, WorkHandle, WorkSelector } from './conversations/work.ts';
+export type { WorkOperationFollow, WorkSessionHandle } from './conversations/work.ts';
 export { AssistantStreamAccumulator, expandAssistantStream, assembleAssistantStream, joinAssistantStreamText, isTokenDelta, isVisibleChunk, chunkHasVisibleText, runFirstTokenTime, runFirstVisibleTime, assistantStreamFirstTokenTime, assistantStreamHasVisibleContent, assistantStreamHasVisibleText, lastAssistantStreamChunk, assistantStreamChunks } from '@deepseek-ai/dsh-llm/assistant-stream';
 export type { AssistantStreamRecord, AssistantStreamRun, TimedStreamChunk, RawStreamChunkType } from '@deepseek-ai/dsh-llm/assistant-stream';
 export type { StreamChunk } from '@deepseek-ai/dsh-llm/types';
@@ -73,3 +74,4 @@ export type { HumanQuestionOrigin, HumanQuestion, HumanSettledQuestion, HumanQue
 export type { HumanSnapshot, HumanQuestionSnapshot } from './participation/contract.ts';
 export { createHumanQuestionResolver } from './participation/questions.ts';
 export type { HumanQuestionHandle, HumanQuestionControls, HumanQuestionResolver } from './participation/questions.ts';
+export { operationFollowSnapshotSchema, type OperationFollowSnapshot } from './operations/follows.ts';

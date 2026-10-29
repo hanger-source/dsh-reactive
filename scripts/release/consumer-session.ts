@@ -1,4 +1,4 @@
-import type { ActionEligibility, ActionInput, CancellationOptions, FileUploadInvocation, FileUploadSource, FileUploadValue, Invocation, Json, ProgramContract, ProgramSessionClient, HumanProgramSessionClient, ResourceReader, Surface, SurfaceClient, SurfaceMount, ViewValue } from '@hanger-source/dsh-reactive';
+import type { ActionEligibility, ActionInput, CancellationOptions, FileUploadInvocation, FileUploadSource, FileUploadValue, Invocation, Json, ProgramContract, ProgramSessionClient, HumanProgramSessionClient, ResourceReader, Surface, SurfaceClient, SurfaceMount, ViewValue, WorkSessionHandle, OperationFollowSnapshot } from '@hanger-source/dsh-reactive';
 import { combineResources, composeSurface, createWorkSelector, defineProgram, defineSurface, resourceView, selectSurface, shareResource, z } from '@hanger-source/dsh-reactive';
 import type { SessionFiles, FileResource, WorkspaceFileText, WorkspaceFileBytes } from '@hanger-source/dsh-reactive/files';
 import type { SessionJournal, ProgramJournalFrame, ProgramJournalPage } from '@hanger-source/dsh-reactive/journal';
@@ -63,6 +63,11 @@ export function sessionWork<P extends ProgramContract, Q extends ProgramContract
   first: ProgramSessionClient<P>, second: ProgramSessionClient<Q>, key: z.output<typeof workKey>, signal: AbortSignal,
 ) {
   return merchantWork.observe(key, [first, second], { signal });
+}
+
+export async function sessionWorkFollows(source: WorkSessionHandle, signal: AbortSignal): Promise<readonly OperationFollowSnapshot[]> {
+  const snapshot = await source.state.read(signal);
+  return snapshot.operationFollows.map(follow => follow.value);
 }
 
 // 退等只针对回执；原Invocation、结果Promise和有限活动保持同一身份与owner。

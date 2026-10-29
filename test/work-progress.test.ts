@@ -149,6 +149,11 @@ test('steer使正式step共同消费两个work，完整发生保留同行输入�
     const peerEventsSubscription = peerFirst.events$.subscribe(event => peerEvents.push(event));
     const firstStates = first.state$.subscribe();
     const sourceStates = second.state$.subscribe();
+    const surviving = second.sessions[1]!;
+    assert.equal(surviving.identity.sessionId, otherSession.id);
+    const survivingStates = surviving.state$.subscribe();
+    const survivingEvents: WorkEvent<WorkKey>[] = [];
+    const survivingEventsSubscription = surviving.events$.subscribe(event => survivingEvents.push(event));
     const peerStates = peerFirst.state$.subscribe();
     const frames: WorkProgressFrame<WorkKey>[] = [];
     const frameSubscription = peerSecond.progressFrames$.subscribe(frame => frames.push(frame));
@@ -162,12 +167,18 @@ test('steer使正式step共同消费两个work，完整发生保留同行输入�
     assert.deepEqual(firstCall.value.inputs.map(input => input.requestId), ['first-input', 'second-input']);
     assert.deepEqual(firstCall.matchedInputs.map(input => input.requestId), ['first-input']);
     assert.deepEqual(secondCall.matchedInputs.map(input => input.requestId), ['second-input']);
+    const localSharedCall = (await peerSecond.sessions[0]!.state.read()).calls[0]!;
+    assert.deepEqual(localSharedCall.value.inputs.map(input => input.requestId), ['first-input', 'second-input']);
+    assert.deepEqual(localSharedCall.matchedInputs.map(input => input.requestId), ['second-input']);
     observerLifetime.abort(new Error('FIRST_WORK_OBSERVER_LEFT'));
     const eventsAtExit = firstEvents.length;
     assert.equal(firstStates.closed, true);
     assert.equal((await peerFirst.state.read()).sessions[0]!.calls[0]!.value.state, 'running');
     source.release();
     assert.notEqual(second.state.peek().status, 'ready', '来源退出撤下完整ready，不能留下半份或旧现场');
+    assert.notEqual(second.sessions[0]!.state.peek().status, 'ready');
+    assert.equal((await surviving.state.read()).sessionId, otherSession.id);
+    assert.equal(survivingStates.closed, false, '一个来源释放不关闭另一会话的局部观察');
     assert.equal(peerStates.closed, false); assert.equal(executions, 1);
     finishBusiness.resolve(); await session.whenIdle();
     const completedFirst = await peerFirst.state.read(), completedSecond = await peerSecond.state.read();
@@ -190,9 +201,21 @@ test('steer使正式step共同消费两个work，完整发生保留同行输入�
     assert.deepEqual(secondReply.matchedInputs.map(input => input.requestId), ['second-input']);
     assert.ok(!completedSecond.sessions[0]!.replies.some(item => item.value.text === '首步只读第一项工作'));
     assert.ok(frames.some(frame => frame.frame.inputs.length === 2 && frame.matchedInputs[0]?.requestId === 'second-input'));
-    assert.equal(firstEvents.length, eventsAtExit); assert.equal(modelCalls, 3); assert.equal(executions, 1);
+    await otherSession.submit({ requestId: 'surviving-input', content: '另一会话继续处理当前工作',
+      intent: 'question', delivery: 'followup', scope: secondWork });
+    await otherSession.whenIdle();
+    const survivingSnapshot = await surviving.state.read();
+    assert.deepEqual(survivingSnapshot.requests.map(item => item.value.requestId), ['surviving-input']);
+    assert.ok(survivingSnapshot.replies.some(item => item.value.text === '两项工作共同完成'
+      && item.matchedInputs.some(input => input.requestId === 'surviving-input')));
+    assert.ok(survivingEvents.some(event => event.event.kind === 'assistant.message'
+      && event.matchedInputs.some(input => input.requestId === 'surviving-input')));
+    assert.ok(survivingEvents.every(event => event.source.sessionId === otherSession.id));
+    assert.notEqual(second.state.peek().status, 'ready', '局部会话继续更新也不能把缺失来源的整体状态变成ready');
+    assert.equal(firstEvents.length, eventsAtExit); assert.equal(modelCalls, 4); assert.equal(executions, 1);
     assert.deepEqual(app.errors, []);
     sourceStates.unsubscribe(); peerStates.unsubscribe(); peerEventsSubscription.unsubscribe(); frameSubscription.unsubscribe();
+    survivingStates.unsubscribe(); survivingEventsSubscription.unsubscribe();
     peer.release(); otherSession.release(); session.release();
   } finally { observerLifetime.abort(); finishFirstStream.resolve(); finishBusiness.resolve(); await app.dispose(); }
 });

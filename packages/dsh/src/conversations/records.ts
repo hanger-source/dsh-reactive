@@ -6,6 +6,7 @@ import type { ToolOccurrence } from '@hanger-source/dsh-reactive/kernel';
 import type { InputReference, NormalizedSubmission, Continuation, WaitReference, GoalReference } from '@hanger-source/dsh-reactive/kernel';
 import type { Admission } from '@hanger-source/dsh-reactive';
 import type { ToolActivity } from '@hanger-source/dsh-reactive';
+import type { OperationFollowSnapshot } from '@hanger-source/dsh-reactive';
 import type { ReactiveProjectionState } from './projections.ts';
 import { inputReferenceSchema as inputReference, continuationSchema, waitSchema, admittedSubmissionSchema, type ConversationActivity } from '@hanger-source/dsh-reactive/kernel';
 export { continuationSchema, waitSchema, submissionSchema } from '@hanger-source/dsh-reactive/kernel';
@@ -51,7 +52,8 @@ declare module '@deepseek-ai/dsh-session/types' {
 export class NativeState {
   readonly current: readonly InputReference[];
   readonly activity: ConversationActivity;
-  constructor(readonly value: ReactiveProjectionState, goal: GoalProjection | null, sequence: number) {
+  constructor(readonly value: ReactiveProjectionState, goal: GoalProjection | null, sequence: number,
+    operationFollows: readonly OperationFollowSnapshot[]) {
     this.current = value.current;
     const calls: ToolActivity[] = [];
     const related = new Map<string, { inputs: InputReference[]; tools: ToolActivity[]; reply: string | null }>();
@@ -81,7 +83,7 @@ export class NativeState {
     }));
     this.activity = { sessionId: value.sessionId, sequence, source: 'durable', execution: 'unavailable',
       goal: goal ? { ...goal.goal, roundsStarted: goal.roundsStarted, activation: null, inputs: this.goalInputs(goal.goal.id) } : null,
-      inputs: value.inputs, calls, replies: value.replies, requests, waits: value.waits };
+      inputs: value.inputs, calls, replies: value.replies, requests, waits: value.waits, operationFollows };
   }
   record(id: string) { return Object.hasOwn(this.value.records, id) ? this.value.records[id] : undefined; }
   goalInputs(id: string): readonly InputReference[] { return Object.hasOwn(this.value.goals, id) ? this.value.goals[id]! : []; }

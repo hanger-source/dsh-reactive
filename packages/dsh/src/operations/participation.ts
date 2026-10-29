@@ -126,7 +126,7 @@ export class OperationParticipation {
         }>;
     }, after: string | null): Promise<string> {
         const owner = operationBindingOwner(follow.operation), command = operationBindingCommand(follow.operation);
-        const id = operationFollowId(entry.agent.id, execution.source.callId, owner, command);
+        const id = operationFollowId(entry.agent.id, this.authority.callSequence(execution), owner, command);
         await this.#follows.prepare(entry.agent, owner, {
             id, operation: { kind: owner.definition.kind, version: owner.definition.version }, command,
             continuation: execution.continuation, wait: { id: 'operation:' + id, operation: { kind: owner.definition.kind, version: owner.definition.version, command } },
@@ -161,7 +161,7 @@ export class OperationParticipation {
         if (!call || event.phase === 'access')
             return;
         const { entry, offer, exec } = call;
-        const id = operationFollowId(entry.agent.id, exec.callId, event.owner, event.command);
+        const id = operationFollowId(entry.agent.id, this.authority.callSequence(execution), event.owner, event.command);
         if (event.phase === 'not-started') {
             await this.#follows.notStarted(entry.agent, id);
             return;

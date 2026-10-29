@@ -74,7 +74,8 @@ export interface ProgramJournalPageRequest extends ProgramSessionAddress, Progra
 export type ProgramJournalFrame = CoreProgramJournalFrame;
 /** 异常通过 Gateway 正式 error 投影，不能把本地 Error 当 JSON 对象发送。 */
 type WireEvent = ConversationEvent<JsonValue>;
-export type ProgramConversationEvent = Exclude<WireEvent, { kind: 'execution.error' | 'tool.settled' | 'goal.changed' | 'wait.opened' | 'wait.resolved' }>
+export type ProgramConversationEvent = Exclude<WireEvent, { kind: 'execution.error' | 'tool.settled' | 'goal.changed' | 'wait.opened' | 'wait.resolved' | 'operation.follow.changed' }>
+  | (Omit<Extract<WireEvent, { kind: 'operation.follow.changed' }>, 'follow'> & { readonly follow: JsonValue })
   | (Omit<Extract<WireEvent, { kind: 'execution.error' }>, 'error'> & { readonly error: ProgramFailure })
   | (Omit<Extract<WireEvent, { kind: 'tool.settled' }>, 'result' | 'meta'> & { readonly result?: JsonValue; readonly meta?: JsonValue })
   | (Omit<Extract<WireEvent, { kind: 'goal.changed' }>, 'goal'> & {

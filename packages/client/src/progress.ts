@@ -1,7 +1,7 @@
 import { revokeConversationAccess, type ClientScope } from './scope.ts';
 import { RemoteSnapshotStream } from '@deepseek-ai/dsh-api-gateway/client';
 import { BehaviorSubject, Subject, defer, EMPTY, fromEvent, map, mergeAll, of, shareReplay, takeUntil, type Observable } from 'rxjs';
-import { ResourceReader, createAssistantProgress, createRequestHandle, decodeProgramEvent, ownConversationEvent, parseAssistantProgressFrame, parseConversationProgress, type AssistantProgressFrame, type ConversationActivity, type ConversationEvent, type ConversationProgressSnapshot, type Observation, type RequestHandle, type ProgramContract, type ProgramParsedInput } from '@hanger-source/dsh-reactive';
+import { ResourceReader, createAssistantProgress, createRequestHandle, decodeProgramEvent, ownConversationEvent, operationFollowSnapshotSchema, parseAssistantProgressFrame, parseConversationProgress, type AssistantProgressFrame, type ConversationActivity, type ConversationEvent, type ConversationProgressSnapshot, type Observation, type RequestHandle, type ProgramContract, type ProgramParsedInput } from '@hanger-source/dsh-reactive';
 import type { ProgramSessionAddress, ProgramProgressFrame } from './contracts/types.ts';
 import { decodeProgramFailure } from './contracts/errors.ts';
 
@@ -85,7 +85,9 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
           // 同一事实 cut 固定当前订阅者；raw-only 不执行业务 input transform。
           // 此处已经离开宿主 append，消费者共享本次自有快照和领域解码，不回放历史。
           const raw$ = defer(() => of(ownConversationEvent(event.kind === 'execution.error'
-            ? { ...event, error: decodeProgramFailure(event.error) } : event))).pipe(shareReplay({ bufferSize: 1, refCount: true }));
+            ? { ...event, error: decodeProgramFailure(event.error) }
+            : event.kind === 'operation.follow.changed'
+              ? { ...event, follow: operationFollowSnapshotSchema.parse(event.follow) } : event))).pipe(shareReplay({ bufferSize: 1, refCount: true }));
           const typed$ = raw$.pipe(map(value => decodeProgramEvent(program, value)), shareReplay({ bufferSize: 1, refCount: true }));
           facts.next({ raw$, typed$ });
         }
