@@ -274,7 +274,9 @@ ApplicationHost 的实际 Action owner 持有唯一 Invocation 回执索引，Ga
 
 unary 使用 Connection 的 `createSharedFetchHandler` 与 `createPeer`；流使用 Gateway 的公开 `wireStream.open` 和官方 stream-protocol。carrier 只负责已认证 physical bytes、大小限制、backpressure、abort 与 uplink，不维护业务历史。客户端通过官方 `RemoteStream`、`RemoteSnapshotStream` 与 `RemoteJournalStream` 完成代次切换、完整基线和可靠 journal 消费。`@hanger-source/dsh-reactive-client/types` 持有精确 wire DTO，`/errors` 持有共享错误合同，`/remote` 持有由官方 Host generator 生成的贡献；它们不依赖宿主 Controller。构建先产出这些纯合同，再生成 Host metadata 与 client 贡献，最后构建 SDK，不手写或猜测远程 schema。
 
-`session.openEvents({ publish, failed })` 连接已授权的 Program journal：宿主先监听公开 session/event，再取得原生 cut，并使用 SessionController.page 读取开场；后续直接交付原生 SessionHistoryRecord。它不经过会提升后台 Agent 的 Controller.follow。缺口修补、分页、重连及游标顺序由官方 Gateway RemoteJournalStream 承担，没有另一套 epoch/sequence 协议或事件重放引擎。冷读进展、日志和分页都不创建 Agent 或发起模型调用。
+本地与远程会话共用 core 的 `SessionJournal` 合同：`session.journal.page(query, options)` 读取原生消息分页，`session.journal.follow(window, options)` 交付开场 cut/page 与之后的原生 entry。Gateway 转发 Host 的同一读侧，不再单独拥有监听、cut 或分页装配。原生读取借确切 Context 中已安装的 Controller/Query，缺服务报告 `SessionJournalUnavailableError`，不隐装 Controller，也不调用会 promote Agent 的 Controller.follow。
+
+`session.openEvents({ publish, failed }, request, { signal })` 在相同 journal 上提供官方 RemoteJournalStream 的缺口修补、分页、重连及游标顺序；不增加 epoch/sequence 协议或事件重放引擎。第三参数只取消本次开场，已取得的连接仍归自身与原 Session owner，开场失败和清理失败同时发生时保留两者。冷读进展、日志和分页都不创建 Agent 或发起模型调用。
 
 官方 `api-remotes` 的公开 apply 固定包含交互式 waterfall，未提供关闭交互转发的 Config 或 source factory；在没有 owner UI 的部署中它会阻塞当前 HumanInput。装配因此只从公开 `API_REMOTE_FORWARDED_EVENTS` 取实际 `api-session/*` emit 事件及原 resource reader，监听真实 Controller 事实后登记 Remote source。人工交互由 Program 的 HumanInput owner 负责。
 

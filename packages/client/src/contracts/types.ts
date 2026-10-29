@@ -1,8 +1,12 @@
 import type { ActionIdentity, ActionSource, Continuation, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
-  ProgramGoalControl as CoreProgramGoalControl, ProgramCancelResult as CoreProgramCancelResult, ProgramRequestStatus as CoreProgramRequestStatus } from '@hanger-source/dsh-reactive';
+  ProgramGoalControl as CoreProgramGoalControl, ProgramCancelResult as CoreProgramCancelResult, ProgramRequestStatus as CoreProgramRequestStatus,
+  ProgramJournalEvent as CoreProgramJournalEvent, ProgramJournalEntry as CoreProgramJournalEntry,
+  ProgramJournalPage as CoreProgramJournalPage, ProgramJournalWindow as CoreProgramJournalWindow,
+  ProgramJournalPageQuery, ProgramJournalFrame as CoreProgramJournalFrame } from '@hanger-source/dsh-reactive';
 import type { WorkspaceFileRange, WorkspaceByteReadOptions } from '@deepseek-ai/dsh-api-workspace-files/types';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { RemoteStreamFailure } from '@deepseek-ai/dsh-api-gateway/stream-protocol';
+export type { ProgramJournalPageQuery } from '@hanger-source/dsh-reactive';
 export type ProgramGoalControl = CoreProgramGoalControl;
 export type ProgramCancelResult = CoreProgramCancelResult;
 export type ProgramRequestStatus = CoreProgramRequestStatus;
@@ -58,27 +62,15 @@ export interface ProgramFileReadRequest extends ProgramFileRequest { readonly ra
 export interface ProgramFileBytesRequest extends ProgramFileRequest { readonly range: WorkspaceByteReadOptions; }
 export interface ProgramInputReceipt { readonly sessionId: string; readonly requestId: string; readonly accepted: true; }
 export interface ProgramRequestAddress extends ProgramSessionAddress { readonly requestId: string; }
-/** Program journal 的纯 wire 合同；Host 的 Controller 页直接按此结构核验。 */
-export interface ProgramJournalEvent {
-  readonly type: string;
-  readonly seq: number;
-  readonly time: number;
-  readonly data: JsonValue;
-  readonly ignorable?: true;
-  readonly sourceEventSeqs?: JsonValue;
-  readonly surfaceOp?: JsonValue;
-}
-export interface ProgramJournalEntry { readonly type: 'event'; readonly event: ProgramJournalEvent; }
-export interface ProgramJournalPage { readonly records: readonly ProgramJournalEntry[]; readonly hasMore: boolean; }
-export interface ProgramJournalWindow {
-  readonly maxMessages?: number;
-  readonly turnWindow?: { readonly minMessages: number; readonly minTurns: number };
-}
+/** wire与本地端口共用core canonical journal合同，不另定义事件或窗口。 */
+export type ProgramJournalEvent = CoreProgramJournalEvent;
+export type ProgramJournalEntry = CoreProgramJournalEntry;
+export type ProgramJournalPage = CoreProgramJournalPage;
+export type ProgramJournalWindow = CoreProgramJournalWindow;
 export interface ProgramJournalOpenRequest extends ProgramSessionAddress, ProgramJournalWindow {}
-export interface ProgramJournalPageRequest extends ProgramJournalOpenRequest { readonly throughSeq: number; readonly beforeSeq?: number; }
+export interface ProgramJournalPageRequest extends ProgramSessionAddress, ProgramJournalPageQuery {}
 /** 原生水位和原生事件的只读载体；历史与连续性仍由 Controller/Gateway 拥有。 */
-export type ProgramJournalFrame = { readonly type: 'opened'; readonly cursor: number; readonly page: ProgramJournalPage }
-  | { readonly type: 'entry'; readonly entry: ProgramJournalEntry };
+export type ProgramJournalFrame = CoreProgramJournalFrame;
 /** 异常通过 Gateway 正式 error 投影，不能把本地 Error 当 JSON 对象发送。 */
 type WireEvent = ConversationEvent<JsonValue>;
 export type ProgramConversationEvent = Exclude<WireEvent, { kind: 'execution.error' | 'tool.settled' | 'wait.opened' | 'wait.resolved' }>

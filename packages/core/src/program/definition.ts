@@ -7,7 +7,7 @@ import { assertProgramIdentity, programIdentity, SharedProgramRequiredError, typ
 /** 组件得到对话事实与显式输入，不持有原生 Agent 或声明注册器。 */
 export type ProgramSession<P extends ProgramContract> = Pick<Conversation<ProgramParsedInput<P>, ProgramInput<P>>,
   'identity' | 'inputs$' | 'activity$' | 'goal$' | 'waits$' | 'events$' | 'progress' | 'progress$' | 'progressFrames$' | 'request'
-  | 'human' | 'questions$' | 'foregroundQuestions$' | 'files' | 'submit'>;
+  | 'human' | 'questions$' | 'foregroundQuestions$' | 'files' | 'journal' | 'submit'>;
 
 export type ProgramWorkspace = Workspace;
 export interface ProgramProps<P extends ProgramContract> {

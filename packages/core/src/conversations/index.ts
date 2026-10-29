@@ -7,3 +7,4 @@ export type { ConversationEvent, RequestEvent, ToolOccurrence, AssistantStream, 
 export { createRequestHandle, createAssistantProgress, parseAssistantAttempt, parseConversationProgress, parseAssistantProgressFrame } from './request.ts';
 export type { ConversationProgressSnapshot, RequestSnapshot, RequestHandle, AssistantProgress } from './request.ts';
 export type { ProgramSessionClient, HumanProgramSessionClient, ProgramGoalControl, ProgramCancelResult, ProgramRequestStatus } from './client.ts';
+export * from '../journal/index.ts';

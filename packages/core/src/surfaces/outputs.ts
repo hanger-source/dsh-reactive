@@ -6,6 +6,7 @@ import { actionManifestSlot, toolActionBindingSchema, type ToolActionBinding } f
 import { ResourceValue } from '../resources/value.ts';
 import { Scope, batch, type Value } from '../reactivity/scope.ts';
 import { type Observation } from '../resources/observation.ts';
+import { mapResource } from '../resources/operators.ts';
 import { resourceObservations, type ResourceSource } from '../resources/source.ts';
 import type { ProgramFrame } from '../program/frame.ts';
 import { assertSurfaceBindings, encodeView, surfaceSlotInstances, isSurfaceCollectionKeysSlot, surfaceCollectionKeysSlot, surfaceSlotDefinition, type Surface, type SurfaceBindingReferences, type ViewDefinition, type ViewValue, type ViewWire } from './contract.ts';
@@ -134,13 +135,11 @@ function createSlot(scope: Scope, definition: ViewDefinition): ViewSlot {
         },
       });
       const release = owner.own(() => subscription.unsubscribe());
-      nextSource.pipe(map((value): Observation<EncodedView> => {
-        const observation: Observation<unknown> = definition.mode === 'resource' ? resourceObservation(value)
-          : { status: 'ready', generation: 0, value, observedAt: Date.now() };
-        if (observation.status !== 'ready') return observation;
-        // encode 同时核验 Surface 的 output 合同；每次 ready 只编码一次，不再 decode/parse 领域值。
-        return { ...observation, value: { domain: observation.value, wire: encodeView(definition, observation.value) } };
-      })).subscribe(subscription);
+      nextSource.pipe(map((value): Observation<unknown> => definition.mode === 'resource' ? resourceObservation(value)
+        : { status: 'ready', generation: 0, value, observedAt: Date.now() }),
+      // 验证失败属于本次观察，原来源继续交付；每次ready仍只编码一次并同步发布domain/wire。
+      mapResource((value): EncodedView => ({ domain: value, wire: encodeView(definition, value) })),
+      ).subscribe(subscription);
     },
     fail(failure) {
       failed = true;

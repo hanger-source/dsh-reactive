@@ -14,7 +14,7 @@ import contribution from '@hanger-source/dsh-reactive-client/remote';
 import type { ProgramActionStart, ProgramCreationReference, ProgramIdentity, ProgramInputReceipt, ProgramInvocationFrame, ProgramQuestions, ProgramOperationNotificationResult, ProgramWorkspace, ProgramSubmission } from './contracts/types.ts';
 import { createAuthenticatedTransport, type AuthenticatedTransport, type AuthenticatedTransportOptions } from './transport.ts';
 import { createOperationQueries, createInvocationOperationQueries, attachRemoteOperation, attachInvocationRemoteOperation, locateRemoteOperation, bindRemoteOperation, readRemoteOperationFeedback, type RemoteOperationObservation } from './operations.ts';
-import { ProgramJournal, type ProgramJournalOptions, type ProgramJournalRequest } from './journal.ts';
+import { ProgramJournal, remoteJournal, type ProgramJournalOptions, type ProgramJournalRequest } from './journal.ts';
 import { connectProgress, type RemoteProgress } from './progress.ts';
 import { createActionBindings } from './action-bindings.ts';
 import { remoteView } from './views.ts';
@@ -32,7 +32,7 @@ export { createAuthenticatedTransport } from './transport.ts';
 export type { AuthenticatedTransport, AuthenticatedTransportOptions } from './transport.ts';
 export { Inbox } from './contracts/inbox.ts';
 export { decodeProgramFailure, ActionAdmissionUnknownError, CreationUnknownError, CreationIncompleteError,
-  ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFilesUnavailableError } from './contracts/errors.ts';
+  ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFilesUnavailableError, SessionJournalUnavailableError } from './contracts/errors.ts';
 export { ProgramJournal } from './journal.ts';
 export type { ProgramJournalOptions, ProgramJournalRequest } from './journal.ts';
 
@@ -54,7 +54,7 @@ interface RemoteSession<P extends ProgramContract> extends ProgramSessionClient<
   attachOperation<D extends OperationContract>(definition: D, reference: OperationReference<D>, options?: CancellationOptions): OperationHandle<D>;
   notifyOperation(followId: string, options?: CancellationOptions): Promise<ProgramOperationNotificationResult>;
   /** 原生可靠 journal；调用者消费完整 change，不另造事件 cursor 或重放引擎。 */
-  openEvents(options: ProgramJournalOptions, request?: ProgramJournalRequest): Promise<ProgramJournal>;
+  openEvents(options: ProgramJournalOptions, request?: ProgramJournalRequest, cancellation?: CancellationOptions): Promise<ProgramJournal>;
   release(): Promise<void>;
 }
 /** 人工端口在共同观察和业务能力上提供人工参与及控制。 */
@@ -66,7 +66,7 @@ export interface RemoteProgramSession<P extends ProgramContract> extends HumanPr
   uploadFile(data: FileUploadSource, options?: RemoteUploadFileOptions): FileUploadInvocation;
   attachOperation<D extends OperationContract>(definition: D, reference: OperationReference<D>, options?: CancellationOptions): OperationHandle<D>;
   notifyOperation(followId: string, options?: CancellationOptions): Promise<ProgramOperationNotificationResult>;
-  openEvents(options: ProgramJournalOptions, request?: ProgramJournalRequest): Promise<ProgramJournal>;
+  openEvents(options: ProgramJournalOptions, request?: ProgramJournalRequest, cancellation?: CancellationOptions): Promise<ProgramJournal>;
   release(): Promise<void>;
 }
 /** 服务端口只借用共同资源与业务入口，运行对象没有人工回答或Goal控制方法。 */
@@ -217,6 +217,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
         };
         const actionBindings = createActionBindings(owner, address);
         const operationQueries = createOperationQueries(owner, address);
+        const journal = remoteJournal(owner, address);
         const accessSource = { kind: 'participant', participant: identity.participant, actorId: identity.actorId, entrypoint: 'operation-query' } as const;
         let progress: RemoteProgress<P> | undefined;
         let files: ReturnType<typeof remoteFiles> | undefined;
@@ -324,6 +325,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
           },
           get progress() { return progressOwner().progress; },
           get files() { assertActive(); return files ??= remoteFiles(owner, address); },
+          get journal() { assertActive(); return journal; },
           get progress$() { return progressOwner().progress$; },
           get progressFrames$() { return progressOwner().progressFrames$; },
           get events$() { return progressOwner().events$; },
@@ -455,9 +457,9 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
             signal.throwIfAborted();
             return sessionResult(await remote.notifyOperation({ ...address, followId }, signal));
           },
-          async openEvents(eventOptions, request = {}) {
+          async openEvents(eventOptions, request = {}, cancellation = {}) {
             assertActive();
-            return ProgramJournal.create(owner, address, eventOptions, request);
+            return ProgramJournal.create(owner, journal, eventOptions, request, cancellation);
           },
           release(): Promise<void> {
             return lease.release();

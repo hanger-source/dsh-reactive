@@ -25,6 +25,8 @@ import { nativeSessionAccess, registerNativeSession } from './session-access.ts'
 import { SessionFilesUnavailableError, type SessionFiles } from '@hanger-source/dsh-reactive/files';
 import type { NativeSessionFiles } from '../files.ts';
 import type { NativeSessionSource } from '../native-capability.ts';
+import { SessionJournalUnavailableError, type SessionJournal } from '@hanger-source/dsh-reactive/journal';
+import { createNativeJournal, type NativeJournal, type NativeSessionJournal } from '../journal.ts';
 export class CreationIncompleteError extends Error {
     constructor(readonly reference: CreationReference, cause: unknown) {
         super('REACTIVE_WORKSPACE_CREATION_INCOMPLETE', { cause });
@@ -40,6 +42,10 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
     #cleanupFailures = new Set<unknown>();
     #fileReaders = new WeakMap<object, NativeSessionFiles>();
     #fileClosings = new Set<Promise<void>>();
+    #journals = new WeakMap<object, NativeSessionJournal>();
+    #journalClosings = new Set<Promise<void>>();
+    #journal?: NativeJournal;
+    #journalInstallation?: Promise<void>;
     #rootAdmissions = new WeakMap<Agent, {
         workspace: ManagedWorkspace;
         environment: AnyEnvironment;
@@ -172,6 +178,11 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         this.#sessions.clear();
         // 资格退出同步发生；应用关闭仍加入自己取得读侧的实际I/O与unwatch回执。
         while (this.#fileClosings.size) await Promise.allSettled([...this.#fileClosings]);
+        while (this.#journalClosings.size) await Promise.allSettled([...this.#journalClosings]);
+        if (this.#journal) {
+            try { await this.#journal.dispose(); } catch (error) { failures.push(error); }
+            await Promise.allSettled([this.#journalInstallation]);
+        }
         failures.push(...this.#cleanupFailures);
         this.#cleanupFailures.clear();
         return failures;
@@ -238,6 +249,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             this.inputs().bindConversation(entry);
             this.registerSessionAccess(conversation, entry, program.signal, () => program.signal.throwIfAborted());
             conversation[conversationBindings]().setFiles(() => this.filesFor(conversation));
+            conversation[conversationBindings]().setJournal(() => this.journalFor(conversation));
             if (agent) this.bindAgent(entry, agent, previous);
             program.mount();
             this.#sessions.set(inspection.meta.id, entry);
@@ -381,13 +393,49 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         access.assertCurrent();
         return reader;
     }
+    journalFor(source: NativeSessionSource): SessionJournal {
+        this.assertActive();
+        const access = nativeSessionAccess(source);
+        const cached = this.#journals.get(source);
+        if (cached) return cached;
+        if (!this.#journal) {
+            if (!this.ctx.get('sessionController') || !this.ctx.get('sessionQuery'))
+                throw new SessionJournalUnavailableError(access.sessionId);
+            const journal = createNativeJournal({ service: 'provided' });
+            this.#journal = journal;
+            this.#journalInstallation = journal.install(this.ctx);
+            void this.#journalInstallation.catch(() => {});
+        }
+        const reader = this.#journal.forSession(source);
+        this.#journals.set(source, reader);
+        const close = () => {
+            let completion: Promise<void>;
+            try { completion = reader.dispose(); }
+            catch (error) { this.#cleanupFailures.add(error); return; }
+            this.#journalClosings.add(completion);
+            void completion.then(() => this.#journalClosings.delete(completion), error => {
+                this.#cleanupFailures.add(error);
+                this.#journalClosings.delete(completion);
+            });
+        };
+        const signal = AbortSignal.any([this.signal, access.signal]);
+        signal.addEventListener('abort', close, { once: true });
+        if (signal.aborted) { close(); signal.throwIfAborted(); }
+        this.assertActive(); access.assertCurrent();
+        return reader;
+    }
     registerSessionAccess(handle: object, session: ConversationSession, signal: AbortSignal, assertHandle: () => void) {
         const assertCurrent = () => {
             signal.throwIfAborted();
             assertHandle();
             this.assertSessionWorkspace(session);
         };
-        registerNativeSession(handle, { context: this.ctx, sessionId: session.header.id, signal, assertCurrent,
+        // 本Host的委托统一由startActivation创建continuable子会话；spawn/fork是provider而非地址mode。
+        const journalAddress = session.child
+            ? Object.freeze({ kind: 'subagent' as const, parentSessionId: SessionId(session.child.command.parentSessionId),
+                childSessionId: session.header.id, mode: 'continuable' as const })
+            : Object.freeze({ kind: 'session' as const, sessionId: session.header.id });
+        registerNativeSession(handle, { context: this.ctx, sessionId: session.header.id, journalAddress, signal, assertCurrent,
             workspaceRoot: () => {
                 assertCurrent();
                 const directory = session.header.cwd;

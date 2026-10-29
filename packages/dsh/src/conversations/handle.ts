@@ -33,6 +33,7 @@ import { InvocationUnavailableError } from '../execution/invocation.ts';
 import type { OperationParticipation } from '../operations/participation.ts';
 import type { ConversationQuestions } from '../participation/questions.ts';
 import { nativeSessionAccess } from './session-access.ts';
+import type { SessionJournal } from '@hanger-source/dsh-reactive/journal';
 export type ResolvedAction<D extends ActionContract> = CollectionResolvedAction<D, SubmitOptions, false>;
 export type EnvironmentOperationReaders<E extends AnyEnvironment> = {
     readonly [K in keyof EnvironmentOperations<E>]: (options?: SubmitOptions) => BoundOperation<EnvironmentOperations<E>[K]>;
@@ -134,6 +135,7 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
     get definition(): P { this.assertActive(); return this.entry.implementation.definition as P; }
     get identity() { return this.entry.conversation.identity; }
     get files(): SessionFiles { this.assertActive(); return this.sessions.filesFor(this); }
+    get journal(): SessionJournal { this.assertActive(); return this.sessions.journalFor(this); }
     /** 当前环境的纯 Surface 合同；远程宿主复用其 schema，不读取业务实现。 */
     get surface(): P['surface'] { this.assertActive(); return this.entry.implementation.definition.surface; }
     get actionManifest(): ResourceReader<readonly ToolActionBinding[]> {

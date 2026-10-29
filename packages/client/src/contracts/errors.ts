@@ -1,9 +1,9 @@
 import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-protocol';
 import { z } from 'zod';
-import { ActionContractMismatchError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFilesUnavailableError, programIdentity, type ActionIdentity, type NativeChildCommand, type NativeChildReference, type ProgramContractIdentity } from '@hanger-source/dsh-reactive';
+import { ActionContractMismatchError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFilesUnavailableError, SessionJournalUnavailableError, programIdentity, type ActionIdentity, type NativeChildCommand, type NativeChildReference, type ProgramContractIdentity } from '@hanger-source/dsh-reactive';
 import type { ProgramCreationReference, ProgramFailure, ProgramIdentity } from './types.ts';
 export { ConversationAccessRevokedError, SessionProgramMismatchError } from '@hanger-source/dsh-reactive';
-export { SessionFilesUnavailableError } from '@hanger-source/dsh-reactive';
+export { SessionFilesUnavailableError, SessionJournalUnavailableError } from '@hanger-source/dsh-reactive';
 
 /** 接受状态未被确认；此错误从不触发自动重发 Action。 */
 export class ActionAdmissionUnknownError extends Error {
@@ -53,12 +53,17 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'reactive/conversation-access-revoked': { readonly sessionId: string; readonly workspaceId: string; readonly reason: 'membership-removed' | 'workspace-deleted' | 'access-expired' };
     'reactive/invocation-operation-unavailable': Record<string, never>;
     'reactive/files-unavailable': { readonly sessionId: string };
+    'reactive/journal-unavailable': { readonly sessionId: string };
   }
 }
 const actionIdentitySchema = z.object({ name: z.string(), version: z.number().int().positive().safe() }).strict();
 
 /** 正式 failure 已由 Gateway/贡献合同核验，客户端保留完整公开 details。 */
-export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError | ConversationAccessRevokedError | SessionProgramMismatchError | ActionContractMismatchError | SessionFilesUnavailableError {
+export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError | ConversationAccessRevokedError | SessionProgramMismatchError | ActionContractMismatchError | SessionFilesUnavailableError | SessionJournalUnavailableError {
+  if (value.code === 'reactive/journal-unavailable') {
+    const details = z.object({ sessionId: z.string() }).strict().parse(value.details);
+    return new SessionJournalUnavailableError(details.sessionId);
+  }
   if (value.code === 'reactive/files-unavailable') {
     const details = z.object({ sessionId: z.string() }).strict().parse(value.details);
     return new SessionFilesUnavailableError(details.sessionId);

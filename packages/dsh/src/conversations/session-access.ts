@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { SessionId, SessionEvent } from '@deepseek-ai/dsh-session';
 import type { SessionInspection } from '@deepseek-ai/dsh-session-persistence';
+import type { SessionAddress } from '@deepseek-ai/dsh-api-session-controller/types';
 import { Observable, defer, filter, fromEvent, switchMap, takeUntil } from 'rxjs';
 import { observeResource, type Observation } from '@hanger-source/dsh-reactive';
 
@@ -9,6 +10,8 @@ import { observeResource, type Observation } from '@hanger-source/dsh-reactive';
 export interface NativeSessionAccess {
   readonly context: Context;
   readonly sessionId: SessionId;
+  /** Host 已核验的根或直接子会话地址；不从裸 id 推断原生归属。 */
+  readonly journalAddress: SessionAddress;
   readonly signal: AbortSignal;
   assertCurrent(): void;
   /** 原会话header的工作目录；读取文件范围不需要冲刷或重读会话日志。 */

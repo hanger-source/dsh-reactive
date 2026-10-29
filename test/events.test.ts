@@ -311,7 +311,7 @@ test('Program失败结束自身提交回执并拒绝新输入，已受理输入�
       const inserted = events.flatMap(event => event.type === 'agent/inbox/spliced' ? event.data.inserted : [])
         .flatMap(message => message.source.kind === 'user' && 'rpcId' in message.source ? [message.source.rpcId] : []);
       assert.equal(inserted.filter(requestId => requestId === input.requestId).length, 1);
-      assert.equal(inserted.includes('after-program-failure'), false);
+      assert.equal(inserted.some(requestId => requestId === 'after-program-failure'), false);
     } finally { await stored.close(); }
     assert.equal(app.native.agents.get(agent.id), agent, 'Program失败不能关闭已受理输入的实际Agent');
     assert.deepEqual(await peer.requestStatus(input.requestId), { requestId: input.requestId, state: 'accepted' });

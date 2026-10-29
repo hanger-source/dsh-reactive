@@ -17,8 +17,8 @@ const first = (source, predicate) => firstValueFrom(source.pipe(filter(predicate
 const ready = value => ({ status: 'ready', generation: 1, observedAt: Date.now(), value });
 const source = initial => {
   const state = new BehaviorSubject(initial);
-  const result = { state, connections: 0, values: new Observable(subscriber => {
-    result.connections++;
+  const result = { state, connections: 0, starts: 0, values: new Observable(subscriber => {
+    result.connections++; result.starts++;
     const subscription = state.subscribe(subscriber);
     return () => { result.connections--; subscription.unsubscribe(); };
   }) };
@@ -28,7 +28,8 @@ const source = initial => {
 test('同一View资源贯通本地、远程和hooks，动态重挂及真实断线保地址，读取取消和SDK释放各自结算', { timeout: 25_000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-view-resources-'));
   const directory = join(root, 'workspace'); await mkdir(directory);
-  const date = z.codec(z.iso.datetime(), z.date(), { decode: value => new Date(value), encode: value => value.toISOString() });
+  const date = z.codec(z.iso.datetime(), z.date().min(new Date('2020-01-01T00:00:00Z')),
+    { decode: value => new Date(value), encode: value => value.toISOString() });
   const leaf = defineSurface({ actions: {}, views: { at: resourceView(date) } });
   const composed = composeSurface({ main: leaf, items: collectionSurface(leaf) });
   const program = defineProgram({ name: 'view_resources_test', input: z.null(), surface: composed.surface });
@@ -101,6 +102,29 @@ test('同一View资源贯通本地、远程和hooks，动态重挂及真实断�
     console.info('view-resources.composed', { sourceConnections: main.connections });
     assert.equal(main.connections, 1, '读取和组合不另建Program来源连接');
 
+    const sourceStarts = main.starts;
+    const invalidLocal = first(localResource.observations$, value => value.status === 'error');
+    const invalidRemote = first(resource.observations$, value => value.status === 'error');
+    const invalidMirror = first(mirror.viewResource('at').observations$, value => value.status === 'error');
+    main.state.next(ready(new Date('2010-01-01T00:00:00Z')));
+    const [localError, remoteError, mirrorError] = await Promise.all([invalidLocal, invalidRemote, invalidMirror]);
+    assert.ok(localError.error instanceof z.ZodError, '领域类型合法但公开refinement不满足时拒绝当前值');
+    await assert.rejects(localResource.read(), error => error === localError.error);
+    await assert.rejects(remote.readView('main.at'), error => error === remoteError.error);
+    await assert.rejects(mirror.readView('at'), error => error === mirrorError.error);
+    assert.equal(main.connections, 1, '当前值验证失败不释放权威来源');
+    const valid = new Date('2026-10-28T01:30:00Z');
+    const recoveredLocal = first(localResource.observations$, value => value.status === 'ready' && value.value === valid);
+    const recoveredRemote = first(resource.observations$, value => value.status === 'ready' && value.value.getTime() === valid.getTime());
+    const recoveredMirror = first(mirror.viewResource('at').observations$, value => value.status === 'ready' && value.value.getTime() === valid.getTime());
+    main.state.next(ready(valid));
+    await Promise.all([recoveredLocal, recoveredRemote, recoveredMirror]);
+    assert.equal(await localResource.read(), valid, '恢复时仍交原领域对象');
+    assert.deepEqual(await remote.readView('main.at'), valid);
+    assert.deepEqual(await mirror.readView('at'), valid, 'hooks组合沿同一资源恢复');
+    assert.equal(local.viewResource('main.at'), localResource); assert.equal(remote.viewResource('main.at'), resource);
+    assert.equal(main.connections, 1); assert.equal(main.starts, sourceStarts, '恢复不重试、不更换原来源连接');
+
     const localItem = local.collection('items').instance('a/b').viewResource('at');
     const instance = remote.collection('items').instance('a/b'), item = instance.viewResource('at');
     assert.equal(instance.viewResource('at'), item);
@@ -125,6 +149,24 @@ test('同一View资源贯通本地、远程和hooks，动态重挂及真实断�
     original.state.next(ready(new Date('2000-01-01T00:00:00Z')));
     assert.deepEqual(item.peek().value, replacement.state.value.value);
     console.info('view-resources.remounted', { oldConnections: original.connections, currentConnections: replacement.connections });
+
+    const finalTime = replacement.state.value.value;
+    replacement.state.complete();
+    assert.equal(replacement.connections, 0);
+    assert.deepEqual(await item.read(), finalTime, '真正完成的来源保留最终值并释放连接');
+    assert.equal(replacement.starts, 1, '观察完成来源不自动重试');
+    const terminalTime = new Date('2026-10-28T02:30:00Z'), terminal = source(ready(terminalTime));
+    const terminalReady = first(item.observations$, value => value.status === 'ready' && value.value.getTime() === terminalTime.getTime());
+    items.set('a/b', terminal); layout.next(['a/b']); await terminalReady;
+    const failedLocal = first(localItem.observations$, value => value.status === 'error');
+    const failedRemote = first(item.observations$, value => value.status === 'error');
+    const terminalFailure = new Error('BUSINESS_VIEW_SOURCE_FAILED');
+    terminal.state.error(terminalFailure);
+    const [localFailure, remoteFailure] = await Promise.all([failedLocal, failedRemote]);
+    assert.equal(localFailure.error, terminalFailure);
+    await assert.rejects(localItem.read(), error => error === terminalFailure);
+    await assert.rejects(item.read(), error => error === remoteFailure.error);
+    assert.equal(terminal.connections, 0); assert.equal(terminal.starts, 1, '真正source error仍结束连接，不隐式重开');
 
     main.state.next({ status: 'pending', generation: 2 });
     await first(resource.observations$, value => value.status === 'pending');

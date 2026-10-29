@@ -11,6 +11,7 @@ export type { SessionFiles, FileResource, FileWatch, WorkspaceFileStat, Workspac
 export { SessionFilesUnavailableError, SessionFileOutsideWorkspaceError } from './files/errors.ts';
 export { createFileResources } from './files/resources.ts';
 export type { FileResourceOptions } from './files/resources.ts';
+export * from './journal/index.ts';
 export type { Workspace } from './workspaces/context.ts';
 export type { SnapshotSource } from './reactivity/observable.ts';
 export type { ProgramSessionClient, HumanProgramSessionClient, ProgramGoalControl, ProgramCancelResult, ProgramRequestStatus } from './conversations/client.ts';

@@ -431,6 +431,27 @@ views 提供领域值事件；observeView 保留当前 pending/ready/error，rea
 
 句柄 release 只结束该观察者。原生 Agent 活着时，会话程序继续存在；已进入业务 execute 的调用不因声明退出或页面断开而撤销。原生调用信号、显式调用信号及业务 owner 分别决定它们有权取消的工作。
 
+## 读取原生日志
+
+本地、远程的人工与服务会话，以及后台 Program 的 conversation，共用 `session.journal`。`page({ throughSeq, beforeSeq, maxMessages, turnWindow }, { signal })` 读取包含式原生水位内的消息对齐历史；`follow(window, { signal })` 返回一次独立的异步连接，先交付 `opened` 的 cursor 和 page，之后交付该水位后的原生 entry。这些持久事件与只通知新事实的 `events$` 各有责任，不从 ConversationEvent 重建历史。
+
+```ts
+const journal = session.journal;
+for await (const frame of journal.follow({ maxMessages: 50 }, { signal })) {
+  if (frame.type === 'opened') {
+    consumeInitialHistory(frame.page, frame.cursor);
+  } else {
+    consumeNativeEntry(frame.entry);
+  }
+}
+```
+
+RxJS 消费使用 `defer(() => from(journal.follow(window, { signal })))`，可继续组合或交给 `useObservable`。取消或退出连接只结束本次观察；Session release 撤销该句柄的读取资格，不取消已经受理的模型、Action、子 Agent 或业务 Operation。
+
+历史的消息分页使用正式 Controller.page；开场水位使用冷安全 SessionQuery observation，读取不会 promote Agent。子会话沿 Host 已核验的原生父子地址读取；冷会话挂载后的追加从同一个 Session 的原生有序日志接合。Host 只借用自己 Context 中已经安装的 Controller 与 Query；缺少服务时报告 `SessionJournalUnavailableError`。`mountProgramGateway` 的正式装配提供这两项服务，独立 Runtime 仍按需要安装自己的原生能力。已选提供者退出或被替换会撤销原读侧，不自动换源。
+
+带 carrier 重连、缺口修补和 prepend 的 `openEvents` 由远程 SDK 的官方 RemoteJournalStream 承担，并消费同一个 journal。`openEvents(options, request, { signal })` 的信号只取消这次开场等待；取得的 journal 继续由其自身与原 Session owner 管理。
+
 ## 消费会话文件
 
 Program 的 conversation、本地与远程 Session SDK 提供共同 `files` 入口。宿主通过 `HostOptions.files` 或 `RuntimeOptions.files` 借入已安装的 NativeFiles；服务仍由宿主显式安装，不因读取文件启动模型或恢复 Agent。

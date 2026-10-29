@@ -121,7 +121,8 @@ export class NativeDelegations {
         return { status: 'accepted', reference: this.reference(record), state: await this.state(record, access.signal) };
       },
       observe: (reference, access) => new Observable(subscriber => {
-        let disposed = false;
+        const controller = new AbortController();
+        const signal = AbortSignal.any([access.signal, controller.signal]);
         let running = false;
         let changed = false;
         const read = async () => {
@@ -129,22 +130,28 @@ export class NativeDelegations {
           if (running) return;
           running = true;
           try {
-            while (changed && !disposed) {
+            while (changed && !subscriber.closed && !signal.aborted) {
               changed = false;
-              const record = await this.referenceRecord(reference, access.signal);
-              await this.authorize(record, 'read', access.source, access.signal);
+              const record = await this.referenceRecord(reference, signal);
+              signal.throwIfAborted();
+              await this.authorize(record, 'read', access.source, signal);
+              signal.throwIfAborted();
               this.assertAccess(record, access);
-              const value = await this.state(record, access.signal);
-              if (!disposed) subscriber.next({ status: 'ready', generation: value.sequence, observedAt: Date.now(), value });
+              const value = await this.state(record, signal);
+              signal.throwIfAborted();
+              subscriber.next({ status: 'ready', generation: value.sequence, observedAt: Date.now(), value });
             }
-          } catch (error) { if (!disposed) subscriber.error(error); }
+          } catch (error) { if (!subscriber.closed) subscriber.error(error); }
           finally { running = false; }
         };
         const subscription = this.updates$.subscribe(event => {
           if (event.parentSessionId === reference.parentSessionId && event.childSessionId === reference.childSessionId) void read();
         });
         void read();
-        return () => { disposed = true; subscription.unsubscribe(); };
+        return () => {
+          controller.abort(new Error('REACTIVE_CHILD_OBSERVATION_RELEASED'));
+          subscription.unsubscribe();
+        };
       }),
       registerFollow: async (command, link, access) => {
         if (command.parentSessionId !== access.sessionId || link.continuation.sessionId !== access.sessionId
@@ -457,9 +464,12 @@ export class NativeDelegations {
     await this.confirmCreation(child, parent, gate);
   }
   private async flush(agent: Agent) { if (!await this.ctx.sessions.flush(agent.session)) throw new Error('REACTIVE_PERSISTENCE_UNAVAILABLE'); }
-  private async verifyReceipt(record: DelegationRecord, receipt: NativeChildReceipt, repairParent?: Agent) {
-    const parent = await readNativeInspection(this.ctx, record.command.parentSessionId);
-    const child = await readNativeInspection(this.ctx, record.childSessionId);
+  private async verifyReceipt(record: DelegationRecord, receipt: NativeChildReceipt, repairParent?: Agent, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const parent = await readNativeInspection(this.ctx, record.command.parentSessionId, signal);
+    signal?.throwIfAborted();
+    const child = await readNativeInspection(this.ctx, record.childSessionId, signal);
+    signal?.throwIfAborted();
     const confirmations = records(parent, 'plugin:reactive/child-receipt', childReceiptRecordSchema)
       .filter(item => canonical(item.command) === canonical(record.command));
     const childConfirmation = this.childReceipt(child);
@@ -517,7 +527,9 @@ export class NativeDelegations {
     catch (error) { if (error instanceof SessionPersistenceNotFoundError) return undefined; throw error; }
   }
   private async state(record: DelegationRecord, signal: AbortSignal): Promise<NativeChildState> {
+    signal.throwIfAborted();
     const inspection = await this.childInspection(record, signal);
+    signal.throwIfAborted();
     if (!inspection) {
       const failure = (await this.creationFailures(record, signal)).at(-1)?.payload;
       return failure ?? { childSessionId: record.childSessionId, phase: 'reserved', goal: null, sequence: 0, reason: null };
@@ -525,12 +537,13 @@ export class NativeDelegations {
     const confirmation = this.childReceipt(inspection);
     if (!confirmation) return { childSessionId: record.childSessionId, phase: 'creation-incomplete', goal: null, sequence: inspection.events.length, reason: 'initial-message-receipt-unavailable' };
     const failures = await this.creationFailures(record, signal);
+    signal.throwIfAborted();
     if (failures.length && !inspection.events.slice(inspection.inheritedEventCount)
       .some(event => event.type === 'user/message' && event.data.id === confirmation.receipt.messageId)) {
       return { childSessionId: record.childSessionId, phase: 'creation-incomplete', goal: confirmation.receipt.goal,
         sequence: inspection.events.length, reason: failures.at(-1)!.payload.reason };
     }
-    try { await this.verifyReceipt(record, confirmation.receipt); }
+    try { await this.verifyReceipt(record, confirmation.receipt, undefined, signal); }
     catch (error) {
       if (!(error instanceof ChildCreationIncompleteError)) throw error;
       return { childSessionId: record.childSessionId, phase: 'creation-incomplete', goal: confirmation.receipt.goal,
@@ -540,6 +553,7 @@ export class NativeDelegations {
     if (!goal || goal.id !== confirmation.receipt.goal.id) return { childSessionId: record.childSessionId, phase: 'error',
       goal: goal ? { id: goal.id, revision: goal.revision } : null, sequence: inspection.events.length, reason: 'child-goal-replaced-or-cleared' };
     const nodes = await this.feedback(record, signal, inspection);
+    signal.throwIfAborted();
     const latest = nodes.at(-1)?.payload;
     const goalSeq = inspection.events.findLast(event => event.type === 'goal/change' && event.data.operation !== 'clear' && event.data.goal.id === goal.id)?.seq ?? -1;
     return { childSessionId: record.childSessionId, phase: goal.phase === 'active' && latest && ['error', 'cancelled', 'interrupted'].includes(latest.phase)
@@ -547,7 +561,9 @@ export class NativeDelegations {
       reason: goal.blockedReason?.message ?? latest?.reason ?? null };
   }
   private async creationFailures(record: DelegationRecord, signal: AbortSignal): Promise<OperationFeedbackNode<NativeChildFeedback>[]> {
+    signal.throwIfAborted();
     const parent = await readNativeInspection(this.ctx, record.command.parentSessionId, signal);
+    signal.throwIfAborted();
     return parent.events.slice(parent.inheritedEventCount).flatMap(event => {
       const item = pluginRecordOf(event);
       if (item?.type !== 'plugin:reactive/child-creation-error') return [];
@@ -558,12 +574,15 @@ export class NativeDelegations {
   }
   private async feedback(record: DelegationRecord, signal: AbortSignal, existing?: SessionInspection): Promise<OperationFeedbackNode<NativeChildFeedback>[]> {
     const failures = await this.creationFailures(record, signal);
+    signal.throwIfAborted();
     const inspection = existing ?? await this.childInspection(record, signal);
+    signal.throwIfAborted();
     if (!inspection) return failures;
     const confirmation = this.childReceipt(inspection);
     if (!confirmation) return failures;
-    try { await this.verifyReceipt(record, confirmation.receipt); }
+    try { await this.verifyReceipt(record, confirmation.receipt, undefined, signal); }
     catch (error) { if (error instanceof ChildCreationIncompleteError) return failures; throw error; }
+    signal.throwIfAborted();
     const nodes: OperationFeedbackNode<NativeChildFeedback>[] = inspection.events.slice(inspection.inheritedEventCount).flatMap(event => {
       let phase: NativeChildFeedback['phase'] | undefined;
       let reason: string | null = null;

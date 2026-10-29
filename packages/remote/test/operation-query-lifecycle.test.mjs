@@ -270,10 +270,22 @@ test('Operation查询按消费者共享连接，Session退出等待本次流退�
     qualifications.push({ name, session, resource,
       revoked: next(resource.observations$, observation => observation.status === 'error') });
   }
-  const journalSession = await connect(), journalFailed = Promise.withResolvers();
-  const journal = await journalSession.openEvents({ publish() {}, failed: journalFailed.resolve });
+  const journalSession = await connect(), journalFailed = Promise.withResolvers(), journalFailures = [];
+  console.info('operation-query.journal.opening');
+  const journal = await journalSession.openEvents({ publish() {}, failed(error) { journalFailures.push(error); journalFailed.resolve(error); } });
+  console.info('operation-query.journal.opened', { advanced: true });
+  const journalReader = journalSession.journal, journalController = new AbortController();
+  const journalFollowing = journalReader.follow({}, { signal: AbortSignal.any([t.signal, journalController.signal]) })[Symbol.asyncIterator]();
+  const journalOpening = await journalFollowing.next();
+  assert.equal(journalOpening.value.type, 'opened');
+  console.info('operation-query.journal.following', { cursor: journalOpening.value.cursor });
+  const journalNext = (async () => {
+    for (;;) { if ((await journalFollowing.next()).done) return; }
+  })().then(value => ({ value }), error => ({ error }));
+  t.after(async () => { journalController.abort(); await journalFollowing.return(); });
   const silent = await connect(), silentAccess = silent.identity.accessId;
   const silentLocation = await connect(), silentAttachment = await connect(), silentFeedback = await connect();
+  const silentJournalSession = await connect(), silentJournal = silentJournalSession.journal;
   const blocked = await connect(); locating.hold = true;
   const lookup = blocked.locateOperation(definition, 'blocked');
   const lookupRejected = assert.rejects(lookup, ConversationAccessRevokedError);
@@ -287,7 +299,9 @@ test('Operation查询按消费者共享连接，Session退出等待本次流退�
   const acceptedWrite = await activeAction('invocation'); await writing.entered.promise;
   const originalAgent = runtime.native.agents.get(SessionId(local.id));
   const registered = runtime.native.workspaceRegistry.get(WorkspaceId(workspace.workspaceId));
+  console.info('operation-query.membership.detaching');
   await registered.detachSession(SessionId(local.id));
+  console.info('operation-query.membership.detached');
   const observations = await Promise.all(qualifications.map(async entry => [entry, await entry.revoked]));
   for (const [entry, observation] of observations) {
     assert.ok(observation.error instanceof ConversationAccessRevokedError, entry.name);
@@ -297,6 +311,14 @@ test('Operation查询按消费者共享连接，Session退出等待本次流退�
     assert.throws(() => entry.resource.peek(), error => error === observation.error, entry.name);
   }
   assert.ok(await journalFailed.promise instanceof ConversationAccessRevokedError);
+  console.info('operation-query.journal.revoked', { advanced: true });
+  const journalStopped = await journalNext;
+  console.info('operation-query.journal.stopped', { error: journalStopped.error?.name });
+  assert.ok(journalStopped.error instanceof ConversationAccessRevokedError, '共同journal帧流保原成员撤销错误');
+  assert.equal(journalStopped.error.reason, 'membership-removed');
+  assert.equal(journalFailures.length, 1, '同owner的高级流只交付一次资格撤销');
+  assert.equal(journalFailures[0], journalStopped.error, '高级流与共同journal保同一个owner退出原因');
+  await assert.rejects(async () => journalReader.page({ throughSeq: journalOpening.value.cursor }), ConversationAccessRevokedError);
   assert.ok((await acceptedRevoked).error instanceof ConversationAccessRevokedError);
   await lookupRejected;
   assert.equal(runtime.native.agents.get(SessionId(local.id)), originalAgent, '撤观察资格不退出实际Agent');
@@ -331,6 +353,8 @@ test('Operation查询按消费者共享连接，Session退出等待本次流退�
   await assert.rejects(silentLocation.locateOperation(definition, 'first'), expired);
   await assert.rejects(silentAttachment.attachOperation(definition, 'first').state.read(t.signal), expired);
   await assert.rejects(silentFeedback.readOperationFeedback(definition, 'first', 'original-participation'), expired);
+  await assert.rejects(silentJournal.page({ throughSeq: journalOpening.value.cursor }), expired,
+    '未开流的共同journal旧资格也不能跨过detach/attach');
   assert.equal(installations, beforeFreshOpen, '旧资格请求须在装配fresh Program之前拒绝');
   locating.hold = false; locating.release.resolve();
   for (const { session, resource } of qualifications) {

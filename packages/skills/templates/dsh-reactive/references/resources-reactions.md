@@ -51,6 +51,8 @@ export function inventory(scope: Scope, service: {
 
 一次读取的 owner 使用 `read(params, { signal })` 加 `invalidations(params, context)`；推送 owner 使用 `observe` 发出完整 Observation。失效通知只表示需重新读取，不携带替代事实。写入成功后可显式 `instance.invalidate()`；这不会重发写入或唤醒模型。
 
+公开资源槽的 refinement 或 codec 验证针对每一次 ready。某次值不能编码时，该次公开 Observation 为 error，原来源和同一出口继续连接；后续有效 ready 直接恢复，业务无需更换资源对象或重挂模块。真正的来源 error、complete 与 owner 退出仍保留各自终止语义，不自动重试来源。
+
 ## 会话文件使用同一资源
 
 Program conversation、本地 SDK、远程 SDK 与可选原生 UI 均提供 `files: SessionFiles`。`const page = session.files.text(path, { offset, limit })` 与 metadata(path)、directory(path) 固定参数并复用对象；read、peek、values$、observations$、invalidate、useResource 和组合算子消费同一读侧。构造不读取；首次消费者等待正式 watch ready，变化先失效再重读，最后消费者退出释放共享监听。业务知道写入成功时可以显式 invalidate，不重发写操作。

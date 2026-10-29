@@ -71,6 +71,14 @@ Program 的 conversation.progress 与 conversation.request(id).state、SDK 和�
 
 进展流的物理 carrier 中断沿官方恢复继续；真正的终止错误结束该句柄的 progress、request 和 events 观察。Connection reset 不会让已经结束的消费者重新变为 pending，也不清除原 error；需要新观察时显式 `client.open(sessionId)` 取得新 Session。资源 baseline 中的业务 error 仍由原来源决定后续事实。
 
+## 读取原生日志
+
+用同一个 `session.journal` 消费本地或远程的人工、服务会话。`page({ throughSeq, beforeSeq?, maxMessages?, turnWindow? }, { signal })` 使用 Controller 的原生消息分页；`follow(window, { signal })` 先交 `opened` 的 cursor/page，再交水位后的原生 entry。它保留持久原始日志，不把瞬态 `events$` 或 assistant stream 拼成历史。
+
+需要 Observable 时使用 `defer(() => from(session.journal.follow(window, { signal })))`，沿 RxJS 组合和 `useObservable` 读取；每次 follow 调用是独立连接。连接退出只撤本次读取，Session release 撤销句柄资格，不取消真实业务。原生服务由 Host 确切 Context 已安装的 Controller/Query 提供，缺服务抛 `SessionJournalUnavailableError`；不为了历史读取隐装 Controller、提升 Agent 或复制分页算法。
+
+远程 `openEvents(options, request, { signal })` 在同一 journal 上使用官方 RemoteJournalStream 管理重连、prepend 和缺口修补。第三参数只取消这次 opening，取得连接后不延长该信号的寿命，也不关闭兄弟资源；退出仍归原 Session/SDK。不要再在业务层维护游标修补状态或直接调用原生 Controller.follow。
+
 ## 输入保 intent 与 delivery 独立
 
 ```ts

@@ -1,8 +1,8 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { Remote, RemoteError, TypertRemoteService, type Principal } from '@deepseek-ai/dsh-typert-protocol';
 import { deepFreeze, type JsonValue } from '@deepseek-ai/dsh-util-values';
-import { SessionId, SessionLogOffset, type Session, type SessionEvent } from '@deepseek-ai/dsh-session';
-import type { ProgramJournalEntry, ProgramJournalPage } from '@hanger-source/dsh-reactive-client/types';
+import { SessionId } from '@deepseek-ai/dsh-session';
+import type { ProgramJournalPage } from '@hanger-source/dsh-reactive-client/types';
 import { type ApplicationHost, type ConversationHandle, type ServiceConversation } from '@hanger-source/dsh-reactive-dsh';
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import { createProgramFailureMapper, throwProgramFailure } from './host-errors.ts';
@@ -398,55 +398,20 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     }
   }
 
-  /** 监听先于 opening cut；观察不经过 Controller.follow 的后台 Agent 激活。 */
+  /** 借用同一会话读侧；冷安全 cut、监听及原生分页均归 Host journal。 */
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *journal(request: ProgramJournalOpenRequest, signal: AbortSignal): AsyncIterable<ProgramJournalFrame> {
-    const identity = this.participant();
-    const id = SessionId(request.sessionId);
-    const inbox = new Inbox<ProgramJournalEntry>(1024 * 1024);
-    let cut: number | undefined;
-    let openingSession: Session | undefined;
-    const append = (event: SessionEvent): void => {
-      if (signal.aborted) { inbox.fail(signal.reason); return; }
-      try { inbox.push({ type: 'event', event: { ...event, data: z.json().parse(event.data) } }); }
-      catch (error) { inbox.fail(error); }
-    };
-    const stopEvent = this.ctx.on('session/event', (session, event) => {
-      if (session.id === id) append(event);
-    }, { global: true });
-    const stopCreated = this.ctx.on('session/created', session => {
-      if (session.id !== id) return;
-      if (cut === undefined) { openingSession = session; return; }
-      // 后续挂载可带此前未由本进程发布的 seed；重复项交给 Gateway 原生 cursor 处理。
-      for (const event of session.snapshotEvents(SessionLogOffset(cut + 1))) append(event);
-    }, { global: true });
-    const abort = (): void => inbox.fail(signal.reason);
-    signal.addEventListener('abort', abort, { once: true });
-    let handle: ConversationHandle | ServiceConversation | undefined;
+    const handle = await this.openSession(request);
     try {
-      signal.throwIfAborted();
-      handle = await this.openSession(request, identity);
-      signal.removeEventListener('abort', abort);
-      signal = this.reading(handle, signal);
-      signal.addEventListener('abort', abort, { once: true });
-      signal.throwIfAborted();
-      cut = handle.snapshot().sequence;
-      // await opening 期间只保留原生 Session，不把已持久历史塞入有界 carrier 邮箱。
-      if (openingSession) {
-        for (const event of openingSession.snapshotEvents(SessionLogOffset(cut + 1))) append(event);
-        openingSession = undefined;
-      }
       const { sessionId: _sessionId, program: _program, accessId: _accessId, ...window } = request;
-      const throughSeq = cut;
-      const page = await this.read(handle, signal, signal => this.ctx.sessionController.page({ address: { kind: 'session', sessionId: id }, throughSeq, ...window }, signal));
-      signal.throwIfAborted();
-      yield { type: 'opened', cursor: cut, page };
-      for await (const entry of inbox) yield { type: 'entry', entry };
-      signal.throwIfAborted();
+      const reading = this.reading(handle, signal);
+      for await (const frame of handle.journal.follow(window, { signal: reading })) {
+        reading.throwIfAborted();
+        yield frame;
+      }
+      reading.throwIfAborted();
     } catch (error) { this.rethrow(error); }
-    finally {
-      signal.removeEventListener('abort', abort); stopEvent(); stopCreated(); inbox.end(); openingSession = undefined; handle?.release();
-    }
+    finally { handle.release(); }
   }
 
   /** 同一 Program 权限边界内的原生冷安全分页，不唤醒 Agent。 */
@@ -454,8 +419,8 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   async journalPage(request: ProgramJournalPageRequest, signal: AbortSignal): Promise<ProgramJournalPage> {
     const handle = await this.openSession(request);
     try {
-      const { sessionId, program: _program, accessId: _accessId, ...page } = request;
-      return await this.read(handle, signal, signal => this.ctx.sessionController.page({ address: { kind: 'session', sessionId: SessionId(sessionId) }, ...page }, signal)).catch(this.rethrow);
+      const { sessionId: _sessionId, program: _program, accessId: _accessId, ...page } = request;
+      return await this.read(handle, signal, signal => handle.journal.page(page, { signal })).catch(this.rethrow);
     } finally { handle.release(); }
   }
 

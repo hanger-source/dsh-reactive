@@ -1,15 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
-import { BehaviorSubject, filter, firstValueFrom, from, timeout } from 'rxjs';
-import { SessionId, pluginRecordOf } from '@deepseek-ai/dsh-session';
+import { BehaviorSubject, filter, firstValueFrom, from, timeout, type Subscription } from 'rxjs';
+import { SessionId, SessionLogOffset, appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-session';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { abortable, ActionBindingUnavailableError, defineProgram, programIdentity, ProgramContractMismatchError, z } from '@hanger-source/dsh-reactive';
 import type { ApplicationService, ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeSubagents, SubagentError } from '@hanger-source/dsh-reactive-dsh/subagents';
+import { mountProgramGateway } from '@hanger-source/dsh-reactive-remote';
 import { delegationRecordSchema } from '../packages/dsh/src/delegations.ts';
 import { bootDelegationFixture, delegationDate, delegationScope, inspectDelegationSession } from './delegation-support.ts';
 import { text, tool } from './native-support.ts';
+
+declare module '@deepseek-ai/dsh-session/types' {
+  interface PluginRecordMap { 'plugin:journal-fixture/attachment': { readonly phase: 'created' | 'tail' }; }
+}
 
 const content = (messages: GenerateOptions['messages']) => messages.flatMap(message => message.content)
   .flatMap(block => block.type === 'text' ? [block.text] : []).join('\n');
@@ -339,5 +344,174 @@ test('冷Action读回执与委托授权不合作时，取消或撤声明及时�
     runtime.native.sessionPersistence.open = open;
     runtime.native.agents.resume = resume;
     declaration$.complete(); parent.release(); await fixture.dispose();
+  }
+});
+
+test('委托观察最后退订撤销本次授权与读取资格，迟到回执不续读且原子工作仍可完成', { timeout: 20_000 }, async () => {
+  const childEntered = Promise.withResolvers<AbortSignal>(), childRelease = Promise.withResolvers<void>();
+  const authorizationEntered = Promise.withResolvers<AbortSignal>(), authorizationRelease = Promise.withResolvers<void>();
+  const readEntered = Promise.withResolvers<AbortSignal>(), readRelease = Promise.withResolvers<void>();
+  let holdAuthorization = false, holdRead = false, models = 0;
+  let journalAttachment: string | undefined;
+  const fixture = await bootDelegationFixture('spawn', {
+    installNative(native) {
+      native.on('session/created', session => {
+        if (session.id === journalAttachment) appendPluginRecord(session, 'plugin:journal-fixture/attachment', { phase: 'created' });
+      }, { global: true });
+    },
+    async *respond(request) {
+      assert.ok(request.tools?.some(tool => tool.name === 'child_complete'));
+      assert.ok(++models <= 2, '退出观察不能重发委托或重复启动子工作');
+      if (models === 1) {
+        assert.ok(request.signal);
+        childEntered.resolve(request.signal);
+        await firstValueFrom(abortable(() => childRelease.promise, request.signal));
+        yield* tool('child_complete', 'observation-child-complete', {});
+      } else yield* text('原子工作完成');
+    },
+    authorize(admission) {
+      if (admission.phase !== 'read' || !holdAuthorization) return;
+      holdAuthorization = false;
+      authorizationEntered.resolve(admission.signal);
+      return authorizationRelease.promise;
+    },
+  });
+  const { parent, runtime } = fixture;
+  const open = runtime.native.sessionPersistence.open;
+  const reads: string[] = [], observationErrors: unknown[] = [], subscriptions: Subscription[] = [];
+  let childSessionId: string | undefined;
+  let gateway: Awaited<ReturnType<typeof mountProgramGateway>> | undefined;
+  const wait = <T>(work: Promise<T>) => firstValueFrom(from(work).pipe(timeout(3_000)));
+  runtime.native.sessionPersistence.open = new Proxy(open, { async apply(target, receiver, args) {
+    if (args[1] === 'read' && (args[0] === parent.id || args[0] === childSessionId)) reads.push(args[0]);
+    const handle: Awaited<ReturnType<typeof open>> = await Reflect.apply(target, receiver, args);
+    if (holdRead && args[0] === childSessionId && args[1] === 'read') {
+      holdRead = false;
+      const signal: AbortSignal | undefined = args[2]?.signal;
+      assert.ok(signal);
+      const read = handle.read;
+      handle.read = new Proxy(read, { async apply(target, receiver, args) {
+        const snapshot = await Reflect.apply(target, receiver, args);
+        readEntered.resolve(signal); await readRelease.promise;
+        return snapshot;
+      } });
+    }
+    return handle;
+  } });
+  try {
+    gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
+      model: { provider: 'delegation-spawn', model: 'deterministic' }, access() {},
+      participant() { throw new Error('LOCAL_CHILD_JOURNAL_HAS_NO_REMOTE_PRINCIPAL'); },
+      carrier: { async authenticate() { throw new Error('LOCAL_CHILD_JOURNAL_HAS_NO_REMOTE_PRINCIPAL'); } } });
+    const invocation = parent.resolveAction('delegate', delegationScope)(
+      { at: delegationDate, job: 'observation-owner' }, { actorId: 'sdk-human' });
+    const receipt = await wait(invocation.result);
+    childSessionId = receipt.childSessionId;
+    const childSignal = await wait(childEntered.promise);
+    const child = runtime.native.agents.get(SessionId(childSessionId));
+    assert.ok(child);
+    const operation = await invocation.operation;
+    const observe = () => {
+      const subscription = operation.observations$.subscribe({ error: error => observationErrors.push(error) });
+      subscriptions.push(subscription); return subscription;
+    };
+
+    holdAuthorization = true;
+    const first = observe(), second = observe();
+    const authorizationSignal = await wait(authorizationEntered.promise);
+    first.unsubscribe();
+    assert.equal(authorizationSignal.aborted, false, '同源资源仍有观察者时保留本次读取资格');
+    second.unsubscribe();
+    assert.equal(authorizationSignal.aborted, true, '不合作策略尚未返回时，最后退订已撤销本次准入');
+    assert.equal(parent.signal.aborted, false);
+    assert.equal(childSignal.aborted, false, '观察退出不取消子工作原生执行');
+    const beforeLateAuthorization = [...reads];
+    authorizationRelease.resolve(); await setImmediate();
+    assert.deepEqual(reads, beforeLateAuthorization, '迟到allow不能再进入state或双边回执核验');
+    assert.equal(await invocation.result, receipt);
+    assert.equal(runtime.native.agents.get(child.id), child);
+
+    holdRead = true;
+    const reading = observe();
+    const readSignal = await wait(readEntered.promise);
+    assert.notEqual(readSignal, authorizationSignal, '重新显式观察签发本连接自己的读取资格');
+    assert.equal(readSignal.aborted, false);
+    reading.unsubscribe();
+    assert.equal(readSignal.aborted, true);
+    assert.equal(childSignal.aborted, false);
+    const beforeLateRead = [...reads];
+    readRelease.resolve(); await setImmediate();
+    assert.deepEqual(reads, beforeLateRead, '已开始的真实read迟到返回后不再起后续parent或child读取');
+    assert.equal((await wait(operation.state.read())).phase, 'active');
+    assert.equal(runtime.native.agents.get(child.id), child);
+
+    childRelease.resolve();
+    await wait(child.whenIdle());
+    assert.equal((await wait(operation.settled())).phase, 'complete', '原业务终态不受观察退出影响');
+    assert.equal(await invocation.result, receipt);
+
+    const parentAgent = runtime.native.agents.get(SessionId(parent.id));
+    assert.ok(parentAgent);
+    await runtime.native.subagents.drainChildren(parentAgent, [child.id]);
+    assert.equal(runtime.native.agents.get(child.id), undefined);
+    assert.equal(runtime.native.sessions.get(child.id), undefined, 'Activation已释放原执行句柄和live Session');
+    assert.equal(runtime.native.agents.get(parentAgent.id), parentAgent, '只退出选定child，原parent仍持有其真实owner');
+    const beforeJournal = models, stored = await inspectDelegationSession(runtime.native, child.id);
+    const coldChild = await runtime.application.open(child.id, fixture.childProgram);
+    const serviceChild = await runtime.application.service().open(child.id, fixture.childProgram);
+    const following = coldChild.journal.follow({ maxMessages: 1_000 })[Symbol.asyncIterator]();
+    let journalFailure: { readonly error: unknown } | undefined;
+    try {
+      const opening = await wait(following.next());
+      assert.ok(!opening.done && opening.value.type === 'opened');
+      const { cursor, page } = opening.value;
+      assert.deepEqual(page.records.map(record => record.event), stored.events, '子会话开场保留实际持久日志');
+      assert.deepEqual(await serviceChild.journal.page({ throughSeq: cursor, maxMessages: 1_000 }), page,
+        '本地人工与服务句柄沿同一已核验child地址读页');
+      assert.equal(runtime.native.agents.get(child.id), undefined, 'cold child journal不启动Agent');
+
+      const restored = runtime.native.sessions.prepare(child.id, { seed: stored.events, meta: stored.header,
+        inheritedEventCount: stored.inheritedEventCount });
+      journalAttachment = child.id;
+      const detach = runtime.native.sessions.enter(restored);
+      try {
+        runtime.native.sessions.announce(restored);
+        const suffix = restored.snapshotEvents(SessionLogOffset(cursor + 1));
+        assert.ok(suffix.length > 1, '实际seed marker先于created listener追加的事件');
+        assert.equal(pluginRecordOf(suffix.at(-1)!)?.type, 'plugin:journal-fixture/attachment');
+        for (const expected of suffix) {
+          const frame = await wait(following.next());
+          assert.ok(!frame.done && frame.value.type === 'entry');
+          assert.deepEqual(frame.value.entry.event, expected, '首次event先补齐原生seed，created不能将旧suffix放到队尾');
+        }
+        const nextSequence = appendPluginRecord(restored, 'plugin:journal-fixture/attachment', { phase: 'tail' });
+        const next = await wait(following.next());
+        assert.ok(!next.done && next.value.type === 'entry');
+        assert.equal(next.value.entry.event.seq, nextSequence, 'created与event的重叠不能重复交付');
+        assert.equal(models, beforeJournal, 'cold到显式Session attach只观察原日志，不启动模型');
+        assert.ok(following.return);
+        const pending = following.next(), closing = following.return();
+        const [last, closed] = await wait(Promise.all([pending, closing]));
+        assert.equal(last.done, true, '正常return立即结束本连接尚未取得下一帧的等待');
+        assert.equal(closed.done, true, '已读entry后的正常return不拒绝自身取消');
+      } finally { journalAttachment = undefined; detach(); }
+    } catch (error) { journalFailure = { error }; throw error; }
+    finally {
+      try { await following.return?.(); }
+      catch (cleanup) {
+        if (journalFailure && cleanup !== journalFailure.error)
+          throw new AggregateError([journalFailure.error, cleanup], 'CHILD_JOURNAL_TEST_AND_CLEANUP_FAILED');
+        throw cleanup;
+      }
+      finally { coldChild.release(); serviceChild.release(); }
+    }
+    assert.deepEqual(observationErrors, []);
+    assert.deepEqual(fixture.errors, []);
+  } finally {
+    authorizationRelease.resolve(); readRelease.resolve(); childRelease.resolve();
+    for (const subscription of subscriptions) subscription.unsubscribe();
+    runtime.native.sessionPersistence.open = open;
+    parent.release();
+    try { await gateway?.close(); } finally { await fixture.dispose(); }
   }
 });

@@ -1,6 +1,16 @@
 import type { ActionInput, CancellationOptions, FileUploadInvocation, FileUploadSource, FileUploadValue, Invocation, Json, ProgramContract, ProgramSessionClient, HumanProgramSessionClient, Surface, SurfaceClient, SurfaceMount, ViewValue } from '@hanger-source/dsh-reactive';
 import { combineResources, composeSurface, defineProgram, defineSurface, resourceView, selectSurface, shareResource, z } from '@hanger-source/dsh-reactive';
 import type { SessionFiles, FileResource, WorkspaceFileText, WorkspaceFileBytes } from '@hanger-source/dsh-reactive/files';
+import type { SessionJournal, ProgramJournalFrame, ProgramJournalPage } from '@hanger-source/dsh-reactive/journal';
+import { SessionJournalUnavailableError } from '@hanger-source/dsh-reactive/journal';
+
+export const sessionJournalFailure = (error: unknown) => error instanceof SessionJournalUnavailableError;
+
+export function sessionJournal<P extends ProgramContract>(session: ProgramSessionClient<P>, signal: AbortSignal) {
+  const journal: SessionJournal = session.journal;
+  return { follow: (): AsyncIterable<ProgramJournalFrame> => journal.follow({ maxMessages: 20 }, { signal }),
+    page: (throughSeq: number, beforeSeq?: number): Promise<ProgramJournalPage> => journal.page({ throughSeq, beforeSeq }, { signal }) };
+}
 
 export function sessionFiles<P extends ProgramContract>(session: ProgramSessionClient<P>, path: string) {
   const files: SessionFiles = session.files;

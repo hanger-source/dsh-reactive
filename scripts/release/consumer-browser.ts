@@ -11,7 +11,7 @@ import type { ProgramAddress } from '@hanger-source/dsh-reactive-client/types';
 import * as remote from '@hanger-source/dsh-reactive-client/remote';
 import type { NativeActionViews, NativeSession, NativeSessionReference } from '@hanger-source/dsh-reactive-native-ui';
 import type { ProgramContract } from '@hanger-source/dsh-reactive';
-export { sessionResources, sessionFiles, sessionFileUpload, receiveFileUpload, callPublishedAction } from './consumer-session.js';
+export { sessionResources, sessionFiles, sessionJournal, sessionJournalFailure, sessionFileUpload, receiveFileUpload, callPublishedAction } from './consumer-session.js';
 import { invocationReceipt } from './consumer-session.js';
 
 const date = z.codec(z.iso.datetime(), z.date(), { decode: value => new Date(value), encode: value => value.toISOString() });

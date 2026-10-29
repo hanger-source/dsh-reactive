@@ -67,6 +67,10 @@
     "./files": {
       "types": "./lib/files.d.ts",
       "import": "./lib/files.js"
+    },
+    "./journal": {
+      "types": "./lib/journal.d.ts",
+      "import": "./lib/journal.js"
     }
   },
   "files": [
@@ -176,13 +180,15 @@
     "@deepseek-ai/dsh-time-context": "0.2.1-rc.3",
     "@deepseek-ai/dsh-schedule": "0.2.1-rc.3",
     "@deepseek-ai/dsh-experimental-agent-team": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-api-workspace-files": "0.2.1-rc.3"
+    "@deepseek-ai/dsh-api-workspace-files": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-api-session-controller": "0.2.1-rc.3"
   },
   "devDependencies": {
     "@hanger-source/dsh-reactive": "file:../core",
     "@deepseek-ai/dsh-schedule": "0.2.1-rc.3",
     "@deepseek-ai/dsh-experimental-agent-team": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-api-workspace-files": "0.2.1-rc.3"
+    "@deepseek-ai/dsh-api-workspace-files": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-api-session-controller": "0.2.1-rc.3"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-jobs": {
@@ -213,6 +219,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-api-workspace-files": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-api-session-controller": {
       "optional": true
     }
   }
