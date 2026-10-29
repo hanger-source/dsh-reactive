@@ -51,6 +51,12 @@ export interface OperationFollowSnapshot {
     readonly continuation: Continuation;
     readonly wait: WaitReference;
   } | null;
+  /** 本次 Follow 未进入 owner；原业务操作仍可能已经运行。 */
+  readonly unregistered: {
+    readonly id: string;
+    readonly continuation: Continuation;
+    readonly wait: WaitReference;
+  } | null;
 }
 
 export const operationFollowSnapshotSchema = z.object({
@@ -62,4 +68,5 @@ export const operationFollowSnapshotSchema = z.object({
     node: z.object({ id: identity, payload: z.json() }).strict().optional(),
   }).strict().nullable(),
   notStarted: z.object({ id: identity, continuation: continuationSchema, wait: waitSchema }).strict().nullable(),
+  unregistered: z.object({ id: identity, continuation: continuationSchema, wait: waitSchema }).strict().nullable(),
 }).strict();

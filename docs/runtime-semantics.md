@@ -121,7 +121,7 @@ SDK 的解析与调用是两个明确阶段。解析只对调用者提交的原�
 
 ### 共同资格与准入寿命
 
-Action 资格沿同一 Observation 传播。首次 pending 等待首次 ready，不借用旧 ready；首次 error 或 ready denied 拒绝新调用。取得 allowed 后，任何 pending、error 或 denied 都撤销尚未进入 `execute` 的本次准入，后续恢复不会复活它；连续 ready allowed 的代次变化不是业务事务版本。来源真实报错成为资格 error，不因此终止整个 Program。
+资源层 `Eligibility` 沿同一 Observation 在 Action、Context 和 Follow 间传播，Program 共享 reader。首次 pending 等待首次 ready，不借用旧 ready；首次 error 或 ready denied 拒绝新调用。取得 allowed 后，任何 pending、error 或 denied 都撤销尚未进入 `execute` 的本次准入，后续恢复不会复活它；连续 ready allowed 的代次变化不是业务事务版本。来源真实报错成为资格 error，不因此终止整个 Program。
 
 资格撤销发生在 `operation.prepare` 期间时，等待 prepare 真实结算，确定尚未开始后记录 `not-started`。进入 `execute` 后退出资格观察不取消业务；观察清理失败也等待业务实际结算，保留正式结果和 Operation 回执，通过返回活动的 `observationError` 报告清理失败。资格观察不替代逐次 admit。
 
@@ -161,9 +161,11 @@ feedback 的 payload 使用独立纯合同。owner.readFeedback 按确切的持�
 
 `useOperation` / `bindOperation` 只绑定不可变原 command。`useOperation` 的工厂可以明确返回 null，表示当前没有操作可公开；它不定位、不登记等待或取消此前的业务。locate 与 attach 继续使用正式查询，participation(id).readFeedback 是对已登记参与的一次快照读取。Surface.operations resolver 捕获当前公开绑定；所得句柄不因槽切换或撤下而改读另一命令。宿主可按会话、合同、原 command 和参与 ID 恢复读取，核验真实持久 link 和 owner 读权，不加载 Agent、不登记等待。
 
-`Follow` 是独立的能力声明。真实原生工具调用才创建新 link，取得本次输入与当前 Goal 修订；它没有 Action.execute。feedback 参与的输入明确包含 after: nodeId | null，settled 参与不使用节点后继条件。after 不携带 Goal 权限。
+`Follow` 是独立的能力声明，其资格 pending、error 或 denied 时撤下可用声明。模型调用在真正进入 owner.register 前 pin 准入；异步 checkpoint 和原输入 Application.admit 后最终复核真实 native 来源、成员与声明。资格撤销后恢复不会复活旧调用。真实原生工具调用才创建新 link，取得本次输入与当前 Goal 修订；它没有 Action.execute。feedback 参与的输入明确包含 after: nodeId | null，settled 参与不使用节点后继条件。after 不携带 Goal 权限。
 
 `Offer.follow` 和 `Follow` 共同使用 `mode: 'wait' | 'background'`，省略时为 wait。wait 等待可靠登记和原生 wait 的持久 ACK，暂缓精确原 Goal 并结论当前轮次；background 同样先可靠登记关联，但不增加阻塞等待、不结论当前轮次，Agent 可以继续其它工作。两者的结果都按固定身份交回原会话，自动唤醒仍须原 Goal 的精确修订有效、未暂停并且不存在其它阻塞等待。background 不获得新 Goal 的权限，也不因为模块退出而取消原业务。
+
+独立 Follow 在首次 owner 登记前被拒绝时，持久记录 `operation-follow-unregistered`（id、continuation、wait），投影为 `unregistered`。它只说明该 Follow 未进入登记，原 Operation 可能早已运行，不能视为 `operation.not-started`。通知仍核验真实 notifier，返回 `{status: 'unregistered'}` 可 ACK，不激活 Agent 或重新登记。进程内首次进入门阻止恢复和通知抢跑尚未准入的 intent；进入 owner 即放行，不等待 ACK，ACK 期间撤声明不取消已受理登记。Host 持有已进入的 Promise 至真实结算；Goal 旧 revision 与暂停仍遵循原规则。进入门仅存在于进程内；进程中断后可能只剩持久 intent，不能据此判断 owner 从未被调用。冷恢复按当前 Application 与业务 owner 对原关联的授权幂等重建，不序列化 JavaScript 资格 pin 或调用栈。只有已持久的 unregistered 证明该参与被拒绝且未进入登记；不能保证所有未通过原运行内准入的崩溃 intent 跨进程都不会登记。未登记结案 checkpoint 失败属于目标 link 和原 Goal 组的故障，不封锁同一 Session 的其他模块。
 
 只需要观察时，直接组合 `OperationHandle.observations$`、`settled()` 或业务资源，不声明 Follow。观察本身不会登记可靠通知、唤醒 Agent 或改变 Goal。后台反馈、暂缓原工作与只读观察因此可以在同一个模块中明确选择，保留各自的执行含义。
 
@@ -171,7 +173,7 @@ L1 交回 F1 后，明确调用 Follow 以 after=F1.id 登记 L2。owner 可沿�
 
 原生投递由固定的服务发布主体负责，实际通知者分别准入与审计。第一次合法通知者不能占有后续恢复发布权；配置更换到另一主体也不能静默改写已有投递身份。accepted 仅确认原生持久受理，unknown 或 pending 不能用于清除业务 outbox。
 
-`OperationOwnerOptions.notifications` 将业务已有可靠设施接入 Host：`connect({ deliver, signal })` 返回 cleanup 或其 Promise，设施负责持久化、租约与重投。`deliver` 接收 sessionId、followId 和 acknowledge，以固定 `serviceActorId` 核验真实 owner；仅 accepted 或 not-started 才调用 acknowledge，unknown、pending、拒绝或失败不 ACK。ACK 只移除业务 outbox 待办，不移除 follow 或 feedback。signal 停止新交接；Host 等真实业务调用、投递及已开始的 ACK 结算后调用 cleanup，异步连接迟到和部分启动失败也遵循此顺序。仍可显式调用 `notifyOperation`，Host 不创建另一份队列。
+`OperationOwnerOptions.notifications` 将业务已有可靠设施接入 Host：`connect({ deliver, signal })` 返回 cleanup 或其 Promise，设施负责持久化、租约与重投。`deliver` 接收 sessionId、followId 和 acknowledge，以固定 `serviceActorId` 核验真实 owner；仅 accepted、not-started 或 unregistered 才调用 acknowledge，unknown、pending、拒绝或失败不 ACK。ACK 只移除业务 outbox 待办，不移除 follow 或 feedback。signal 停止新交接；Host 等真实业务调用、投递及已开始的 ACK 结算后调用 cleanup，异步连接迟到和部分启动失败也遵循此顺序。仍可显式调用 `notifyOperation`，Host 不创建另一份队列。
 
 ## 人工问题与前台等待
 
@@ -211,11 +213,11 @@ continued 答复按原问题的 callId 恢复工具调用保存的输入集合�
 
 `createWorkSelector({ identify })` 用应用定义的 JSON 键选择原始输入或持久请求声明；返回 undefined 表示不属于该工作。`select` 同步投影显式快照，`observe` 组合显式会话来源的 progress 与 human，并共享一个 ResourceReader。`state$` 是该 reader 的观察，`events$` 和 `progressFrames$` 只交付订阅后的匹配事实，不重放历史。冷观察不复活 assistant attempt 草稿，也不发现会话、启动 Agent 或取得权限。
 
-Activity.operationFollows 包含原 link、receipt|null、preparedDelivery|null 和 notStarted|null；preparedDelivery 保留 requestId、actorId、notifierId 及可选 reference、node。这些是同一原生投影的持久事实，读取不触发 locate、register 或 notifier。intent 不证明 register ACK，缺少 receipt 不证明未执行，prepared 不代表结果已受理、消费或结算。直播追加产生 operation.follow.changed，change 为 intent、receipt、delivery-prepared 或 not-started，携带完整 inputs；冷恢复读取投影，不重放这些事件。
+Activity.operationFollows 包含原 link、receipt|null、preparedDelivery|null、notStarted|null 和 unregistered|null；preparedDelivery 保留 requestId、actorId、notifierId 及可选 reference、node。这些是同一原生投影的持久事实，读取不触发 locate、register 或 notifier。intent 不证明 register ACK，缺少 receipt 不证明未执行，prepared 不代表结果已受理、消费或结算。直播追加产生 operation.follow.changed，change 为 intent、receipt、delivery-prepared、not-started 或 unregistered，携带完整 inputs；冷恢复读取投影，不重放这些事件。
 
 Activity 的 inputs 是输入目录，calls 和 replies 是完整发生事实，Goal.inputs 保存关联；Request.tools 与最后回复由这些事实派生。calls 保留每次真实发生，ToolActivity 和 ToolOccurrence 的 `callSequence` 是该次正式 start 事件的序号；provider 的 callId 可以跨轮复用。RequestDeclaration 是真实持久声明，包含 `result: { continuation, wait, ready } | null`；没有 messageId 的声明不是已受理输入。回复 `inputs: null` 表示关联未知，不按工作归组。每个命中项保留完整 value、原 callSequence 或 messageId 及完整 inputs；matchedInputs 只解释分组，不裁剪事实或授予续接权限。多输入共同调用或回复可出现在多个工作。原始 scope 在本地与远程均不执行 Program transform。
 
-每个来源保留 sessionId、workspaceId、environmentId 和真实 Session 的 parentSessionId。会话中的 source、execution 是背景，不表示工作独占会话。条件表达 `goal.paused`、`goal.blocked`、`wait.pending`、`question.pending`、`call.failed` 及原续接约束。`continuation.unconsumed` 表示结果请求已 accepted、result.ready 为 true，但尚未推进到 consumed，不代表模型已处理；`continuation.superseded` 和 `continuation.inactive` 表达其所引用 Goal 已被替换或不再 active。`goal.round-limit` 只在 active Goal 已用尽轮数时出现；`operation.not-started` 表示已知业务未进入，`operation.delivery-prepared` 表示投递已准备而结果请求不存在或仍为 declared。不据此判定整个工作 busy 或完成。跨会话观察不共享 Goal 或答复权限。
+每个来源保留 sessionId、workspaceId、environmentId 和真实 Session 的 parentSessionId。会话中的 source、execution 是背景，不表示工作独占会话。条件表达 `goal.paused`、`goal.blocked`、`wait.pending`、`question.pending`、`call.failed` 及原续接约束。`continuation.unconsumed` 表示结果请求已 accepted、result.ready 为 true，但尚未推进到 consumed，不代表模型已处理；`continuation.superseded` 和 `continuation.inactive` 表达其所引用 Goal 已被替换或不再 active。`goal.round-limit` 只在 active Goal 已用尽轮数时出现；`operation.follow-unregistered` 表示该 Follow 未进入登记；`operation.not-started` 表示已知业务未进入，`operation.delivery-prepared` 表示投递已准备而结果请求不存在或仍为 declared。不据此判定整个工作 busy 或完成。跨会话观察不共享 Goal 或答复权限。
 
 所有必需来源 ready 才有完整工作 ready；任一来源 pending 或 error 撤下旧 ready，来源退出保留原错误，不替换为空数组。不同会话 generation 不构成事务快照。options 可省略：无显式 owner 时读侧遵循 refCount 与来源有效性；最后观察退出只释放观察，不停止会话或业务。需要业务 Operation 阶段或资源错误时使用现有 RxJS 组合。
 

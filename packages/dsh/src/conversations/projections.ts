@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import { pluginRecordOf, type SessionEvent } from '@deepseek-ai/dsh-session';
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection';
 import { inputReferenceSchema, requestActivitySchema, toolActivitySchema, replyActivitySchema } from '@hanger-source/dsh-reactive/kernel';
-import { canonical, childInputRecordSchema, goalBindingSchema, inputEditRecordSchema, inputRecordIdentity, operationNotStartedSchema, recordSchema, referenceOf, contentDigest, unique, waitRecordSchema, callForResult, ptcParent } from './records.ts';
+import { canonical, childInputRecordSchema, goalBindingSchema, inputEditRecordSchema, inputRecordIdentity, operationNotStartedSchema, operationFollowUnregisteredSchema, recordSchema, referenceOf, contentDigest, unique, waitRecordSchema, callForResult, ptcParent } from './records.ts';
 
 const inputsSchema = inputReferenceSchema.array().readonly();
 const pendingOccurrenceSchema = z.object({ messageId: z.string(), inputs: inputsSchema }).strict();
@@ -26,7 +26,7 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
 
 /** 仅负责业务请求、原生输入和调用的关联；驱动、水位、冷恢复由原生注册表拥有。 */
 export const reactiveProjectionDefinition: ProjectionDefinition<'reactiveInputs'> = {
-  key: 'reactiveInputs', stateVersion: 10, stateSchema: reactiveProjectionSchema,
+  key: 'reactiveInputs', stateVersion: 11, stateSchema: reactiveProjectionSchema,
   init: (header, inheritedEventCount) => ({ sessionId: header.id, delegated: header.parentSession !== undefined, inheritedEventCount,
     records: {}, pendingEdits: {}, goals: {}, nativeInputs: {}, inputs: [], calls: {}, replies: [], current: [], openTurn: null, openStep: null,
     pending: { 'next-turn': [], 'next-step': [] },
@@ -45,6 +45,7 @@ function applyReactiveProjection(previous: ReactiveProjectionState, event: Sessi
     'tool/ptc-dispatch-start', 'tool/result', 'tool/ptc-dispatch', 'assistant/message'].includes(event.type)
     && record?.type !== 'plugin:reactive/input' && record?.type !== 'plugin:reactive/goal-inputs' && record?.type !== 'plugin:reactive/wait'
     && record?.type !== 'plugin:reactive/child-input' && record?.type !== 'plugin:reactive/operation-not-started'
+    && record?.type !== 'plugin:reactive/operation-follow-unregistered'
     && record?.type !== 'plugin:reactive/input-edit') return previous;
   let state = { ...previous };
   type RequestLifecycle = z.output<typeof requestLifecycleSchema>;
@@ -101,6 +102,11 @@ function applyReactiveProjection(previous: ReactiveProjectionState, event: Sessi
   }
   if (record?.type === 'plugin:reactive/operation-not-started') {
     const closed = operationNotStartedSchema.parse(record.data);
+    state.waits = state.waits.filter(item => canonical(item.wait) !== canonical(closed.wait)
+      || canonical(item.continuation) !== canonical(closed.continuation));
+  }
+  if (record?.type === 'plugin:reactive/operation-follow-unregistered') {
+    const closed = operationFollowUnregisteredSchema.parse(record.data);
     state.waits = state.waits.filter(item => canonical(item.wait) !== canonical(closed.wait)
       || canonical(item.continuation) !== canonical(closed.continuation));
   }

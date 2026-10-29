@@ -57,7 +57,7 @@ export class OperationNotifications {
             signal.throwIfAborted();
             const result = await this.operations.notifyOperation(sessionId, followId, { signal }, this.#participant!, owner);
             signal.throwIfAborted();
-            if (result.status === 'accepted' || result.status === 'not-started') await acknowledge.call(delivery, result);
+            if (result.status === 'accepted' || result.status === 'not-started' || result.status === 'unregistered') await acknowledge.call(delivery, result);
             return result;
         })().then(completion.resolve, completion.reject);
         return work;

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { ResourceReader } from '../resources/reader.ts';
 import { shareResource } from '../resources/sharing.ts';
 import type { ResourceSource } from '../resources/source.ts';
-import { retainActionEligibility, type ActionEligibility } from './eligibility.ts';
+import { retainEligibility, type Eligibility } from '../resources/eligibility.ts';
 import { abortable } from '../reactivity/observable.ts';
 import type { Observation } from '../resources/observation.ts';
 import type { CancellationOptions, Continuation, InputReference, Json, WaitReference } from '../conversations/protocol.ts';
@@ -142,7 +142,7 @@ export type ActionOperationEvent =
 
 export interface ActionBindingOptions<D extends ActionContract> {
   /** 同一业务前提供声明、发现与所有调用入口借用；不替代每次 admit。 */
-  readonly eligibility?: ResourceSource<ActionEligibility>;
+  readonly eligibility?: ResourceSource<Eligibility>;
   /** 声明 owner 当前是否已提交并激活；临时退出不等同于永久 release。 */
   active?(): boolean;
   /** 当前声明代际的准入寿命；不会取消已经进入 execute 的业务。 */
@@ -194,7 +194,7 @@ export interface ActionReference {
   readonly scope: unknown;
   readonly released: boolean;
   /** 未声明共同前提时省略；观察不受理调用，也不取得来源 owner 的释放权。 */
-  readonly eligibility?: ResourceReader<ActionEligibility>;
+  readonly eligibility?: ResourceReader<Eligibility>;
 }
 
 /** 捕获的绑定已撤下或被另一个真实绑定替换；拒绝本次新受理。 */
@@ -449,7 +449,7 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
       let finished = false, invocation: ActionInvocation<Definition> | undefined;
       const result = (async () => {
         let phase: InvocationPhase = 'input';
-        let qualification: ReturnType<typeof retainActionEligibility> | undefined;
+        let qualification: ReturnType<typeof retainEligibility> | undefined;
         const releaseQualification = () => {
           const retained = qualification; qualification = undefined; retained?.release();
         };
@@ -471,7 +471,7 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
           const declarationSignal = options.admissionSignal?.();
           const admissionSignal = AbortSignal.any([signal, lifetime.signal,
             ...(declarationSignal ? [declarationSignal] : []), ...(callerAdmissionSignal ? [callerAdmissionSignal] : [])]);
-          qualification = eligibility ? retainActionEligibility(definition.name, eligibility, admissionSignal) : undefined;
+          qualification = eligibility ? retainEligibility(definition.name, eligibility, admissionSignal) : undefined;
           const admitting = qualification ? AbortSignal.any([admissionSignal, qualification.signal]) : admissionSignal;
           try {
             if (qualification) await qualification.ready;

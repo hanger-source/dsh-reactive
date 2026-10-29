@@ -131,7 +131,7 @@ Environment 定义捕获自有 Skill 声明数组；Application 定义捕获环�
 
 声明撤下会阻止后续受理。已经进入执行的 Action 沿原调用信号和业务 owner 继续结算；Invocation 的结果和活动观察不受消费者订阅次数控制。业务结果返回、原生工具最终结算与业务任务正式完成各有自己的事实来源。
 
-共同业务资格属于 Action 绑定的只读资源，供声明、发现和各调用入口共享；业务 owner 仍负责真实调用者、原始输入、目标与事务的逐次准入。Offer 自动消费资格，Context 可借用相同来源或绑定的 reader；Expose 保持合同稳定。本地和远程解析所得 Action 的 `eligibility` 是同源只读观察，不授予执行权。远程观察随既有 `resolveAction` 流传递，不另建订阅协议或执行缓存。
+共同业务资格是资源层的 `Eligibility`，可由 Action、Context 和 Follow 绑定同一来源，供声明、发现和各调用入口共享；业务 owner 仍负责真实调用者、原始输入、目标与事务的逐次准入。Offer 自动消费资格，Context 可借用相同来源或绑定的 reader；Expose 保持合同稳定。本地和远程解析所得 Action 的 `eligibility` 是同源只读观察，不授予执行权。远程观察随既有 `resolveAction` 流传递，不另建订阅协议或执行缓存。
 
 ## 长期业务操作与人工参与
 

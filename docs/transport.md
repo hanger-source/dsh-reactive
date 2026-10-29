@@ -285,3 +285,5 @@ unary 使用 Connection 的 `createSharedFetchHandler` 与 `createPeer`；流使
 Typert contribution 由官方 generator 分析真实 Service 与公开类型后生成。当前发布版分析器要求依赖包出现在 workspace registration inventory；构建脚本使用公开 `WorkspaceCaches.registrations`，从实际 npm manifest、exports 与 d.ts 登记 protocol/util-values，再交官方 analyzer/emitter。诊断不关闭，不手写 endpoint descriptor 或深层导入。
 
 `./client` 发布 Node ESM 与普通 Browser ESM。Browser bundle 保留 core 为共享外部合同模块，使 Program、Surface、Action 与 Operation 合同使用同一实例的品牌；消费者的纯合同模块也应解析到这份 core。单份 core 不构成跨进程合同等价证明。浏览器入口不包含原生 WebUI ModuleLoader 插件；正式应用仍需验证自己的认证、反向代理、模型 provider 与业务 owner。
+
+远程资格观察沿既有资源流传递；资格错误码为 `reactive/eligibility`，与本地 `EligibilityError` 保留同一语义。`operation.follow-unregistered` 是 Follow 未进入登记的持久事实，不表示原 Operation 未开始。

@@ -40,7 +40,7 @@ Operation 代表业务 owner 持有的跨调用事实。局部 Action 若声明 
 
 本地 SDK Action 的调用 options.signal 只限制进入 execute 前的准入与持久准备；业务已经开始后，取消这个 signal 不撤回回执，也不破坏 Operation 关联。显式 execution.signal 和原生工具 signal 仍有真实执行取消权，不能为了退等而复用它们。权威业务终态继续用 operation.settled({ signal }) 等待，不把 Invocation returned 当作业务完成。
 
-共同业务资格使用 `ActionEligibility`：`{ allowed: true } | { allowed: false, reason: string }`。`bindAction` 的选项可提供 `eligibility: ResourceSource<ActionEligibility>`；`useAction(implementation, target, dependencies, { eligibility })` 在第四参提供，局部 factory 在选项中提供。绑定的 `action.eligibility` 是只读 ResourceReader，保留 Observation 状态和 denied 原因。
+共同业务资格使用 `Eligibility`：`{ allowed: true } | { allowed: false, reason: string }`。`bindAction` 的选项可提供 `eligibility: ResourceSource<Eligibility>`；`useAction(implementation, target, dependencies, { eligibility })` 在第四参提供，局部 factory 在选项中提供。绑定的 `action.eligibility` 是只读 ResourceReader，保留 Observation 状态和 denied 原因。
 
 首次 pending 等首个 ready，首次 error 或 denied 拒绝新调用；获得 allowed 后 pending、error 或 denied 撤销尚未 execute 的准入，恢复不复活，连续 allowed 代次变化不构成事务版本。真实来源错误不终止整个 Program。prepare 需真实结算后才能记 not-started；execute 后退出观察不取消业务，清理失败也等待业务结算。资格不能替代原始输入、真实调用者、目标及事务的逐次 admit。
 
@@ -116,3 +116,5 @@ const implementation = implementProgram(Inventory, {
 Review 等选择性公开用 `selectSurface(source, { views: ['facts'], actions: ['save'] })` 后放进 composition；省略类别不公开。模块仍对自己的原 Surface Expose，框架完成选择映射。移除再加入是新绑定，旧捕获 Action 拒绝新调用；已开始执行沿原 owner 完成。
 
 `implementModule(surface, { Component, modules?, operations? })` 捕获子模块与业务 owner，内部组件取得 `modules`；外部 `.Component` 接受业务 props 和 `mount`，自动建立局部映射。Program 静态列直接模块，递归捕获依赖并注入 `ProgramProps.modules`；未声明模块硬失败。dsh 的 `implementNativeModule` 额外捕获 `native` 能力。业务输入解码结果 `ProgramParsedInput` 和提交的 `ProgramInput` 可以不同；不要把单向 transform 输出重新当 raw parse。远程 View/Action 输出需真实可逆 wire codec，不能承诺任意 Date transform 都可反向 encode。
+
+Follow 可通过 `eligibility?: ResourceSource<Eligibility>` 与 Context、Action 共享业务来源；pending、error、denied 撤下声明。调用在进入 owner.register 前 pin 准入，并在异步 checkpoint 和原输入 Application.admit 后复核真实来源、成员与声明；撤销后恢复不复活旧调用。

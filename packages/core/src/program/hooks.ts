@@ -3,7 +3,7 @@ import { EmptyError, ReplaySubject, Subscriber, defer, fromEvent, isObservable, 
 import type { z } from 'zod';
 import { bindAction, implementAction, type LocalActionOptions, type ActionCallContext, type ActionDefinition, type ActionExecutionContext, type ActionImplementation, type ActionOperationEvent, type ActionReference, type BoundAction } from '../actions/contract.ts';
 import type { Json } from '../conversations/protocol.ts';
-import type { ActionEligibility } from '../actions/eligibility.ts';
+import type { Eligibility } from '../resources/eligibility.ts';
 import { bindOperation, type BoundOperation, type OperationAccessContext, type OperationBindingReference, type OperationCommand, type OperationContract, type OperationFeedbackPayload, type OperationFeedbackRead, type OperationOwner, type OperationReference } from '../operations/contract.ts';
 import { Scope } from '../reactivity/scope.ts';
 import { synchronous } from '../reactivity/synchronous.ts';
@@ -60,7 +60,7 @@ function useOwner(): ProgramHookOwner {
  * 局部 factory 同时返回实现选项与 target，沿用同一绑定和可信来源，不隐式执行。
  * 普通调用由宿主逐次建立来源，原生调用仍显式传入其真实执行关联。
  */
-export interface UseActionOptions { readonly eligibility?: ResourceSource<ActionEligibility>; }
+export interface UseActionOptions { readonly eligibility?: ResourceSource<Eligibility>; }
 
 export function useAction<I extends z.ZodType, O extends z.ZodType, S extends z.ZodType<Json>, Observed extends Json = never,
   P extends OperationContract = never>(

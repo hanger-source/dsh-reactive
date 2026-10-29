@@ -40,7 +40,7 @@ export interface AssistantProgressFrame {
 export type ConversationEvent<T = Json> = EventOrigin & (
   | { kind: 'input.accepted' | 'input.entered'; messageId: string; inputs: readonly InputReference<T>[] }
   | { kind: 'input.progress'; requestId: string; inputs: readonly InputReference<T>[] }
-  | { kind: 'operation.follow.changed'; change: 'intent' | 'receipt' | 'delivery-prepared' | 'not-started'; follow: OperationFollowSnapshot; inputs: readonly InputReference<T>[] }
+  | { kind: 'operation.follow.changed'; change: 'intent' | 'receipt' | 'delivery-prepared' | 'not-started' | 'unregistered'; follow: OperationFollowSnapshot; inputs: readonly InputReference<T>[] }
   | ({ kind: 'tool.started' } & ToolOccurrence<T>)
   | ({ kind: 'tool.settled'; outcome: 'returned' | 'failed'; result?: Json; meta?: Json } & ToolOccurrence<T>)
   | { kind: 'assistant.message'; messageId: string; turn: number; step: number; inputs?: readonly InputReference<T>[]; text: string; interrupted: boolean }

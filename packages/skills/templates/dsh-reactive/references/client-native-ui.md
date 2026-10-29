@@ -8,7 +8,7 @@
 
 本地或远程的人工、服务会话可直接作为 `WorkSource` 交给 `createWorkSelector` 的 `observe(key, sources, options?)`；`select(key, snapshots)` 同步投影已有快照。工作读侧的 `state` 与 `state$` 共用一个 reader，events$ 和 progressFrames$ 只交付新事实。所有来源 ready 才交付完整快照；pending/error 撤下旧 ready，来源退出保留原错误，各会话 generation 不组成事务。最后观察退出只释放观察。identity 的 parentSessionId 来自真实 Session；观察不会打开会话、启动 Agent 或补充权限。
 
-WorkHandle.sessions 为每个显式来源提供 WorkSessionHandle，含 identity、state、state$、events$ 和 progressFrames$；通过 `sessions[i].state.read()` 读取局部 ResourceReader，整体资源要求全部来源 ready；一个来源退出时其他局部资源可继续，不兜底或授予权限。WorkSessionSnapshot.operationFollows 包含 resultRequest，条件包含 operation.not-started、operation.delivery-prepared、continuation.unconsumed、goal.round-limit。
+WorkHandle.sessions 为每个显式来源提供 WorkSessionHandle，含 identity、state、state$、events$ 和 progressFrames$；通过 `sessions[i].state.read()` 读取局部 ResourceReader，整体资源要求全部来源 ready；一个来源退出时其他局部资源可继续，不兜底或授予权限。WorkSessionSnapshot.operationFollows 包含 resultRequest，条件包含 operation.not-started、operation.follow-unregistered、operation.delivery-prepared、continuation.unconsumed、goal.round-limit。
 
 输入目录、调用、回复及 Goal 的输入关联来自 Activity；请求的工具和最后回复由这些事实派生。每次调用保留正式 start 事件序号 callSequence，provider callId 可跨轮复用；回复保留 messageId。声明含 `result: { continuation, wait, ready } | null`，无 messageId 不等于已受理输入；回复 inputs 为 null 时不归组。每个匹配项保完整 value、原身份和 inputs，matchedInputs 只解释观察分组，不裁剪事实或授予续接权限；多输入调用或回复可同时出现在多个工作。原始 scope 在两端均不执行 Program transform。
 

@@ -120,7 +120,7 @@ export type ProgramOperationLocation =
   | { readonly status: 'rejected'; readonly reason: JsonValue }
   | { readonly status: 'unknown' };
 export interface ProgramOperationNotification extends ProgramSessionAddress { readonly followId: string; }
-export type ProgramOperationNotificationResult = { readonly status: 'unknown' | 'pending' | 'not-started' }
+export type ProgramOperationNotificationResult = { readonly status: 'unknown' | 'pending' | 'not-started' | 'unregistered' }
   | { readonly status: 'accepted'; readonly receipt: ProgramInputReceipt };
 type WireHumanQuestion<Q extends { readonly origin: HumanQuestionOrigin }> = Omit<Q, 'origin'> & {
   readonly origin: Omit<Q['origin'], 'inputs'> & { readonly inputs: readonly InputReference<JsonValue>[] };

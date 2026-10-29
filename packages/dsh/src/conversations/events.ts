@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent';
 import { pluginRecordOf, type SessionEvent } from '@deepseek-ai/dsh-session';
 import type { AssistantStream, ConversationEvent } from '@hanger-source/dsh-reactive/kernel';
-import { childInputRecordSchema, operationNotStartedSchema, recordSchema, waitRecordSchema, type NativeState } from './records.ts';
+import { childInputRecordSchema, operationNotStartedSchema, operationFollowUnregisteredSchema, recordSchema, waitRecordSchema, type NativeState } from './records.ts';
 import { intentSchema, receiptSchema, deliverySchema } from '../operations/projection.ts';
 
 /** 只转换新的 append。历史读取只消费原生投影，不调用此入口。 */
@@ -11,16 +11,19 @@ export function sessionOccurrences(sessionId: string, event: SessionEvent, previ
   const events: ConversationEvent[] = [];
   const record = pluginRecordOf(event);
   if (record?.type === 'plugin:reactive/operation-follow' || record?.type === 'plugin:reactive/operation-receipt'
-    || record?.type === 'plugin:reactive/operation-delivery' || record?.type === 'plugin:reactive/operation-not-started') {
+    || record?.type === 'plugin:reactive/operation-delivery' || record?.type === 'plugin:reactive/operation-not-started'
+    || record?.type === 'plugin:reactive/operation-follow-unregistered') {
     const id = record.type === 'plugin:reactive/operation-follow' ? intentSchema.parse(record.data).id
       : record.type === 'plugin:reactive/operation-receipt' ? receiptSchema.parse(record.data).id
       : record.type === 'plugin:reactive/operation-delivery' ? deliverySchema.parse(record.data).id
+      : record.type === 'plugin:reactive/operation-follow-unregistered' ? operationFollowUnregisteredSchema.parse(record.data).id
       : operationNotStartedSchema.parse(record.data).id;
     const follow = current.activity.operationFollows.find(follow => follow.link.id === id);
     if (!follow) throw new Error('REACTIVE_OPERATION_FOLLOW_NOT_FOUND');
     const change = record.type === 'plugin:reactive/operation-follow' ? 'intent'
       : record.type === 'plugin:reactive/operation-receipt' ? 'receipt'
-      : record.type === 'plugin:reactive/operation-delivery' ? 'delivery-prepared' : 'not-started';
+      : record.type === 'plugin:reactive/operation-delivery' ? 'delivery-prepared'
+      : record.type === 'plugin:reactive/operation-follow-unregistered' ? 'unregistered' : 'not-started';
     events.push({ ...origin, kind: 'operation.follow.changed', change, follow, inputs: follow.link.continuation.inputs });
   }
   if (record?.type === 'plugin:reactive/child-input') {

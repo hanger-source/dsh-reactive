@@ -11,6 +11,15 @@ import { abortable } from '@hanger-source/dsh-reactive';
 import { canonical } from '../conversations/records.ts';
 import { receiptSchema, intentSchema, deliverySchema, followsSchema, followsProjection, type FollowState, type FollowIntent } from './projection.ts';
 
+type FollowClosure = { readonly status: 'not-started' } | { readonly status: 'unregistered' };
+interface FollowEntry {
+  readonly outcome: Promise<boolean>;
+  readonly resolve: (closed: boolean) => void;
+  readonly reject: (reason: unknown) => void;
+  entered: boolean;
+  failure?: { readonly error: unknown };
+}
+
 export interface FollowHost {
   publisherId(): string;
   recoveryAccess(agent: Agent): OperationAccess;
@@ -34,6 +43,8 @@ export function operationFollowId(sessionId: string, callSequence: number, owner
 export class OperationFollows {
   #owners = new Map<string, OperationOwnerReference>();
   #barriers = new WeakMap<Agent, Map<string, Promise<ReadonlySet<string>>>>();
+  // 进入门只覆盖本进程首次登记的接点；resolve 后不等待 owner 的可靠 ACK。
+  #entries = new Map<string, FollowEntry>();
   constructor(private readonly ctx: Context, owners: readonly OperationOwnerReference[], private readonly host: FollowHost) {
     ctx.sessionProjections.register(followsProjection);
     for (const owner of owners) {
@@ -47,6 +58,14 @@ export class OperationFollows {
     const state = this.ctx.sessionProjections.stateOf(agent.session, 'reactiveOperations');
     if (!state) throw new Error('REACTIVE_OPERATION_PROJECTION_REQUIRED');
     return state;
+  }
+  private assertEntryCheckpoint(link: OperationFollowLink) {
+    const failure = this.#entries.get(this.entryKey(link))?.failure;
+    if (failure) throw failure.error;
+  }
+  private assertTargetCheckpoint(state: FollowState, id: string) {
+    const intent = Object.hasOwn(state.intents, id) ? state.intents[id] : undefined;
+    if (intent) this.assertEntryCheckpoint(intent);
   }
   private owner(link: OperationFollowLink) {
     const owner = this.#owners.get(JSON.stringify([link.operation.kind, link.operation.version]));
@@ -67,13 +86,24 @@ export class OperationFollows {
     // 无 Goal 的工作由原 continuation 区分，不借用另一组输入的等待。
     return canonical(link.continuation.goal ?? link.continuation);
   }
+  private entryKey(link: OperationFollowLink) { return canonical([link.continuation.sessionId, link.id]); }
+  private async awaitEntry(link: OperationFollowLink, signal: AbortSignal): Promise<boolean> {
+    const entry = this.#entries.get(this.entryKey(link));
+    if (!entry) return false;
+    return firstValueFrom(abortable(() => entry.outcome, signal));
+  }
   private pending(agent: Agent, group: string) {
+    for (const intent of Object.values(this.state(agent).intents)) {
+      if (intent.mode === 'wait' && this.group(intent) === group) this.assertEntryCheckpoint(intent);
+    }
     return this.links(agent).filter(link => link.mode === 'wait' && this.group(link) === group && !this.host.resolved(agent, link));
   }
   /** 后台关联不登记 Goal wait；投递仍须命中持久保存的确切原工作。 */
   background(agent: Agent, continuation: Continuation, wait: WaitReference) {
-    return this.links(agent).some(link => link.mode === 'background' && canonical(link.wait) === canonical(wait)
+    const links = this.links(agent).filter(link => link.mode === 'background' && canonical(link.wait) === canonical(wait)
       && canonical(link.continuation) === canonical(continuation));
+    for (const link of links) this.assertEntryCheckpoint(link);
+    return links.length > 0;
   }
   definition(kind: string, version: number): OperationContract {
     const owner = this.#owners.get(JSON.stringify([kind, version]));
@@ -97,6 +127,7 @@ export class OperationFollows {
     const state = this.inspectedState(inspection);
     if (!Object.hasOwn(state.intents, id)) throw new Error('REACTIVE_OPERATION_FOLLOW_NOT_FOUND');
     const intent = state.intents[id]!;
+    this.assertEntryCheckpoint(intent);
     this.publisher(intent);
     return this.publicLink(intent);
   }
@@ -114,10 +145,13 @@ export class OperationFollows {
     const owner = this.forDefinition(definition);
     const intent = Object.hasOwn(state.intents, id) ? state.intents[id] : undefined;
     if (!intent) throw new Error('REACTIVE_OPERATION_FOLLOW_NOT_FOUND');
+    this.assertEntryCheckpoint(intent);
     this.publisher(intent);
     const link = this.publicLink(intent);
     if (link.continuation.sessionId !== access.sessionId || this.owner(link) !== owner) throw new Error('REACTIVE_OPERATION_FOLLOW_MISMATCH');
     if (link.when !== 'feedback') throw new Error('REACTIVE_OPERATION_FEEDBACK_PARTICIPATION_REQUIRED');
+    if (await this.awaitEntry(link, access.signal) || Object.hasOwn(state.unregistered, id))
+      throw new Error('REACTIVE_OPERATION_FOLLOW_UNREGISTERED');
     if (Object.hasOwn(state.notStarted, id)) throw new Error('REACTIVE_OPERATION_NOT_STARTED');
     const read = await readOperationFeedback(owner, command, link, access);
     access.signal.throwIfAborted();
@@ -131,12 +165,38 @@ export class OperationFollows {
   }
   links(agent: Agent): readonly OperationFollowLink[] {
     const state = this.state(agent);
-    return Object.values(state.intents).filter(intent => !Object.hasOwn(state.notStarted, intent.id)).map(intent => this.publicLink(intent));
+    // 未落盘结案的失败门仍交给各组恢复报告；不能当作权威关闭，也不能封锁其他组。
+    return Object.values(state.intents).filter(intent => this.#entries.get(this.entryKey(intent))?.failure
+      || (!Object.hasOwn(state.notStarted, intent.id) && !Object.hasOwn(state.unregistered, intent.id)))
+      .map(intent => this.publicLink(intent));
   }
-  isNotStarted(agent: Agent, id: string) { return Object.hasOwn(this.state(agent).notStarted, id); }
-  inspectedNotStarted(inspection: SessionInspection, id: string) { return Object.hasOwn(this.inspectedState(inspection).notStarted, id); }
-  notStartedWait(agent: Agent, continuation: Continuation, wait: WaitReference) {
-    return Object.values(this.state(agent).notStarted).some(closed => canonical(closed.wait) === canonical(wait)
+  isNotStarted(agent: Agent, id: string) {
+    const state = this.state(agent);
+    this.assertTargetCheckpoint(state, id);
+    return Object.hasOwn(state.notStarted, id);
+  }
+  inspectedNotStarted(inspection: SessionInspection, id: string) {
+    const state = this.inspectedState(inspection);
+    this.assertTargetCheckpoint(state, id);
+    return Object.hasOwn(state.notStarted, id);
+  }
+  isUnregistered(agent: Agent, id: string) {
+    const state = this.state(agent);
+    this.assertTargetCheckpoint(state, id);
+    return Object.hasOwn(state.unregistered, id);
+  }
+  inspectedUnregistered(inspection: SessionInspection, id: string) {
+    const state = this.inspectedState(inspection);
+    this.assertTargetCheckpoint(state, id);
+    return Object.hasOwn(state.unregistered, id);
+  }
+  closedWait(agent: Agent, continuation: Continuation, wait: WaitReference) {
+    const state = this.state(agent);
+    for (const intent of Object.values(state.intents)) {
+      if (canonical(intent.wait) === canonical(wait) && canonical(intent.continuation) === canonical(continuation))
+        this.assertEntryCheckpoint(intent);
+    }
+    return [...Object.values(state.notStarted), ...Object.values(state.unregistered)].some(closed => canonical(closed.wait) === canonical(wait)
       && canonical(closed.continuation) === canonical(continuation));
   }
   async notStarted(agent: Agent, id: string) {
@@ -144,6 +204,7 @@ export class OperationFollows {
     const intent = Object.hasOwn(state.intents, id) ? state.intents[id] : undefined;
     // prepare 可能在写入 intent 前即失败；没有关联就没有待结案的 native wait。
     if (!intent) return;
+    if (this.isUnregistered(agent, id)) throw new Error('REACTIVE_OPERATION_FOLLOW_UNREGISTERED');
     this.publisher(intent);
     if (Object.hasOwn(state.receipts, id)) throw new Error('REACTIVE_OPERATION_ALREADY_STARTED');
     if (!Object.hasOwn(state.notStarted, id)) appendPluginRecord(agent.session, 'plugin:reactive/operation-not-started', {
@@ -156,6 +217,7 @@ export class OperationFollows {
     const intents = this.state(agent).intents;
     if (!Object.hasOwn(intents, id)) throw new Error('REACTIVE_OPERATION_FOLLOW_NOT_FOUND');
     const intent = intents[id]!;
+    this.assertEntryCheckpoint(intent);
     this.publisher(intent);
     return this.publicLink(intent);
   }
@@ -166,8 +228,10 @@ export class OperationFollows {
   hasPendingContinuation(agent: Agent, continuation: Continuation) {
     return this.pending(agent, canonical(continuation.goal ?? continuation)).length > 0;
   }
-  async prepare(agent: Agent, owner: OperationOwnerReference, raw: OperationFollowLink, access: OperationAccess) {
+  async prepare(agent: Agent, owner: OperationOwnerReference, raw: OperationFollowLink, access: OperationAccess,
+    admission?: { admit(): void | PromiseLike<void>; enter(): void }) {
     const link = operationFollowLinkSchema.parse(raw);
+    this.assertEntryCheckpoint(link);
     this.validate(owner, link.when);
     const publisherId = this.host.publisherId();
     if (!publisherId.trim()) throw new Error('REACTIVE_OPERATION_PUBLISHER_REQUIRED');
@@ -176,23 +240,62 @@ export class OperationFollows {
     if (previous) this.publisher(previous);
     if (previous && canonical(previous) !== canonical(intent)) throw new Error('REACTIVE_OPERATION_FOLLOW_CONFLICT');
     if (this.isNotStarted(agent, link.id)) throw new Error('REACTIVE_OPERATION_NOT_STARTED');
-    if (!previous) appendPluginRecord(agent.session, 'plugin:reactive/operation-follow', intent);
-    // intent 在业务 side 的可靠关联之前落盘；恢复绝不重放 execute。
-    await this.host.checkpoint(agent);
-    await registerOperationFollow(owner, link.command, link, access);
-    if (link.mode === 'wait') await this.host.wait(agent, link.continuation, link.wait);
+    if (this.isUnregistered(agent, link.id)) throw new Error('REACTIVE_OPERATION_FOLLOW_UNREGISTERED');
+    const entryKey = this.entryKey(link);
+    if (this.#entries.has(entryKey)) throw new Error('REACTIVE_OPERATION_FOLLOW_IN_PROGRESS');
+    const completion = admission ? Promise.withResolvers<boolean>() : undefined;
+    const entry: FollowEntry | undefined = completion ? { outcome: completion.promise, resolve: completion.resolve, reject: completion.reject,
+      entered: false } : undefined;
+    if (entry) {
+      this.#entries.set(entryKey, entry);
+      void entry.outcome.catch(() => {});
+    }
+    let appended = false;
+    try {
+      if (!previous) { appendPluginRecord(agent.session, 'plugin:reactive/operation-follow', intent); appended = true; }
+      // intent 在业务 side 的可靠关联之前落盘；恢复绝不重放 execute。
+      await this.host.checkpoint(agent);
+      if (admission) await admission.admit();
+      await registerOperationFollow(owner, link.command, link, access, entry ? () => {
+        admission!.enter();
+        entry.entered = true;
+        entry.resolve(false);
+      } : undefined);
+      if (link.mode === 'wait') await this.host.wait(agent, link.continuation, link.wait);
+    } catch (error) {
+      if (entry && !entry.entered) {
+        try {
+          // 已有 intent 可能来自崩溃前已经进入的 owner，不能据此声明从未登记。
+          if (!appended) throw error;
+          appendPluginRecord(agent.session, 'plugin:reactive/operation-follow-unregistered', {
+            id: link.id, continuation: link.continuation, wait: link.wait,
+          });
+          await this.host.checkpoint(agent);
+          entry.resolve(true);
+        } catch (checkpointError) {
+          entry.failure = { error: checkpointError };
+          entry.reject(checkpointError);
+          if (checkpointError !== error) throw new AggregateError([error, checkpointError], 'REACTIVE_OPERATION_FOLLOW_CHECKPOINT_FAILED');
+        }
+      }
+      throw error;
+    } finally {
+      if (entry?.entered) this.#entries.delete(entryKey);
+    }
   }
   /** 冷入口同样先验证真实通知者的关联权限，不能以 locator 的读取权限代替。 */
-  async admit(link: OperationFollowLink, access: OperationAccess, notStarted = false) {
+  async admit(link: OperationFollowLink, access: OperationAccess, closed?: FollowClosure): Promise<FollowClosure | undefined> {
     const source = access.source;
     if (source.kind !== 'participant') throw new Error('REACTIVE_OPERATION_NOTIFIER_REQUIRED');
     access.signal.throwIfAborted();
     const owner = this.owner(link);
     this.validate(owner, link.when);
+    const unregistered = await this.awaitEntry(link, access.signal);
     await firstValueFrom(abortable(() => this.host.admit(link, source, access.signal), access.signal));
     access.signal.throwIfAborted();
     // 已结案的框架关联只核本次通知准入；不能让旧 outbox 重新登记业务观察。
-    if (notStarted) return;
+    if (unregistered) return { status: 'unregistered' };
+    if (closed) return closed;
     await registerOperationFollow(owner, link.command, link, access);
     access.signal.throwIfAborted();
   }
@@ -212,13 +315,13 @@ export class OperationFollows {
             // 整组先取得可靠关联 ACK；一个未授权 intent 不能被伪装成等待登记成功。
             for (const item of pending) {
               this.publisher(this.state(agent).intents[item.id]!);
-              if (registered.has(item.id) || this.isNotStarted(agent, item.id)) continue;
+              if (registered.has(item.id) || this.isNotStarted(agent, item.id) || this.isUnregistered(agent, item.id)) continue;
               await this.admit(item, recovery);
               registered.add(item.id);
             }
             for (const item of pending) {
               recovery.signal.throwIfAborted();
-              if (this.isNotStarted(agent, item.id)) continue;
+              if (this.isNotStarted(agent, item.id) || this.isUnregistered(agent, item.id)) continue;
               await this.host.wait(agent, item.continuation, item.wait);
             }
             // register/flush 的 await 期间可能出现同组的新 native 调用。
@@ -235,6 +338,7 @@ export class OperationFollows {
     }
   }
   async receipt(agent: Agent, id: string, owner: OperationOwnerReference, reference: Json) {
+    if (this.isUnregistered(agent, id)) throw new Error('REACTIVE_OPERATION_FOLLOW_UNREGISTERED');
     if (this.isNotStarted(agent, id)) throw new Error('REACTIVE_OPERATION_NOT_STARTED');
     const link = this.link(agent, id);
     if (this.owner(link) !== owner) throw new Error('REACTIVE_OPERATION_OWNER_MISMATCH');
@@ -265,7 +369,10 @@ export class OperationFollows {
     const actorId = this.publisher(this.state(agent).intents[id]!);
     const notifierId = access.source.actorId;
     access.signal.throwIfAborted();
-    await this.admit(link, access, this.isNotStarted(agent, id));
+    const closed = await this.admit(link, access, this.isNotStarted(agent, id) ? { status: 'not-started' }
+      : this.isUnregistered(agent, id) ? { status: 'unregistered' } : undefined);
+    if (closed) return closed;
+    if (this.isUnregistered(agent, id)) return { status: 'unregistered' };
     if (this.isNotStarted(agent, id)) return { status: 'not-started' };
     await this.ensureWaits(agent, link, access);
     if (this.isNotStarted(agent, id)) return { status: 'not-started' };

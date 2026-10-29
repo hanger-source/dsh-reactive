@@ -74,6 +74,7 @@ export type OperationLocation<Reference, State> =
 /** 通知回执只表示原生持久受理，不表示操作结算或模型已经消费。 */
 export type OperationNotificationAcknowledgement =
   | { readonly status: 'not-started' }
+  | { readonly status: 'unregistered' }
   | { readonly status: 'accepted'; readonly receipt: InputReceipt };
 export type OperationNotificationResult = OperationNotificationAcknowledgement
   | { readonly status: 'unknown' | 'pending' };
@@ -159,7 +160,7 @@ type OwnerBindings = {
   reference(raw: unknown): Json;
   attach(raw: unknown, access: OperationAccessContext, admit?: AccessAdmission): OperationHandle<OperationContract>;
   locate(raw: unknown, access: OperationAccessContext, admit?: AccessAdmission): Promise<OperationLocation<Json, unknown>>;
-  registerFollow?: (raw: unknown, link: OperationFollowLink, access: OperationAccessContext) => Promise<void>;
+  registerFollow?: (raw: unknown, link: OperationFollowLink, access: OperationAccessContext, beforeRegister?: () => void) => Promise<void>;
   readFeedback?: (raw: unknown, link: OperationFollowLink, access: OperationAccessContext) => Promise<OperationFeedbackRead<Json, unknown>>;
   settled(state: unknown): unknown;
 };
@@ -273,13 +274,14 @@ export function implementOperation<D extends OperationContract>(definition: D,
     settled: state => settled(state as OperationState<D>),
   };
   const register = options.registerFollow;
-  if (register) bindings.registerFollow = async (raw, rawLink, initialAccess) => {
+  if (register) bindings.registerFollow = async (raw, rawLink, initialAccess, beforeRegister) => {
     const command = parseIdentity<D['command']>(definition.command, raw);
     const link = verifiedLink(definition, command.wire, rawLink);
     if (link.when === 'feedback' && !definition.feedback) throw new Error('REACTIVE_OPERATION_FEEDBACK_UNSUPPORTED');
     const access = ownAccess(initialAccess);
     await firstValueFrom(defer(() => {
       access.signal.throwIfAborted();
+      beforeRegister?.();
       return from(retainAccessWork(access, acknowledgement(register(command.value, link, access)))).pipe(untilAbort(access.signal));
     }));
   };
@@ -386,10 +388,10 @@ export function locateOperation<D extends OperationContract>(owner: OperationOwn
 
 /** @internal 可靠 follow 不能退化成临时 Observable 订阅。 */
 export async function registerOperationFollow(owner: OperationOwnerReference, raw: unknown, link: OperationFollowLink,
-  access: OperationAccessContext): Promise<void> {
+  access: OperationAccessContext, beforeRegister?: () => void): Promise<void> {
   const register = ownerBindings(owner).registerFollow;
   if (!register) throw new Error('REACTIVE_OPERATION_FOLLOW_UNSUPPORTED');
-  await register(raw, link, access);
+  await register(raw, link, access, beforeRegister);
 }
 
 /** @internal feedback 有独立权威读取；不会先 locate，也不会以读建立登记。 */

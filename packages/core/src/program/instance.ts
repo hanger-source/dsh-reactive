@@ -8,6 +8,7 @@ import { abortable } from '../reactivity/observable.ts';
 import { ResourceValue } from '../resources/value.ts';
 import type { ResourceReader } from '../resources/reader.ts';
 import type { ResourceSource } from '../resources/source.ts';
+import type { Eligibility } from '../resources/eligibility.ts';
 import { scopedResourceSharing } from '../resources/sharing.ts';
 import { type Observation } from '../resources/observation.ts';
 import { ProgramHookProvider, type ProgramHookOwner } from './hooks.ts';
@@ -35,6 +36,7 @@ export interface BoundFollow {
   readonly mode: OperationFollowMode;
   readonly scope: Json;
   readonly enabled: Cell<boolean>;
+  readonly eligibility?: ResourceReader<Eligibility>;
 }
 export interface ProgramInstanceOptions {
   /** 普通程序调用的真实服务身份与宿主信号；不由组件自报原生身份。 */
@@ -164,10 +166,12 @@ export class ProgramInstance<P extends ProgramContract> implements ProgramHookOw
   private follow(declaration: FollowDeclaration) {
     const previous = this.follows.get(declaration.name);
     if (previous?.operation === declaration.operation && previous.when === declaration.when && previous.mode === declaration.mode
+      && previous.eligibility === declaration.eligibility
       && previous.description === declaration.description && scopeIdentity(previous.scope) === scopeIdentity(declaration.scope)) {
       previous.enabled.set(declaration.enabled);
     } else this.follows.set(declaration.name, { name: declaration.name, description: declaration.description,
       operation: declaration.operation, when: declaration.when, mode: declaration.mode, scope: declaration.scope,
+      ...declaration.eligibility === undefined ? {} : { eligibility: declaration.eligibility },
       enabled: this.scope.state(declaration.enabled) });
   }
   private assertActive() {

@@ -37,6 +37,8 @@ export const goalBindingSchema = z.object({ goalId: z.string(), inputs: inputRef
 export const waitRecordSchema = z.object({ continuation: continuationSchema, wait: waitSchema }).strict();
 /** 只结案框架确定未开始的那次调用，不判定或取消原业务操作。 */
 export const operationNotStartedSchema = waitRecordSchema.extend({ id: z.string().min(1) }).strict();
+/** 只结案未进入 owner 的 Follow，不判定原业务操作是否执行。 */
+export const operationFollowUnregisteredSchema = waitRecordSchema.extend({ id: z.string().min(1) }).strict();
 export const childInputRecordSchema = z.object({ messageId: z.string().min(1), input: inputReference }).strict();
 declare module '@deepseek-ai/dsh-session/types' {
   interface PluginRecordMap {
@@ -45,6 +47,7 @@ declare module '@deepseek-ai/dsh-session/types' {
     'plugin:reactive/goal-inputs': { goalId: string; inputs: readonly InputReference[] };
     'plugin:reactive/wait': { continuation: Continuation; wait: WaitReference };
     'plugin:reactive/operation-not-started': z.infer<typeof operationNotStartedSchema>;
+    'plugin:reactive/operation-follow-unregistered': z.infer<typeof operationFollowUnregisteredSchema>;
     'plugin:reactive/child-input': z.infer<typeof childInputRecordSchema>;
   }
 }

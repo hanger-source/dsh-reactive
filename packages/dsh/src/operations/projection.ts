@@ -2,7 +2,7 @@ import { pluginRecordOf } from '@deepseek-ai/dsh-session';
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection';
 import { z } from 'zod';
 import { operationFollowLinkSchema, type OperationFollowSnapshot } from '@hanger-source/dsh-reactive/kernel';
-import { canonical, operationNotStartedSchema } from '../conversations/records.ts';
+import { canonical, operationNotStartedSchema, operationFollowUnregisteredSchema } from '../conversations/records.ts';
 
 export const receiptSchema = z.object({ id: z.string().min(1), reference: z.json() }).strict();
 const publisher = { publisherId: z.string().min(1) };
@@ -15,6 +15,7 @@ export const followsSchema = z.object({
   receipts: z.record(z.string(), receiptSchema),
   deliveries: z.record(z.string(), deliverySchema),
   notStarted: z.record(z.string(), operationNotStartedSchema),
+  unregistered: z.record(z.string(), operationFollowUnregisteredSchema),
 }).strict();
 export type FollowState = z.infer<typeof followsSchema>;
 export type FollowIntent = z.infer<typeof intentSchema>;
@@ -33,11 +34,21 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
 
 /** 执行与公开观察共用唯一折叠；这里只保存关联与反馈准备事实，不执行业务任务。 */
 export const followsProjection: ProjectionDefinition<'reactiveOperations'> = {
-  key: 'reactiveOperations', stateVersion: 4, stateSchema: followsSchema,
-  init: (_header, inheritedEventCount) => ({ inheritedEventCount, intents: {}, receipts: {}, deliveries: {}, notStarted: {} }),
+  key: 'reactiveOperations', stateVersion: 5, stateSchema: followsSchema,
+  init: (_header, inheritedEventCount) => ({ inheritedEventCount, intents: {}, receipts: {}, deliveries: {}, notStarted: {}, unregistered: {} }),
   apply(previous, event) {
     if (event.seq < previous.inheritedEventCount) return previous;
     const record = pluginRecordOf(event);
+    if (record?.type === 'plugin:reactive/operation-follow-unregistered') {
+      const closed = operationFollowUnregisteredSchema.parse(record.data);
+      const intent = Object.hasOwn(previous.intents, closed.id) ? previous.intents[closed.id] : undefined;
+      if (!intent) throw new Error('REACTIVE_OPERATION_FOLLOW_NOT_FOUND');
+      if (canonical({ id: intent.id, continuation: intent.continuation, wait: intent.wait }) !== canonical(closed))
+        throw new Error('REACTIVE_OPERATION_FOLLOW_MISMATCH');
+      if (Object.hasOwn(previous.receipts, closed.id) || Object.hasOwn(previous.deliveries, closed.id)
+        || Object.hasOwn(previous.notStarted, closed.id)) throw new Error('REACTIVE_OPERATION_FOLLOW_CONFLICT');
+      return { ...previous, unregistered: { ...previous.unregistered, [closed.id]: closed } };
+    }
     if (record?.type === 'plugin:reactive/operation-not-started') {
       const closed = operationNotStartedSchema.parse(record.data);
       const intent = Object.hasOwn(previous.intents, closed.id) ? previous.intents[closed.id] : undefined;
@@ -45,6 +56,7 @@ export const followsProjection: ProjectionDefinition<'reactiveOperations'> = {
       if (canonical({ id: intent.id, continuation: intent.continuation, wait: intent.wait }) !== canonical(closed))
         throw new Error('REACTIVE_OPERATION_FOLLOW_MISMATCH');
       if (Object.hasOwn(previous.receipts, closed.id)) throw new Error('REACTIVE_OPERATION_ALREADY_STARTED');
+      if (Object.hasOwn(previous.unregistered, closed.id)) throw new Error('REACTIVE_OPERATION_FOLLOW_UNREGISTERED');
       return { ...previous, notStarted: { ...previous.notStarted, [closed.id]: closed } };
     }
     if (record?.type === 'plugin:reactive/operation-follow') {
@@ -56,6 +68,7 @@ export const followsProjection: ProjectionDefinition<'reactiveOperations'> = {
     if (record?.type === 'plugin:reactive/operation-receipt') {
       const receipt = receiptSchema.parse(record.data);
       if (!Object.hasOwn(previous.intents, receipt.id)) throw new Error('REACTIVE_OPERATION_FOLLOW_NOT_FOUND');
+      if (Object.hasOwn(previous.unregistered, receipt.id)) throw new Error('REACTIVE_OPERATION_FOLLOW_UNREGISTERED');
       const before = Object.hasOwn(previous.receipts, receipt.id) ? previous.receipts[receipt.id] : undefined;
       if (before && canonical(before) !== canonical(receipt)) throw new Error('REACTIVE_OPERATION_REFERENCE_CONFLICT');
       return { ...previous, receipts: { ...previous.receipts, [receipt.id]: receipt } };
@@ -63,6 +76,7 @@ export const followsProjection: ProjectionDefinition<'reactiveOperations'> = {
     if (record?.type === 'plugin:reactive/operation-delivery') {
       const delivery = deliverySchema.parse(record.data);
       if (!Object.hasOwn(previous.intents, delivery.id)) throw new Error('REACTIVE_OPERATION_FOLLOW_NOT_FOUND');
+      if (Object.hasOwn(previous.unregistered, delivery.id)) throw new Error('REACTIVE_OPERATION_FOLLOW_UNREGISTERED');
       const before = Object.hasOwn(previous.deliveries, delivery.id) ? previous.deliveries[delivery.id] : undefined;
       if (before && canonical(before) !== canonical(delivery)) throw new Error('REACTIVE_OPERATION_DELIVERY_CONFLICT');
       return { ...previous, deliveries: { ...previous.deliveries, [delivery.id]: delivery } };
@@ -84,6 +98,7 @@ export function operationFollowSnapshots(state: FollowState): readonly Operation
         ...delivery.node === undefined ? {} : { node: delivery.node },
       },
       notStarted: state.notStarted[intent.id] ?? null,
+      unregistered: state.unregistered[intent.id] ?? null,
     });
   }));
 }

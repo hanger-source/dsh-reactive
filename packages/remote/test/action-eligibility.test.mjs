@@ -7,7 +7,7 @@ import { createElement as h } from 'react';
 import { BehaviorSubject, filter, firstValueFrom, timeout, tap } from 'rxjs';
 import WebSocket from 'ws';
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol';
-import { ActionEligibilityError, defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, z } from '@hanger-source/dsh-reactive';
+import { EligibilityError, defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, z } from '@hanger-source/dsh-reactive';
 import { Expose, implementProgram, useAction } from '@hanger-source/dsh-reactive/program';
 import { createProgramClient } from '@hanger-source/dsh-reactive-client';
 import { mountProgramGateway, RemoteAuthenticationError } from '@hanger-source/dsh-reactive-remote';
@@ -96,13 +96,13 @@ test('真实Gateway持续交付共同资格，旧绑定逐次核验，恢复及�
   qualification.next(ready({ allowed: false, reason: '知识资料未确认' }));
   const denied = await next('source denied', eligibility, value => value.status === 'ready' && !value.value.allowed);
   assert.equal(denied.value.reason, '知识资料未确认');
-  await assert.rejects((await captured('forbidden')).result, error => error instanceof ActionEligibilityError && error.reason === 'denied'
+  await assert.rejects((await captured('forbidden')).result, error => error instanceof EligibilityError && error.reason === 'denied'
     && error.observation.value.reason === '知识资料未确认');
   qualification.next({ status: 'error', generation: ++generation,
     error: new RemoteError('gateway/internal', '资格来源暂时不可用', {}) });
   const failed = await next('source error', eligibility, value => value.status === 'error');
   assert.equal(failed.error.code, 'gateway/internal');
-  await assert.rejects((await captured('error-write')).result, error => error instanceof ActionEligibilityError && error.reason === 'error'
+  await assert.rejects((await captured('error-write')).result, error => error instanceof EligibilityError && error.reason === 'error'
     && error.observation.error.code === 'gateway/internal');
   assert.equal(await (await independentRead(null)).result, 'first', '来源error不杀Program，独立Action继续读取真实文件');
   assert.equal(local.resolveAction('save', null).bindingId, bindingId, '资格变化不撤Expose也不换绑定');

@@ -16,3 +16,5 @@ export type { ResourceSource } from './source.ts';
 export type { ResourceSources, ResourceValues, ResourceSwitchOptions } from './operators.ts';
 export { createResource } from './local.ts';
 export type { LocalResourceOptions, LocalResource } from './local.ts';
+export { EligibilityError } from './eligibility.ts';
+export type { Eligibility } from './eligibility.ts';

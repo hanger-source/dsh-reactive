@@ -60,7 +60,7 @@ export type WorkCondition =
   | { readonly kind: 'continuation.unconsumed' | 'continuation.superseded' | 'continuation.inactive';
       readonly request: WorkRequestOccurrence; readonly continuation: Continuation;
       readonly currentGoal: GoalActivity | null; readonly matchedInputs: readonly InputReference[] }
-  | ({ readonly kind: 'operation.not-started' | 'operation.delivery-prepared' } & WorkOperationFollow)
+  | ({ readonly kind: 'operation.not-started' | 'operation.follow-unregistered' | 'operation.delivery-prepared' } & WorkOperationFollow)
   | { readonly kind: 'question.pending'; readonly callId: HumanQuestion['callId'];
       readonly active: WorkOccurrence<HumanQuestion> | null;
       readonly foreground: WorkOccurrence<HumanForegroundQuestion> | null;
@@ -215,7 +215,8 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
       }
       for (const wait of waits) conditions.push(Object.freeze({ kind: 'wait.pending', ...wait }));
       for (const follow of operationFollows) {
-        if (follow.value.notStarted !== null) conditions.push(Object.freeze({ kind: 'operation.not-started', ...follow }));
+        if (follow.value.unregistered !== null) conditions.push(Object.freeze({ kind: 'operation.follow-unregistered', ...follow }));
+        else if (follow.value.notStarted !== null) conditions.push(Object.freeze({ kind: 'operation.not-started', ...follow }));
         else if (follow.value.preparedDelivery !== null
           && (follow.resultRequest === null || follow.resultRequest.state === 'declared'))
           conditions.push(Object.freeze({ kind: 'operation.delivery-prepared', ...follow }));

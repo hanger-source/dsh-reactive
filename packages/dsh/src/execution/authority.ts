@@ -51,6 +51,7 @@ export class ActionAuthority {
     #executions = new WeakMap<ActionExecutionContext, {
         session: ConversationSession;
         callSequence: number | null;
+        native: LiveConversation | null;
     }>();
     constructor(private readonly ctx: Context, private readonly options: HostOptions, private readonly signal: AbortSignal, private readonly workspaces: Workspaces, private readonly sessions: ConversationSessions, private readonly facts: ConversationObservations, private readonly inputs: ConversationInputs, private readonly delegations: NativeDelegations) {
         this.#retention = options.completedRetentionMs ?? 300_000;
@@ -104,21 +105,36 @@ export class ActionAuthority {
         return signed.callSequence;
     }
     assertActionExecution(session: ConversationSession, execution: ActionExecutionContext) {
-        if (this.#executions.get(execution)?.session !== session)
+        const signed = this.#executions.get(execution);
+        if (signed?.session !== session)
             throw new Error('REACTIVE_ACTION_EXECUTION_UNTRUSTED');
-        const native = this.#toolCalls.get(execution);
-        if (execution.source.kind === 'tool' && (!native || native.entry.session !== session
-            || this.ctx.agents.get(native.entry.agent.id) !== native.entry.agent))
+        const native = signed.native;
+        if (execution.source.kind === 'tool' && (!native || native.session !== session
+            || this.ctx.agents.get(native.agent.id) !== native.agent || session.live.value !== native))
             throw new Error('REACTIVE_ACTION_TOOL_AUTHORITY_REQUIRED');
     }
-    private signExecution<T extends ActionExecutionContext>(session: ConversationSession, execution: T, callSequence: number | null, beforeExecute?: () => void): T {
-        this.#executions.set(execution, { session, callSequence });
+    private signExecution<T extends ActionExecutionContext>(session: ConversationSession, execution: T, native: LiveConversation | null,
+        callSequence: number | null, beforeExecute?: () => void): T {
+        this.#executions.set(execution, { session, callSequence, native });
         guardActionExecution(execution, () => {
             beforeExecute?.();
             this.assertActionExecution(session, execution);
             this.sessions.assertSessionWorkspace(session);
         });
         return execution;
+    }
+    /** 独立Follow沿原调用输入重新准入；签出来源、成员和Program资格在每次等待后复核。 */
+    assertFollowExecution(entry: LiveConversation, execution: ActionExecutionContext, signal: AbortSignal): void {
+        signal.throwIfAborted();
+        this.assertActionExecution(entry.session, execution);
+        entry.session.program.flush();
+        signal.throwIfAborted();
+        this.sessions.assertSessionWorkspace(entry.session);
+    }
+    async admitFollow(entry: LiveConversation, execution: ActionExecutionContext, signal: AbortSignal): Promise<void> {
+        this.assertFollowExecution(entry, execution, signal);
+        await firstValueFrom(abortable(() => this.inputs.revalidateCauses(execution.inputs, signal), signal));
+        this.assertFollowExecution(entry, execution, signal);
     }
     async admitAction(session: ConversationSession, action: ActionReference, input: unknown, call: ActionCallContext<unknown>, execution: ActionExecutionContext, admissionSignal: AbortSignal) {
         const native = this.#toolCalls.get(execution);
@@ -188,7 +204,7 @@ export class ActionAuthority {
                 return accepted;
             },
         };
-        return this.signExecution(entry.session, execution, occurrence.callSequence);
+        return this.signExecution(entry.session, execution, entry, occurrence.callSequence);
     }
     participantExecution(session: ConversationSession, options: SubmitOptions, identity: ParticipantIdentity, entrypoint: string, beforeExecute?: () => void): ParticipantExecution {
         this.assertActive();
@@ -198,7 +214,7 @@ export class ActionAuthority {
         // 独立参与调用没有继承当前模型输入或 Goal 续接权限。
         const execution: ParticipantExecution = { invocationId: randomUUID(), sessionId: session.header.id,
             source: { kind: 'participant', actorId, participant, entrypoint }, inputs: [], continuation: null, signal };
-        return this.signExecution(session, execution, null, beforeExecute);
+        return this.signExecution(session, execution, null, null, beforeExecute);
     }
     programExecution(session: ConversationSession, entrypoint: string): ActionExecutionContext {
         return this.participantExecution(session, {}, serviceParticipant(this.options.serviceActorId), entrypoint);

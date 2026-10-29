@@ -4,8 +4,8 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BehaviorSubject, Observable, filter, firstValueFrom, lastValueFrom, of } from 'rxjs';
-import { ActionEligibilityError, Scope, bindAction, combineResources, createResource, defineAction, defineOperation, implementAction,
-  implementOperation, mapResource, z, type ActionEligibility, type Observation, type ActionExecutionContext } from '@hanger-source/dsh-reactive';
+import { EligibilityError, Scope, bindAction, combineResources, createResource, defineAction, defineOperation, implementAction,
+  implementOperation, mapResource, z, type Eligibility, type Observation, type ActionExecutionContext } from '@hanger-source/dsh-reactive';
 import { invokeBoundAction } from '../packages/core/src/actions/contract.ts';
 
 const eligibilityExecution = (invocationId: string): ActionExecutionContext => ({ invocationId, sessionId: 'eligibility',
@@ -144,7 +144,7 @@ test('冷业务事实先完成读取，异步准入期间失效不能借恢复�
       started.resolve(); await finish.promise; call.signal.throwIfAborted();
       await writeFile(output, value); return value;
     } }), null, {
-    eligibility: facts.observations$.pipe(mapResource((): ActionEligibility => ({ allowed: true }))),
+    eligibility: facts.observations$.pipe(mapResource((): Eligibility => ({ allowed: true }))),
     async admit(value, _call, _execution, signal) { if (value === 'old') { entered.resolve(signal); await admission.promise; } },
   });
   try {
@@ -152,7 +152,7 @@ test('冷业务事实先完成读取，异步准入期间失效不能借恢复�
     const signal = await entered.promise;
     assert.equal(reads, 1, '首次调用本身取得冷资源，不依赖Offer或预热观察');
     facts.invalidate();
-    await assert.rejects(original.result, error => error instanceof ActionEligibilityError && error.reason === 'pending');
+    await assert.rejects(original.result, error => error instanceof EligibilityError && error.reason === 'pending');
     assert.equal(signal.aborted, true);
     admission.resolve();
     const next = action('new', eligibilityExecution('new'));
@@ -168,7 +168,7 @@ test('冷业务事实先完成读取，异步准入期间失效不能借恢复�
 test('资格撤销等待真实持久prepare结算后才结案，恢复允许不复活原调用', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-eligibility-prepare-'));
   const journal = join(directory, 'journal'), output = join(directory, 'output');
-  const qualification = new BehaviorSubject<Observation<ActionEligibility>>({ status: 'ready', generation: 1,
+  const qualification = new BehaviorSubject<Observation<Eligibility>>({ status: 'ready', generation: 1,
     observedAt: Date.now(), value: { allowed: true } });
   const prepared = Promise.withResolvers<void>(), finishPrepare = Promise.withResolvers<void>();
   const operation = defineOperation({ kind: 'qualification-prepared', version: 1, command: z.string(), reference: z.string(),
@@ -196,7 +196,7 @@ test('资格撤销等待真实持久prepare结算后才结案，恢复允许不�
     assert.equal((await original.activity.read()).state, 'pending');
     assert.equal(await readFile(journal, 'utf8'), 'preparing', '持久prepare未完成时不能提前写not-started');
     finishPrepare.resolve();
-    await assert.rejects(original.result, error => error instanceof ActionEligibilityError && error.reason === 'pending');
+    await assert.rejects(original.result, error => error instanceof EligibilityError && error.reason === 'pending');
     assert.equal(await readFile(journal, 'utf8'), 'not-started');
     await assert.rejects(readFile(output), { code: 'ENOENT' });
     const next = action('accepted-operation', eligibilityExecution('recovered'));
@@ -211,7 +211,7 @@ test('资格来源释放失败仍等已开始的真实写入并保留结果，�
   const cleanupError = new Error('QUALIFICATION_SOURCE_CLEANUP_FAILED');
   const action = bindAction(implementAction({ name: 'cleanup_qualified_write', description: '独立结算已受理写入', scope: z.null(),
     input: z.null(), output: z.string(), async execute() { started.resolve(); await finish.promise; await writeFile(output, 'committed'); return output; },
-  }), null, { admit() {}, eligibility: new Observable<Observation<ActionEligibility>>(subscriber => {
+  }), null, { admit() {}, eligibility: new Observable<Observation<Eligibility>>(subscriber => {
     subscriber.next({ status: 'ready', generation: 1, observedAt: Date.now(), value: { allowed: true } });
     return () => { throw cleanupError; };
   }) });

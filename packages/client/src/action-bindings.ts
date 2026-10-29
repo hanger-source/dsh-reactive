@@ -2,14 +2,14 @@ import { RemoteSnapshotStream, type ClientRemote } from '@deepseek-ai/dsh-api-ga
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { BehaviorSubject } from 'rxjs';
-import { z, ResourceReader, actionIdentity, assertActionIdentity, type ActionEligibility, type Observation, type ActionIdentity, type CancellationOptions } from '@hanger-source/dsh-reactive';
+import { z, ResourceReader, actionIdentity, assertActionIdentity, type Eligibility, type Observation, type ActionIdentity, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { ProgramSessionAddress, ProgramActionBinding } from './contracts/types.ts';
 import { decodeProgramFailure } from './contracts/errors.ts';
 import { revokeConversationAccess, type ClientScope, type ClientLease } from './scope.ts';
 
 export interface RemoteActionCapture {
   readonly descriptor: ProgramActionBinding;
-  readonly eligibility?: ResourceReader<ActionEligibility>;
+  readonly eligibility?: ResourceReader<Eligibility>;
   /** 查询当前槽持有连接；连接移交不改写这个 capture 的原始绑定身份。 */
   assertActive(): void;
 }
@@ -22,7 +22,7 @@ type BindingConnection = {
   readonly ready: Promise<ProgramActionBinding>;
   readonly bindingId: string | undefined;
   readonly reusable: boolean;
-  readonly eligibility: ResourceReader<ActionEligibility> | undefined;
+  readonly eligibility: ResourceReader<Eligibility> | undefined;
   start(): void;
   assertActive(): void;
   close(reason: unknown): Promise<void>;
@@ -46,8 +46,8 @@ function connectBinding(remote: ClientRemote, address: ProgramSessionAddress, na
   const first = Promise.withResolvers<ProgramActionBinding>();
   void first.promise.catch(() => {});
   const controller = new AbortController();
-  const qualification = new BehaviorSubject<Observation<ActionEligibility>>({ status: 'pending', generation: 0 });
-  let eligibility: ResourceReader<ActionEligibility> | undefined;
+  const qualification = new BehaviorSubject<Observation<Eligibility>>({ status: 'pending', generation: 0 });
+  let eligibility: ResourceReader<Eligibility> | undefined;
   let generation = 0;
   let descriptor: ProgramActionBinding | undefined;
   let active = false, closed = false, terminal = false, opening = true;

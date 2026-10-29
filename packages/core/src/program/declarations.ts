@@ -1,13 +1,14 @@
 import { createElement, Fragment, useContext, type ReactElement } from 'react';
 import { z } from 'zod';
 import { isBoundAction, type ActionContract, type ActionReference, type BoundAction } from '../actions/contract.ts';
-import type { ActionEligibility } from '../actions/eligibility.ts';
+import type { Eligibility } from '../resources/eligibility.ts';
 import { isOperationBinding, type OperationContract, type OperationBindingReference, type BoundOperation, type OperationFollowMode } from '../operations/contract.ts';
 import type { Json } from '../conversations/protocol.ts';
 import type { HumanInputPolicy } from '../participation/contract.ts';
 import type { NativeToolAdmission } from '../tools/admission.ts';
 import type { Observation } from '../resources/observation.ts';
 import type { ResourceSource } from '../resources/source.ts';
+import type { ResourceReader } from '../resources/reader.ts';
 import { declaration } from './renderer.ts';
 import { useResource, useSharedResource } from './hooks.ts';
 import { assertSurfaceBindings, type ExactSurfaceBindings, type PartialSurfaceBindings, type Surface, type SurfaceBindingReferences } from '../surfaces/contract.ts';
@@ -15,7 +16,7 @@ import { isModuleDeclaration, moduleMountContext, type ModuleDeclaration } from 
 import { moduleContribution, moduleName } from '../surfaces/composition.ts';
 
 export type ContextProps<T = unknown> = { readonly name: string; readonly required?: boolean;
-  readonly eligibility?: ResourceSource<ActionEligibility> } & (
+  readonly eligibility?: ResourceSource<Eligibility> } & (
   | { readonly value: Json; readonly observation?: never; readonly source?: never; readonly render?: never }
   | { readonly value?: never; readonly observation: Observation<T>; readonly source?: never; readonly render: (value: T) => Json }
   | { readonly value?: never; readonly observation?: never; readonly source: ResourceSource<T>; readonly render: (value: T) => Json }
@@ -33,7 +34,7 @@ export interface OfferProps<D extends ActionContract> {
 /** 仅在异构声明帧的内部边界擦除 schema，公开 Offer props 仍保留精确合同。 */
 export interface OfferDeclaration {
   readonly kind: 'offer'; readonly name: string; readonly action: ActionReference; readonly enabled: boolean;
-  readonly eligibility?: Observation<ActionEligibility>;
+  readonly eligibility?: Observation<Eligibility>;
   readonly modulePath?: readonly string[];
   readonly follow?: { readonly when: 'settled' | 'feedback'; readonly scope: Json; readonly mode: OperationFollowMode };
 }
@@ -44,6 +45,7 @@ export interface FollowProps<D extends OperationContract> {
   readonly when: [NonNullable<NoInfer<D>['feedback']>] extends [never] ? 'settled' : 'settled' | 'feedback';
   readonly scope: Json;
   readonly enabled?: boolean;
+  readonly eligibility?: ResourceSource<Eligibility>;
   readonly mode?: OperationFollowMode;
 }
 /** 声明一个沿原操作登记新等待的能力；求值本身不创建参与或执行命令。 */
@@ -51,6 +53,7 @@ export interface FollowDeclaration {
   readonly kind: 'follow'; readonly name: string; readonly description: string;
   readonly operation: OperationBindingReference; readonly when: 'settled' | 'feedback';
   readonly scope: Json; readonly enabled: boolean; readonly mode: OperationFollowMode;
+  readonly eligibility?: ResourceReader<Eligibility>;
 }
 export interface ExposeProps<S extends Surface, B extends PartialSurfaceBindings<S> = PartialSurfaceBindings<S>> {
   readonly surface: S;
@@ -165,7 +168,7 @@ function EligibleOffer<D extends ActionContract>(props: OfferProps<D>): ReactEle
   return offerLeaf(props, observation);
 }
 
-function offerLeaf<D extends ActionContract>(props: OfferProps<D>, eligibility?: Observation<ActionEligibility>): ReactElement {
+function offerLeaf<D extends ActionContract>(props: OfferProps<D>, eligibility?: Observation<Eligibility>): ReactElement {
   const localName = props.name ?? props.action.definition.name;
   if (!/^[a-z][a-z0-9_]{0,79}$/u.test(localName)) throw new Error('REACTIVE_OFFER_NAME_INVALID');
   if (props.enabled !== undefined && typeof props.enabled !== 'boolean') throw new Error('REACTIVE_OFFER_ENABLED_INVALID');
@@ -180,6 +183,16 @@ function offerLeaf<D extends ActionContract>(props: OfferProps<D>, eligibility?:
 
 /** 工具调用才登记新参与；after 由调用输入明确指出 owner 已签发的反馈节点。 */
 export function Follow<D extends OperationContract>(props: FollowProps<D>): ReactElement {
+  return props.eligibility === undefined ? followLeaf(props) : createElement(EligibleFollow<D>, props);
+}
+
+function EligibleFollow<D extends OperationContract>(props: FollowProps<D>): ReactElement {
+  const eligibility = useSharedResource(props.eligibility!);
+  const observed = useResource(eligibility).state;
+  return followLeaf(props, eligibility, observed);
+}
+
+function followLeaf<D extends OperationContract>(props: FollowProps<D>, eligibility?: ResourceReader<Eligibility>, observed?: Observation<Eligibility>): ReactElement {
   if (!/^[a-z][a-z0-9_]{0,79}$/u.test(props.name)) throw new Error('REACTIVE_FOLLOW_NAME_INVALID');
   name(props.description, 'REACTIVE_FOLLOW_DESCRIPTION_REQUIRED');
   if (!isOperationBinding(props.operation)) throw new Error('REACTIVE_FOLLOW_OPERATION_REQUIRED');
@@ -188,7 +201,9 @@ export function Follow<D extends OperationContract>(props: FollowProps<D>): Reac
   if (props.enabled !== undefined && typeof props.enabled !== 'boolean') throw new Error('REACTIVE_FOLLOW_ENABLED_INVALID');
   if (props.mode !== undefined && props.mode !== 'wait' && props.mode !== 'background') throw new Error('REACTIVE_FOLLOW_MODE_INVALID');
   return leaf({ kind: 'follow', name: props.name, description: props.description, operation: props.operation,
-    when: props.when, scope: json.parse(props.scope), enabled: props.enabled ?? true, mode: props.mode ?? 'wait' });
+    when: props.when, scope: json.parse(props.scope),
+    enabled: props.enabled !== false && (observed === undefined || observed.status === 'ready' && observed.value.allowed),
+    ...eligibility === undefined ? {} : { eligibility }, mode: props.mode ?? 'wait' });
 }
 
 /** Surface 是公开合同；多个模块可贡献不同槽，完整帧的槽冲突由 collector 核验。 */

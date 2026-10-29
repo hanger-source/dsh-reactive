@@ -120,7 +120,7 @@ export class ProgramTools {
                     settledInput.parse(raw);
                 const execution = this.authority.toolExecution(entry, exec,
                     (continuation, wait) => this.operations.registerWait(entry.agent, continuation, wait));
-                const id = await this.operations.participate(entry, follow, execution, after);
+                const id = await this.operations.participate(entry, follow, execution, after, allowed);
                 exec.signal.throwIfAborted();
                 if (follow.mode === 'wait')
                     exec.concludeTurn();

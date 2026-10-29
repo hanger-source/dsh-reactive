@@ -24,7 +24,7 @@ import type { ConversationObservations } from '../conversations/observations.ts'
 import type { ConversationInputs } from '../conversations/inputs.ts';
 import type { ActionAuthority } from '../execution/authority.ts';
 import { humanParticipant, serviceParticipant, assertParticipantOptions, participantActor, type ParticipantIdentity } from '../participation/identity.ts';
-import { withOperationAccessSettlement, type OperationOwnerReference } from '@hanger-source/dsh-reactive/kernel';
+import { retainEligibility, withOperationAccessSettlement, type OperationOwnerReference } from '@hanger-source/dsh-reactive/kernel';
 /** 可靠操作参与与精确 Goal 续接；Operation 事实仍由业务 owner 持有。 */
 export class OperationParticipation {
     #follows: OperationFollows;
@@ -124,20 +124,54 @@ export class OperationParticipation {
         readonly source: Extract<ActionExecutionContext['source'], {
             readonly kind: 'tool';
         }>;
-    }, after: string | null): Promise<string> {
+    }, after: string | null, allowed: () => boolean): Promise<string> {
         const owner = operationBindingOwner(follow.operation), command = operationBindingCommand(follow.operation);
         const id = operationFollowId(entry.agent.id, this.authority.callSequence(execution), owner, command);
-        await this.#follows.prepare(entry.agent, owner, {
-            id, operation: { kind: owner.definition.kind, version: owner.definition.version }, command,
-            continuation: execution.continuation, wait: { id: 'operation:' + id, operation: { kind: owner.definition.kind, version: owner.definition.version, command } },
-            scope: follow.scope, target: command, source: execution.source, mode: follow.mode,
-            ...follow.when === 'feedback' ? { when: 'feedback', after } : { when: 'settled', after: null },
-        }, { sessionId: entry.agent.id, source: execution.source, signal: execution.signal });
-        return id;
+        const program = entry.session.program, changed = new AbortController();
+        const signal = AbortSignal.any([execution.signal, this.signal, entry.scope.signal, entry.session.scope.signal,
+            program.signal, changed.signal]);
+        this.authority.assertFollowExecution(entry, execution, signal);
+        let eligibility: ReturnType<typeof retainEligibility> | undefined, stop: (() => void) | undefined, released = false;
+        const release = () => {
+            if (released) return;
+            released = true;
+            try { stop?.(); } finally { eligibility?.release(); }
+        };
+        try {
+            eligibility = follow.eligibility === undefined ? undefined : retainEligibility(follow.name, follow.eligibility, signal);
+            const admissionSignal = eligibility === undefined ? signal : AbortSignal.any([signal, eligibility.signal]);
+            stop = entry.scope.effect(() => {
+                program.revision.get();
+                try { if (!allowed()) changed.abort(new Error('REACTIVE_CAPABILITY_UNAVAILABLE: ' + follow.name)); }
+                catch (error) { changed.abort(error); }
+            });
+            const check = () => {
+                this.authority.assertFollowExecution(entry, execution, admissionSignal);
+                if (!allowed()) throw new Error('REACTIVE_CAPABILITY_UNAVAILABLE: ' + follow.name);
+                eligibility?.check();
+            };
+            const access = withOperationAccessSettlement({ sessionId: entry.agent.id, source: execution.source,
+                signal: AbortSignal.any([execution.signal, this.signal]) }, work => this.retainNotification(work));
+            await this.#follows.prepare(entry.agent, owner, {
+                id, operation: { kind: owner.definition.kind, version: owner.definition.version }, command,
+                continuation: execution.continuation, wait: { id: 'operation:' + id, operation: { kind: owner.definition.kind, version: owner.definition.version, command } },
+                scope: follow.scope, target: command, source: execution.source, mode: follow.mode,
+                ...follow.when === 'feedback' ? { when: 'feedback', after } : { when: 'settled', after: null },
+            }, access, {
+                admit: async () => {
+                    await firstValueFrom(abortable(() => eligibility?.ready, admissionSignal));
+                    check();
+                    await this.authority.admitFollow(entry, execution, admissionSignal);
+                    check();
+                },
+                enter: () => { check(); release(); this.authority.assertFollowExecution(entry, execution, admissionSignal); },
+            });
+            return id;
+        } finally { release(); }
     }
     registerWait(agent: Agent, continuation: Continuation, raw: WaitReference): Promise<void> {
         const wait = waitSchema.parse(raw);
-        if (this.#follows.notStartedWait(agent, continuation, wait))
+        if (this.#follows.closedWait(agent, continuation, wait))
             return this.facts.flush(agent);
         const state = this.facts.liveState(agent.session);
         const previous = state.activity.waits.find(item => item.wait.id === wait.id);
@@ -284,14 +318,15 @@ export class OperationParticipation {
             const link = live ? this.#follows.link(live.agent, followId) : this.#follows.inspectedLink(inspection!, followId);
             if (sourceOwner) this.#follows.assertNotificationOwner(link, sourceOwner);
             const notStarted = live ? this.#follows.isNotStarted(live.agent, followId) : this.#follows.inspectedNotStarted(inspection!, followId);
+            const unregistered = live ? this.#follows.isUnregistered(live.agent, followId) : this.#follows.inspectedUnregistered(inspection!, followId);
             const access: OperationAccess = withOperationAccessSettlement({ sessionId, source: {
                     kind: 'participant', participant: identity.participant, actorId, entrypoint: 'operation-feedback',
                 }, signal }, work => this.retainNotification(work));
             // 冷会话在加载原生 Agent 前也须取得业务 follow 权限；纯读权不能触发激活。
-            await this.#follows.admit(link, access, notStarted);
+            const closed = await this.#follows.admit(link, access,
+                notStarted ? { status: 'not-started' } : unregistered ? { status: 'unregistered' } : undefined);
             signal.throwIfAborted(); this.sessions.assertSessionWorkspace(session);
-            if (notStarted)
-                return { status: 'not-started' };
+            if (closed) return closed;
             await this.sessions.activate(sessionId, session.accessId);
             signal.throwIfAborted(); this.sessions.assertSessionWorkspace(session);
             const entry = this.sessions.live(session);

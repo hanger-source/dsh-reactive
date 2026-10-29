@@ -13,9 +13,9 @@
 - settled(state) 返回领域终态或 undefined。阶段反馈不等于终态，业务失败/取消也可以是明确的领域终态。
 - 可靠 Follow 需要 registerFollow 在副作用前持久保存精确 link，并用业务已有投递设施可靠通知。readFeedback 必须按该 link 和 after 读**已选定节点**，不能每次返回最新节点。owner 缺这两项能力时，只提供定位/观察，不能假 ACK 宣称可靠续接。
 
-`OperationOwnerOptions.notifications.connect({ deliver, signal })` 接入业务现有的持久化、租约与重投设施，返回 cleanup 或其 Promise。交接只提供 sessionId、followId 和 acknowledge；Host 以固定 `serviceActorId` 核验真实 owner，仅 accepted 或 not-started 才 ACK，unknown、pending、拒绝或失败不 ACK。ACK 只移除 outbox 待办，follow 和 feedback 保留。signal 停止新交接；Host 等真实业务调用、投递和已开始的 ACK 结算后才 cleanup，迟到的 connect 与部分启动失败也遵循此顺序。仍可显式调用 `notifyOperation`；Host 不另造队列。
+`OperationOwnerOptions.notifications.connect({ deliver, signal })` 接入业务现有的持久化、租约与重投设施，返回 cleanup 或其 Promise。交接只提供 sessionId、followId 和 acknowledge；Host 以固定 `serviceActorId` 核验真实 owner，仅 accepted、not-started 或 unregistered 才 ACK，unknown、pending、拒绝或失败不 ACK。ACK 只移除 outbox 待办，follow 和 feedback 保留。signal 停止新交接；Host 等真实业务调用、投递和已开始的 ACK 结算后才 cleanup，迟到的 connect 与部分启动失败也遵循此顺序。仍可显式调用 `notifyOperation`；Host 不另造队列。
 
-ConversationActivity.operationFollows 从原生投影读取 link、receipt|null、preparedDelivery|null 和 notStarted|null；preparedDelivery 包含 requestId、actorId、notifierId 及可选 reference、node。读取不调用 locate、register 或 notifier；intent 不证明 register ACK，receipt 缺失不证明未执行，prepared 不代表受理、消费或结算。operation.follow.changed 在直播追加时携带完整 inputs，change 为 intent、receipt、delivery-prepared 或 not-started；冷恢复不重放事件。
+ConversationActivity.operationFollows 从原生投影读取 link、receipt|null、preparedDelivery|null、notStarted|null 和 unregistered|null；preparedDelivery 包含 requestId、actorId、notifierId 及可选 reference、node。读取不调用 locate、register 或 notifier；intent 不证明 register ACK，receipt 缺失不证明未执行，prepared 不代表受理、消费或结算。operation.follow.changed 在直播追加时携带完整 inputs，change 为 intent、receipt、delivery-prepared、not-started 或 unregistered；冷恢复不重放事件。
 
 Action 的 `operation: { definition, command(input, scope, origin), reference(receipt) }` 将本次调用接到同一 Operation；实现同时传 `operationOwner`。origin 保真实 invocation/session/source，不是业务 UUID 签发器。需要业务幂等键时由业务约定正式身份。
 
@@ -61,3 +61,5 @@ const answer = await call.askHuman([{ id: 'delivery-mode', question: '如何接�
 askHuman 只接受 id/question/header/options/multiSelect；detail/intent 明确不支持。仅真实 native/PTC 工具执行来源可用，SDK/service Action 无此来源会拒绝且不启动 Agent。call.wait、completeGoal、askHuman 仅在 execute 调用体活跃时可用；保存 call 在返回后调用会拒绝。
 
 调用体结束会取消并 drain 未完成子问，保原 return/throw；不要通过 fire-and-forget 让问答逃离父调用。SDK/原生 UI 回答沿 `answerQuestion(callId, answer, options)`，前台等待通过 `attachWait`；退出读侧不等于取消业务。
+
+独立 Follow 首次登记前被拒绝时持久记录 `operation-follow-unregistered`（id、continuation、wait），不表示原 Operation 未开始。通知核真实 notifier 后返回 `{status: 'unregistered'}` 可 ACK，不激活 Agent 或重新登记。进程内首次进入门阻止恢复和通知抢跑，进入 owner 即放行；Host 持有登记 Promise 至结算，进入门仅在进程内有效；崩溃后仅有 intent 不能证明 owner 从未被调用。冷恢复按当前 Application 与业务 owner 对原关联的授权幂等重建，不序列化 JavaScript 资格 pin 或调用栈；只有持久 unregistered 才证明该参与被拒绝且未进入登记。未登记结案 checkpoint 失败只影响目标 link 和原 Goal 组，不封锁同一 Session 的其他模块。

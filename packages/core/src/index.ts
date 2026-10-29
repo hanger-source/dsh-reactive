@@ -23,8 +23,6 @@ export type { Json, InputReference, GoalReference, Continuation, WaitReference, 
 export type { Environment, AnyEnvironment, EnvironmentInput, EnvironmentViews, EnvironmentActions, EnvironmentOperations, EnvironmentAt } from './environments/definition.ts';
 export type { ApplicationDefinition } from './applications/definition.ts';
 export { defineAction, implementAction, bindAction, ActionBindingUnavailableError, ActionTargetMismatchError } from './actions/contract.ts';
-export { ActionEligibilityError } from './actions/eligibility.ts';
-export type { ActionEligibility } from './actions/eligibility.ts';
 export { actionIdentity, actionIdentityKey, assertActionIdentity, ActionContractMismatchError } from './actions/identity.ts';
 export type { ActionIdentity } from './actions/contract.ts';
 export type { LocalActionOptions } from './actions/contract.ts';

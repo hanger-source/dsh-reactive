@@ -6,15 +6,15 @@ import { tmpdir } from 'node:os';
 import { Fragment, createElement as h } from 'react';
 import { BehaviorSubject, Observable, filter, firstValueFrom, timeout } from 'rxjs';
 import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, z,
-  type ActionEligibility, type Observation } from '@hanger-source/dsh-reactive';
+  type Eligibility, type Observation } from '@hanger-source/dsh-reactive';
 import { Context, Expose, Offer, implementProgram, useAction, useBeforeStep } from '@hanger-source/dsh-reactive/program';
 import { boot, text, tool } from './native-support.ts';
 
 test('同一资格源贯通模型准备、可选现场与稳定SDK合同，必需等待不阻断其他会话', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-program-eligibility-'));
-  const state = new BehaviorSubject<Observation<ActionEligibility>>({ status: 'pending', generation: 0 });
+  const state = new BehaviorSubject<Observation<Eligibility>>({ status: 'pending', generation: 0 });
   let connections = 0, models = 0, bodies = 0;
-  const qualifications = new Observable<Observation<ActionEligibility>>(subscriber => {
+  const qualifications = new Observable<Observation<Eligibility>>(subscriber => {
     connections++; return state.subscribe(subscriber);
   });
   const preparing = Promise.withResolvers<void>(), modelTools: string[][] = [];
