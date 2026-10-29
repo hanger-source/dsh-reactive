@@ -226,17 +226,20 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
             try { await stoppingNotifications; }
             catch (error) { failures.push(error); }
             await Promise.allSettled(this.#sessionsStarting ? [this.#sessionsStarting] : []);
-            failures.push(...await this.sessions.shutdownNative());
+            try { failures.push(...await this.sessions.shutdownNative()); }
+            catch (error) { failures.push(error); }
             try {
                 await this.sessions.stopPresets();
             }
             catch (error) {
                 failures.push(error);
             }
-            failures.push(...await this.sessions.releasePrograms());
-            this.delegations.dispose();
+            try { failures.push(...await this.sessions.releasePrograms()); }
+            catch (error) { failures.push(error); }
+            try { this.delegations.dispose(); }
+            catch (error) { failures.push(error); }
             try {
-                this.workspaces.dispose();
+                await this.workspaces.dispose();
             }
             catch (error) {
                 failures.push(error);

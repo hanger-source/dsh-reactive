@@ -5,6 +5,7 @@ import type { SessionInspection } from '@deepseek-ai/dsh-session-persistence';
 import type { SessionAddress } from '@deepseek-ai/dsh-api-session-controller/types';
 import { Observable, defer, filter, fromEvent, switchMap, takeUntil } from 'rxjs';
 import { observeResource, type Observation } from '@hanger-source/dsh-reactive';
+import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 
 /** @internal Host 对 exact 本地句柄或 Program 来源签发的权限；不从 sessionId 反查或启动 Agent。 */
 export interface NativeSessionAccess {
@@ -13,6 +14,7 @@ export interface NativeSessionAccess {
   /** Host 已核验的根或直接子会话地址；不从裸 id 推断原生归属。 */
   readonly journalAddress: SessionAddress;
   readonly signal: AbortSignal;
+  readonly scope: Scope;
   assertCurrent(): void;
   /** 原会话header的工作目录；读取文件范围不需要冲刷或重读会话日志。 */
   workspaceRoot(): string;

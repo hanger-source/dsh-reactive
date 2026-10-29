@@ -26,10 +26,12 @@ export class AgentBindings {
     signal.throwIfAborted();
     if (this.#entries.has(agent)) throw new Error('REACTIVE_AGENT_ALREADY_BOUND');
     const scope = sourceScope.child();
+    scope.own(release);
     const resources = Promise.withResolvers<void>();
     const ended = Promise.withResolvers<void>();
     let closing = false;
     let disposing: Promise<void> | undefined;
+    let releaseOwner: (() => void) | undefined;
     let installation: (Fiber & PromiseLike<Fiber>) | undefined;
     const closeBindings = (): Promise<void> => {
       if (closing) return resources.promise;
@@ -38,7 +40,7 @@ export class AgentBindings {
       const failures = new Set<unknown>();
       try { scope.dispose(); } catch (error) { failures.add(error); }
       void (async () => {
-        try { await release(); } catch (error) { failures.add(error); }
+        try { await scope.closed; } catch (error) { failures.add(error); }
         if (failures.size === 1) throw [...failures][0];
         if (failures.size) throw new AggregateError([...failures], 'REACTIVE_AGENT_BINDINGS_DISPOSAL_FAILED');
       })().then(resources.resolve, resources.reject);
@@ -47,6 +49,8 @@ export class AgentBindings {
     const dispose = (): Promise<void> => {
       if (disposing) return disposing;
       disposing = ended.promise;
+      const owned = releaseOwner; releaseOwner = undefined;
+      owned?.();
       // 先同步撤销声明和读取；原生Fiber与Skill的异步退出保留同一回执。
       const closed = closeBindings();
       void (async () => {
@@ -66,6 +70,8 @@ export class AgentBindings {
       const closing = dispose();
       void closing.catch(error => agent.ctx.logger.error('reactive.program.disposal.failed', { sessionId: agent.id, error }));
     };
+    // 原图保留已开始的原生卸载；子Scope只加入自己的资源，避免等待父图或当前Fiber。
+    releaseOwner = sourceScope.own(dispose);
     try {
       installation = agent.ctx.plugin({ name: 'reactive-program-bindings', inject: ['tools', 'systemPrompt', 'agents', 'sessionProjections', 'userQuestions'], apply(native: Context) {
         if (closing) return;
@@ -86,11 +92,8 @@ export class AgentBindings {
       if (signal.aborted) stop();
       return entry;
     } catch (error) {
-      // 已取得的安装由compose/attach失败边界await release；构造未取得Fiber时只回收本地scope。
-      if (!installation) {
-        try { scope.dispose(); }
-        catch (cleanup) { throw new AggregateError([error, cleanup], 'REACTIVE_AGENT_INSTALLATION_FAILED'); }
-      }
+      // 同步构造不能等待；原图的owned回执继续承担全部异步清理。
+      stop();
       throw error;
     }
   }

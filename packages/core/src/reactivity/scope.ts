@@ -19,7 +19,17 @@ export class Scope {
   #availability = signal(true);
   #parent?: Scope;
   #releases = new Set<() => void>();
-  constructor(private readonly options: ScopeOptions = {}) {}
+  #pending = new Set<Promise<unknown>>();
+  #failures = new Set<unknown>();
+  #failureSnapshot?: { readonly count: number; readonly error: AggregateError };
+  #cleaning = 0;
+  #completion = Promise.withResolvers<void>();
+  /** dispose 同步撤销资格；closed 等待已经开始的清理及所有子 Scope 真正结束。 */
+  readonly closed = this.#completion.promise;
+  constructor(private readonly options: ScopeOptions = {}) {
+    // 同步调用者仍可只使用 dispose；错误同时保留给明确等待 closed 的 owner。
+    void this.closed.catch(() => {});
+  }
   get disposed() { return this.#signal.aborted; }
   get signal() { return this.#signal; }
   private trackAvailability(): void {
@@ -28,11 +38,38 @@ export class Scope {
     this.#parent?.trackAvailability();
   }
   assertActive() { this.trackAvailability(); this.#signal.throwIfAborted(); }
-  own(release: () => void): () => void {
+  /** 同步返回值不承担回执含义；PromiseLike清理由closed等待。 */
+  own(release: () => unknown): () => void {
     this.assertActive();
-    const stop = () => { if (this.#releases.delete(stop)) release(); };
+    const stop = () => {
+      if (!this.#releases.delete(stop)) return;
+      this.#cleaning++;
+      try {
+        const pending = release();
+        if (pending !== null && (typeof pending === 'object' || typeof pending === 'function')
+          && typeof Reflect.get(pending, 'then') === 'function') this.join(Promise.resolve(pending));
+      } catch (error) { this.#failures.add(error); throw error; }
+      finally { this.#cleaning--; this.settle(); }
+    };
     this.#releases.add(stop);
     return stop;
+  }
+  private join(pending: Promise<unknown>): void {
+    this.#pending.add(pending);
+    void pending.then(
+      () => { this.#pending.delete(pending); this.settle(); },
+      error => { this.#failures.add(error); this.#pending.delete(pending); this.settle(); },
+    );
+  }
+  private settle(): void {
+    if (!this.#released || this.#cleaning || this.#pending.size) return;
+    if (this.#failures.size) {
+      if (this.#failureSnapshot?.count !== this.#failures.size) this.#failureSnapshot = {
+        count: this.#failures.size, error: new AggregateError(this.#failures, 'REACTIVE_SCOPE_DISPOSAL_FAILED'),
+      };
+      this.#completion.reject(this.#failureSnapshot.error);
+    }
+    else this.#completion.resolve();
   }
   child() {
     this.assertActive();
@@ -40,6 +77,8 @@ export class Scope {
     child.#parent = this;
     child.#signal = AbortSignal.any([this.signal, child.signal]);
     const release = this.own(() => child.dispose());
+    // 子 owner 提前退出会撤下 release，但它开始过的异步清理仍属于父 owner 的结算。
+    this.join(child.closed);
     child.own(() => release());
     return child;
   }
@@ -85,18 +124,33 @@ export class Scope {
   dispose(reason: unknown = new ScopeDisposedError()) {
     if (this.#released) return;
     this.#released = true;
+    this.#cleaning++;
     const failures: unknown[] = [];
+    let failure: AggregateError | undefined;
     try {
       batch(() => {
         // 派生缓存先失效；abort回调和子Scope清理重入时不能再读取旧值。
-        this.#availability.value = false;
-        this.#controller.abort(reason);
+        try { this.#availability.value = false; } catch (error) { failures.push(error); }
+        try { this.#controller.abort(reason); } catch (error) { failures.push(error); }
         for (const release of [...this.#releases].reverse()) {
           try { release(); } catch (error) { failures.push(error); }
         }
       });
     } catch (error) { failures.push(error); }
-    if (failures.length) throw new AggregateError(failures, 'REACTIVE_SCOPE_DISPOSAL_FAILED');
+    finally {
+      for (const error of failures) this.#failures.add(error);
+      if (failures.length) {
+        failure = new AggregateError(failures, 'REACTIVE_SCOPE_DISPOSAL_FAILED');
+        // 同一份关闭失败经同步入口和异步回执交付时保持身份，供上层按事实去重。
+        // 历史手动释放失败仍只进入完整 closed 回执，不扩大本轮同步抛错。
+        if (new Set(failures).size === this.#failures.size) this.#failureSnapshot = {
+          count: this.#failures.size, error: failure,
+        };
+      }
+      this.#cleaning--;
+      this.settle();
+    }
+    if (failure) throw failure;
   }
 }
 

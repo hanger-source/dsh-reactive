@@ -20,6 +20,10 @@
 
 `ResourceInstance`、`ResourceValue`、`shareResource` 和显式指定 owner signal 的 `ResourceReader` 把 owner 撤销表达为资源失效。仍活跃的观察先收到原 `signal.reason` 的 error Observation，再正常完成；退出后订阅只取得新的撤销观察，不连接来源或回放旧业务值。`peek`、`read` 和回调式 `subscribe` 拒绝已经结束的 owner。`values$` 在自身 owner 退出时正常完成；owner 活跃时的查询错误仍是值流错误。显式 owner 的资源在来源正常完成后继续观察有效性，来源 I/O 按其本来完成时点释放；owner 退出才结束这种观察。空完成或停在 pending 后完成交付 EmptyError。未指定 owner 的 ResourceReader 与普通 Observable 保留来源的有限语义。
 
+`Scope.dispose()` 同步 abort 并执行清理，`scope.closed` 等待该 Scope 实际持有的已开始 Promise、异步清理及子 Scope 结算；清理失败可使其拒绝。手动释放已经开始的异步清理后，即使子 Scope 已撤下，父 Scope 仍等待它。停止观察不等于取消已开始的业务，也不意味着等待独立业务 owner 的整个 Operation 结束。Reaction 失败以 `run.settled` 的 failed 结果结算，不自动使 `Scope.closed` 拒绝。
+
+最后一个冷会话借用释放时，程序图同步退出；应用关闭仍等待已经收集的图所持有的真实工作和清理。`host.close(sessionId)` 结束原生 Agent 挂载，仍有借用的 Program 冷图保持原身份；工作区关系则直到实际 Workspace owner 退出才停止并结算。
+
 Scope 子树共享父撤销的原原因，父退出后即使尚在执行其他同步清理，子资源也已经不可使用。实际释放仍走原有 Scope 树，父汇总子清理错误；逻辑撤销不代替原生异步释放的完成回执。
 
 `useObservable(factory, deps)` 用 React `useMemo` 保持来源身份，并以 `useSyncExternalStore` 观察当前快照。factory 只构造 Observable；订阅在提交后的观察阶段建立。首次未发出为 pending，成功发出为 ready，来源错误为 error；空完成产生错误，已经发出后完成保留最后值。观察退出后断开所属查询连接，再次观察时按该来源及订阅语义重新准备。

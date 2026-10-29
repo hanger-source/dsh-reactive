@@ -77,7 +77,7 @@ export class ReactionRun<D extends ReactionContract> {
     this.#scope.assertActive();
     if (this.#activated || this.#current.value.status !== 'running') throw new Error('REACTIVE_REACTION_ALREADY_STARTED');
     this.#activated = true;
-    this.#release = this.#scope.own(() => this.stop());
+    this.#release = this.#scope.own(() => { this.stop(); return this.settled; });
     let sequence = 0;
     const subscriber = new Subscriber<ReactionEvent<D>>({
       next: event => {

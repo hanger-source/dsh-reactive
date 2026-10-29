@@ -221,10 +221,12 @@ export class Workspaces {
     this.verify(session, workspace, environment);
     await workspace.native.attachSession(session.id);
   }
-  dispose() {
+  async dispose(): Promise<void> {
     try { this.#scope.dispose(); } catch (error) { this.#failures.add(error); }
     this.#entries.clear();
     this.#accesses.clear();
+    this.#membershipObservers.clear();
+    try { await this.#scope.closed; } catch (error) { this.#failures.add(error); }
     if (this.#failures.size) throw new AggregateError([...this.#failures], 'REACTIVE_WORKSPACES_DISPOSAL_FAILED');
   }
 }

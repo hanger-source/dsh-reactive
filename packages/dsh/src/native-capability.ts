@@ -181,6 +181,7 @@ export class NativeCapabilityOwner {
     this.#draining = completion.promise;
     void (async () => {
       try { this.stopObservations(); } catch { /* 已保存清理失败，仍等待每个原生调用。 */ }
+      try { await this.scope.closed; } catch (error) { this.#failures.add(error); }
       while (this.#pending.size) {
         const results = await Promise.allSettled(this.#pending);
         for (const result of results) if (result.status === 'rejected') this.#failures.add(result.reason);

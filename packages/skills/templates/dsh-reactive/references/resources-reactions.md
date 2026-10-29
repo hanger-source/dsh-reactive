@@ -45,6 +45,8 @@ export function inventory(scope: Scope, service: {
 
 资源 owner 退出时，仍在观察的 observations$ 先交付 error Observation，其 error 是原 signal.reason，再正常完成；迟到订阅只取得撤销观察，不回放旧值或重连。values$ 在自身 owner 退出时正常完成，活跃期间的查询错误仍沿值流报错。借入资源的 useResource、Context 和公开资源消费同一失效，不单独保存旧 ready。普通有限 Observable 的最后值语义保留；跨 owner 借用需要明确的资源对象或 shareResource({ signal })，不要从裸流完成推测 owner。
 
+`scope.dispose()` 同步撤销并清理；`scope.closed` 等待该 Scope 实际持有的已开始 Promise、异步清理及子 Scope，清理错误可使其拒绝。手动释放已开始的异步清理，即使子 Scope 已撤下，父 Scope 仍等待它。Reaction 失败由 `run.settled` 以 failed 结果结算，不自动使 `closed` 拒绝；关闭观察不取消业务，也不等待独立业务 owner 的整个 Operation。
+
 父 Scope 撤销立即传播到所有子 Scope，后代不能在同步清理重入中读取旧事实或启动 effect；实际清理仍由 Scope 树汇总，子 signal.reason 保留父的原原因。
 
 跨 Scope 的 computed 同时依赖实际读取的值与来源的读取资格。来源退出后，value/get/peek/read 拒绝旧缓存；peek 不跟踪业务值变化。`changes$` 按 RxJS 合同以 error 终止，分支恢复后重新订阅；`subscribe(accept, onError?)` 通过错误回调报告依赖失败并继续观察条件分支的恢复，省略时使用 owner 的 observerError。Resource 的 pending/error/ready 继续沿同一个 Observation 表达。
@@ -80,6 +82,8 @@ ready 是最近一次读取切面，不是永久新鲜保证。单父目录的�
 已有普通 Observable 直接交给 `useShared(source$)`、`useObservable(source$)` 或 `useRelation(source$)`；确实构造管道时再使用 factory 与 dependencies。它们保留流元素的原类型，不根据业务值的 status 字段推断资源，也不把 error Observation 当成 RxJS error。
 
 `useShared` 与观察流形式的 `useResource` 由 RxJS 持有唯一共享连接及重放值。来源完成或报错后，可在 Program 活跃期间按原 source identity 读取终止事实；Program 失败或退出会停止既有观察并清空该缓存。之前捕获的流在迟到订阅、包括完成清理期间的重入订阅时直接完成，不重放旧值或错误，也不重新打开尚未读取的来源。直接借入资源对象的 observations$ 则保留原来源及原 owner；Program 退出不销毁工作区或业务系统拥有的事实。
+
+组件自身的持续关系用 `useScope(setup, dependencies)`：commit effect 建立子 Scope，setup 同步执行，可返回同步或异步清理函数；卸载或依赖变化立即停止关系，StrictMode 重新 setup 使用新 Scope，未提交的 render 不启动关系。在 setup 中可用 `createReaction(scope, options)` 并显式 `start()`，与资源、标准 RxJS 和业务 hook 组合。该 Scope 只拥有这一关系，不拥有共享 Program 或 Workspace。
 
 需要普通函数读取、写后失效或将对象交给其他业务 hook 时，用 `useResourceInstance(implementation, params)` 取得相同实例，再按需 `useResource(instance)`。取得实例不启动读取；不要为 read、Context 和公开 View 各建一个资源。
 

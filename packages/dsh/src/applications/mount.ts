@@ -109,7 +109,7 @@ export async function mountAssembledApplication<E extends readonly AnyEnvironmen
                                 }
                             });
                         } catch (error) {
-                            try { if (host) await host.drain(); else workspaces.dispose(); }
+                            try { if (host) await host.drain(); else await workspaces.dispose(); }
                             catch (cleanup) { throw new AggregateError([error, cleanup], 'REACTIVE_APPLICATION_STARTUP_FAILED'); }
                             throw error;
                         }

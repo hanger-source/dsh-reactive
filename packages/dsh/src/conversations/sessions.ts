@@ -133,6 +133,9 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         try { await entry?.dispose(); } catch (error) { failures.push(error); }
         if (entry) {
             try { this.collect(entry.session); } catch (error) { failures.push(error); }
+            if (entry.session.scope.disposed) {
+                try { await entry.session.scope.closed; } catch (error) { failures.push(error); }
+            }
         }
         if (released && this.#owned.get(handle.agent.id) === handle) this.#owned.delete(handle.agent.id);
         if (failures.length === 1) throw failures[0];
@@ -167,7 +170,8 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
     stopPresets(): Promise<void> { return this.#presets.dispose(); }
     async releasePrograms(): Promise<unknown[]> {
         const failures: unknown[] = [];
-        for (const entry of this.#sessions.values()) {
+        const sessions = [...this.#sessions.values()];
+        for (const entry of sessions) {
             try {
                 entry.scope.dispose();
             }
@@ -176,6 +180,8 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             }
         }
         this.#sessions.clear();
+        const closed = await Promise.allSettled(sessions.map(entry => entry.scope.closed));
+        failures.push(...closed.flatMap(result => result.status === 'rejected' ? [result.reason] : []));
         // 资格退出同步发生；应用关闭仍加入自己取得读侧的实际I/O与unwatch回执。
         while (this.#fileClosings.size) await Promise.allSettled([...this.#fileClosings]);
         while (this.#journalClosings.size) await Promise.allSettled([...this.#journalClosings]);
@@ -269,6 +275,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             if (agent) {
                 try { await this.programs().release(agent); } catch (cleanup) { failures.push(cleanup); }
             }
+            try { await scope.closed; } catch (cleanup) { failures.push(cleanup); }
             if (failures.length > 1) throw new AggregateError(failures, 'REACTIVE_CONVERSATION_COMPOSE_FAILED');
             throw error;
         }
@@ -351,6 +358,9 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             try { await this.programs().release(agent); } catch (cleanup) { failures.push(cleanup); }
             if (entry) {
                 try { this.collect(entry.session); } catch (cleanup) { failures.push(cleanup); }
+                if (entry.session.scope.disposed) {
+                    try { await entry.session.scope.closed; } catch (cleanup) { failures.push(cleanup); }
+                }
             }
             if (failures.length > 1) throw new AggregateError(failures, 'REACTIVE_CONVERSATION_ATTACH_FAILED');
             throw error;
@@ -376,16 +386,18 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         if (!this.options.files) throw new SessionFilesUnavailableError(access.sessionId);
         const reader = this.options.files.forSession(source);
         this.#fileReaders.set(source, reader);
-        const close = () => {
+        const release = access.scope.own(() => {
             let completion: Promise<void>;
             try { completion = reader.dispose(); }
-            catch (error) { this.#cleanupFailures.add(error); return; }
+            catch (error) { this.#cleanupFailures.add(error); throw error; }
             this.#fileClosings.add(completion);
             void completion.then(() => this.#fileClosings.delete(completion), error => {
                 this.#cleanupFailures.add(error);
                 this.#fileClosings.delete(completion);
             });
-        };
+            return completion;
+        });
+        const close = () => { try { release(); } catch (error) { this.#cleanupFailures.add(error); } };
         const signal = AbortSignal.any([this.signal, access.signal]);
         signal.addEventListener('abort', close, { once: true });
         if (signal.aborted) { close(); signal.throwIfAborted(); }
@@ -408,16 +420,18 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         }
         const reader = this.#journal.forSession(source);
         this.#journals.set(source, reader);
-        const close = () => {
+        const release = access.scope.own(() => {
             let completion: Promise<void>;
             try { completion = reader.dispose(); }
-            catch (error) { this.#cleanupFailures.add(error); return; }
+            catch (error) { this.#cleanupFailures.add(error); throw error; }
             this.#journalClosings.add(completion);
             void completion.then(() => this.#journalClosings.delete(completion), error => {
                 this.#cleanupFailures.add(error);
                 this.#journalClosings.delete(completion);
             });
-        };
+            return completion;
+        });
+        const close = () => { try { release(); } catch (error) { this.#cleanupFailures.add(error); } };
         const signal = AbortSignal.any([this.signal, access.signal]);
         signal.addEventListener('abort', close, { once: true });
         if (signal.aborted) { close(); signal.throwIfAborted(); }
@@ -435,7 +449,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             ? Object.freeze({ kind: 'subagent' as const, parentSessionId: SessionId(session.child.command.parentSessionId),
                 childSessionId: session.header.id, mode: 'continuable' as const })
             : Object.freeze({ kind: 'session' as const, sessionId: session.header.id });
-        registerNativeSession(handle, { context: this.ctx, sessionId: session.header.id, journalAddress, signal, assertCurrent,
+        registerNativeSession(handle, { context: this.ctx, sessionId: session.header.id, journalAddress, signal, scope: session.scope, assertCurrent,
             workspaceRoot: () => {
                 assertCurrent();
                 const directory = session.header.cwd;
@@ -617,6 +631,9 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
                     try { session.scope.dispose(); } catch (cleanup) { failures.push(cleanup); }
                 }
                 try { await this.programs().release(previous.agent); } catch (cleanup) { failures.push(cleanup); }
+                if (session) {
+                    try { await session.scope.closed; } catch (cleanup) { failures.push(cleanup); }
+                }
                 // 这里只保留清理/settle归属；旧公开图与旧资格不恢复。
                 if (this.ctx.agents.get(previous.agent.id) === previous.agent) this.#entries.set(previous.agent, previous);
                 if (failures.length > 1) throw new AggregateError(failures, 'REACTIVE_CONVERSATION_REBIND_FAILED');
@@ -715,6 +732,9 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
                     try { await this.rollbackActivation(handle); } catch (cleanup) { failures.push(cleanup); }
                 }
                 try { this.collect(session); } catch (cleanup) { failures.push(cleanup); }
+                if (session.scope.disposed) {
+                    try { await session.scope.closed; } catch (cleanup) { failures.push(cleanup); }
+                }
                 if (failures.length > 1) throw new AggregateError(failures, 'REACTIVE_CONVERSATION_ACTIVATION_FAILED');
                 throw error;
             }

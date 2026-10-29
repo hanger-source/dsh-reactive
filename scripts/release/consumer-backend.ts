@@ -1,10 +1,10 @@
-import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction, composeSurface, combineResources, mapResource, switchResource, abortable,
+import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction, createReaction, composeSurface, combineResources, mapResource, switchResource, abortable,
   resourceView, shareResource, type Scope, type ResourceSource, type OperationContract, type OperationHandle,
   type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, type NativeToolAdmission, z } from '@hanger-source/dsh-reactive';
 import { concatMap, firstValueFrom, map, type Observable } from 'rxjs';
 import { createElement } from 'react';
 import { Context, Expose, Module, Skill, NativeTools, HumanInput, implementModule, implementProgram, useAction, useResource, useResourceInstance, useReaction, useBeforeStep,
-  useObservable, useShared, useSharedResource, useRelation, type HumanInputProps } from '@hanger-source/dsh-reactive/program';
+  useObservable, useShared, useSharedResource, useRelation, useScope, type HumanInputProps } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, mountApplication, type ApplicationAssembly, type ConversationHandle, type ServiceConversation, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-reactive-dsh/tools';
@@ -103,6 +103,12 @@ export function useBackendBindings(resource: ResourceImplementation<typeof curre
 }
 export const useBackendValues = (source: Observable<number>) => useObservable(useShared(source));
 export function useBackendRelation(relation: Observable<void>) { useRelation(relation); }
+export function useComponentBackend(target: string, changes$: Observable<number>, save: (target: string, value: number) => Promise<number>) {
+  useScope(scope => {
+    createReaction(scope, { event: z.number(), result: z.number(), observe: () => changes$, operator: concatMap,
+      execute: value => save(target, value) }).start();
+  }, [target, changes$, save]);
+}
 export function useLocalBackend(target: string, changes$: Observable<number>, save: (target: string, value: number) => Promise<number>) {
   const resource = useResourceInstance(() => ({ value: z.string(), read: () => target }), [target]);
   const action = useAction(() => ({ name: 'local_save', description: '保存明确目标',

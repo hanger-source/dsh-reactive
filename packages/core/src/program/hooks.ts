@@ -6,6 +6,7 @@ import type { Json } from '../conversations/protocol.ts';
 import type { ActionEligibility } from '../actions/eligibility.ts';
 import { bindOperation, type BoundOperation, type OperationAccessContext, type OperationBindingReference, type OperationCommand, type OperationContract, type OperationFeedbackPayload, type OperationFeedbackRead, type OperationOwner, type OperationReference } from '../operations/contract.ts';
 import { Scope } from '../reactivity/scope.ts';
+import { synchronous } from '../reactivity/synchronous.ts';
 import { type Observation } from '../resources/observation.ts';
 import { bindResource, type ResourceInstance } from '../resources/binding.ts';
 import { resourceObservations, type ResourceSource } from '../resources/source.ts';
@@ -278,6 +279,38 @@ export function useRelation<T>(source: Observable<T> | (() => Observable<T>), de
     else source$.subscribe(subscriber);
     return () => scope.dispose();
   }, [owner, source$]);
+}
+
+export type ScopeSetup = (scope: Scope) => void | (() => void | PromiseLike<unknown>);
+
+/**
+ * 提交后为本组件建立真实子Scope；setup同步构造关系，退出立即停止且由Program等待实际释放。
+ * 每次setup都有独立代际，StrictMode重建不复活已经结束的Scope。
+ * 传入的是本关系自己的owner，不是共享Program或Workspace的销毁权。
+ */
+export function useScope(setup: ScopeSetup, dependencies: DependencyList): void {
+  const owner = useOwner();
+  const current = useMemo(() => setup, dependencies);
+  useEffect(() => {
+    const scope = owner.reactivityScope.child();
+    const finished = Promise.withResolvers<void>();
+    let settingUp = true;
+    let cleanup: ReturnType<ScopeSetup> = undefined;
+    // setup可同步导致退出；其稍后返回的清理仍属于这一Scope的真实关闭回执。
+    scope.own(() => settingUp ? finished.promise.then(() => cleanup?.()) : cleanup?.());
+    void scope.closed.catch(error => owner.fail(error));
+    try {
+      const result = synchronous(current(scope), 'SCOPE_SETUP');
+      if (result !== undefined && typeof result !== 'function') throw new TypeError('REACTIVE_SCOPE_CLEANUP_INVALID');
+      cleanup = result;
+    } catch (error) {
+      let failure = error;
+      try { scope.dispose(error); }
+      catch (cleanupError) { failure = new AggregateError([error, cleanupError], 'REACTIVE_SCOPE_SETUP_FAILED'); }
+      owner.fail(failure);
+    } finally { settingUp = false; finished.resolve(); }
+    return () => scope.dispose();
+  }, [owner, current]);
 }
 
 /** 声明幂等的步骤前检查；依赖替换或组件退出撤销本登记的信号和等待，真实失败仍交宿主处理。 */
