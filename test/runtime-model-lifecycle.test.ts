@@ -116,8 +116,9 @@ test('官方模型恢复链重试请求、压缩历史并卸载图片，取消�
     assert.equal(retried.data.failure.code, 'RATE_LIMIT');
     assert.ok(events.some(event => event.type === 'llm/retry-started' && event.data.retryId === retried.data.retryId));
     const calls = runtime.native.sessionProjections.stateOf(agent.session, 'reactiveInputs')!.calls;
-    assert.equal(calls['record-once']?.inputs[0]?.requestId, 'record');
-    assert.equal(calls['record-once']?.inputs[0]?.actorId, 'merchant-operator');
+    const recorded = Object.values(calls).find(call => call.callId === 'record-once');
+    assert.equal(recorded?.inputs[0]?.requestId, 'record');
+    assert.equal(recorded?.inputs[0]?.actorId, 'merchant-operator');
 
     stage = 'pressure';
     const material = 'Supplier itinerary revision departure weekdays contact channel delivery facts. '.repeat(80);
@@ -183,7 +184,8 @@ test('官方模型恢复链重试请求、压缩历史并卸载图片，取消�
     assert.ok(pressureSummary.data.shadowedSeqs.every(seq => !restored.session.surface.nodes.includes(seq)));
     assert.ok(restored.session.snapshotEvents().some(event => event.type === 'image/offload' && event.data.targets.some(target => target.seq === imageInput.seq)));
     await runtime.native.attachments.readImage(originalImage.attachment);
-    assert.equal(runtime.native.sessionProjections.stateOf(restored.session, 'reactiveInputs')!.calls['record-once']?.inputs[0]?.requestId, 'record');
+    assert.equal(Object.values(runtime.native.sessionProjections.stateOf(restored.session, 'reactiveInputs')!.calls)
+      .find(call => call.callId === 'record-once')?.inputs[0]?.requestId, 'record');
     assert.deepEqual(effects, ['merchant-a']);
     cold.release(); resumed.release();
   } finally { stop(); await runtime.dispose(); }
