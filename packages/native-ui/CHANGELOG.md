@@ -2,6 +2,15 @@
 
 此文件保留源码版本准备记录；条目和版本号本身不表示 npm 已发布或公共 API 已稳定。
 
+## 0.24.0
+
+### Patch Changes
+
+- Updated dependencies [d1bcc55]
+- Updated dependencies [6db04b3]
+  - @hanger-source/dsh-reactive@0.24.0
+  - @hanger-source/dsh-reactive-client@0.24.0
+
 ## 0.23.0
 
 ### Patch Changes

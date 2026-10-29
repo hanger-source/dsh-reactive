@@ -2,6 +2,17 @@
 
 此文件保留源码版本准备记录；条目和版本号本身不表示 npm 已发布或公共 API 已稳定。
 
+## 0.24.0
+
+### Minor Changes
+
+- d1bcc55: 远程 Action 在分派前固定 UUID 受理身份，受理回执未知错误携带 invocationId，调用者可沿原身份只读查回。TypedRPC startAction 请求必须提供该身份；不自动重发或推断业务未执行。
+
+  宿主唯一调用记录在解析与准入前登记身份，相同请求返回原 Invocation，不同请求冲突，同步重入明确报告受理中。普通本地自动身份保留原输入能力；显式身份使用 JSON 原值并受既有进程 owner、保留期和数量限制约束。
+- 6db04b3: 模块通过 useWorkspace 和 useProgramSession 借用真实所属环境，无需逐层转交会话与工作区。类型化输入和提交须核验当前 Program 合同，普通输入保持原服务参与语义。
+
+  OperationFollow 的结果观察与恢复筛选共同核验正式结果、原 continuation 与完整 wait；同名无关请求不再冒认原操作反馈或阻止恢复。
+
 ## 0.23.0
 
 ### Minor Changes
