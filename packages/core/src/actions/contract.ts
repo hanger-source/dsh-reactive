@@ -1,6 +1,9 @@
 import { BehaviorSubject, ReplaySubject, Subject, firstValueFrom, map, takeWhile, type Observable } from 'rxjs';
 import { z } from 'zod';
 import { ResourceReader } from '../resources/reader.ts';
+import { shareResource } from '../resources/sharing.ts';
+import type { ResourceSource } from '../resources/source.ts';
+import { retainActionEligibility, type ActionEligibility } from './eligibility.ts';
 import { abortable } from '../reactivity/observable.ts';
 import type { Observation } from '../resources/observation.ts';
 import type { CancellationOptions, Continuation, InputReference, Json, WaitReference } from '../conversations/protocol.ts';
@@ -138,6 +141,8 @@ export type ActionOperationEvent =
   | { readonly phase: 'receipt'; readonly owner: OperationOwnerReference; readonly command: Json; readonly reference: Json };
 
 export interface ActionBindingOptions<D extends ActionContract> {
+  /** 同一业务前提供声明、发现与所有调用入口借用；不替代每次 admit。 */
+  readonly eligibility?: ResourceSource<ActionEligibility>;
   /** 声明 owner 当前是否已提交并激活；临时退出不等同于永久 release。 */
   active?(): boolean;
   /** 当前声明代际的准入寿命；不会取消已经进入 execute 的业务。 */
@@ -188,6 +193,8 @@ export interface ActionReference {
   readonly bindingId: string;
   readonly scope: unknown;
   readonly released: boolean;
+  /** 未声明共同前提时省略；观察不受理调用，也不取得来源 owner 的释放权。 */
+  readonly eligibility?: ResourceReader<ActionEligibility>;
 }
 
 /** 捕获的绑定已撤下或被另一个真实绑定替换；拒绝本次新受理。 */
@@ -327,6 +334,7 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
     const scope = ownJson(definition.scope.parse(captured ? captured.scope : rawScope), 'REACTIVE_ACTION_SCOPE_NOT_JSON');
     let released = false;
     const lifetime = new AbortController();
+    const eligibility = options.eligibility === undefined ? undefined : shareResource(options.eligibility, { signal: lifetime.signal });
     const invocations = new Subject<ActionInvocation<Definition>>();
     const active = new Set<ActionInvocation<Definition>>();
     let currentActive: Extract<Observation<readonly ActionInvocation<Definition>[]>, { status: 'ready' }> = Object.freeze({
@@ -441,8 +449,13 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
       let finished = false, invocation: ActionInvocation<Definition> | undefined;
       const result = (async () => {
         let phase: InvocationPhase = 'input';
+        let qualification: ReturnType<typeof retainActionEligibility> | undefined;
+        const releaseQualification = () => {
+          const retained = qualification; qualification = undefined; retained?.release();
+        };
         let prepared: { readonly owner: OperationOwnerReference; readonly command: Json } | undefined;
         let started = false;
+        let executionCleanup: { readonly error: unknown } | undefined;
         try {
           assertActive();
           call.signal.throwIfAborted();
@@ -458,8 +471,12 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
           const declarationSignal = options.admissionSignal?.();
           const admissionSignal = AbortSignal.any([signal, lifetime.signal,
             ...(declarationSignal ? [declarationSignal] : []), ...(callerAdmissionSignal ? [callerAdmissionSignal] : [])]);
+          qualification = eligibility ? retainActionEligibility(definition.name, eligibility, admissionSignal) : undefined;
+          const admitting = qualification ? AbortSignal.any([admissionSignal, qualification.signal]) : admissionSignal;
           try {
-            await firstValueFrom(abortable(() => options.admit(input, call, execution, admissionSignal), admissionSignal));
+            if (qualification) await qualification.ready;
+            admitting.throwIfAborted();
+            await firstValueFrom(abortable(() => options.admit(input, call, execution, admitting), admitting));
           } catch (error) {
             // 宿主拥有具名出口与绑定身份的精确诊断；声明退出后仍由原签发者核验。
             if (declarationSignal?.aborted) executionGuards.get(execution)?.();
@@ -467,30 +484,40 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
           }
           // 等待准入期间退出的声明没有受理执行；已进入 execute 后不再依赖声明。
           assertActive();
-          admissionSignal.throwIfAborted();
+          admitting.throwIfAborted();
+          qualification?.check();
           call.signal.throwIfAborted();
           let command: Json | undefined;
           const mapping = definition.operation;
           if (mapping && operationOwner) {
             phase = 'operation';
             command = operationCommand(operationOwner, mapping.command(input, scope, origin));
+            admitting.throwIfAborted();
+            qualification?.check();
             prepared = { owner: operationOwner, command };
             await options.operation?.({ phase: 'prepare', owner: operationOwner, command }, execution);
             // 持久准备也属于受理之前；退出声明不允许在等待之后开始新副作用。
             assertActive();
-            admissionSignal.throwIfAborted();
+            admitting.throwIfAborted();
+            qualification?.check();
             call.signal.throwIfAborted();
           }
           // 准入和持久准备的所有异步等待结束后，在副作用开始的同一同步边界核验宿主权威。
           executionGuards.get(execution)?.();
-          admissionSignal.throwIfAborted();
+          admitting.throwIfAborted();
+          qualification?.check();
           call.signal.throwIfAborted();
           phase = 'execute';
           let rawOutput: z.input<O>;
           try {
             bodyActive = true;
             started = true;
-            const returned = execute(input, call);
+            let returned: ReturnType<typeof execute>;
+            try { returned = execute(input, call); }
+            finally {
+              try { releaseQualification(); }
+              catch (error) { executionCleanup = { error }; }
+            }
             // 先真正进入业务，再交付可同步重入的活动通知。
             publishActivity({ state: 'running' });
             rawOutput = isPromiseLike(returned) ? await returned : returned;
@@ -515,25 +542,33 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
           // 观察投影失败不改写已经返回的业务结果，更不冒充 tool.settled。
           try {
             const observation = observe(output);
-            publishActivity({ state: 'returned', ...(observation === undefined ? {} : { observation }) });
+            publishActivity({ state: 'returned', ...(observation === undefined ? {} : { observation }),
+              ...executionCleanup ? { observationError: executionCleanup.error } : {} });
           } catch (observationError) {
-            publishActivity({ state: 'returned', observationError });
+            publishActivity({ state: 'returned', observationError: executionCleanup
+              ? new AggregateError([observationError, executionCleanup.error], 'REACTIVE_ACTION_OBSERVATION_FAILED') : observationError });
           }
           return output;
         } catch (error) {
-          let failure = error;
+          let failure = executionCleanup && executionCleanup.error !== error
+            ? new AggregateError([error, executionCleanup.error], 'REACTIVE_ACTION_ELIGIBILITY_CLEANUP_FAILED') : error;
           // prepare 可已跨过持久 ACK；只有本框架确定尚未调用 execute 时才能结案。
           // 一旦进入业务函数，异常可能表示未知受理，不能替 owner 猜测 rejected。
           if (prepared && !started) {
             try { await options.operation?.({ phase: 'not-started', ...prepared }, execution); }
             catch (checkpointError) { failure = new AggregateError([error, checkpointError], 'REACTIVE_ACTION_NOT_STARTED_CHECKPOINT_FAILED'); }
           }
+          try { releaseQualification(); }
+          catch (cleanupError) { failure = new AggregateError([failure, cleanupError], 'REACTIVE_ACTION_ELIGIBILITY_CLEANUP_FAILED'); }
           publishActivity({ state: 'failed', phase, error: failure });
           throw failure;
         } finally {
-          finished = true;
-          if (invocation && active.delete(invocation)) publishActive();
-          if (released && !active.size) activeStates.complete();
+          try { releaseQualification(); }
+          finally {
+            finished = true;
+            if (invocation && active.delete(invocation)) publishActive();
+            if (released && !active.size) activeStates.complete();
+          }
         }
       })();
       // activity$ 也是正式的失败观察入口；仅观察它不制造未处理 Promise 拒绝。
@@ -561,6 +596,7 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
       invocations$: invocations.asObservable(),
       activeInvocations,
       activeInvocations$: activeInvocations.values$,
+      ...eligibility ? { eligibility } : {},
       observe,
       attach,
       locate,

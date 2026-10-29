@@ -110,6 +110,12 @@ defineAction 和 implementAction 都不执行业务；useAction(prepareMerchant,
 
 Action 绑定保存已解析目标的自有冻结快照。它不会在执行途中改用页面最新选择。原生工具取得真实 callId、rootCallId、parentCallId、输入关联和适用 Goal；独立参与者调用有自己的身份，不从环境中借用当前 Goal 权限。
 
+### 共同业务资格
+
+绑定可以接收 `eligibility: ResourceSource<ActionEligibility>`，其中 `ActionEligibility` 是 `{ allowed: true } | { allowed: false, reason: string }`。`bindAction` 在绑定选项中传入；`useAction(implementation, target, dependencies, { eligibility })` 使用第四个参数，局部 factory 则在返回选项中提供 `eligibility`。绑定通过 `action.eligibility` 暴露只读 `ResourceReader`，保留资源 Observation 的 pending、ready（允许或拒绝）和 error，不把拒绝压成资源错误。
+
+`Offer` 自动读取绑定的资格；`enabled` 仍是模型声明开关，不是执行授权。`Context` 可传入同一资格源或 `action.eligibility`：拒绝时撤下声明，pending/error 时必需 Context 阻塞准备，`required={false}` 则撤下该声明，其他模块继续。`Expose` 可以稳定暴露 Action 合同，资格变化不要求撤下公开合同。共同前提不能替代对原始输入、真实调用者、目标和事务的逐次 `admit` 核验。
+
 ## 组合当前现场
 
 领域模块定义自己的局部 Surface。应用用同一份模块合同组合多个实例，框架产生根 Surface、精确 SDK 路径和带身份的挂载点。

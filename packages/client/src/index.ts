@@ -282,7 +282,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
           };
           // schema 输出只在明确合同的传输边界恢复类型；不要求 scope 支持反向 encode。
           return Object.freeze(Object.assign(invoke, { definition: contract, bindingId: binding.bindingId,
-            scope: binding.scope as ActionScope<D> }));
+            scope: binding.scope as ActionScope<D>, ...captured.eligibility ? { eligibility: captured.eligibility } : {} }));
         };
         const invocationAt = async <D extends ActionContract>(name: string, contract: D, id: string,
           options: CancellationOptions = {}): Promise<ActionInvocation<D>> => {

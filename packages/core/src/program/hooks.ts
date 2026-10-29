@@ -3,6 +3,7 @@ import { EmptyError, ReplaySubject, Subscriber, defer, fromEvent, isObservable, 
 import type { z } from 'zod';
 import { bindAction, implementAction, type LocalActionOptions, type ActionCallContext, type ActionDefinition, type ActionExecutionContext, type ActionImplementation, type ActionOperationEvent, type ActionReference, type BoundAction } from '../actions/contract.ts';
 import type { Json } from '../conversations/protocol.ts';
+import type { ActionEligibility } from '../actions/eligibility.ts';
 import { bindOperation, type BoundOperation, type OperationAccessContext, type OperationBindingReference, type OperationCommand, type OperationContract, type OperationFeedbackPayload, type OperationFeedbackRead, type OperationOwner, type OperationReference } from '../operations/contract.ts';
 import { Scope } from '../reactivity/scope.ts';
 import { type Observation } from '../resources/observation.ts';
@@ -58,19 +59,22 @@ function useOwner(): ProgramHookOwner {
  * 局部 factory 同时返回实现选项与 target，沿用同一绑定和可信来源，不隐式执行。
  * 普通调用由宿主逐次建立来源，原生调用仍显式传入其真实执行关联。
  */
+export interface UseActionOptions { readonly eligibility?: ResourceSource<ActionEligibility>; }
+
 export function useAction<I extends z.ZodType, O extends z.ZodType, S extends z.ZodType<Json>, Observed extends Json = never,
   P extends OperationContract = never>(
   implementation: ActionImplementation<ActionDefinition<I, O, S, Observed, P>>, target: () => z.input<NoInfer<S>>, dependencies: DependencyList,
+  options?: UseActionOptions,
 ): BoundAction<ActionDefinition<I, O, S, Observed, P>, true>;
 export function useAction<I extends z.ZodType, O extends z.ZodType, S extends z.ZodType<Json>, Observed extends Json = never,
   P extends OperationContract = never>(
-  factory: () => LocalActionOptions<I, O, S, Observed, P> & { readonly target: z.input<NoInfer<S>> }, dependencies: DependencyList,
+  factory: () => LocalActionOptions<I, O, S, Observed, P> & { readonly target: z.input<NoInfer<S>> } & UseActionOptions, dependencies: DependencyList,
 ): BoundAction<ActionDefinition<I, O, S, Observed, P>, true>;
 export function useAction<I extends z.ZodType, O extends z.ZodType, S extends z.ZodType<Json>, Observed extends Json = never,
   P extends OperationContract = never>(
   source: ActionImplementation<ActionDefinition<I, O, S, Observed, P>>
-    | (() => LocalActionOptions<I, O, S, Observed, P> & { readonly target: z.input<NoInfer<S>> }),
-  targetOrDependencies: (() => z.input<S>) | DependencyList, dependencies?: DependencyList,
+    | (() => LocalActionOptions<I, O, S, Observed, P> & { readonly target: z.input<NoInfer<S>> } & UseActionOptions),
+  targetOrDependencies: (() => z.input<S>) | DependencyList, dependencies?: DependencyList, options?: UseActionOptions,
 ): BoundAction<ActionDefinition<I, O, S, Observed, P>, true> {
   const owner = useOwner();
   const local = typeof source === 'function';
@@ -79,8 +83,10 @@ export function useAction<I extends z.ZodType, O extends z.ZodType, S extends z.
     const localOptions = typeof source === 'function' ? source() : undefined;
     const implementation = typeof source === 'function' ? implementAction(localOptions!) : source;
     const target = localOptions === undefined ? (targetOrDependencies as () => z.input<S>)() : localOptions.target;
+    const eligibility = localOptions === undefined ? options?.eligibility : localOptions.eligibility;
     const state: { admission: AbortController | undefined; owned: boolean } = { admission: undefined, owned: false };
     const action: BoundAction<ActionDefinition<I, O, S, Observed, P>, true> = bindAction(implementation, target, {
+      ...eligibility === undefined ? {} : { eligibility: owner.shareResource(eligibility) },
       active: () => state.admission !== undefined && !state.admission.signal.aborted,
       admissionSignal: () => state.admission!.signal,
       execution: reference => owner.execution(reference),
@@ -88,7 +94,7 @@ export function useAction<I extends z.ZodType, O extends z.ZodType, S extends z.
       operation: (event, execution) => owner.operation?.(action, event, execution),
     });
     return { action, state };
-  }, [owner, local ? true : source, ...currentDependencies]);
+  }, [owner, local ? true : source, options?.eligibility, ...currentDependencies]);
   useLayoutEffect(() => {
     if (!binding.state.owned) {
       owner.scope.own(() => binding.action.release());

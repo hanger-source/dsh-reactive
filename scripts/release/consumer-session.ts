@@ -1,4 +1,4 @@
-import type { ActionInput, CancellationOptions, FileUploadInvocation, FileUploadSource, FileUploadValue, Invocation, Json, ProgramContract, ProgramSessionClient, HumanProgramSessionClient, Surface, SurfaceClient, SurfaceMount, ViewValue } from '@hanger-source/dsh-reactive';
+import type { ActionEligibility, ActionInput, CancellationOptions, FileUploadInvocation, FileUploadSource, FileUploadValue, Invocation, Json, ProgramContract, ProgramSessionClient, HumanProgramSessionClient, ResourceReader, Surface, SurfaceClient, SurfaceMount, ViewValue } from '@hanger-source/dsh-reactive';
 import { combineResources, composeSurface, createWorkSelector, defineProgram, defineSurface, resourceView, selectSurface, shareResource, z } from '@hanger-source/dsh-reactive';
 import type { SessionFiles, FileResource, WorkspaceFileText, WorkspaceFileBytes } from '@hanger-source/dsh-reactive/files';
 import type { SessionJournal, ProgramJournalFrame, ProgramJournalPage } from '@hanger-source/dsh-reactive/journal';
@@ -93,4 +93,10 @@ export async function callPublishedAction<S extends Surface, K extends keyof S['
 ) {
   const binding = await client.resolveAction(name, scope, options);
   return await binding(input, options);
+}
+
+export async function publishedActionEligibility<S extends Surface, K extends keyof S['actions'] & string>(
+  client: SurfaceClient<S>, name: K, scope: z.input<S['actions'][K]['scope']>, options?: CancellationOptions,
+): Promise<ResourceReader<ActionEligibility> | undefined> {
+  return (await client.resolveAction(name, scope, options)).eligibility;
 }

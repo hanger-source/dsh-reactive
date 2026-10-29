@@ -266,6 +266,10 @@ export function createProgramOutputs<const S extends Surface>(scope: Scope, surf
         actionManifest.set(Object.freeze(Object.values(frame.offers).map(offer => toolActionBindingSchema.parse({
           toolName: offer.name, action: offer.action.definition.name, actionVersion: offer.action.definition.version, bindingId: offer.action.bindingId, scope: offer.action.scope,
           modulePath: offer.modulePath ?? [], enabled: offer.enabled,
+          ...offer.eligibility ? { eligibility: offer.eligibility.status === 'error'
+            ? { ...offer.eligibility, error: { name: offer.eligibility.error instanceof Error ? offer.eligibility.error.name : 'Error',
+              message: offer.eligibility.error instanceof Error ? offer.eligibility.error.message : String(offer.eligibility.error) } }
+            : offer.eligibility } : {},
           surfaceNames: Object.entries(nextActions).filter(([, action]) => action === offer.action).map(([name]) => name),
         }))));
         for (const [name, state] of members) {

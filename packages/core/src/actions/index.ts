@@ -1,4 +1,6 @@
 export { defineAction, implementAction, bindAction, ActionBindingUnavailableError, ActionTargetMismatchError } from './contract.ts';
+export { ActionEligibilityError } from './eligibility.ts';
+export type { ActionEligibility } from './eligibility.ts';
 export { actionIdentity, actionIdentityKey, assertActionIdentity, ActionContractMismatchError } from './identity.ts';
 export type { ActionIdentity } from './contract.ts';
 export type { LocalActionOptions } from './contract.ts';

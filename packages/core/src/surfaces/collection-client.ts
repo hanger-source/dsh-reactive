@@ -5,6 +5,7 @@ import type { BoundOperation, OperationContract } from '../operations/contract.t
 import type { CancellationOptions } from '../conversations/protocol.ts';
 import type { Observation } from '../resources/observation.ts';
 import type { ResourceReader } from '../resources/reader.ts';
+import type { ActionEligibility } from '../actions/eligibility.ts';
 import { moduleClientSlot, moduleRootSurface, type SurfaceMount } from './composition.ts';
 import { surfaceCollectionKeysSlot, surfaceInstanceSlot, surfaceSlotDefinition, type Surface, type SurfaceCollectionDefinition, type SurfaceSlotKind, type SurfaceViews, type ViewDefinition, type ViewValue } from './contract.ts';
 
@@ -14,6 +15,7 @@ export interface CollectionResolvedAction<D extends ActionContract, Options exte
   readonly definition: D;
   readonly bindingId: string;
   readonly scope: ActionScope<D>;
+  readonly eligibility?: ResourceReader<ActionEligibility>;
 }
 /** 根会话与集合成员共用的消费合同；调用时序由实际本地或远程入口决定。 */
 export interface SurfaceClient<S extends Surface, Options extends CancellationOptions = CancellationOptions, Async extends boolean = boolean> {

@@ -40,6 +40,12 @@ Operation 代表业务 owner 持有的跨调用事实。局部 Action 若声明 
 
 本地 SDK Action 的调用 options.signal 只限制进入 execute 前的准入与持久准备；业务已经开始后，取消这个 signal 不撤回回执，也不破坏 Operation 关联。显式 execution.signal 和原生工具 signal 仍有真实执行取消权，不能为了退等而复用它们。权威业务终态继续用 operation.settled({ signal }) 等待，不把 Invocation returned 当作业务完成。
 
+共同业务资格使用 `ActionEligibility`：`{ allowed: true } | { allowed: false, reason: string }`。`bindAction` 的选项可提供 `eligibility: ResourceSource<ActionEligibility>`；`useAction(implementation, target, dependencies, { eligibility })` 在第四参提供，局部 factory 在选项中提供。绑定的 `action.eligibility` 是只读 ResourceReader，保留 Observation 状态和 denied 原因。
+
+首次 pending 等首个 ready，首次 error 或 denied 拒绝新调用；获得 allowed 后 pending、error 或 denied 撤销尚未 execute 的准入，恢复不复活，连续 allowed 代次变化不构成事务版本。真实来源错误不终止整个 Program。prepare 需真实结算后才能记 not-started；execute 后退出观察不取消业务，清理失败也等待业务结算。资格不能替代原始输入、真实调用者、目标及事务的逐次 admit。
+
+Offer 自动读取 action.eligibility；enabled 仍只是模型声明开关。Context 的 eligibility 可接同一源或 action.eligibility：denied 撤声明，pending/error 对 required 阻塞、对 optional 撤声明，不阻塞无关模块。Expose 可稳定暴露合同。
+
 ## 组件只贡献当前声明
 
 一个业务模块通常将同一资源接到三处：

@@ -456,6 +456,16 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
       if (!definition) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
       assertActionIdentity(request.contract, definition);
       const binding = handle.resolveAction(request.name, request.scope);
+      if (binding.eligibility) {
+        yield* frames(binding.eligibility.observations$, signal, value => ({
+          bindingId: binding.bindingId, contract: actionIdentity(definition), scope: z.json().parse(binding.scope),
+          eligibility: value.status === 'error'
+            ? { status: 'error', generation: value.generation, error: this.failure(value.error) }
+            : value.status === 'ready' ? { ...value, value: z.json().parse(value.value) } : value,
+        }));
+        signal.throwIfAborted();
+        return;
+      }
       yield { bindingId: binding.bindingId, contract: actionIdentity(definition), scope: z.json().parse(binding.scope) };
       if (!signal.aborted) await firstValueFrom(merge(
         defer(() => { signal.throwIfAborted(); return fromEvent(signal, 'abort'); }),

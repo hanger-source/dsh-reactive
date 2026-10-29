@@ -2,6 +2,7 @@ import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-proto
 import { z } from 'zod';
 import { ActionContractMismatchError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFilesUnavailableError, SessionJournalUnavailableError, programIdentity, type ActionIdentity, type NativeChildCommand, type NativeChildReference, type ProgramContractIdentity } from '@hanger-source/dsh-reactive';
 import type { ProgramCreationReference, ProgramFailure, ProgramIdentity } from './types.ts';
+import { ActionEligibilityError } from '@hanger-source/dsh-reactive';
 export { ConversationAccessRevokedError, SessionProgramMismatchError } from '@hanger-source/dsh-reactive';
 export { SessionFilesUnavailableError, SessionJournalUnavailableError } from '@hanger-source/dsh-reactive';
 
@@ -41,6 +42,7 @@ export class FileUploadReceiptUnknownError extends Error {
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface RemoteErrorDetailsMap {
+    'reactive/action-eligibility': { readonly actionName: string; readonly reason: 'pending' | 'error' | 'denied'; readonly observation: import('./types.ts').WireObservation };
     'reactive/creation-incomplete': { readonly reference: ProgramCreationReference };
     'reactive/child-creation-incomplete': { readonly command: NativeChildCommand; readonly reference: NativeChildReference };
     'reactive/action-binding-unavailable': { readonly name: string; readonly reason: 'not-exposed' | 'binding-changed' | 'connection-lost' };
@@ -59,7 +61,21 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
 const actionIdentitySchema = z.object({ name: z.string(), version: z.number().int().positive().safe() }).strict();
 
 /** 正式 failure 已由 Gateway/贡献合同核验，客户端保留完整公开 details。 */
-export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError | ConversationAccessRevokedError | SessionProgramMismatchError | ActionContractMismatchError | SessionFilesUnavailableError | SessionJournalUnavailableError {
+export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError | ConversationAccessRevokedError | SessionProgramMismatchError | ActionContractMismatchError | SessionFilesUnavailableError | SessionJournalUnavailableError | ActionEligibilityError {
+  if (value.code === 'reactive/action-eligibility') {
+    const failure = z.object({ code: z.string(), message: z.string(), details: z.union([z.array(z.json()), z.record(z.string(), z.json())]) }).strict();
+    const details = z.object({ actionName: z.string(), reason: z.enum(['pending', 'error', 'denied']), observation: z.discriminatedUnion('status', [
+      z.object({ status: z.literal('pending'), generation: z.number() }).strict(),
+      z.object({ status: z.literal('error'), generation: z.number(), error: failure }).strict(),
+      z.object({ status: z.literal('ready'), generation: z.number(), observedAt: z.number(),
+        value: z.object({ allowed: z.literal(false), reason: z.string() }).strict() }).strict(),
+    ]) }).strict().parse(value.details);
+    const observation = details.observation;
+    const error = new ActionEligibilityError(details.actionName, observation.status === 'error'
+      ? { ...observation, error: decodeProgramFailure(observation.error) } : observation);
+    if (error.reason !== details.reason) throw new Error('REACTIVE_ACTION_ELIGIBILITY_FAILURE_INVALID');
+    return error;
+  }
   if (value.code === 'reactive/journal-unavailable') {
     const details = z.object({ sessionId: z.string() }).strict().parse(value.details);
     return new SessionJournalUnavailableError(details.sessionId);

@@ -115,6 +115,14 @@ SDK 的解析与调用是两个明确阶段。解析只对调用者提交的原�
 
 当前调用的 result 与 activity$ 独立结算，单次失败不会终止调用流。流的发出不承诺调用仍在 pending；activity$ 保留它当下的状态。绑定释放完成新调用流，已开始的调用继续结算。result 返回只证明业务函数链返回，原生工具后处理、Operation 与 Goal 的完成各有原事实，不能互相替代。用 RxJS 高阶操作符等待异步结果；需要失败后继续接收下一次调用时，在每个 inner 中明确处理业务失败。
 
+### 共同资格与准入寿命
+
+Action 资格沿同一 Observation 传播。首次 pending 等待首次 ready，不借用旧 ready；首次 error 或 ready denied 拒绝新调用。取得 allowed 后，任何 pending、error 或 denied 都撤销尚未进入 `execute` 的本次准入，后续恢复不会复活它；连续 ready allowed 的代次变化不是业务事务版本。来源真实报错成为资格 error，不因此终止整个 Program。
+
+资格撤销发生在 `operation.prepare` 期间时，等待 prepare 真实结算，确定尚未开始后记录 `not-started`。进入 `execute` 后退出资格观察不取消业务；观察清理失败也等待业务实际结算，保留正式结果和 Operation 回执，通过返回活动的 `observationError` 报告清理失败。资格观察不替代逐次 admit。
+
+Offer 自动消费绑定资格，并与声明的 enabled 共同决定模型可见性。Context 的资格 denied 撤下声明；pending/error 对必需 Context 保留准备屏障，对 optional Context 撤下声明，不阻塞无关模块。
+
 ## Surface 领域值与 wire
 
 `defineSurface` 用 `view(schema)` 声明值事件流，用 `resourceView(schema)` 声明 Observation 资源流，并列出每个动作的精确 Action 定义。Expose 可以贡献部分槽；同一完整帧中重复贡献同一槽会失败。未知槽、非 Observable 视图来源与不同 Action 定义身份均被拒绝，JSX 返回类型擦除不能绕过运行时校验。

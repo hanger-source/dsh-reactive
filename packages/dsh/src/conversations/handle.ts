@@ -192,6 +192,8 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
         return Object.freeze(Object.assign((input: ActionInput<D>, options: SubmitOptions = {}) => this.invokeActionAt(name, definition, binding.bindingId, input, options), {
             definition, bindingId: binding.bindingId,
             scope: binding.scope as ActionScope<D>,
+            ...binding.eligibility ? { eligibility: new ResourceReader(binding.eligibility,
+                { signal: this.#scope.signal, onObserverError: error => this.#scope.observerError(error) }) } : {},
         }));
     }
     private assertActionDefinition(name: string, definition: ActionContract): void {

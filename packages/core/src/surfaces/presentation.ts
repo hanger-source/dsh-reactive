@@ -6,6 +6,14 @@ import type { Json } from '../conversations/protocol.ts';
 export const toolActionBindingSchema = z.object({
   toolName: z.string().min(1), action: z.string().min(1), actionVersion: z.number().int().positive().safe(), bindingId: z.string().min(1), scope: z.json(),
   modulePath: z.string().array().readonly(), surfaceNames: z.string().array().readonly(), enabled: z.boolean(),
+  eligibility: z.discriminatedUnion('status', [
+    z.object({ status: z.literal('pending'), generation: z.number().int().nonnegative() }).strict(),
+    z.object({ status: z.literal('error'), generation: z.number().int().nonnegative(),
+      error: z.object({ name: z.string(), message: z.string() }).strict() }).strict(),
+    z.object({ status: z.literal('ready'), generation: z.number().int().nonnegative(), observedAt: z.number().finite(),
+      value: z.union([z.object({ allowed: z.literal(true) }).strict(),
+        z.object({ allowed: z.literal(false), reason: z.string() }).strict()]) }).strict(),
+  ]).optional(),
 }).strict();
 export type ToolActionBinding = z.output<typeof toolActionBindingSchema>;
 export const actionManifestSlot = '$actions';

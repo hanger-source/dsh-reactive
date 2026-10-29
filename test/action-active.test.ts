@@ -3,9 +3,14 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { filter, firstValueFrom, lastValueFrom } from 'rxjs';
-import { bindAction, combineResources, defineAction, implementAction, z, type ActionExecutionContext } from '@hanger-source/dsh-reactive';
+import { BehaviorSubject, Observable, filter, firstValueFrom, lastValueFrom, of } from 'rxjs';
+import { ActionEligibilityError, Scope, bindAction, combineResources, createResource, defineAction, defineOperation, implementAction,
+  implementOperation, mapResource, z, type ActionEligibility, type Observation, type ActionExecutionContext } from '@hanger-source/dsh-reactive';
 import { invokeBoundAction } from '../packages/core/src/actions/contract.ts';
+
+const eligibilityExecution = (invocationId: string): ActionExecutionContext => ({ invocationId, sessionId: 'eligibility',
+  source: { kind: 'participant', actorId: 'operator', participant: 'human', entrypoint: 'cli' },
+  signal: new AbortController().signal, inputs: [], continuation: null });
 
 test('绑定release与原调用取消在不合作准入返回前结案，迟到准入不能开始真实写入', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-action-admission-'));
@@ -122,4 +127,103 @@ test('绑定当前调用集合包含并发准入与执行，晚订和退订不�
   if (empty.status === 'ready') assert.deepEqual(empty.value, []);
   assert.deepEqual(effects, ['first', 'second']);
   assert.deepEqual(seen, [['first', 'second'], ['second']]);
+});
+
+test('冷业务事实先完成读取，异步准入期间失效不能借恢复执行，已受理写入独立结算', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-eligibility-'));
+  const factsFile = join(directory, 'facts'), output = join(directory, 'accepted');
+  await writeFile(factsFile, 'ready');
+  const scope = new Scope(), admission = Promise.withResolvers<void>(), entered = Promise.withResolvers<AbortSignal>();
+  const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  let reads = 0;
+  const facts = createResource(scope, { value: z.string(), async read({ signal }) {
+    reads++; return readFile(factsFile, { encoding: 'utf8', signal });
+  } });
+  const action = bindAction(implementAction({ name: 'eligible_write', description: '按当前资料写入', scope: z.null(),
+    input: z.enum(['old', 'new']), output: z.string(), async execute(value, call) {
+      started.resolve(); await finish.promise; call.signal.throwIfAborted();
+      await writeFile(output, value); return value;
+    } }), null, {
+    eligibility: facts.observations$.pipe(mapResource((): ActionEligibility => ({ allowed: true }))),
+    async admit(value, _call, _execution, signal) { if (value === 'old') { entered.resolve(signal); await admission.promise; } },
+  });
+  try {
+    const original = action('old', eligibilityExecution('old'));
+    const signal = await entered.promise;
+    assert.equal(reads, 1, '首次调用本身取得冷资源，不依赖Offer或预热观察');
+    facts.invalidate();
+    await assert.rejects(original.result, error => error instanceof ActionEligibilityError && error.reason === 'pending');
+    assert.equal(signal.aborted, true);
+    admission.resolve();
+    const next = action('new', eligibilityExecution('new'));
+    await started.promise;
+    facts.invalidate(); action.release();
+    finish.resolve();
+    assert.equal(await next.result, 'new');
+    assert.equal(await readFile(output, 'utf8'), 'new');
+    assert.deepEqual(await action.activeInvocations.read(), []);
+  } finally { admission.resolve(); finish.resolve(); action.release(); scope.dispose(); }
+});
+
+test('资格撤销等待真实持久prepare结算后才结案，恢复允许不复活原调用', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-eligibility-prepare-'));
+  const journal = join(directory, 'journal'), output = join(directory, 'output');
+  const qualification = new BehaviorSubject<Observation<ActionEligibility>>({ status: 'ready', generation: 1,
+    observedAt: Date.now(), value: { allowed: true } });
+  const prepared = Promise.withResolvers<void>(), finishPrepare = Promise.withResolvers<void>();
+  const operation = defineOperation({ kind: 'qualification-prepared', version: 1, command: z.string(), reference: z.string(),
+    state: z.boolean(), settled: value => value ? value : undefined });
+  const owner = implementOperation(operation, { locate: () => ({ status: 'unknown' }),
+    observe: () => of({ status: 'ready', generation: 1, observedAt: Date.now(), value: true }) });
+  const action = bindAction(implementAction(defineAction({ name: 'qualified_operation', description: '持久准备之后执行', scope: z.null(),
+    input: z.string(), output: z.string(), operation: { definition: operation, command: input => input, reference: result => result },
+  }), { operationOwner: owner, async execute(input) { await writeFile(output, input); return input; } }), null, {
+    eligibility: qualification, admit() {}, async operation(event) {
+      if (event.phase === 'prepare') {
+        await writeFile(journal, 'preparing'); prepared.resolve(); await finishPrepare.promise;
+        await writeFile(journal, 'prepared');
+      } else if (event.phase === 'not-started') {
+        assert.equal(await readFile(journal, 'utf8'), 'prepared'); await writeFile(journal, 'not-started');
+      }
+    },
+  });
+  try {
+    const original = action('old-operation', eligibilityExecution('prepared'));
+    await prepared.promise;
+    qualification.next({ status: 'ready', generation: 2, observedAt: Date.now(), value: { allowed: true } });
+    qualification.next({ status: 'pending', generation: 3 });
+    qualification.next({ status: 'ready', generation: 4, observedAt: Date.now(), value: { allowed: true } });
+    assert.equal((await original.activity.read()).state, 'pending');
+    assert.equal(await readFile(journal, 'utf8'), 'preparing', '持久prepare未完成时不能提前写not-started');
+    finishPrepare.resolve();
+    await assert.rejects(original.result, error => error instanceof ActionEligibilityError && error.reason === 'pending');
+    assert.equal(await readFile(journal, 'utf8'), 'not-started');
+    await assert.rejects(readFile(output), { code: 'ENOENT' });
+    const next = action('accepted-operation', eligibilityExecution('recovered'));
+    assert.equal(await next.result, 'accepted-operation');
+    assert.equal((await next.operation).reference, 'accepted-operation');
+  } finally { finishPrepare.resolve(); action.release(); qualification.complete(); }
+});
+
+test('资格来源释放失败仍等已开始的真实写入并保留结果，以观察错误报告清理失败', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-eligibility-cleanup-'));
+  const output = join(directory, 'committed'), started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  const cleanupError = new Error('QUALIFICATION_SOURCE_CLEANUP_FAILED');
+  const action = bindAction(implementAction({ name: 'cleanup_qualified_write', description: '独立结算已受理写入', scope: z.null(),
+    input: z.null(), output: z.string(), async execute() { started.resolve(); await finish.promise; await writeFile(output, 'committed'); return output; },
+  }), null, { admit() {}, eligibility: new Observable<Observation<ActionEligibility>>(subscriber => {
+    subscriber.next({ status: 'ready', generation: 1, observedAt: Date.now(), value: { allowed: true } });
+    return () => { throw cleanupError; };
+  }) });
+  try {
+    const invocation = action(null, eligibilityExecution('cleanup'));
+    await started.promise;
+    assert.equal((await invocation.activity.read()).state, 'running');
+    finish.resolve();
+    assert.equal(await invocation.result, output);
+    assert.equal(await readFile(output, 'utf8'), 'committed');
+    const state = await invocation.activity.read();
+    assert.equal(state.state, 'returned');
+    if (state.state === 'returned') assert.match(String(state.observationError), /QUALIFICATION_SOURCE_CLEANUP_FAILED/u);
+  } finally { finish.resolve(); action.release(); }
 });
