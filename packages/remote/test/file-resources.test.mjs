@@ -258,10 +258,10 @@ test('Session Files直接经过真实HTTP与watch：范围、权限、重连、�
       t.diagnostic('files.phase 冷文件移走 round=' + cycle);
       const absentAgain = firstValueFrom(page.observations$.pipe(filter(value => value.status === 'error'), timeout(8_000)));
       await rename(path, join(directory, 'previous-artifact-' + cycle + '.txt')); await absentAgain;
-      t.diagnostic('files.phase 冷文件缺失已观察，重新创建 round=' + cycle);
+      t.diagnostic('files.phase 冷文件缺失已由原生通知观察，重新创建后显式失效 round=' + cycle);
       const text = 'restored-' + cycle;
       const restored = firstValueFrom(page.observations$.pipe(filter(value => value.status === 'ready' && value.value.text === text), timeout(8_000)));
-      await writeFile(path, 'title\n' + text + '\n'); await restored;
+      await writeFile(path, 'title\n' + text + '\n'); page.invalidate(); await restored;
     }
     coldMonitor.unsubscribe();
 
