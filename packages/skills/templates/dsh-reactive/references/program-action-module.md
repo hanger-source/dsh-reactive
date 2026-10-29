@@ -88,6 +88,8 @@ return items.map(item =>
 
 从核心导 `composeSurface`、`collectionSurface`；从 `/program` 导 `Module`。集合由业务 Observable 和 React 子树更新，根合同稳定。业务 key 是完整寻址身份；React key 负责重排身份，不从 key 猜 Surface。SDK 使用 `session.collection('items').instance(sku)`，不拼编码地址或工具名。
 
+纯 `mounts.items.instance(sku)` 只签发地址，不缓存历史业务key。同一Module逻辑地址的重复渲染保留工具身份；切换root、合同、路径或父挂载会结束旧动态代际，回到旧key也会重新签发工具身份。已受理Invocation仍沿原owner结算，旧捕获Action不能借新目标执行。不要用地址token的对象相等代替业务身份，或为减少token创建而在全局保存历史key。
+
 消费模块发现事实时，直接使用 collection.instances 与 session.actionManifest 资源，按同一 Observation 语义组合成员、业务资格和当前声明。普通函数、Promise、Observable 与 hooks 复用原查询及 SDK owner；父模块撤下不是一个仍有效的空成员目录，嵌套目录会报告 error。不同槽沿各自查询流到达，不提供跨槽事务快照，也不因为观察目录自动调用行为。
 
 静态模块使用 `composeSurface({ preparation: PreparationSurface, knowledge: KnowledgeSurface })` 及对应 mounts。内部模块可有自己的 composition，嵌套 Module 自动 rebase，不导根 composition、不逐槽手写 Outlet/names。局部 `Expose` 必须引用定义时同一 Surface 对象；框架不复制 Action 或重新解析 scope。

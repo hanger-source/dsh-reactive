@@ -92,7 +92,9 @@ Jobs、Schedule、Team、Files、Approval、Clock 用 `capability.forSession(con
 
 同一原来源共享 SDK 实例，Program 来源和外部句柄分别拥有观察寿命。Jobs、Schedule、Team 会话与固定任务的 `state` 是可直接传给 `useResource` 的只读资源，Job 的 `output` 独立表示非消费输出切面。`state.read(signal)`、peek、subscribe、values$、observations$ 共用现有资源机制；原 state$/list$/catalog$/projection$ 是相应值流，不能用它们推断旧值仍有效。最后一个资源消费者退出会撤销查询并撤下旧 ready，组件退订不 dispose 会话 SDK，也不停止已受理工作。SDK dispose、Program 失败或来源退出释放其会话资源观察，不杀死 Job、不撤回提醒、不取消 Team 成员；独立的有限调用活动仍沿原 result 结算。Program 来源不自动取得人工、ToolOccurrence 或 Goal 权限。
 
-Job 收到终态并收集输出后，可以显式 job.remove() 移除原生可见记录。running、未知或外会话目标仍由原生拒绝；移除不启动停止操作，不自动消费输出。列表沿正式 removed 事件更新，固定目标的 state/output 随后表示原生缺席错误。
+Job 的 wait(timeoutMs, { signal }) 只观察终态，超时返回当时真实状态；取消只结束本次等待，不杀Job、不消费输出，也不替模型确认完成通知。显式 job.collect({ signal }) 调用正式原生消费读取，推进模型cursor，首个终态消费才可能取得producer的result；它不是无副作用资源读取，多个消费者不各自获得一份结果。需要长期独立结果的业务应由真实业务owner持有，不能把Job的单次消费结果复制成框架状态。
+
+调用方取得所需终态后，可以显式 job.remove() 移除原生可见记录。running、未知或外会话目标仍由原生拒绝；移除不启动停止操作，不自动消费输出或确认结果，也不补发通知。列表沿正式 removed 事件更新，固定目标的 state/output 随后表示原生缺席错误。
 
 Schedule 的 update/delete 把显式 options.signal 交给原生执行前检查，SDK 退出信号只限定默认 wait 与观察。已经返回 NativeInvocation、仍在原生 FIFO 排队的写入，不因 SDK dispose 或来源 release 取消；显式调用者取消仍可在原生落盘前阻止写入。能力 owner 退出等待已登记调用结算。ScheduleId、ScheduleInputError、ScheduleLogError 从宿主 /schedule 入口取得，实际目标归属与事务资格仍由服务核验。
 

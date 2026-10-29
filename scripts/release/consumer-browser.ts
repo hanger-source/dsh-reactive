@@ -9,6 +9,8 @@ import * as transport from '@hanger-source/dsh-reactive-client/transport';
 import * as types from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramAddress } from '@hanger-source/dsh-reactive-client/types';
 import * as remote from '@hanger-source/dsh-reactive-client/remote';
+import type { NativeActionViews, NativeSession, NativeSessionReference } from '@hanger-source/dsh-reactive-native-ui';
+import type { ProgramContract } from '@hanger-source/dsh-reactive';
 export { sessionResources, sessionFileUpload, receiveFileUpload, callPublishedAction } from './consumer-session.js';
 import { invocationReceipt } from './consumer-session.js';
 
@@ -24,3 +26,9 @@ export const invocationResult = <T, O extends Json, Source>(invocation: Invocati
 // 同一个实包浏览器产物同时消费所有正式入口，运行消费者验证共享身份及实际字节/Socket行为。
 export const clientEntries = { client, errors, inbox, transport, types, remote };
 export const address: ProgramAddress = { sessionId: 'release-client-entries', program: { name: program.name, version: program.version } };
+
+// 浏览器从产品声明取得标准 disposal 合同，不借 Node ambient 或消费者补充 lib。
+export const disposeTransport = (value: transport.AuthenticatedTransport): PromiseLike<void> => value[Symbol.asyncDispose]();
+export const disposeNativeReference = <P extends ProgramContract>(value: NativeSessionReference<P>): PromiseLike<void> => value[Symbol.asyncDispose]();
+export const disposeNativeSession = <P extends ProgramContract>(value: NativeSession<P>): void => value[Symbol.dispose]();
+export const disposeNativeActionViews = (value: NativeActionViews): void => value[Symbol.dispose]();

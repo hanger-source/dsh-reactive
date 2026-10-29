@@ -1,3 +1,5 @@
+/// <reference lib="esnext.disposable" preserve="true" />
+
 import { bytesToBase64 } from "@deepseek-ai/dsh-util-crypto";
 import { type z } from "zod";
 import { Observable, map, distinctUntilChanged, firstValueFrom } from "rxjs";

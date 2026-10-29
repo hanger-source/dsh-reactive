@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createElement as h, Fragment } from 'react';
@@ -108,15 +108,16 @@ test('动态商家集合沿嵌套模块公开同一合同，新增与重排保�
     await firstValueFrom(collection.instances$.pipe(filter(keys => keys.includes(b))));
     assert.deepEqual(await instanceB.readView('preparation.facts'), { merchantId: b, revision: 1 });
     const originalB = knowledgeB.resolveAction('record', b);
-    layout.next([b, a]);
-    assert.equal(knowledgeA.resolveAction('record', a).bindingId, originalA.bindingId);
-    assert.equal(knowledgeB.resolveAction('record', b).bindingId, originalB.bindingId);
     const manifest = await session.actionManifest.read();
     const offeredB = manifest.find(item => item.modulePath.length === 3 && item.modulePath[0] === 'merchants'
       && item.modulePath[1] === b && item.modulePath[2] === 'knowledge');
     assert.ok(offeredB);
     assert.equal(offeredB.bindingId, originalB.bindingId);
     nativeName = offeredB.toolName;
+    layout.next([b, a]);
+    assert.equal(knowledgeA.resolveAction('record', a).bindingId, originalA.bindingId);
+    assert.equal(knowledgeB.resolveAction('record', b).bindingId, originalB.bindingId);
+    // 后续模型仍使用重排前取得的正式工具名；相同逻辑地址的新token不能让当前工具失效。
     await session.submit({ requestId: 'record-b', content: '记录商家b资料', intent: 'question', delivery: 'followup', scope: null });
     await session.whenIdle();
     assert.deepEqual(effects, [{ merchantId: b, source: 'tool', note: 'native-b' }]);
@@ -158,4 +159,106 @@ test('动态商家集合沿嵌套模块公开同一合同，新增与重排保�
   } finally {
     finish.resolve(); layout.complete(); for (const source of facts.values()) source.complete(); await app.dispose();
   }
+});
+
+test('同一React模块切换动态地址不复活旧工具，嵌套消费与另一会话各守原实例，已受理写入继续结算', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-collection-generation-'));
+  const file = join(root, 'recorded.jsonl');
+  await writeFile(file, '');
+  const selected = new BehaviorSubject({ merchantId: 'a', revision: 0 });
+  const peerSelected = new BehaviorSubject({ merchantId: 'a', revision: 0 });
+  const entered = Promise.withResolvers<void>(), released = Promise.withResolvers<void>();
+  const result = z.object({ merchantId: z.string(), sessionId: z.string(), note: z.string() });
+  const record = defineAction({ name: 'record_details', description: '写入明确商家的正式记录', scope: z.string(),
+    input: z.object({ note: z.string() }), output: result });
+  const implementation = implementAction(record, { async execute(input, call) {
+    if (input.note === 'accepted-a') { entered.resolve(); await released.promise; }
+    call.signal.throwIfAborted();
+    const recorded = { merchantId: call.scope, sessionId: call.sessionId, note: input.note };
+    await appendFile(file, JSON.stringify(recorded) + '\n');
+    return recorded;
+  } });
+  const local = defineSurface({ views: {}, actions: { record } });
+  const merchant = composeSurface({ commands: local });
+  const composed = composeSurface({ merchants: collectionSurface(merchant.surface) });
+  function Commands({ merchantId }: { merchantId: string }) {
+    const action = useAction(implementation, () => merchantId, [merchantId]);
+    return h(Fragment, null, h(Offer<typeof record>, { action }),
+      h(Expose<typeof local, PartialSurfaceBindings<typeof local>>, { surface: local, value: { actions: { record: action } } }));
+  }
+  const program = defineProgram({ input: z.null(), surface: composed.surface });
+  const definition = defineApplication({ name: 'collection-generation', admit: async () => {}, environments: [defineEnvironment({
+    id: 'work', instructions: '只调用当前模块的正式记录工具', program: implementProgram(program, { Component({ conversation }) {
+      const current = useObservable(conversation.identity.sessionId === 'first' ? selected : peerSelected);
+      if (current.status !== 'ready') return null;
+      const merchantId = current.value.merchantId;
+      // Module故意不带React key；业务地址替换仍须退出原工具身份。
+      return h(Module, { mount: composed.mounts.merchants.instance(merchantId) },
+        h(Module, { mount: merchant.mounts.commands }, h(Commands, { merchantId })));
+    } }),
+  })] });
+  let nextTool: { name: string; requestId: string } | undefined;
+  let modelCalls = 0;
+  const app = await boot(join(root, 'home'), definition, async function* () {
+    if (++modelCalls > 20) throw new Error('COLLECTION_GENERATION_MODEL_CALL_LIMIT');
+    const selected = nextTool;
+    nextTool = undefined;
+    if (selected) yield* tool(selected.name, selected.requestId, { note: selected.requestId });
+    else yield* text('记录流程已结束');
+  });
+  try {
+    const first = await app.host.create('work', { workspaceId: app.workspace.workspaceId, sessionId: 'first' });
+    const peer = await app.host.create('work', { workspaceId: app.workspace.workspaceId, sessionId: 'peer' });
+    const collection = first.collection('merchants');
+    const clientA = collection.instance('a').module(merchant.mounts.commands);
+    const clientB = collection.instance('b').module(merchant.mounts.commands);
+    const peerClient = peer.collection('merchants').instance('a').module(merchant.mounts.commands);
+    const resolve = (client: SurfaceClient<typeof local>, merchantId: string) => client.resolveAction('record', merchantId);
+    const originalA = await resolve(clientA, 'a'), originalPeer = await resolve(peerClient, 'a');
+    const originalName = (await first.actionManifest.read()).find(item => item.bindingId === originalA.bindingId)!.toolName;
+    const peerName = (await peer.actionManifest.read()).find(item => item.bindingId === originalPeer.bindingId)!.toolName;
+    const invoke = async (session: typeof first, name: string, requestId: string) => {
+      nextTool = { name, requestId };
+      await session.submit({ requestId, content: '执行当前明确工具', intent: 'question', delivery: 'followup', scope: null });
+      await session.whenIdle();
+      const occurrence = session.snapshot().requests[requestId]?.tools.find(item => item.callId === requestId);
+      assert.ok(occurrence, '实际原生工具结算必须关联原请求');
+      return occurrence.state;
+    };
+    selected.next({ merchantId: 'a', revision: 1 });
+    assert.equal((await resolve(clientA, 'a')).bindingId, originalA.bindingId);
+    assert.equal(await invoke(first, originalName, 'same-key'), 'returned');
+
+    const running = await originalA({ note: 'accepted-a' });
+    await entered.promise;
+    selected.next({ merchantId: 'b', revision: 2 });
+    const currentB = await resolve(clientB, 'b');
+    const nameB = (await first.actionManifest.read()).find(item => item.bindingId === currentB.bindingId)!.toolName;
+    assert.equal(await invoke(first, originalName, 'stale-a-at-b'), 'failed');
+    assert.equal(await invoke(first, nameB, 'current-b'), 'returned');
+
+    selected.next({ merchantId: 'a', revision: 3 });
+    const currentA = await resolve(clientA, 'a');
+    const currentName = (await first.actionManifest.read()).find(item => item.bindingId === currentA.bindingId)!.toolName;
+    assert.throws(() => originalA({ note: 'stale-sdk-a' }), ActionBindingUnavailableError);
+    assert.equal(await invoke(first, originalName, 'stale-a-after-return'), 'failed');
+    assert.equal(await invoke(first, nameB, 'stale-b-after-return'), 'failed');
+    assert.equal(await invoke(first, currentName, 'current-a'), 'returned');
+    released.resolve();
+    assert.deepEqual(await running.result, { merchantId: 'a', sessionId: first.id, note: 'accepted-a' });
+    assert.equal(clientA.invocation('record', running.id), running);
+    await app.host.close(first.id);
+    first.release();
+    assert.equal((await resolve(peerClient, 'a')).bindingId, originalPeer.bindingId);
+    assert.equal(await invoke(peer, peerName, 'peer-after-close'), 'returned');
+    assert.deepEqual((await readFile(file, 'utf8')).trim().split('\n').map(line => result.parse(JSON.parse(line))), [
+      { merchantId: 'a', sessionId: first.id, note: 'same-key' },
+      { merchantId: 'b', sessionId: first.id, note: 'current-b' },
+      { merchantId: 'a', sessionId: first.id, note: 'current-a' },
+      { merchantId: 'a', sessionId: first.id, note: 'accepted-a' },
+      { merchantId: 'a', sessionId: peer.id, note: 'peer-after-close' },
+    ]);
+    assert.deepEqual(app.errors, []);
+    peer.release();
+  } finally { released.resolve(); selected.complete(); peerSelected.complete(); await app.dispose(); }
 });

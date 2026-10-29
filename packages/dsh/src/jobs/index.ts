@@ -1,15 +1,15 @@
-import type { JobRegistry, JobId, JobEvent, JobSpec, JobView, JobOutputRead } from '@deepseek-ai/dsh-jobs';
+import type { JobRegistry, JobId, JobEvent, JobSpec, JobView, JobRead, JobOutputRead } from '@deepseek-ai/dsh-jobs';
 import LocalJobs, { type Config as LocalJobsConfig } from '@deepseek-ai/dsh-jobs-local';
 import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs';
-import { Observable, firstValueFrom, map, of } from 'rxjs';
-import { abortable, fromSnapshot, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
+import { Observable, defer, filter, firstValueFrom, fromEvent, map, of, takeUntil, timeout } from 'rxjs';
+import { fromSnapshot, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, nativeResource, nativeToolNames, ownNativeValue, type NativeCapability, type NativeSessionSource } from '../native-capability.ts';
 import { nativeSessionAccess, type NativeSessionAccess } from '../conversations/session-access.ts';
 
 export { JobId } from './client.ts';
 export type { JobView, JobKind, JobKindMap } from './client.ts';
-export type { JobEvent, JobOutputRead, JobSpec, JobHooks, JobOutcome } from '@deepseek-ai/dsh-jobs';
+export type { JobEvent, JobRead, JobOutputRead, JobSpec, JobHooks, JobOutcome } from '@deepseek-ai/dsh-jobs';
 
 export interface NativeJobsOptions {
   /** local 安装正式进程内注册表；provided 使用宿主已经安装的同一服务。 */
@@ -30,9 +30,12 @@ export interface NativeJob {
   readonly output$: Observable<JobOutputRead>;
   snapshot(): JobView;
   readAt(fromByte: number): JobOutputRead;
+  /** 非消费状态等待；不取得模型完成通知或输出游标的交付权。 */
   wait(timeoutMs: number, options?: CancellationOptions): Promise<JobView>;
+  /** 显式消费模型游标；终态 result 仅由原生首次消费读取交付一次。 */
+  collect(options?: CancellationOptions): JobRead;
   stop(reason: string, options?: CancellationOptions): 'requested' | 'already-finished';
-  /** 显式移除已经收集终态且未交给模型的记录；不停止仍在执行的Job。 */
+  /** 删除终态记录；调用方决定何时清理，不读取结果或确认模型已经收取。 */
   remove(options?: CancellationOptions): void;
 }
 
@@ -59,13 +62,27 @@ class NativeJobReader implements NativeJob {
   snapshot(): JobView { return ownNativeValue(this.jobs.registry().get(this.id, this.jobs.ownerId)); }
   /** 绝对字节偏移不推进模型游标；lossy/next 保留原生含义。 */
   readAt(fromByte: number): JobOutputRead { return ownNativeValue(this.jobs.registry().readAt(this.id, fromByte, this.jobs.ownerId)); }
-  /** 只取消本次等待，不停止执行；超时仍可能返回 running/stopping。 */
+  /** 只观察状态，不进入原生消费等待；超时返回当时快照，取消只退出本次等待。 */
   wait(timeoutMs: number, options: CancellationOptions = {}): Promise<JobView> {
     const signal = this.jobs.signal(options);
     signal.throwIfAborted();
-    const registry = this.jobs.registry();
-    return firstValueFrom(abortable(waitSignal => registry.wait(this.id, timeoutMs, this.jobs.ownerId, waitSignal), signal))
-      .then(ownNativeValue);
+    const cancelled = defer(() => {
+      signal.throwIfAborted();
+      return fromEvent(signal, 'abort').pipe(map((): never => { throw signal.reason; }));
+    });
+    return firstValueFrom(defer(() => {
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        throw new Error(`invalid wait timeout: expected a positive number of milliseconds, got ${JSON.stringify(timeoutMs)}`);
+      }
+      return this.state.values$.pipe(
+        filter(job => job.status !== 'running' && job.status !== 'stopping'),
+        timeout({ first: timeoutMs, with: () => of(this.snapshot()) }),
+      );
+    }).pipe(takeUntil(cancelled))).then(ownNativeValue);
+  }
+  collect(options: CancellationOptions = {}): JobRead {
+    this.jobs.signal(options).throwIfAborted();
+    return ownNativeValue(this.jobs.registry().read(this.id, this.jobs.ownerId));
   }
   /** 停止是显式命令，不等于已经停止；需要确认时另行 wait。 */
   stop(reason: string, options: CancellationOptions = {}): 'requested' | 'already-finished' {

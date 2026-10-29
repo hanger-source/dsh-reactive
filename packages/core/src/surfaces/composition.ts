@@ -19,6 +19,7 @@ export interface SurfaceCollectionMount<S extends Surface = Surface, Selected ex
   readonly surface: S;
   readonly selected: Selected;
   readonly path: readonly string[];
+  /** 只签发逻辑地址，不保留历史key或建立运行中的模块实例。 */
   instance(key: string): SurfaceMount<S, Selected>;
 }
 /** 显式组合身份，不从 React key、当前目标或声明顺序推断。 */
@@ -65,7 +66,8 @@ interface MountInfo {
   readonly source: Surface;
   readonly selected: Surface;
   readonly prefix: string;
-  readonly namespace: string;
+  /** 动态地址只有在真实Module实例中物化后才取得声明名称。 */
+  readonly namespace?: string;
   readonly collection?: { readonly name: string; readonly key: string };
   readonly memberships?: readonly { readonly directory: string; readonly key: string }[];
   readonly mapSlot?: (kind: SurfaceSlotKind, slot: string) => string | undefined;
@@ -180,23 +182,15 @@ export function composeSurface<const T extends SurfaceTree>(tree: T): SurfaceCom
       prefix: leaf.path.join('.') + '.', namespace });
     leaf.target[leaf.key] = mount;
   }
-  let instanceSequence = 0;
   for (const leaf of collectionLeaves) {
-    const instances = new Map<string, SurfaceMount>();
     const collection = Object.freeze({ surface: leaf.definition.source, selected: leaf.definition.surface, path: leaf.path,
       instance(key: string): SurfaceMount {
         if (typeof key !== 'string' || !key) throw new Error('REACTIVE_MODULE_INSTANCE_KEY_INVALID');
-        let mount = instances.get(key);
-        if (!mount) {
-          const path = Object.freeze([...leaf.path, key]);
-          mount = Object.freeze({ [mountBrand]: true as const, surface: leaf.definition.source, selected: leaf.definition.surface, path });
-          mounts.set(mount, { root: surface, source: leaf.definition.source, selected: leaf.definition.surface,
-            prefix: '', namespace: 'm_i_' + (++instanceSequence).toString(36) + '__',
-            collection: { name: leaf.path.join('.'), key } });
-          const info = mounts.get(mount)!;
-          mounts.set(mount, { ...info, memberships: [{ directory: surfaceCollectionKeysSlot(leaf.path.join('.')), key }] });
-          instances.set(key, mount);
-        }
+        const path = Object.freeze([...leaf.path, key]);
+        const mount = Object.freeze({ [mountBrand]: true as const, surface: leaf.definition.source, selected: leaf.definition.surface, path });
+        mounts.set(mount, { root: surface, source: leaf.definition.source, selected: leaf.definition.surface,
+          prefix: '', collection: { name: leaf.path.join('.'), key },
+          memberships: [{ directory: surfaceCollectionKeysSlot(leaf.path.join('.')), key }] });
         return mount;
       },
     });
@@ -237,7 +231,9 @@ export function moduleClientSlot(mount: SurfaceMount, kind: SurfaceSlotKind, slo
 }
 /** @internal 长度前缀是无歧义编码；不通过替换、截断或 React key 猜名字。 */
 export function moduleName(mount: SurfaceMount, local: string, tool: boolean): string {
-  const result = mountInfo(mount).namespace + local;
+  const namespace = mountInfo(mount).namespace;
+  if (namespace === undefined) throw new Error('REACTIVE_MODULE_NAMESPACE_REQUIRED');
+  const result = namespace + local;
   if (tool && !/^[a-z][a-z0-9_]{0,79}$/u.test(result)) throw new Error('REACTIVE_MODULE_TOOL_NAME_INVALID');
   return result;
 }
@@ -258,15 +254,23 @@ export function moduleContribution(mount: SurfaceMount, source: Surface, value: 
   }) };
 }
 
-/** @internal 将显式子挂载映射到父合同，品牌与原绑定注册表始终同源。 */
-export function rebaseModuleMount(mount: SurfaceMount, parent: SurfaceMount | null): SurfaceMount {
+/** @internal 真实Module物化动态声明名称，再将显式子挂载映射到父合同。 */
+export function rebaseModuleMount(mount: SurfaceMount, parent: SurfaceMount | null, dynamicNamespace?: string): SurfaceMount {
     const child = mountInfo(mount);
-    if (!parent) return mount;
+    const namespace = child.collection ? dynamicNamespace : child.namespace;
+    if (namespace === undefined) throw new Error('REACTIVE_MODULE_NAMESPACE_REQUIRED');
+    if (!parent) {
+      if (!child.collection) return mount;
+      const materialized = Object.freeze({ ...mount });
+      mounts.set(materialized, { ...child, namespace });
+      return materialized;
+    }
     const outer = mountInfo(parent);
     if (child.root !== outer.source) throw new Error('REACTIVE_MODULE_PARENT_MISMATCH');
+    if (outer.namespace === undefined) throw new Error('REACTIVE_MODULE_NAMESPACE_REQUIRED');
     const rebased = Object.freeze({ [mountBrand]: true as const, surface: mount.surface, selected: mount.selected,
       path: Object.freeze([...parent.path, ...mount.path]) });
-    mounts.set(rebased, { ...child, root: outer.root, prefix: '', namespace: outer.namespace + child.namespace,
+    mounts.set(rebased, { ...child, root: outer.root, prefix: '', namespace: outer.namespace + namespace,
       collection: outer.collection ?? child.collection,
       memberships: [...outer.memberships ?? [], ...(child.memberships ?? []).flatMap(instance => {
         const directory = mappedSlot(outer, 'views', instance.directory);

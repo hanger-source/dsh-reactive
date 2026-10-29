@@ -478,6 +478,7 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     assert.equal(observedSession.job(absent.id), absent);
     assert.throws(() => absent.snapshot(), /unknown job/u);
     await assert.rejects(absent.state.read(), /unknown job/u);
+    assert.throws(() => absent.collect(), /unknown job/u);
     assert.throws(() => absent.stop('不存在的目标不能进入执行'), /unknown job/u);
     assert.throws(() => absent.remove(), /unknown job/u);
     const launch = () => programSession.jobs.start({ kind: 'native-lifecycle', label: '隔离Node进程，显式停止前保持运行',
@@ -489,10 +490,11 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
         child.stdout.on('data', (data: Buffer) => job.append(data.toString('utf8'), { channel: 'stdout' }));
         child.stderr.on('data', (data: Buffer) => job.append(data.toString('utf8'), { channel: 'stderr' }));
         child.once('error', error => { failure = error; });
-        const closed = new Promise<JobOutcome>(resolve => child.once('close', (code, signal) => resolve({
-          status: cancelled ? 'killed' : failure || code !== 0 ? 'failed' : 'completed',
-          detail: failure?.message ?? `exit=${code};signal=${signal}`,
-        })));
+        const closed = new Promise<JobOutcome>(resolve => child.once('close', (code, signal) => {
+          const detail = failure?.message ?? `exit=${code};signal=${signal}`;
+          resolve({ status: cancelled ? 'killed' : failure || code !== 0 ? 'failed' : 'completed',
+            detail, result: `native-process ${job.id}: ${detail}` });
+        }));
         children.push({ child, closed });
         return { cancel() { cancelled = true; child.kill('SIGTERM'); }, done: closed };
       },
@@ -510,6 +512,7 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     assert.deepEqual(secondObserved, observed, '两个SDK观察者读取同一个真实输出，均不消费模型cursor');
     const foreignReader = capability.forSession(foreign).job(first);
     assert.throws(() => foreignReader.readAt(0), '另一个真实owner不能读取输出');
+    assert.throws(() => foreignReader.collect(), '另一个真实owner不能接管模型的输出游标');
     await assert.rejects(foreignReader.output.read());
     assert.throws(() => foreignReader.stop('外会话不能停止原进程'));
     assert.deepEqual(reader.readAt(0), observed, '重复SDK观察不消耗模型游标');
@@ -517,21 +520,36 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     assert.doesNotThrow(() => process.kill(children[0]!.child.pid!, 0));
     assert.throws(() => foreignReader.remove(), '另一个真实owner不能移除原Job');
     assert.deepEqual(programSession.jobs.job(first).readAt(0), observed, 'Program与外部SDK消费同一原生Job，不复制输出状态');
-    assert.equal(jobs.read(first, owner).chunks.map(chunk => chunk.text).join(''), 'native-job-ready\n');
-    assert.equal(jobs.read(first, owner).chunks.length, 0, '只有正式consuming read才推进模型游标');
+    assert.equal(reader.collect().chunks.map(chunk => chunk.text).join(''), 'native-job-ready\n');
+    assert.equal(jobs.read(first, owner).chunks.length, 0, '显式collect推进正式模型游标，不另建SDK消费位置');
     assert.deepEqual(reader.readAt(0), observed, '模型读取也不破坏SDK观察者的绝对offset');
+    assert.equal((await reader.wait(1)).status, 'running', '观察等待超时返回真实运行快照，不停止进程');
+    await assert.rejects(reader.wait(0), /invalid wait timeout/u);
+    const sdkWait = assert.rejects(reader.wait(5_000), /REACTIVE_SCOPE_DISPOSED/u);
     observedSession.dispose();
+    await sdkWait;
     assert.equal(jobs.get(first, owner).status, 'running', '释放SDK观察不调用原生kill');
     assert.doesNotThrow(() => process.kill(children[0]!.child.pid!, 0), '真实Node进程仍存活');
     observedSession = capability.forSession(session);
     const controlling = observedSession.job(first);
+    const agent = runtime.native.agents.get(owner)!;
     assert.equal(controlling.stop('明确停止本次Node进程'), 'requested');
-    const stopped = await controlling.wait(5_000);
-    assert.equal(stopped.status, 'killed'); await children[0]!.closed;
+    const [stopped, programStopped] = await Promise.all([controlling.wait(5_000), programSession.jobs.job(first).wait(5_000)]);
+    const producerOutcome = await children[0]!.closed;
+    assert.equal(stopped.status, 'killed'); assert.deepEqual(programStopped, stopped);
+    assert.equal(agent.inbox.nextStep.filter(message => message.source.kind === 'tool-jobs'
+      && message.content.some(part => part.type === 'text' && part.text.includes(first))).length, 1,
+    '两个SDK的非消费等待仍让正式ToolJobs向真实Agent投递一次quiet完成通知');
+    assert.equal(jobs.read(first, owner).result, producerOutcome.result, 'SDK等待不提前消费producer终态result，原模型读取仍可取得');
+    const collected = controlling.collect();
+    assert.equal(collected.job.status, 'killed');
+    assert.equal(collected.result, undefined, '显式collect沿原生单次交付，不向SDK重放模型已经收取的result');
+    assert.deepEqual(collected.chunks, []);
     assert.throws(() => process.kill(children[0]!.child.pid!, 0), { code: 'ESRCH' });
     assert.throws(() => reader.remove(), /REACTIVE_SCOPE_DISPOSED/u, '旧SDK退出后不能借原目标移除记录');
     const preCancelled = new AbortController(), removalCancelled = new Error('JOB_REMOVAL_CANCELLED_BEFORE_CONTROL');
     preCancelled.abort(removalCancelled);
+    assert.throws(() => controlling.collect({ signal: preCancelled.signal }), error => error === removalCancelled);
     assert.throws(() => controlling.remove({ signal: preCancelled.signal }), error => error === removalCancelled);
     assert.equal(jobs.get(first, owner).status, 'killed', '预取消不改变正式注册表');
     const removed = firstValueFrom(observedSession.events$.pipe(filter(event => event.type === 'removed' && event.job.id === first), timeout(3_000)));
@@ -561,7 +579,6 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
 
     const second = launch(); await ready(second);
     const secondClosed = children[1]!.closed;
-    const agent = runtime.native.agents.get(owner)!;
     const retainedSource = programSession.source, secondReader = observedSession.job(second);
     const stateSubscription = secondReader.state.observations$.subscribe();
     const outputSubscription = secondReader.output.observations$.subscribe();

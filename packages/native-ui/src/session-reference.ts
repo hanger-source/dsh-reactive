@@ -1,3 +1,5 @@
+/// <reference lib="esnext.disposable" preserve="true" />
+
 import type { Context } from '@deepseek-ai/cordis';
 import type { SessionReference } from '@deepseek-ai/dsh-api-session-controller/client';
 import { SessionId } from '@deepseek-ai/dsh-session/types';

@@ -1,3 +1,5 @@
+/// <reference lib="esnext.disposable" preserve="true" />
+
 import type { ReactNode } from 'react';
 import type { SlotCore, SlotComponent } from '@deepseek-ai/dsh-client-ui-slots';
 import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client';

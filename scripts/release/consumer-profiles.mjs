@@ -87,6 +87,12 @@ export async function prepareConsumerSources(directory, kind) {
     target: 'ES2024', module: 'NodeNext', moduleResolution: 'NodeNext', strict: true,
     skipLibCheck: false, outDir: 'compiled', types: ['node'], jsx: 'react-jsx',
   }, include: sources.map(file => file.target) }, null, 2));
+  if (kind === 'ui') {
+    await writeFile(join(directory, 'tsconfig.browser.json'), JSON.stringify({ compilerOptions: {
+      target: 'ES2024', lib: ['ES2024', 'DOM', 'DOM.Iterable'], module: 'ESNext', moduleResolution: 'Bundler',
+      customConditions: ['browser'], strict: true, skipLibCheck: false, noEmit: true, types: [], jsx: 'react-jsx',
+    }, files: ['browser.ts'] }, null, 2));
+  }
 }
 
 /** 与工作区共用成熟依赖检查规则；cwd使解析与package.json都属于实际仓外安装。 */
@@ -118,6 +124,10 @@ export function assertConsumerVerification(proof, config) {
       throw new Error('RELEASE_NATIVE_CONTRACTS_VERIFICATION_REQUIRED');
     }
     if (kind === 'ui') {
+      const types = consumer.browser.types;
+      if (types?.strict !== true || types.nodeAmbient !== false || !Number.isInteger(types.files) || types.files < 1) {
+        throw new Error('RELEASE_BROWSER_TYPES_VERIFICATION_REQUIRED');
+      }
       const native = consumer.browser.native;
       if (!native || !['bytes', 'inputModules', 'coreModules', 'reactModules', 'reactDomModules'].every(key =>
         Number.isInteger(native[key]) && native[key] > 0)

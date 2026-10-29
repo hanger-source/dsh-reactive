@@ -1,3 +1,5 @@
+/// <reference lib="esnext.disposable" preserve="true" />
+
 import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-protocol';
 import { RemoteStreamCarrierError } from '@deepseek-ai/dsh-api-gateway/client';
 import { parseRemoteStreamServerMessage, REMOTE_STREAM_MUX_PATH, type RemoteStreamClientMessage } from '@deepseek-ai/dsh-api-gateway/stream-protocol';

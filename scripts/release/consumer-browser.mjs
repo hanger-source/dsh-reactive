@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
+import { capture } from './common.mjs';
 
 const nativeModules = ['@deepseek-ai/dsh-client-modules', '@deepseek-ai/dsh-client-connection',
   '@deepseek-ai/dsh-typert-registry', '@deepseek-ai/dsh-api-gateway', '@deepseek-ai/dsh-client-file-upload',
@@ -89,8 +90,20 @@ async function buildNativeBrowser(directory, coreRoot) {
   return proof;
 }
 
+/** 同一安装中的浏览器声明独立严格编译；拒绝显式或间接引入 Node ambient。 */
+async function checkBrowserTypes(directory) {
+  const output = await capture(process.execPath, [join(directory, 'node_modules/typescript/bin/tsc'),
+    '-p', 'tsconfig.browser.json', '--listFiles'], directory);
+  const files = output.split(/\r?\n/u).filter(Boolean);
+  if (!files.length) throw new Error('RELEASE_BROWSER_TYPES_FILES_REQUIRED');
+  const node = files.find(file => /\/node_modules\/@types\/node\//u.test(file.replaceAll('\\', '/')));
+  if (node) throw new Error('RELEASE_BROWSER_NODE_AMBIENT: ' + node);
+  return { strict: true, nodeAmbient: false, files: files.length };
+}
+
 /** 最终安装包的正式browser导出及完整依赖闭包；不使用源码alias或工作区模块。 */
 export async function buildConsumerBrowser(directory) {
+  const types = await checkBrowserTypes(directory);
   const coreRoot = await realpath(join(directory, 'node_modules/@hanger-source/dsh-reactive'));
   const clientRoot = await realpath(join(directory, 'node_modules/@hanger-source/dsh-reactive-client'));
   const client = JSON.parse(await readFile(join(clientRoot, 'package.json'), 'utf8'));
@@ -111,7 +124,7 @@ export async function buildConsumerBrowser(directory) {
   const { checkClientEntries } = await import(pathToFileURL(join(directory, 'runtime.mjs')).href);
   const clientEntries = await checkClientEntries(directory, consumer.clientEntries);
   return { entry: relative(directory, browserEntries[0]), entries: browserEntries.map(entry => relative(clientRoot, entry)),
-    output: join(directory, output), clientEntries,
+    output: join(directory, output), clientEntries, types,
     bytes: emitted.reduce((sum, file) => sum + file.bytes, 0), modules: inputs.length, coreModules,
     native: await buildNativeBrowser(directory, coreRoot) };
 }

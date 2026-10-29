@@ -1,3 +1,5 @@
+/// <reference lib="esnext.disposable" preserve="true" />
+
 import { assertProgramDefinition, type HumanQuestion,
   type HumanForegroundQuestion, type HumanAnswer, type ProgramContract, type ProgramSurface,
   type OperationContract, type OperationHandle, type OperationState, type ResourceReadable,
