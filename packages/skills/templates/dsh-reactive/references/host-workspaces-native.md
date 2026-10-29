@@ -116,6 +116,8 @@ Files 复用已安装的 WorkspaceFiles、fs、sandboxPolicy 和 Typert，不自
 
 `text(path, { offset, limit })`、metadata(path)、directory(path) 返回共同 FileResource。同参数同对象、同路径共享 watch；read、peek、values$、observations$、invalidate 与 `useResource` 共用它。构造不做 I/O；首次观察等正式 ready，变化取消旧读并重查，目录每次变化重新列举。读取错误沿资源 error 交付，变化或显式 invalidate 可以重查；watch 初始化失败不偷偷轮询。会话 cwd 和 baseFile 范围由正式 FS 核验，越界失败保留被拒 path。取消及时退出等待，读侧 dispose 和 Host 关闭等待实际 read/unwatch；Agent close 不取消有效来源的文件观察。readBytes 每次独立缓冲区。远程消费者通过认证 Program file* 端点借用同一能力，原生 UI 按需接资源；需要选择领域产物或更窄公开权限时仍使用资源 View。
 
+文件和缺失文件观察包含目录的唯一正式 `WorkspaceFiles.changes` 流，使创建、删除和替换造成的命名空间变化能够触发目标重读；目录目标直通原流。连接时包含目录必须存在且为目录，否则报 `REACTIVE_NATIVE_FILE_WATCH_DIRECTORY_REQUIRED`；目录资格退出时来源报错，创建或恢复后须显式 invalidate 重新取得目录流，不自动搜索祖先、重绑或轮询。目录 ready 后，以公开 FS resolve/contains/stat 取得目标基线，每个目录帧重新核 scope、权限、路径并读取目标 opaque version 或 absent，不按目录 version 过滤。目标变化才发目标帧，兄弟噪音不触发；该帧是 FS 现态投影，不保证所有瞬时状态或无损通知。观察沿原 owner 使用单 watch，closed 等待唯一 generator 的真实 unwatch。
+
 已有 Registry 时 `mountProgramGateway(..., { registry: 'provided', ... })` 明确借入；未安装 Registry 时该模式直接失败。非 owner 只授必要 reactivePrograms/file* 权限，不因 WorkspaceFiles 已安装而授原生 workspaceFiles/*。文件流每次交付重新核权限，不承诺闲置条件策略撤销的即时推送。
 
 原生 FS 通知不承担每次写入的持久事件含义。固定 rc.3 本地 provider 使用 chokidar，同路径 change 在 50ms 内可能直接被抑制且不补尾通知，资源可能保留上次 ready。业务已知写入完成后应显式 invalidate，需要立即核验用 readText/stat 等权威查询；内容版本以真实读取为准。框架不额外轮询或替换原生 watcher。

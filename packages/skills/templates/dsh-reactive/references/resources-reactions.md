@@ -59,6 +59,8 @@ Program conversation、本地 SDK、远程 SDK 与可选原生 UI 均提供 `fil
 
 单次 readText/readBytes/stat/list 仍读权威服务；raw watch 的 dispose/closed 反映本实现实际持有的观察。范围来自 exact 会话 cwd，baseFile 同样核验。readBytes 每次返回独立缓冲区，不建共享字节缓存。远程断线撤下旧 ready，新连接正式 ready 后重读，不承诺补齐断线事件或远端 unwatch ACK。Host files 选项必须借入已安装能力；不在 hook 中安装服务，不为文件建立第二份生命周期或状态。
 
+文件或缺失文件通过包含目录的唯一正式 WorkspaceFiles.changes 流观察命名空间失效，覆盖目标创建、删除和替换；目录目标仍直通原流。连接时包含目录必须存在且为目录，否则报 `REACTIVE_NATIVE_FILE_WATCH_DIRECTORY_REQUIRED`；目录资格退出时来源报错，创建或恢复后须显式 invalidate 重新取得目录流，不自动搜索祖先、重绑或轮询。目录 ready 后通过公开 FS resolve/contains/stat 建立目标基线，每个目录帧重新核 scope、权限和路径并读取目标 opaque version 或 absent，不按目录 version 过滤。只有目标变化才发目标帧，兄弟噪音被过滤；这是当前 FS 状态投影，不承诺所有瞬时状态或无损事件。它沿同一 owner 持有单个 watch，closed 等待唯一 generator 实际 unwatch。
+
 ready 是最近一次读取切面，不是永久新鲜保证。固定 rc.3 本地 FS 的同路径 change 在 50ms 内可能被抑制且没有尾通知；已知连续写入完成后应显式 invalidate，需要立刻确认则调用 readText/stat 等权威查询。不加轮询、固定延迟或自动 retry 来伪装原生通知保证。
 
 ## 派生仍使用标准 Observable

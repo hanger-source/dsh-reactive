@@ -6,7 +6,8 @@ import { Observable, ReplaySubject, firstValueFrom } from 'rxjs';
 import { abortable, ScopeDisposedError, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import { SessionFileOutsideWorkspaceError, type SessionFiles as SessionFilesContract, type FileWatch,
   type WorkspaceFileRange, type WorkspaceByteReadOptions, type WorkspaceFileText, type WorkspaceFileBytes,
-  type WorkspaceFileStat, type WorkspaceDirectoryListing, type WorkspaceFileWatchFrame } from '@hanger-source/dsh-reactive/files';
+  type WorkspaceFileStat, type WorkspaceDirectoryListing, type WorkspaceFileWatchFrame,
+  type WorkspaceFileChange } from '@hanger-source/dsh-reactive/files';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { NativeCapabilityOwner, nativeObservationScope, ownNativeValue,
   type NativeCapability, type NativeSessionSource } from './native-capability.ts';
@@ -63,12 +64,44 @@ class NativeWatch implements FileWatch {
     this.closed = (async () => {
       let reason: unknown = this.#disposedReason;
       try {
-        const { service, scope, target } = await files.resolve(path, signal);
+        const { service, scope, target, fs, resolvedTarget } = await files.resolve(path, signal);
+        const directory = (await fs.stat(resolvedTarget, signal))?.type === 'directory';
         signal.throwIfAborted(); files.assertCurrent();
-        // for-await 的退出等待官方 generator.finally → follower.close → unwatch。
-        for await (const frame of service.changes(scope, target, signal)) {
+        const absolute = fs.processPath(resolvedTarget);
+        const paths = absolute.startsWith('/') ? posix : win32;
+        // 文件内容与成员变化都由所在目录失效；只向调用者投影目标的真实元数据。
+        const observedPath = directory ? target : paths.dirname(absolute);
+        const requireDirectory = async (): Promise<void> => {
+          const parent = await files.resolve(observedPath, signal);
+          const info = await parent.fs.stat(parent.resolvedTarget, signal);
           signal.throwIfAborted(); files.assertCurrent();
-          subject.next(ownNativeValue(frame));
+          if (info?.type !== 'directory') throw new Error('REACTIVE_NATIVE_FILE_WATCH_DIRECTORY_REQUIRED');
+        };
+        if (!directory) await requireDirectory();
+        const observeTarget = async (): Promise<WorkspaceFileChange> => {
+          await requireDirectory();
+          const current = await files.resolve(path, signal);
+          const info = await current.fs.stat(current.resolvedTarget, signal);
+          signal.throwIfAborted(); files.assertCurrent();
+          const absolutePath = current.fs.processPath(current.resolvedTarget);
+          return info === undefined ? { absolutePath, absent: true } : { absolutePath, version: info.version };
+        };
+        let previous: WorkspaceFileChange | undefined;
+        // for-await 的退出等待官方 generator.finally → follower.close → unwatch。
+        for await (const frame of service.changes(scope, observedPath, signal)) {
+          signal.throwIfAborted(); files.assertCurrent();
+          if (directory) { subject.next(ownNativeValue(frame)); continue; }
+          const current = await observeTarget();
+          if (frame.kind === 'ready') {
+            // 先取得正式watch再取基线；期间失效仍由原生generator排队。
+            previous = current;
+            subject.next(ownNativeValue(frame));
+            continue;
+          }
+          const unchanged = previous !== undefined && previous.absolutePath === current.absolutePath
+            && ('absent' in previous ? 'absent' in current : 'version' in current && previous.version === current.version);
+          previous = current;
+          if (!unchanged) subject.next(ownNativeValue({ kind: 'change', change: current }));
         }
         subject.complete();
       } catch (error) {
@@ -147,7 +180,7 @@ class SessionFiles implements NativeSessionFiles {
     signal.throwIfAborted(); this.assertCurrent();
     if (!fs.contains(root, target)) throw new SessionFileOutsideWorkspaceError(path);
     const scope: WorkspaceFileScope = { sessionId: this.access.sessionId, workspaceRoot };
-    return { service, scope, target: path };
+    return { service, scope, target: path, fs, resolvedTarget: target };
   }
   private read<T>(options: CancellationOptions, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
     const signal = this.signal(options);

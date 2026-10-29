@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtemp, mkdir, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { setImmediate as immediate, setTimeout as delay } from 'node:timers/promises';
 import { symbols } from '@deepseek-ai/cordis';
 import Registry from '@deepseek-ai/dsh-typert-registry';
@@ -119,7 +119,7 @@ test('Session Files直接经过真实HTTP与watch：范围、权限、重连、�
       };
     };
     native.read = async function (scope, target, range, signal) {
-      assert.ok(watches.some(watch => watch.active && watch.path === resolve(scope.workspaceRoot, target)), '实际watch ready前不能读取文件切面');
+      assert.ok(watches.some(watch => watch.active && watch.path === dirname(resolve(scope.workspaceRoot, target))), '目标所在目录watch ready前不能读取文件切面');
       let result;
       try { result = await read.call(this, scope, target, range, signal); reads++; }
       catch (error) {
@@ -218,6 +218,18 @@ test('Session Files直接经过真实HTTP与watch：范围、权限、重连、�
     rawOpening.release.resolve(); await rawReady; rawSubscription.unsubscribe(); await raw.dispose();
 
     t.diagnostic('files.phase 缺失恢复与冷读取');
+    const nested = remote.files.text('created-directory/artifact.txt'), nestedStates = [];
+    const nestedMonitor = nested.observations$.subscribe(value => nestedStates.push(value));
+    subscriptions.push(nestedMonitor);
+    const missingParent = await firstValueFrom(nested.observations$.pipe(filter(value => value.status === 'error'), timeout(8_000)));
+    assert.equal(missingParent.error.message, 'REACTIVE_NATIVE_FILE_WATCH_DIRECTORY_REQUIRED');
+    assert.equal(nestedStates.some(value => value.status === 'ready'), false, '父目录缺失不能签发可观察的ready');
+    await mkdir(join(directory, 'created-directory'));
+    await writeFile(join(directory, 'created-directory', 'artifact.txt'), '目录成立后取得正式观察');
+    const nestedReady = firstValueFrom(nested.observations$.pipe(filter(value => value.status === 'ready'), timeout(8_000)));
+    nested.invalidate();
+    assert.equal((await nestedReady).value.text, '目录成立后取得正式观察');
+    nestedMonitor.unsubscribe();
     const late = remote.files.text('later.txt');
     const absent = firstValueFrom(late.observations$.pipe(filter(value => value.status === 'error'), timeout(8_000)));
     const monitor = late.observations$.subscribe(value => t.diagnostic('files.later ' + JSON.stringify({

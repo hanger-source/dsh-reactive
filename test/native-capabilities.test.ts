@@ -489,7 +489,7 @@ test('本地Files惰性借入精确会话，真实文件变化与取消不越过
     service.read = async (scope, path, range, signal) => {
       reads++;
       if (requireWatch && path === 'artifact.txt')
-        assert.ok(watches.some(current => current.active && current.path === artifact), '正式watch ready前不得读取资源切面');
+        assert.ok(watches.some(current => current.active && current.path === directory), '正式命名空间watch ready前不得读取资源切面');
       return read(scope, path, range, signal);
     };
     service.readBytes = async (...args) => {

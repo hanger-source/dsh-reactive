@@ -235,6 +235,8 @@ Program、外部本地 SDK、远程 SDK 与可选原生 UI 通过 `session.files
 
 Files 的 text(path, range)、metadata(path)、directory(path) 固定原始路径和读取窗口，提供同一个 read、peek、values$、observations$ 与 invalidate。共同工厂复用现有资源和 RxJS，不另建 Scope。构造不做 I/O，首次观察等待正式 watch ready 后读取；同一路径的不同资源共享 watch，最后一个查询退出释放它。目录每次变更重新列举。原生读取以 exact 会话 header 的 cwd 和正式 FS resolve/contains 核目标与 baseFile 范围，文本、目录与元数据仍由 WorkspaceFiles 决定版本、限额和错误。字节读取每次持有独立缓冲区，不加入共享快照。
 
+文件及缺失文件的观察使用包含目录的唯一正式 `WorkspaceFiles.changes` 流，因为创建、删除和替换会改变目录命名空间。连接时包含目录必须存在且为目录，否则报 `REACTIVE_NATIVE_FILE_WATCH_DIRECTORY_REQUIRED`；目录资格退出时来源报错，创建或恢复目录后需显式 invalidate 重新取得目录流，不自动搜索祖先、重绑或轮询。目录来源 ready 后，通过公开 FS 的 resolve、contains、stat 取得目标基线；每个目录帧都重新核验 scope、权限和路径并读取目标的不透明 version 或缺席状态，不按目录 version 过滤。仅目标状态变化时交付目标帧，兄弟文件噪音被过滤；目录目标仍直通原流。目标帧是 FS 现态投影，不是逐次写入的持久事件，不能保证捕获所有瞬时状态或无损通知。观察沿原 owner 使用单个 watch，closed 等待唯一 generator 实际 unwatch。
+
 观察资格退出立即结束本消费者等待；原生读侧 dispose 与 Host 关闭等待实际读取和 unwatch，不取消写文件的 Action、Job 或 Operation。Agent 关闭不结束仍有效来源的文件观察。远程端点逐次核 Program、accessId、认证主体、文件路径及交付时权限，字节沿正式 binary codec；断线撤下旧 ready，新 watch ready 后重读，不承诺补齐断线事件。客户端释放只证明本端清理，没有远端 unwatch ACK。原生 UI 借用同一资源状态，自己的 dispose 等待其创建的观察退出，不销毁借入 SDK。需要选择领域产物或授予更窄的公开内容时，仍使用 Program 的资源 View。
 
 创建根会话时，宿主持久写入原工作区 binding 并完成原生 workspace 成员登记，之后才构造 Program；最终创建回执仍在实际 Agent setup 成功后写入并确认持久 flush。登记失败保留原 CreationIncompleteError 引用；只有成员、或完成记录仍在等待创建 ACK 的会话不能经普通 open、resume、conversation 或 service 取得外部句柄，须沿原创建引用完成登记。创建和已有会话激活由同一启动 owner 区分，普通只读访问不等待或借用新会话的创建许可。已有完整回执的恢复只核成员，不重新加入已被撤销的成员关系。
