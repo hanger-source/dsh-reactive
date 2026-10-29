@@ -86,7 +86,7 @@ test('公开出口随完整帧切换来源，消费者退订不停止连接，�
   } finally { scope.dispose(); }
 });
 
-test('每次领域值只 encode 一次，领域与 wire 各保留合同形态，编码失败和来源错误正式进入两边的 error', async () => {
+test('领域值只 encode 一次，编码错误后同源恢复，来源错误仍终止并保留领域与 wire 的 error', async () => {
   const scope = new Scope();
   let encodes = 0, decodes = 0, connections = 0;
   const encodingFailure = new Error('业务日期拒绝编码');
@@ -116,17 +116,24 @@ test('每次领域值只 encode 一次，领域与 wire 各保留合同形态，
     assert.equal(encodes, 2); assert.equal(decodes, 0);
     await assert.rejects(outputs.views.observedAt.read(), error => error === encodingFailure);
     await assert.rejects(outputs.wireViews.observedAt.read(), error => error === encodingFailure);
-    assert.equal(values.observed, false);
+    assert.equal(values.observed, true);
     outputs.apply(frame({ surface, views: { observedAt: source$ } }));
     assert.equal(connections, 1);
+    const recovered = new Date('2027-01-01T00:00:00.000Z');
+    values.next(recovered);
+    assert.equal(await outputs.views.observedAt.read(), recovered);
+    assert.equal(await outputs.wireViews.observedAt.read(), '2027-01-01T00:00:00.000Z');
+    assert.equal(encodes, 3); assert.equal(decodes, 0); assert.equal(connections, 1);
 
     const replacement = new Subject<Date>();
     outputs.apply(frame({ surface, views: { observedAt: replacement } }));
+    assert.equal(values.observed, false);
     assert.equal(outputs.views.observedAt.peek().status, 'pending');
     const sourceFailure = new Error('业务读取失败');
     replacement.error(sourceFailure);
     await assert.rejects(outputs.views.observedAt.read(), error => error === sourceFailure);
     await assert.rejects(outputs.wireViews.observedAt.read(), error => error === sourceFailure);
+    assert.equal(replacement.observed, false);
   } finally { scope.dispose(); }
 });
 
