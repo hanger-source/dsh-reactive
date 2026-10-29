@@ -3,6 +3,7 @@ import type { ConversationIdentity } from './conversation.ts';
 import type { Continuation, ConversationActivity, ExecutionFailure, GoalActivity, InputReference, Json, ReplyActivity, RequestActivity, RequestDeclaration, ToolActivity } from './protocol.ts';
 import type { AssistantAttemptSnapshot, AssistantProgressFrame, ConversationEvent } from './events.ts';
 import type { ConversationProgressSnapshot } from './request.ts';
+import type { ModelPreparation } from './preparation.ts';
 import type { HumanForegroundQuestion, HumanQuestion, HumanReplyDelivery, HumanSettledQuestion, HumanSnapshot } from '../participation/contract.ts';
 import type { Observation } from '../resources/observation.ts';
 import { matchesOperationFollowResult, type OperationFollowSnapshot } from '../operations/follows.ts';
@@ -52,6 +53,7 @@ export interface WorkOperationFollow extends WorkOccurrence<OperationFollowSnaps
 
 /** 条件只描述原事实，不判定整个业务是否可以继续，也不把执行 busy 当作阻塞。 */
 export type WorkCondition =
+  | ({ readonly kind: 'preparation.waiting' } & WorkOccurrence<ModelPreparation>)
   | ({ readonly kind: 'execution.failed' } & WorkOccurrence<ExecutionFailure>)
   | ({ readonly kind: 'goal.paused' } & WorkOccurrence<GoalActivity>)
   | ({ readonly kind: 'goal.blocked'; readonly blockedReason: GoalActivity['blockedReason'] } & WorkOccurrence<GoalActivity>)
@@ -69,6 +71,7 @@ export type WorkCondition =
       readonly matchedInputs: readonly InputReference[] };
 
 export interface WorkSessionSnapshot {
+  readonly preparation: WorkOccurrence<ModelPreparation> | null;
   readonly identity: WorkSourceIdentity;
   readonly sessionId: string;
   /** 会话背景，不表示该业务独占了整个会话的执行。 */
@@ -183,6 +186,7 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
       const replies = occurrences(activity.replies, value => value.inputs);
       const failures = occurrences(activity.failures, value => value.inputs);
       const activeAttempts = occurrences(attempts, value => value.inputs);
+      const preparation = occurrences(progress.preparation === null ? [] : [progress.preparation], value => value.inputs)[0] ?? null;
       const active = occurrences(human.questions.active, value => value.origin.inputs);
       const settled = occurrences(human.questions.settled, value => value.origin.inputs);
       const humanReplies = occurrences(human.replies, value => value.origin.inputs);
@@ -198,6 +202,7 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
         return [Object.freeze({ value, matchedInputs, resultRequest })];
       }));
       const conditions: WorkCondition[] = [];
+      if (preparation && preparation.value.waiting.length) conditions.push(Object.freeze({ kind: 'preparation.waiting', ...preparation }));
       for (const failure of failures) conditions.push(Object.freeze({ kind: 'execution.failed', ...failure }));
       for (const reply of humanReplies) conditions.push(Object.freeze({ kind: 'question.reply-pending', ...reply }));
       for (const goal of goals) {
@@ -241,7 +246,7 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
         matchedInputs: uniqueInputs([...(question.active?.matchedInputs ?? []), ...(question.foreground?.matchedInputs ?? [])]) }));
       return Object.freeze({ identity: captureIdentity(identity), sessionId: identity.sessionId,
         source: activity.source, live: activity.source === 'live', execution: activity.execution, sequence: activity.sequence,
-        requests, inputs, calls, replies, failures, attempts: activeAttempts, questions: Object.freeze({ active, settled, replies: humanReplies }),
+        requests, inputs, calls, replies, failures, preparation, attempts: activeAttempts, questions: Object.freeze({ active, settled, replies: humanReplies }),
         foreground, waits, operationFollows, goals, conditions: Object.freeze(conditions) });
     });
     return Object.freeze({ key, sessions: Object.freeze(sessions) });

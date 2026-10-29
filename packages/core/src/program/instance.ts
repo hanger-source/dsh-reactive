@@ -1,5 +1,6 @@
 import { createElement, type ReactElement } from 'react';
-import { catchError, firstValueFrom, forkJoin, of, throwError } from 'rxjs';
+import { catchError, defer, finalize, firstValueFrom, forkJoin, of, throwError } from 'rxjs';
+import type { PreparationObserver } from '../conversations/preparation.ts';
 import { invokeBoundAction, type ActionCallContext, type ActionExecutionContext, type ActionReference, type ActionOperationEvent, type Invocation } from '../actions/contract.ts';
 import type { Json } from '../conversations/protocol.ts';
 import type { OperationAccessContext, OperationBindingReference, OperationContract, OperationFeedbackRead, OperationFeedbackPayload, OperationReference, OperationFollowMode } from '../operations/contract.ts';
@@ -16,7 +17,7 @@ import type { ProgramContract, ProgramSession, ProgramWorkspace } from './defini
 import { programElement } from './implementation.ts';
 import { type ProgramImplementation } from './definition.ts';
 import { decodeProgramDeclaration, type OfferDeclaration, type FollowDeclaration, type SkillDeclaration, type HumanInputDeclaration, type NativeToolDeclaration } from './declarations.ts';
-import { collectProgramFrame, type ProgramFrame } from './frame.ts';
+import { collectProgramFrame, sameProgramFrame, type ProgramFrame } from './frame.ts';
 import { createProgramOutputs } from '../surfaces/outputs.ts';
 import { createDeclarationRenderer, type DeclarationRenderer } from './renderer.ts';
 
@@ -54,7 +55,7 @@ export interface ProgramInstanceOptions {
     access: OperationAccessContext): Promise<OperationFeedbackRead<OperationReference<D>, OperationFeedbackPayload<D>>>;
 }
 type TrustedExecution = { readonly action: ActionReference; readonly allowed: () => boolean };
-type StepBoundary = { readonly check: (signal: AbortSignal) => void | Promise<void>; readonly signal: AbortSignal };
+type StepBoundary = { readonly id: string; readonly check: (signal: AbortSignal) => void | Promise<void>; readonly signal: AbortSignal };
 
 /** 会话拥有组件树、声明快照与查询；原生执行及已受理业务拥有各自生存期。 */
 export class ProgramInstance<P extends ProgramContract> implements ProgramHookOwner {
@@ -127,6 +128,7 @@ export class ProgramInstance<P extends ProgramContract> implements ProgramHookOw
     for (const offer of Object.values(frame.offers)) this.options.validateOffer?.(offer);
     for (const follow of Object.values(frame.follows)) this.options.validateFollow?.(follow);
     for (const tool of Object.values(frame.nativeTools)) this.options.validateNativeTool?.(tool);
+    if (this.#frame && sameProgramFrame(this.#frame, frame)) return;
     batch(() => {
       for (const [name, binding] of this.#contexts) if (!Object.hasOwn(frame.contexts, name)) {
         this.#contexts.delete(name); this.contexts.delete(name); binding.scope.dispose();
@@ -159,7 +161,10 @@ export class ProgramInstance<P extends ProgramContract> implements ProgramHookOw
   }
   private offer(declaration: OfferDeclaration) {
     const previous = this.offers.get(declaration.name);
-    if (previous?.action === declaration.action) { previous.enabled.set(declaration.enabled); previous.follow = declaration.follow; }
+    if (previous?.action === declaration.action
+      && JSON.stringify(previous.modulePath) === JSON.stringify(declaration.modulePath ?? [])) {
+      previous.enabled.set(declaration.enabled); previous.follow = declaration.follow;
+    }
     else this.offers.set(declaration.name, { name: declaration.name, action: declaration.action,
       enabled: this.scope.state(declaration.enabled), modulePath: declaration.modulePath ?? Object.freeze([]), follow: declaration.follow });
   }
@@ -203,7 +208,7 @@ export class ProgramInstance<P extends ProgramContract> implements ProgramHookOw
   beforeStep(check: (signal: AbortSignal) => void | Promise<void>): () => void {
     this.assertActive();
     const controller = new AbortController();
-    const boundary = { check, signal: controller.signal };
+    const boundary = { id: globalThis.crypto.randomUUID(), check, signal: controller.signal };
     const release = this.reactivityScope.own(() => {
       this.#boundaries.delete(boundary);
       controller.abort();
@@ -213,7 +218,7 @@ export class ProgramInstance<P extends ProgramContract> implements ProgramHookOw
     this.#boundaries.add(boundary); this.revision.update(value => value + 1);
     return release;
   }
-  async prepare(signal: AbortSignal): Promise<void> {
+  async prepare(signal: AbortSignal, observer?: PreparationObserver): Promise<void> {
     for (;;) {
       signal.throwIfAborted(); this.flush();
       const boundaries = [...this.#boundaries];
@@ -228,7 +233,10 @@ export class ProgramInstance<P extends ProgramContract> implements ProgramHookOw
         // 同次检查并列连接；任一失败由forkJoin立即撤其余本次等待，不撤销登记身份。
         await firstValueFrom(forkJoin(boundaries.map(boundary => {
           const checking = AbortSignal.any([signal, this.signal, boundary.signal, changed.signal]);
-          return abortable(current => boundary.check(AbortSignal.any([checking, current])), checking).pipe(catchError((error: unknown) => {
+          return defer(() => {
+            const release = observer?.({ kind: 'check', id: boundary.id });
+            return abortable(current => boundary.check(AbortSignal.any([checking, current])), checking).pipe(finalize(() => release?.()));
+          }).pipe(catchError((error: unknown) => {
             signal.throwIfAborted(); this.assertActive();
             return this.#boundaries.has(boundary) ? throwError(() => error) : of(undefined);
           }));

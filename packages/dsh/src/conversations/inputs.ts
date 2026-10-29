@@ -56,6 +56,8 @@ export class ConversationInputs {
         this.sessions.assertSessionWorkspace(entry.session);
         this.workspaces.assertMember(agent.session, entry.session.workspace, entry.session.environment);
         await this.delegations.settlementNotices(agent, entry.claimed, signal);
+        signal.throwIfAborted();
+        this.sessions.assertSessionWorkspace(entry.session);
         const currentGoal = this.ctx.goals.get(agent);
         if (currentGoal?.activation === 'armed' && (entry.session.state.hasWaits(currentGoal)
             || this.operations().hasPendingGoal(agent, currentGoal)))

@@ -16,6 +16,10 @@
 
 会话程序按名称及实际来源身份增量更新内部接点，并在 batch 后发布 revision。原生准备使用 revision 判断异步等待期间声明是否变化；保持不变的 Action、工具、目录和视图来源不会因无关 render 全部重建。
 
+完整校验后的有效声明相同，保留原提交及 revision。Context 的实际文本与 pending/error/ready 有效性、Action/Operation 绑定、政策与资格来源、Skill、Surface 来源、Module 代际和人工响应者共同决定声明是否改变；ready 的观察时间本身不是 prompt 内容。程序可以读取自己的进展，观察更新不凭空制造下一轮装配。
+
+`progress.preparation` 只保存当前真实装配的 id、已知原输入和未结束的等待。实际 await owner 登记与撤销自己的令牌；Context 并列读取每轮独立退出，撤下一个来源会先结束旧批次的其他读取，再重新收集，业务资源本身不被销毁。取消同步撤令牌，迟到 finally 不影响新代际。冷图为 null；准备观察不写持久投影、不参与调度，执行失败仍沿原生 turn/end:error 形成历史事实。
+
 ## 查询、共享与长期关系
 
 `ResourceInstance`、`ResourceValue`、`shareResource` 和显式指定 owner signal 的 `ResourceReader` 把 owner 撤销表达为资源失效。仍活跃的观察先收到原 `signal.reason` 的 error Observation，再正常完成；退出后订阅只取得新的撤销观察，不连接来源或回放旧业务值。`peek`、`read` 和回调式 `subscribe` 拒绝已经结束的 owner。`values$` 在自身 owner 退出时正常完成；owner 活跃时的查询错误仍是值流错误。显式 owner 的资源在来源正常完成后继续观察有效性，来源 I/O 按其本来完成时点释放；owner 退出才结束这种观察。空完成或停在 pending 后完成交付 EmptyError。未指定 owner 的 ResourceReader 与普通 Observable 保留来源的有限语义。

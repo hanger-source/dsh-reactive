@@ -222,10 +222,16 @@ test('真实Skill准备替换声明，不配合取消的共享provider不阻塞�
     const signal = new AbortController().signal;
     const changing = one.ctx.systemPrompt.assemble(assembleContextFor(one, signal));
     const oldSignal = await wait(entered[0]!.promise);
+    const firstPreparation = (await first.progress.read()).preparation!;
+    assert.ok(firstPreparation.waiting.some(wait => wait.kind === 'skill' && wait.name === 'old-method'));
     const shared = two.ctx.systemPrompt.assemble(assembleContextFor(two, signal));
     const sharedSignal = await wait(entered[1]!.promise);
+    const secondPreparation = (await second.progress.read()).preparation!;
+    assert.notEqual(secondPreparation.id, firstPreparation.id);
     selected.next('new-method');
     const current = await wait(changing);
+    assert.equal((await first.progress.read()).preparation, null);
+    assert.equal((await second.progress.read()).preparation?.id, secondPreparation.id, '另一会话仍在原准备中等待自己的读取');
     assert.equal(oldSignal.aborted, true); assert.equal(sharedSignal.aborted, false);
     assert.equal(control.signal.aborted, false); assert.equal(signal.aborted, false);
     assert.ok(JSON.stringify(current.contexts).includes('CURRENT_METHOD_BODY'));
@@ -233,7 +239,9 @@ test('真实Skill准备替换声明，不配合取消的共享provider不阻塞�
     bodies[0]!.reject(new Error('OBSOLETE_PROVIDER_FAILED_LATE'));
     bodies[1]!.resolve('OTHER_SESSION_METHOD_BODY');
     assert.ok(JSON.stringify((await wait(shared)).contexts).includes('OTHER_SESSION_METHOD_BODY'));
+    assert.equal((await second.progress.read()).preparation, null);
     await immediate();
+    assert.equal((await first.progress.read()).preparation, null, '被替换读取的迟到失败不能复活旧准备');
     assert.ok(JSON.stringify((await one.ctx.systemPrompt.assemble(assembleContextFor(one, signal))).contexts).includes('CURRENT_METHOD_BODY'));
     assert.equal((await app.native.get('skills')!.get('old-method', { scope: two, cwd: root, signal }))?.content,
       'SHARED_METHOD_STILL_AVAILABLE');
@@ -302,10 +310,12 @@ test('Skill准备随真实工作目录和catalog重读，当前失败、步骤�
     const cancelResult = assemble(step.signal), rejected = assert.rejects(wait(cancelResult), error => error === cancellation);
     const cancelSignal = await wait(cancelled.entered.promise);
     step.abort(cancellation); await rejected;
+    assert.equal((await session.progress.read()).preparation, null, '取消步骤立即撤下准备观察，不等不合作的来源结束');
     assert.equal(cancelSignal.aborted, true); cancelled.gate.resolve();
 
     failure = new Error('CURRENT_METHOD_OFFLINE');
     await assert.rejects(wait(assemble()), error => error === failure);
+    assert.equal((await session.progress.read()).preparation, null, '当前读取失败不保留过期等待');
     failure = undefined;
     assert.ok(JSON.stringify((await wait(assemble())).contexts).includes('CATALOG_CURRENT_BODY'));
 
@@ -314,6 +324,7 @@ test('Skill准备随真实工作目录和catalog重读，当前失败、步骤�
     const closingSignal = await wait(closing.entered.promise);
     await assert.doesNotReject(app.runtime.application.close(session.id), '会话关闭只拒绝在途准备，不使关闭失败');
     await disposed;
+    assert.equal((await session.progress.read()).preparation, null, 'Agent退出后冷图不保留活跃准备');
     assert.equal(closingSignal.aborted, true); assert.equal(control.signal.aborted, false);
     assert.equal(app.models(), 0); assert.deepEqual(app.errors, []);
     session.release();

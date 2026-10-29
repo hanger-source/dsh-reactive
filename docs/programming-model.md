@@ -483,6 +483,14 @@ function observeWork(workId: string, sessions: readonly WorkSource[], signal: Ab
 
 每项保留完整 `value` 和解释命中依据的 `matchedInputs`；一次调用或回复可能因多条输入同时属于多个工作。调用保留正式 start 事件序号 `callSequence`，回复保留 `messageId` 和完整 inputs；provider 的 callId 可跨轮复用，不能用它合并不同发生。matchedInputs 只解释观察分组，不裁剪事实或授予续接权限。声明是持久请求事实，可在尚无 messageId 时命中，但它不是已受理的 InputReference。缺少输入关联证据的回复不归组。条件表达暂停、阻塞、等待、待答、调用失败及原续接资格，不能据此判断整个工作忙碌或完成。业务 Operation 阶段与资源错误可用现有 RxJS 资源组合表达。
 
+## 观察当前模型准备
+
+`session.progress.read(signal)` 的 `preparation` 是当前真实模型准备的 `ModelPreparation | null`。同一对象保留本次准备 id、当时已知的原始 inputs 与尚未结束的 `waiting`。等待描述来自实际执行边界：委托核验、输入准备、步骤检查、Context、Skill 服务与目录、工作目录、Skill 正文及原生 prompt 装配。Context 使用已有声明名，Skill 使用已有名称或目录；步骤检查只提供登记身份，不从函数名猜测业务含义。
+
+请求的 `session.request(id).state` 只在本次准备的 inputs 确实包含该请求时提供 `preparation`；Work 的 `preparation` 保留完整准备事实与 `matchedInputs`，存在实际等待时产生 `preparation.waiting` 条件。同一次准备可以同时关联多个工作。输入关联解释观察范围，不表示输入已经进入模型或取得业务授权。
+
+准备观察只描述当前等待，不参与调度，也不记录历史。正常结束、异常、取消或原 Agent 退出会撤下本次等待，迟到完成不能恢复旧准备；冷会话返回 null。null 不承诺下一模型步骤已经就绪，等待消失也不证明业务操作完成。失败历史继续读取 `activity.failures`，声明与资源本身仍沿各自 owner 和有效性合同工作。
+
 ## 观察执行失败与保留交付
 
 会话的 `progress.activity.failures`、请求的 `state.activity.failures` 与 Work 的 `failures` 读取同一组 `ExecutionFailure`。每项保留原生错误、turn、sequence、observedAt 和完整原输入；`unentered` 标识该次提议中尚未进入输入历史的实际消息，包含 messageId、原队列、问题 callId 及其输入关联。Work 的 `execution.failed` 条件是失败事实，不代表整个业务失败或已经完成。

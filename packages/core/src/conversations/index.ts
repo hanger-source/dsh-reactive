@@ -14,3 +14,4 @@ export type { WorkOrigin, WorkSourceIdentity, WorkSource, WorkSourceSnapshot, Wo
 export type { WorkOperationFollow, WorkSessionHandle } from './work.ts';
 export type { ProgramSessionClient, HumanProgramSessionClient, ProgramGoalControl, ProgramCancelResult, ProgramRequestStatus } from './client.ts';
 export * from '../journal/index.ts';
+export { modelPreparationSchema, ownModelPreparation, type ModelPreparation, type ModelPreparationWait } from './preparation.ts';

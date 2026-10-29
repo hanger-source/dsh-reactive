@@ -9,6 +9,7 @@ import type {} from '@deepseek-ai/dsh-fs';
 import { retainEligibility, type SkillDeclaration } from '@hanger-source/dsh-reactive/kernel';
 import { abortable, EligibilityError, type Eligibility, type ResourceReader, type Observation } from '@hanger-source/dsh-reactive';
 import { firstValueFrom, Subscriber } from 'rxjs';
+import { observePreparation, type PreparationObserver } from '@hanger-source/dsh-reactive/kernel';
 
 // 原生注册可同步发布通知；先登记身份，撤销后才返回的资源仍归原注册收拢。
 type NamedSkill = { text: string; release?: () => void };
@@ -143,10 +144,11 @@ export class ProgramSkills {
   }
 
   /** 在原生 pre-step 的 Skill catalog 收集之前等待；相同目录与名称保留原生注册身份。 */
-  async ready(signal: AbortSignal) {
+  async ready(signal: AbortSignal, observer?: PreparationObserver) {
     this.assertActive();
     signal.throwIfAborted();
-    await firstValueFrom(abortable(() => this.#owner.await(), signal));
+    await observePreparation(observer, { kind: 'skill-services' }, signal,
+      () => firstValueFrom(abortable(() => this.#owner.await(), signal)));
     this.assertActive();
     signal.throwIfAborted();
     const ctx = this.#ctx;
@@ -183,8 +185,11 @@ export class ProgramSkills {
           throw error;
         }
       }
-      const results = await firstValueFrom(abortable(() => Promise.allSettled([...this.#providers.values()].map(binding => binding.fiber?.await())), signal));
-      await firstValueFrom(abortable(() => Promise.all([...this.#retiring]), signal));
+      const results = await firstValueFrom(abortable(() => Promise.allSettled([...this.#providers].map(([directory, binding]) =>
+        observePreparation(observer, { kind: 'skill-directory', directory }, signal,
+          () => firstValueFrom(abortable(() => binding.fiber?.await(), signal))))), signal));
+      if (this.#retiring.size) await observePreparation(observer, { kind: 'skill-release' }, signal,
+        () => firstValueFrom(abortable(() => Promise.all([...this.#retiring]), signal)));
       this.assertActive();
       signal.throwIfAborted();
       const failures = [...this.#failures, ...results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])];
@@ -194,7 +199,7 @@ export class ProgramSkills {
   }
 
   /** 选中的方法正文进入本次原生上下文；依赖变化取消当前读取并准备新的集合。 */
-  async prepare(signal: AbortSignal): Promise<() => boolean> {
+  async prepare(signal: AbortSignal, observer?: PreparationObserver): Promise<() => boolean> {
     const lifetime = AbortSignal.any([signal, this.programSignal, this.#lifetime.signal]);
     lifetime.throwIfAborted();
     this.assertActive();
@@ -220,15 +225,18 @@ export class ProgramSkills {
       }
       reading = AbortSignal.any([lifetime, attempt.signal, ...[...pins.values()].map(pin => pin.signal)]);
       await firstValueFrom(abortable(() => Promise.all([...pins.values()].map(pin => pin.ready)), reading));
-      await this.ready(reading);
+      await this.ready(reading, observer);
       lookupRevision = this.#lookupRevision;
       reading.throwIfAborted();
       const ctx = this.#ctx!;
       const names = [...selected.values()].flatMap(declaration => declaration.name === undefined ? [] : [declaration.name]);
-      const cwd = await firstValueFrom(abortable(() => ctx.workingDirectory.ensure(this.agent, reading), reading));
+      const cwd = await observePreparation(observer, { kind: 'working-directory' }, reading,
+        () => firstValueFrom(abortable(() => ctx.workingDirectory.ensure(this.agent, reading), reading)));
       const stable = () => !this.#disposed && !lifetime.aborted && current()
         && cwd === ctx.workingDirectory.get(this.agent.session);
-      const definitions = await firstValueFrom(abortable(() => Promise.all(names.map(name => ctx.skills.get(name, { scope: this.agent, cwd, signal: reading }))), reading));
+      const definitions = await firstValueFrom(abortable(() => Promise.all(names.map(name =>
+        observePreparation(observer, { kind: 'skill', name }, reading,
+          () => firstValueFrom(abortable(() => ctx.skills.get(name, { scope: this.agent, cwd, signal: reading }), reading))))), reading));
       reading.throwIfAborted();
       this.assertActive();
       if (!stable()) return () => false;

@@ -1,4 +1,4 @@
-import type { AttachmentIdType, ExecutionFailure, SessionImageAttachment as CoreSessionImageAttachment } from '@hanger-source/dsh-reactive';
+import type { AttachmentIdType, ExecutionFailure, ModelPreparation, SessionImageAttachment as CoreSessionImageAttachment } from '@hanger-source/dsh-reactive';
 import type { ActionIdentity, ActionSource, Continuation, GoalActivity, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanReplyDelivery, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
   ProgramGoalControl as CoreProgramGoalControl, ProgramCancelResult as CoreProgramCancelResult, ProgramRequestStatus as CoreProgramRequestStatus,
   ProgramJournalEvent as CoreProgramJournalEvent, ProgramJournalEntry as CoreProgramJournalEntry,
@@ -17,6 +17,10 @@ export type ProgramExecutionFailure = Omit<ExecutionFailure, 'inputs' | 'unenter
   readonly unentered: readonly (Omit<ExecutionFailure['unentered'][number], 'inputs'> & {
     readonly inputs: readonly InputReference<JsonValue>[];
   })[];
+};
+/** 当前模型准备的 wire 形态；仅原始输入 scope 穿过 JSON 边界。 */
+export type ProgramModelPreparation = Omit<ModelPreparation, 'inputs'> & {
+  readonly inputs: readonly InputReference<JsonValue>[];
 };
 
 /** 官方 failure 的 wire 形态；details 按 Typert 边界限定为 JSON 对象或数组。 */
@@ -99,6 +103,7 @@ export type ProgramConversationEvent = Exclude<WireEvent, { kind: 'execution.err
 export type ProgramProgressFrame =
   | { readonly type: 'baseline'; readonly observation: WireObservation }
   | { readonly type: 'activity'; readonly activity: JsonValue }
+  | { readonly type: 'preparation'; readonly preparation: ProgramModelPreparation | null }
   | { readonly type: 'assistant'; readonly progress: JsonValue }
   | { readonly type: 'event'; readonly event: ProgramConversationEvent };
 export interface ProgramViewRequest extends ProgramSessionAddress { readonly name: string; }

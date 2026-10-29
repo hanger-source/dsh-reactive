@@ -85,6 +85,12 @@ Program 的 conversation.progress 与 conversation.request(id).state、SDK 和�
 
 答复取消、重新入队或提议窗口结束都可能让 replies 消失；不能据空集合声称从未回答或模型已消费。冷读的 proposed 只是最后持久事实，不证明当前有 Agent 在执行。前台回答沿原生工具返回结算；晚答进入 user/message 才推进原生问题结算，仍不证明模型已处理或业务成功。观察不签发原 Goal 的续接权限。
 
+## 读取当前模型准备
+
+`session.progress.read(signal)` 的 preparation 是 `ModelPreparation | null`，保留当前准备 id、已知原始 inputs 和实际仍在等待的 waiting。Context、Skill 名称与目录使用已有身份，check.id 只是不透明的登记身份。委托、输入准备、步骤检查、Skill 服务/目录/正文、工作目录、Context 和原生装配各自报告自己的等待，不维护另一份综合任务状态。
+
+`session.request(id).state` 只展示 inputs 确切命中的 preparation；WorkSessionSnapshot.preparation 保完整事实和 matchedInputs，实际有等待时给出 preparation.waiting 条件。多输入可同时属于多个工作，观察不签发权限，也不证明输入已被模型消费。结束、失败、取消及 Agent 退出撤下当前准备；冷读为 null，不从持久失败或旧模型步骤复活等待。null 不代表业务或模型已完成。
+
 ## 读取执行失败
 
 `session.progress.read(signal)` 的 activity.failures、`session.request(id).state.read(signal)` 的 activity?.failures，以及 WorkSessionSnapshot.failures 共用 ExecutionFailure。该事实来自原生 turn/end:error，带原生 LlmFailure、turn/sequence/observedAt、原 inputs 和尚未入历史的 unentered 消息。Work 条件 execution.failed 保同一来源；不能把它解释为整个业务、Goal 或 Operation 的最终失败。自定义 Activity/Request 来源必须提供 failures，不能用读侧 error 代替有效的失败事实。

@@ -13,7 +13,7 @@ import { type ActionContract, type ActionInput, type ActionScope } from "@hanger
 import { type OperationContract, type OperationHandle, type OperationReference, type OperationCommand, type OperationLocation, type OperationState, type BoundOperation, type OperationFeedbackRead, type OperationFeedbackPayload, type OperationNotificationResult } from "@hanger-source/dsh-reactive/kernel";
 import { type ActionInvocation } from "@hanger-source/dsh-reactive/kernel";
 import { type HumanAnswer, type HumanForegroundQuestion, type HumanInputState, type HumanWaitFrame } from "@hanger-source/dsh-reactive/kernel";
-import { type ConversationActivity } from "@hanger-source/dsh-reactive/kernel";
+import { type ConversationActivity, type ModelPreparation } from "@hanger-source/dsh-reactive/kernel";
 import { type FileUploadSource, type FileUploadInvocation, type EncodedFileUploadRequest, type UploadFileOptions, type Json, type SessionFiles } from "@hanger-source/dsh-reactive/kernel";
 import type { AssistantProgressFrame, ConversationEvent } from "@hanger-source/dsh-reactive/kernel";
 import { createRequestHandle, type ConversationProgressSnapshot, type RequestHandle } from "@hanger-source/dsh-reactive/kernel";
@@ -46,6 +46,8 @@ export interface ServiceConversation<P extends ProgramContract = ProgramContract
     readonly signal: AbortSignal;
     readonly accessId: string;
     readonly activity$: Observable<ConversationActivity>;
+    /** 同源准备增量，供宿主运输且不展开 assistant 前缀。 */
+    readonly preparation$: Observable<ModelPreparation | null>;
     readonly rawEvents$: Observable<ConversationEvent>;
     observeWireView(name: string): Observable<Observation<Json>>;
     uploadEncodedFile(request: EncodedFileUploadRequest, options?: CancellationOptions): FileUploadInvocation;
@@ -55,6 +57,8 @@ export interface ServiceConversation<P extends ProgramContract = ProgramContract
     progressSnapshot(): Observation<ConversationProgressSnapshot>;
 }
 export class ConversationHandle<P extends ProgramContract = ProgramContract> implements HumanProgramSessionClient<P, SubmitOptions, false> {
+    /** 同源准备增量，避免每次等待变化物化完整 assistant 前缀。 */
+    readonly preparation$: Observable<ModelPreparation | null>;
     readonly activity$: Observable<ConversationActivity>;
     readonly progress$: Observable<Observation<ConversationProgressSnapshot>>;
     readonly progress: ResourceReader<ConversationProgressSnapshot>;
@@ -77,6 +81,7 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
         sessions.registerSessionAccess(this, entry, this.#scope.signal, () => this.assertActive());
         entry.pins++;
         this.activity$ = this.observe(entry.conversation.activity$);
+        this.preparation$ = this.observe(entry.conversation.preparation$);
         this.progress = new ResourceReader(entry.conversation.progress,
             { signal: this.#scope.signal, onObserverError: error => this.#scope.observerError(error) });
         this.progress$ = this.progress.observations$;

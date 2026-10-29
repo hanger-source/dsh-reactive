@@ -17,6 +17,8 @@ import type { OperationParticipation } from '../operations/participation.ts';
 import type { ProgramTools } from '../execution/tools.ts';
 import { firstValueFrom } from 'rxjs';
 import { abortable } from '@hanger-source/dsh-reactive';
+import { observePreparation, type PreparationObserver, type ModelPreparationWait } from '@hanger-source/dsh-reactive/kernel';
+import { randomUUID } from 'node:crypto';
 declare module '@deepseek-ai/dsh-system-prompt' {
     interface AssembleContext {
         reactivePrepared?: true;
@@ -72,7 +74,7 @@ export class ConversationPrograms {
         program.flush();
         await entry.skills.ready(AbortSignal.any([nativeScope.signal, program.signal]));
     }
-    async prepareBindings(entry: LiveConversation, nativeSignal: AbortSignal) {
+    async prepareBindings(entry: LiveConversation, nativeSignal: AbortSignal, observer?: PreparationObserver) {
         const program = entry.session.program;
         const signal = AbortSignal.any([nativeSignal, program.signal]);
         for (;;) {
@@ -81,12 +83,12 @@ export class ConversationPrograms {
             this.tools.prepareNativeTools(entry);
             const revision = program.revision.peek();
             try {
-                await program.prepare(signal);
-                const skillsStable = await entry.skills.prepare(signal);
+                await program.prepare(signal, observer);
+                const skillsStable = await entry.skills.prepare(signal, observer);
                 if (!skillsStable())
                     continue;
-                const contextsStable = await this.bindings.prepare(entry.agent, signal);
-                await program.prepare(signal);
+                const contextsStable = await this.bindings.prepare(entry.agent, signal, observer);
+                await program.prepare(signal, observer);
                 const stable = () => {
                     if (signal.aborted)
                         return false;
@@ -113,22 +115,48 @@ export class ConversationPrograms {
             if (!context.signal)
                 throw new Error('REACTIVE_ASSEMBLY_SIGNAL_REQUIRED');
             entry.stepSignal = context.signal;
-            const signal = AbortSignal.any([context.signal, entry.scope.signal, entry.session.scope.signal]);
-            signal.throwIfAborted();
-            this.sessions.assertSessionWorkspace(entry.session);
-            await firstValueFrom(abortable(() => this.delegations.beforeStep(entry.agent, signal), signal));
+            const signal = AbortSignal.any([context.signal, entry.scope.signal, entry.session.scope.signal, entry.session.program.signal]);
             signal.throwIfAborted();
             this.sessions.assertSessionWorkspace(entry.session);
             if (entry.preparing)
                 throw new Error('REACTIVE_ASSEMBLY_CONCURRENT');
-            entry.progress.beginPreparation();
             entry.preparing = true;
+            entry.progress.beginPreparation();
+            const id = randomUUID();
+            const waiting = new Map<object, ModelPreparationWait>();
+            const bindings = entry.session.conversation[conversationBindings]();
+            let closed = false;
+            const snapshot = () => ({ id, inputs: entry.session.state.inputs(entry.claimed), waiting: [...waiting.values()] });
+            const publish = () => { if (!closed) bindings.publishPreparation(snapshot(), id); };
+            const close = () => {
+                if (closed) return;
+                closed = true;
+                waiting.clear();
+                bindings.publishPreparation(null, id);
+            };
+            const observer: PreparationObserver = wait => {
+                signal.throwIfAborted();
+                const token = {};
+                waiting.set(token, wait);
+                publish();
+                return () => { if (waiting.delete(token)) publish(); };
+            };
+            signal.addEventListener('abort', close, { once: true });
             try {
-                await this.inputs.prepare(entry, signal);
+                bindings.publishPreparation(snapshot());
+                signal.throwIfAborted();
+                await observePreparation(observer, { kind: 'delegation' }, signal,
+                    () => firstValueFrom(abortable(() => this.delegations.beforeStep(entry.agent, signal), signal)));
+                signal.throwIfAborted();
+                this.sessions.assertSessionWorkspace(entry.session);
+                await observePreparation(observer, { kind: 'inputs' }, signal, () => this.inputs.prepare(entry, signal));
+                signal.throwIfAborted();
+                publish();
                 // 只使用公开装配 API：重新收集已更新的声明和上下文，不修改 loop 保存的旧快照。
                 for (;;) {
-                    const stable = await this.prepareBindings(entry, signal);
-                    const assembled = await firstValueFrom(abortable(() => entry.agent.ctx.systemPrompt.assemble({ ...context, reactivePrepared: true }), signal));
+                    const stable = await this.prepareBindings(entry, signal, observer);
+                    const assembled = await observePreparation(observer, { kind: 'assembly' }, signal,
+                        () => firstValueFrom(abortable(() => entry.agent.ctx.systemPrompt.assemble({ ...context, reactivePrepared: true }), signal)));
                     signal.throwIfAborted();
                     this.sessions.assertSessionWorkspace(entry.session);
                     if (!stable())
@@ -139,6 +167,8 @@ export class ConversationPrograms {
                 }
             }
             finally {
+                signal.removeEventListener('abort', close);
+                close();
                 entry.preparing = false;
             }
         });

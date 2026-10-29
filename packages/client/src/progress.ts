@@ -1,7 +1,7 @@
 import { revokeConversationAccess, type ClientScope } from './scope.ts';
 import { RemoteSnapshotStream } from '@deepseek-ai/dsh-api-gateway/client';
 import { BehaviorSubject, Subject, defer, EMPTY, fromEvent, map, mergeAll, of, shareReplay, takeUntil, type Observable } from 'rxjs';
-import { ResourceReader, createAssistantProgress, createRequestHandle, decodeProgramEvent, ownConversationEvent, operationFollowSnapshotSchema, parseAssistantProgressFrame, parseConversationProgress, type AssistantProgressFrame, type ConversationActivity, type ConversationEvent, type ConversationProgressSnapshot, type Observation, type RequestHandle, type ProgramContract, type ProgramParsedInput } from '@hanger-source/dsh-reactive';
+import { ResourceReader, createAssistantProgress, createRequestHandle, decodeProgramEvent, ownConversationEvent, operationFollowSnapshotSchema, ownModelPreparation, parseAssistantProgressFrame, parseConversationProgress, type AssistantProgressFrame, type ConversationActivity, type ConversationEvent, type ConversationProgressSnapshot, type ModelPreparation, type Observation, type RequestHandle, type ProgramContract, type ProgramParsedInput } from '@hanger-source/dsh-reactive';
 import type { ProgramSessionAddress, ProgramProgressFrame } from './contracts/types.ts';
 import { decodeProgramFailure } from './contracts/errors.ts';
 
@@ -19,6 +19,7 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
   const { sessionId } = address;
   const { context: ctx, signal: lifetime } = owner;
   const assistant = createAssistantProgress();
+  let preparation: ModelPreparation | null = null;
   const current = new BehaviorSubject<Observation<ConversationActivity>>({ status: 'pending', generation: 0 });
   const facts = new Subject<{ raw$: Observable<ConversationEvent>; typed$: Observable<ConversationEvent<ProgramParsedInput<P>>> }>();
   const rawEvents = facts.pipe(map(fact => fact.raw$), mergeAll());
@@ -32,7 +33,7 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
     const source = current.value;
     if (source.status !== 'ready') return source;
     if (cached?.source === source) return cached.snapshot;
-    const snapshot = Object.freeze({ ...source, value: Object.freeze({ activity: source.value, attempts: assistant.snapshot() }) });
+    const snapshot = Object.freeze({ ...source, value: Object.freeze({ activity: source.value, attempts: assistant.snapshot(), preparation }) });
     cached = { source, snapshot };
     return snapshot;
   };
@@ -40,6 +41,7 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
   const invalidate = (): void => {
     if (lifetime.aborted || terminated) return;
     assistant.replace([]);
+    preparation = null;
     current.next({ status: 'pending', generation: current.value.generation + 1 });
   };
   const ready = (activity: ConversationActivity): void => {
@@ -59,9 +61,11 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
         const observation = frame.observation;
         if (observation.status === 'ready') {
           const value = parseConversationProgress(observation.value);
+          preparation = value.preparation;
           assistant.replace(value.attempts); ready(value.activity);
         } else {
           assistant.replace([]);
+          preparation = null;
           if (observation.status === 'error') {
             const error = revokeConversationAccess(owner, decodeProgramFailure(observation.error));
             if (lifetime.aborted) return;
@@ -73,7 +77,13 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
       },
       update: frame => {
         if (lifetime.aborted) return;
-        if (frame.type === 'activity') ready(parseConversationProgress({ activity: frame.activity, attempts: [] }).activity);
+        if (frame.type === 'activity') ready(parseConversationProgress({ activity: frame.activity, attempts: [], preparation: null }).activity);
+        else if (frame.type === 'preparation') {
+          const observed = current.value;
+          if (observed.status !== 'ready') throw new Error('REACTIVE_REMOTE_PREPARATION_WITHOUT_BASELINE');
+          preparation = frame.preparation === null ? null : ownModelPreparation(frame.preparation);
+          ready(observed.value);
+        }
         else if (frame.type === 'assistant') {
           const observed = current.value;
           if (observed.status !== 'ready') throw new Error('REACTIVE_REMOTE_ASSISTANT_WITHOUT_BASELINE');
@@ -98,7 +108,8 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
         if (lifetime.aborted) return;
         // 官方snapshot consumer已经终止；先固定事实，通知中的重入reset也不能假装重新观察。
         terminated = true;
-        assistant.replace([]); current.next({ status: 'error', generation: current.value.generation + 1, error });
+        assistant.replace([]); preparation = null;
+        current.next({ status: 'error', generation: current.value.generation + 1, error });
         facts.error(error); progressFrames.error(error);
       },
     });
@@ -107,7 +118,7 @@ export function connectProgress<P extends ProgramContract>(owner: ClientScope, a
   }, async ({ stream, reset }) => {
     reset();
     try { await stream.dispose(); }
-    finally { assistant.replace([]); current.complete(); facts.complete(); progressFrames.complete(); requests.clear(); cached = undefined; }
+    finally { assistant.replace([]); preparation = null; current.complete(); facts.complete(); progressFrames.complete(); requests.clear(); cached = undefined; }
   }, 'program-progress:' + sessionId);
   if (owner.active) lease.value.stream.start();
   return {

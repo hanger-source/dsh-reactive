@@ -4,6 +4,9 @@ import type { ContextDeclaration, OfferDeclaration, FollowDeclaration, NativeToo
 import type { Frame } from './renderer.ts';
 import type { Surface, SurfaceBindingReferences } from '../surfaces/contract.ts';
 import { moduleRootSurface, type SurfaceMount } from '../surfaces/composition.ts';
+import type { Observation } from '../resources/observation.ts';
+import type { Json } from '../conversations/protocol.ts';
+import { isObservable } from 'rxjs';
 
 export interface SurfaceContribution extends SurfaceBindingReferences {
   readonly surface: Surface;
@@ -118,4 +121,52 @@ export function collectProgramFrame(frame: Frame<ProgramDeclaration>): ProgramFr
     nativeTools: Object.freeze(nativeTools), skills: Object.freeze(skills), mounts: Object.freeze(mounts), ...humanInput ? { humanInput } : {}, surfaces: Object.freeze([...surfaces.values()].map(contribution =>
       Object.freeze({ surface: contribution.surface, views: Object.freeze(contribution.views),
         actions: Object.freeze(contribution.actions), operations: Object.freeze(contribution.operations) }))) });
+}
+
+/** 相同有效声明保留原提交；观察自己的进展不会凭空制造一次装配修订。 */
+export function sameProgramFrame(left: ProgramFrame, right: ProgramFrame): boolean {
+  const record = <T>(a: Readonly<Record<string, T>> | undefined, b: Readonly<Record<string, T>> | undefined,
+    equal: (a: T, b: T) => boolean = Object.is): boolean => {
+    const keys = Object.keys(a ?? {});
+    return keys.length === Object.keys(b ?? {}).length && keys.every(key => Object.hasOwn(b ?? {}, key) && equal(a![key]!, b![key]!));
+  };
+  const set = <T>(a: readonly T[], b: readonly T[], equal: (a: T, b: T) => boolean = Object.is): boolean =>
+    a.length === b.length && a.every(value => b.some(other => equal(value, other)));
+  const observation = <T>(a: Observation<T> | undefined, b: Observation<T> | undefined, equal: (a: T, b: T) => boolean): boolean => {
+    if (!a || !b) return a === b;
+    if (a.status !== b.status) return false;
+    if (a.status === 'pending') return true;
+    if (a.status === 'error') return b.status === 'error' && a.error === b.error;
+    return b.status === 'ready' && equal(a.value, b.value);
+  };
+  const text = (value: Json) => typeof value === 'string' ? value : JSON.stringify(value);
+  const context = (a: ContextDeclaration, b: ContextDeclaration): boolean => {
+    const av = a.observation, bv = b.observation;
+    // 静态值和同一ready文本向原生贡献相同内容；观察时间和代次不是prompt输入。
+    if ((av === undefined || av.status === 'ready') && (bv === undefined || bv.status === 'ready'))
+      return text(av === undefined ? a.value! : av.value) === text(bv === undefined ? b.value! : bv.value);
+    return observation(av, bv, (x, y) => text(x) === text(y));
+  };
+  return record(left.contexts, right.contexts, context)
+    && record(left.offers, right.offers, (a, b) => a.action === b.action && a.enabled === b.enabled
+      && JSON.stringify(a.modulePath ?? []) === JSON.stringify(b.modulePath ?? [])
+      && observation(a.eligibility, b.eligibility, (x, y) => x.allowed === y.allowed && (x.allowed || (!y.allowed && x.reason === y.reason)))
+      && (a.follow === undefined || b.follow === undefined ? a.follow === b.follow
+        : a.follow.when === b.follow.when && a.follow.mode === b.follow.mode && frameJson(a.follow.scope) === frameJson(b.follow.scope)))
+    && record(left.follows, right.follows, (a, b) => a.operation === b.operation && a.description === b.description
+      && a.when === b.when && a.mode === b.mode && a.enabled === b.enabled && a.eligibility === b.eligibility
+      && frameJson(a.scope) === frameJson(b.scope))
+    && record(left.nativeTools, right.nativeTools, (a, b) => a.enabled === b.enabled && a.admit === b.admit && a.eligibility === b.eligibility)
+    && set(left.skills, right.skills, (a, b) => a.name === b.name && a.directory === b.directory && a.eligibility === b.eligibility)
+    && set(left.surfaces, right.surfaces, (a, b) => a.surface === b.surface
+      && record(a.actions, b.actions) && record(a.operations, b.operations)
+      && record(a.views, b.views, (x, y) => (isObservable(x) ? x : x.observations$) === (isObservable(y) ? y : y.observations$)))
+    // Module以useMemo保留逻辑地址；动态撤后重挂取得不同effective mount，不能合并代际。
+    && set(left.mounts ?? [], right.mounts ?? [])
+    && left.humanInput?.admitResponder === right.humanInput?.admitResponder;
+}
+
+function frameJson(value: Json): string {
+  return JSON.stringify(value, (_key, item: unknown) => item !== null && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.keys(item).sort().map(key => [key, (item as Record<string, unknown>)[key]])) : item);
 }

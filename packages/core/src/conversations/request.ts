@@ -5,13 +5,16 @@ import { inputReferenceSchema, ownConversationActivity, type ConversationActivit
 import type { AssistantAttemptSnapshot, AssistantProgressFrame, ConversationEvent, RequestEvent } from './events.ts';
 import type { Observation } from '../resources/observation.ts';
 import { ResourceReader, type ResourceReadable, type ResourceReaderOptions } from '../resources/reader.ts';
+import { ownModelPreparation, type ModelPreparation } from './preparation.ts';
 
 /** 当前持久事实与真实活跃前缀；冷读取的 attempts 为空，不复活草稿。 */
 export interface ConversationProgressSnapshot {
+  readonly preparation: ModelPreparation | null;
   readonly activity: ConversationActivity;
   readonly attempts: readonly AssistantAttemptSnapshot[];
 }
 export interface RequestSnapshot {
+  readonly preparation: ModelPreparation | null;
   readonly sessionId: string;
   readonly requestId: string;
   readonly source: ConversationActivity['source'];
@@ -43,11 +46,12 @@ export function createRequestHandle<T>(sessionId: string, requestId: string,
     if (cached?.source === source) return cached.snapshot;
     let snapshot: Observation<RequestSnapshot>;
     try {
-      const { activity, attempts } = source.value;
+      const { activity, attempts, preparation } = source.value;
       if (activity.sessionId !== sessionId) throw new Error('REACTIVE_REQUEST_SESSION_MISMATCH');
       snapshot = Object.freeze({ ...source, value: Object.freeze({ sessionId, requestId, source: activity.source,
         execution: activity.execution, sequence: activity.sequence,
         activity: Object.hasOwn(activity.requests, requestId) ? activity.requests[requestId]! : null,
+        preparation: preparation?.inputs.some(input => input.sourceSessionId === sessionId && input.requestId === requestId) ? preparation : null,
         attempts: Object.freeze(attempts.filter(attempt => attempt.inputs.some(input =>
           input.sourceSessionId === sessionId && input.requestId === requestId))),
       }) });
@@ -95,8 +99,9 @@ export function parseAssistantAttempt(raw: unknown): AssistantAttemptSnapshot {
   return Object.freeze({ ...value, inputs: ownInputs(value.inputs), stream: accumulator.snapshot() });
 }
 export function parseConversationProgress(raw: unknown): ConversationProgressSnapshot {
-  const value = z.object({ activity: z.unknown(), attempts: z.unknown().array() }).strict().parse(raw);
-  return Object.freeze({ activity: ownConversationActivity(value.activity), attempts: Object.freeze(value.attempts.map(parseAssistantAttempt)) });
+  const value = z.object({ activity: z.unknown(), attempts: z.unknown().array(), preparation: z.unknown().refine(value => value !== undefined) }).strict().parse(raw);
+  return Object.freeze({ activity: ownConversationActivity(value.activity), attempts: Object.freeze(value.attempts.map(parseAssistantAttempt)),
+    preparation: value.preparation === null ? null : ownModelPreparation(value.preparation) });
 }
 export function parseAssistantProgressFrame(raw: unknown): AssistantProgressFrame {
   const value = frameSchema.parse(raw), frame = value.frame;

@@ -19,6 +19,7 @@ import type { SessionJournal } from '../journal/contract.ts';
 import { SessionJournalUnavailableError } from '../journal/errors.ts';
 import type { SessionAttachments } from '../attachments/contract.ts';
 import { SessionAttachmentsUnavailableError } from '../attachments/errors.ts';
+import { ownModelPreparation, type ModelPreparation } from './preparation.ts';
 
 export { z };
 export type { Json, InputReference, GoalReference, Continuation, WaitReference, Submission, NormalizedSubmission, AdmittedSubmission, InputDelivery, PromptContentPart, AdmittedPromptContentPart, FileUploadValue, FileUploadReceiptId, EncodedFileUploadRequest, FileUploadSource, UploadFileOptions, Admission, CancellationOptions, SubmitOptions, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions } from './protocol.ts';
@@ -47,6 +48,8 @@ export class Conversation<T = Json, Raw = T> {
   readonly rawEvents$: Observable<ConversationEvent>;
   readonly progress$: Observable<Observation<ConversationProgressSnapshot>>;
   readonly progress: ResourceReader<ConversationProgressSnapshot>;
+  /** @internal 同一进展 owner 的瞬态事实，运输不需展开 assistant 前缀。 */
+  readonly preparation$: Observable<ModelPreparation | null>;
   readonly progressFrames$: Observable<AssistantProgressFrame>;
   readonly human: ResourceReader<HumanSnapshot>;
   readonly questions$: Observable<HumanInputState>;
@@ -57,6 +60,7 @@ export class Conversation<T = Json, Raw = T> {
   #frames = new Subject<AssistantProgressFrame>();
   #assistant: ReturnType<typeof createAssistantProgress>;
   #progressVersion: Cell<number>;
+  #preparation: Cell<ModelPreparation | null>;
   #progressSnapshot?: Observation<ConversationProgressSnapshot>;
   #requests = new Map<string, RequestHandle<T>>();
   #human: Cell<Observation<HumanSnapshot>>;
@@ -78,6 +82,8 @@ export class Conversation<T = Json, Raw = T> {
     this.#inputs = scope.state([]);
     this.#activity = scope.state(ownConversationActivity(initial));
     this.#progressVersion = scope.state(0);
+    this.#preparation = scope.state<ModelPreparation | null>(null);
+    this.preparation$ = this.observeFacts(this.#preparation.changes$);
     this.#human = scope.state<Observation<HumanSnapshot>>(Object.freeze({ status: 'pending', generation: 0 }));
     this.inputs$ = this.#inputs.changes$;
     this.activity$ = this.#activity.changes$;
@@ -111,7 +117,7 @@ export class Conversation<T = Json, Raw = T> {
     const generation = this.#progressVersion.peek();
     try {
       return this.#progressSnapshot = Object.freeze({ status: 'ready', generation, observedAt: Date.now(),
-        value: Object.freeze({ activity: this.#activity.peek(), attempts: this.#assistant.snapshot() }) });
+        value: Object.freeze({ activity: this.#activity.peek(), attempts: this.#assistant.snapshot(), preparation: this.#preparation.peek() }) });
     } catch (error) {
       return this.#progressSnapshot = Object.freeze({ status: 'error', generation, error });
     }
@@ -159,6 +165,12 @@ export class Conversation<T = Json, Raw = T> {
     return {
       assistantProgress: this.#assistant,
       activity: this.#activity,
+      publishPreparation: (value: ModelPreparation | null, expectedId?: string) => {
+        if (this.#scope.disposed) return;
+        if (expectedId !== undefined && this.#preparation.peek()?.id !== expectedId) return;
+        const owned = value === null ? null : ownModelPreparation(value);
+        batch(() => { this.#preparation.set(owned); this.notifyProgress(); });
+      },
       setSubmit: (submit: (input: Submission<Raw>, options: CancellationOptions) => Promise<InputReceipt>) => { this.#submit = submit; },
       setFiles: (files: () => SessionFiles) => { this.#files = files; },
       setJournal: (journal: () => SessionJournal) => { this.#journal = journal; },
@@ -185,7 +197,7 @@ export class Conversation<T = Json, Raw = T> {
         this.notifyProgress();
         this.#frames.next(owned);
       },
-      resetProgress: () => { this.#assistant.replace([]); this.notifyProgress(); },
+      resetProgress: () => { this.#assistant.replace([]); this.#preparation.set(null); this.notifyProgress(); },
       publishHuman: (value: HumanSnapshot) => this.#human.update(previous => Object.freeze({
         status: 'ready', generation: previous.generation + 1, observedAt: Date.now(), value,
       })),

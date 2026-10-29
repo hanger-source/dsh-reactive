@@ -89,6 +89,10 @@ for (const failPreparation of [false, true]) test(failPreparation
     assert.equal(await bound.answer({ answers: [{ id: 'evidence', selected: [], custom: 'file:///evidence/original.md' }] }), true);
     await proposed.promise;
     const snapshot = await delivering, [reply] = snapshot.replies;
+    const preparing = await next(remote.progress.values$, value => value.preparation?.waiting.some(wait => wait.kind === 'check'));
+    assert.deepEqual(preparing.preparation.inputs, question.origin.inputs, 'HTTP 保留准备中的原输入，未借新的回答者身份');
+    assert.equal((await remote.request('original').state.read()).preparation.id, preparing.preparation.id);
+    assert.equal((await remote.request('unrelated').state.read()).preparation, null);
     assert.equal(reply.questionCallId, question.callId); assert.equal(reply.target, 'next-step');
     assert.deepEqual(reply.origin, question.origin);
     assert.equal(snapshot.questions.active[0].state, 'continued'); assert.deepEqual(snapshot.questions.settled, []);
@@ -108,6 +112,7 @@ for (const failPreparation of [false, true]) test(failPreparation
       assert.deepEqual(retained.questions, snapshot.questions, '装配失败不结算原问题');
       const failed = await next(remote.progress.values$, value => value.activity.failures.length === 1);
       const [failure] = failed.activity.failures;
+      assert.equal(failed.preparation, null, '装配失败撤下当前等待，失败历史另行保留');
       const ended = agent.session.snapshotEvents().find(event => event.seq === failure.sequence);
       assert.equal(ended.type, 'turn/end'); assert.equal(ended.data.reason.kind, 'error');
       assert.deepEqual(failure.error, ended.data.reason.error, 'HTTP 保留原生 LlmFailure');
@@ -132,12 +137,14 @@ for (const failPreparation of [false, true]) test(failPreparation
     assert.ok(agent.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.id === reply.messageId));
     assert.ok(requests[2].some(message => message.role === 'user' && message.id === reply.messageId));
     assert.equal(modelCalls, 3); assert.equal(admissions.length, 2, '冷预审和真实 live 准入沿同一原问题');
+    assert.equal((await remote.progress.read()).preparation, null);
     if (failPreparation) {
       assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'user/message' && event.data.id === reply.messageId).length, 1);
       assert.equal(errors.length, 1); assert.match(String(errors[0]), /REMOTE_REPLY_PREPARATION_FAILED/);
       const failure = (await remote.progress.read()).activity.failures[0];
       await runtime.application.close(local.id);
       const cold = await client.open(local.id);
+      assert.equal((await cold.progress.read()).preparation, null, '冷读不复活曾经等待的准备');
       assert.deepEqual((await cold.request('original').state.read()).activity.failures, [failure]);
       assert.equal(runtime.native.agents.get(SessionId(local.id)), undefined, '失败历史的冷读不激活 Agent');
       assert.equal(modelCalls, 3);

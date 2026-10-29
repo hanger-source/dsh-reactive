@@ -6,6 +6,7 @@ import type {} from '@deepseek-ai/dsh-fs';
 import { Scope, type Cell, batch } from '@hanger-source/dsh-reactive/kernel';
 import { type ResourceValue } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin } from '../native-installation.ts';
+import { observePreparation, type PreparationObserver } from '@hanger-source/dsh-reactive/kernel';
 
 type BoundContext = { source: ResourceValue<string>; committed: Cell<string>; release(): void };
 interface Entry {
@@ -38,7 +39,11 @@ export class AgentBindings {
       closing = true;
       signal.removeEventListener('abort', stop);
       const failures = new Set<unknown>();
-      try { scope.dispose(); } catch (error) { failures.add(error); }
+      try {
+        // Program撤销同步结束原生声明；同次等待必须保留它的业务失败原因。
+        if (signal.aborted) scope.dispose(signal.reason);
+        else scope.dispose();
+      } catch (error) { failures.add(error); }
       void (async () => {
         try { await scope.closed; } catch (error) { failures.add(error); }
         if (failures.size === 1) throw [...failures][0];
@@ -133,19 +138,27 @@ export class AgentBindings {
   }
   /** 在应用准入、输入关联之后，原生 prompt 装配之前调用一次。
    * prepare 固定本次上下文；之后的现场变化只影响下一次执行边界。 */
-  async prepare(agent: Agent, signal: AbortSignal) {
+  async prepare(agent: Agent, signal: AbortSignal, observer?: PreparationObserver) {
     const entry = this.#entries.get(agent);
     if (!entry) throw new Error('REACTIVE_AGENT_NOT_BOUND');
     for (;;) {
-      const bindings = [...entry.contexts.values()];
+      const namedBindings = [...entry.contexts];
+      const bindings = namedBindings.map(([, binding]) => binding);
       const sameBindings = () => bindings.length === entry.contexts.size && bindings.every(binding => [...entry.contexts.values()].includes(binding));
+      const round = new AbortController();
+      const reading = AbortSignal.any([signal, entry.scope.signal, round.signal]);
       let texts: string[];
-      try { texts = await Promise.all(bindings.map(binding => binding.source.read(signal))); }
+      try { texts = await Promise.all(namedBindings.map(([name, binding]) =>
+        observePreparation(observer, { kind: 'context', name }, reading, () => binding.source.read(reading)))); }
       catch (error) {
         signal.throwIfAborted(); entry.scope.assertActive();
         // 旧模块已退出时，它的读取取消属于依赖切换，继续读取现在的声明集合。
         if (!sameBindings()) continue;
         throw error;
+      }
+      finally {
+        // 一项退出后先结束本轮其余读取及令牌，再重收集；共享来源仍由原 owner 持有。
+        round.abort();
       }
       signal.throwIfAborted();
       entry.scope.assertActive();
