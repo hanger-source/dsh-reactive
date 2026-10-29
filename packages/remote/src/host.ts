@@ -1,4 +1,4 @@
-import type { ProgramImageAttachmentRequest, SessionImageAttachment } from '@hanger-source/dsh-reactive-client/types';
+import type { ProgramImageAttachmentRequest, ProgramImageAttachmentValue } from '@hanger-source/dsh-reactive-client/types';
 import type { Context } from '@deepseek-ai/cordis';
 import { Remote, RemoteError, TypertRemoteService, type Principal } from '@deepseek-ai/dsh-typert-protocol';
 import { deepFreeze, type JsonValue } from '@deepseek-ai/dsh-util-values';
@@ -422,7 +422,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
 
   /** 只读原会话内正式引用的图片，由 Controller 核验附件身份。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
-  async readImage(request: ProgramImageAttachmentRequest, signal: AbortSignal): Promise<SessionImageAttachment> {
+  async readImage(request: ProgramImageAttachmentRequest, signal: AbortSignal): Promise<ProgramImageAttachmentValue> {
     request = deepFreeze(structuredClone(request));
     const principal = this.principal();
     const handle = await this.openSession(request);
