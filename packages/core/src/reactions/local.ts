@@ -2,8 +2,8 @@ import { z } from 'zod';
 import type { Observable } from 'rxjs';
 import type { Scope } from '../reactivity/scope.ts';
 import { defineReaction, type ReactionDefinition } from './definition.ts';
-import { implementReaction, type ReactionOperator, type ReactionSourceContext } from './implementation.ts';
-import { bindReaction, type ReactionInstance } from './binding.ts';
+import { implementReaction, reactionImplementation, type ReactionOperator, type ReactionSourceContext } from './implementation.ts';
+import { ReactionInstance } from './binding.ts';
 
 export interface LocalReactionOptions<E extends z.ZodType, R extends z.ZodType> {
   /** 可选诊断标签；不参与运行身份、去重或业务授权。 */
@@ -24,7 +24,8 @@ export function createReaction<E extends z.ZodType, R extends z.ZodType>(
   const { name = 'local.reaction', event, result, observe, operator, execute } = options;
   if (typeof observe !== 'function') throw new Error('REACTIVE_REACTION_IMPLEMENTATION_INVALID');
   const definition = defineReaction({ name, params: z.null(), event, result });
-  return bindReaction(implementReaction(definition, {
+  const implementation = implementReaction(definition, {
     observe: (_params, context) => observe(context), operator, execute,
-  }), { scope }).instance(null);
+  });
+  return new ReactionInstance(scope, definition, null, reactionImplementation(implementation));
 }

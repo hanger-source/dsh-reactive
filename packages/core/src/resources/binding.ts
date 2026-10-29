@@ -17,7 +17,6 @@ export class ResourceInstance<D extends ResourceContract> implements ResourceRea
   #connection: Subscription | undefined;
   #observers = 0;
   #generation = 0;
-  #closed = false;
   #invalidations = new Subject<void>();
   #value: ResourceValue<ResourceData<D>>;
   readonly observations$: Observable<Observation<ResourceData<D>>>;
@@ -25,7 +24,7 @@ export class ResourceInstance<D extends ResourceContract> implements ResourceRea
   readonly definition: D;
   readonly params: ResourceTarget<D>;
 
-  /** @internal 只由绑定按正式实现创建。 */
+  /** @internal 参数绑定与局部构造均使用经过校验的实现配置。 */
   constructor(scope: Scope, definition: D, params: ResourceTarget<D>, implementation: ResourceImplementationOptions<D>) {
     this.#scope = scope;
     const state = scope.state<Observation<ResourceData<D>>>({ status: 'pending', generation: 0 });
@@ -38,13 +37,16 @@ export class ResourceInstance<D extends ResourceContract> implements ResourceRea
       const connection = this.#connection;
       this.#connection = undefined;
       // 先撤旧事实；来源清理可能同步重订阅，新连接的 ready 不属于这次退出。
-      if (!this.#closed && !scope.disposed) pending();
+      if (!scope.disposed) pending();
       connection?.unsubscribe();
     };
     const start = () => {
-      if (this.#connection || this.#closed) return;
+      if (this.#connection || scope.disposed) return;
       const connection = new Subscription();
       this.#connection = connection;
+      // 只让 owner 持有真实连接；冷构造与最后观察者退出后的实例无需终身登记。
+      const release = scope.own(() => connection.unsubscribe());
+      connection.add(release);
       const source$ = this.#invalidations.pipe(startWith(undefined), switchLatest(() => new Observable<Observation<ResourceData<D>>>(subscriber => {
         const controller = new AbortController();
         // observe/invalidations 工厂尚未返回时也可能退出 owner，不能延后登记取消。
@@ -59,7 +61,7 @@ export class ResourceInstance<D extends ResourceContract> implements ResourceRea
       }), pending));
       const subscriber = new Subscriber<Observation<ResourceData<D>>>({
         next: observation => {
-          if (!this.#closed && !scope.disposed) state.set(Object.freeze({ ...observation, generation: ++this.#generation }));
+          if (!scope.disposed) state.set(Object.freeze({ ...observation, generation: ++this.#generation }));
         },
         error: (error: unknown) => scope.observerError(error),
         complete: () => {},
@@ -81,12 +83,6 @@ export class ResourceInstance<D extends ResourceContract> implements ResourceRea
     });
     this.values$ = this.observations$.pipe(mergeMap(observation => scope.disposed || observation.status === 'pending' ? EMPTY
       : observation.status === 'error' ? throwError(() => observation.error) : of(observation.value)));
-    scope.own(() => {
-      this.#closed = true;
-      this.#connection?.unsubscribe();
-      this.#connection = undefined;
-      this.#invalidations.complete();
-    });
   }
 
   get value(): Observation<ResourceData<D>> { return this.#value.value; }

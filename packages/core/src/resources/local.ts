@@ -3,8 +3,8 @@ import type { Observable } from 'rxjs';
 import type { Scope } from '../reactivity/scope.ts';
 import type { Observation } from './observation.ts';
 import { defineResource, type ResourceDefinition } from './definition.ts';
-import { implementResource, type ResourceReadContext } from './implementation.ts';
-import { bindResource, type ResourceInstance } from './binding.ts';
+import { implementResource, resourceImplementation, type ResourceReadContext } from './implementation.ts';
+import { ResourceInstance } from './binding.ts';
 
 export type LocalResourceOptions<V extends z.ZodType> = {
   /** 可选诊断标签；局部实例身份由实际对象与 Scope 决定，不按名称登记。 */
@@ -26,11 +26,13 @@ export function createResource<V extends z.ZodType>(scope: Scope, options: Local
   const definition = defineResource({ name: options.name ?? 'local.resource', params: z.null(), value: options.value });
   if (options.observe !== undefined) {
     const observe = options.observe;
-    return bindResource(implementResource(definition, { observe: (_params, context) => observe(context) }), { scope }).instance(null);
+    const implementation = implementResource(definition, { observe: (_params, context) => observe(context) });
+    return new ResourceInstance(scope, definition, null, resourceImplementation(implementation));
   }
   const { read, invalidations } = options;
-  return bindResource(implementResource(definition, {
+  const implementation = implementResource(definition, {
     read: (_params, context) => read(context),
     ...(invalidations === undefined ? {} : { invalidations: (_params: null, context: ResourceReadContext) => invalidations(context) }),
-  }), { scope }).instance(null);
+  });
+  return new ResourceInstance(scope, definition, null, resourceImplementation(implementation));
 }
