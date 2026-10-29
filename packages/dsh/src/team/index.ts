@@ -4,7 +4,7 @@ import { SessionLogOffset } from '@deepseek-ai/dsh-session/types';
 import type { SessionId } from '@deepseek-ai/dsh-session';
 import type { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection';
 import { foldSubagentDescriptor } from '@deepseek-ai/dsh-subagent';
-import { Observable, firstValueFrom, map, merge } from 'rxjs';
+import { Observable, firstValueFrom, map, merge, switchMap } from 'rxjs';
 import { abortable, observeResource, mapResource, ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { NativeCapabilityOwner, nativeResource, nativeObservationScope, ownNativeValue,
@@ -78,19 +78,17 @@ class SessionTeam implements NativeSessionTeam {
   get disposed(): boolean { return this.#scope.disposed; }
   constructor(private readonly owner: NativeCapabilityOwner, private readonly access: NativeSessionAccess) {
     this.#scope = nativeObservationScope(owner, access);
-    const changes$ = new Observable<void>(subscriber => {
+    const changes$ = access.liveAgent$.pipe(switchMap(agent => new Observable<void>(subscriber => {
       const ctx = this.context();
-      const release = ctx.on('session/event', (session, event) => {
-        if (event.type !== 'team/member' && event.type !== 'team/task') return;
-        try {
-          const agent = this.access.liveAgent();
-          const rootId = agent ? this.service().membership(agent).root.id : this.access.sessionId;
-          if (session.id === rootId) subscriber.next();
-        } catch (error) { subscriber.error(error); }
+      const projections: SessionProjectionRegistry | undefined = ctx.get('sessionProjections');
+      if (!projections) throw new Error('REACTIVE_NATIVE_TEAM_PROJECTION_REQUIRED');
+      const root = agent ? this.service().membership(agent).root.session : undefined;
+      return projections.onChanged((session, key) => {
+        if (key !== 'agentTeam' || (root ? session !== root : session.id !== access.sessionId)) return;
+        subscriber.next();
       });
-      return release;
-    });
-    // 先监听 Team 日志，再由实际 owner 触发初读；关闭/恢复取消旧切面，不另存 Agent 状态。
+    })));
+    // 先监听同源官方投影再初读；每个 Agent 代际固定原生 root，不复制 Team 事件分类。
     this.state = nativeResource(this.#scope, () => observeResource({ key$: merge(changes$, access.liveAgent$),
       read: (_owner, signal) => this.readProjection({ signal }) }));
     this.projection$ = this.state.values$;
@@ -152,6 +150,7 @@ class SessionTeam implements NativeSessionTeam {
     } else {
       const inspection = await firstValueFrom(abortable(signal => this.access.inspect(signal), signal));
       signal.throwIfAborted(); this.context();
+      if (inspection.meta.id !== this.access.sessionId) throw new Error('REACTIVE_NATIVE_SESSION_MISMATCH');
       if (foldSubagentDescriptor(inspection.events.slice(inspection.inheritedEventCount)) !== undefined) {
         throw new Error('REACTIVE_NATIVE_TEAM_LIVE_MEMBER_REQUIRED');
       }
@@ -203,7 +202,12 @@ class SessionTeam implements NativeSessionTeam {
   }
   async waitForChange(timeoutMs: number, options: CancellationOptions = {}): Promise<TeamWaitResult> {
     const signal = this.signal(options);
-    return ownNativeValue(await this.service().waitForChange(this.agent(), timeoutMs, signal));
+    const service = this.service(), agent = this.agent();
+    const result = await firstValueFrom(abortable(waiting => service.waitForChange(agent, timeoutMs, waiting), signal));
+    // 原生通知可以先结算、同轮后续 listener 再退出；交付仍核验这次等待的原身份。
+    signal.throwIfAborted(); this.context();
+    if (this.agent() !== agent) throw new Error('REACTIVE_NATIVE_TEAM_LIVE_MEMBER_REQUIRED');
+    return ownNativeValue(result);
   }
   interrupt(name: string, options: CancellationOptions = {}): { readonly previousStatus: 'running' | 'inactive' } {
     this.signal(options);

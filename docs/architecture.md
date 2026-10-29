@@ -219,7 +219,9 @@ Jobs、Schedule、Team、Files、Approval 与 Clock 的 `forSession` 接受 Host
 
 Jobs、Schedule 与 Team 的会话 SDK 和固定任务提供只读 `state` 资源；Job 的 `output` 单独提供非消费输出切面。普通 read、peek、完整 Observation、RxJS、hooks 和资源 View 共享正式 Resource 实例，不从值流另存有效性。状态构造不读取，首次消费者建立原生监听后读取，最后消费者退出撤销查询并撤下旧 ready。Schedule 和 Team 发生变化时立即 pending，旧切面失效，读取失败成为 error，后续原生通知可恢复。资源只持有观察，执行、CAS、投递与成员仍由各自原生 owner 负责。显式 SDK list、catalog、readProjection、任务 read 等单次查询保留原生权威读取含义，不因已有资源快照跳过调用。
 
-Team 的 `task(id)` 同步绑定固定来源会话与 id，构造不读取原生任务板或证明目标存在。同一 SDK 重复取得同一任务会复用对象；`state`、`state$`、`read` 与显式 `update` 共用原生投影和任务 CAS，在实际读取或修改时核验存在、归属与权限，不保存另一份任务状态或修订。删除从任务板撤下后，原对象的读侧返回 undefined；原生 getTask 的墓碑查询保留其独立语义。冷 Lead 可读取和绑定任务，写入仍要求真实活跃成员；任务对象不会随其他选择或调用参数改指目标。Team 投影观察跟随实际 Agent 关闭、恢复，取消旧读取，不因读取创建成员或启动模型。
+Job 的输出事件同时触发 `state` 和 `output` 重读。`collect` 只执行一次原生消费读取，消费产生的 trim 随后通知同一物理 Registry 中相应 owner 的已连接 Job state、output 和会话列表重读；通知跨 exact 来源及借用该 Registry 的 provided 能力共享，`events$` 仍只交付原生事件。显式安装 Jobs 工具时，正式 `tools/result` 中的 `job_output` 完成后也触发重读，最终结果为 `isError` 时仍可能已经消费。宿主直接调用原生 `registry.read` 不产生官方消费通知，调用后须对对应 Job 显式 `invalidate(options?)`。资源不保证所有外部消费路径自动实时，也不通过轮询或复制输出 ring 补充通知。
+
+Team 的 `task(id)` 同步绑定固定来源会话与 id，构造不读取原生任务板或证明目标存在。同一 SDK 重复取得同一任务会复用对象；`state`、`state$`、`read` 与显式 `update` 共用原生投影和任务 CAS，在实际读取或修改时核验存在、归属与权限，不保存另一份任务状态或修订。删除从任务板撤下后，原对象的读侧返回 undefined；原生 getTask 的墓碑查询保留其独立语义。冷 Lead 可读取和绑定任务，写入仍要求真实活跃成员；任务对象不会随其他选择或调用参数改指目标。Team 通过官方 `SessionProjectionRegistry.onChanged` 监听 `agentTeam` 投影，不枚举日志事件；mailbox 投影 failure 交付为资源 error。投影观察跟随实际 Agent 关闭、恢复，取消旧读取，不因读取创建成员或启动模型。`waitForChange` 的取消只结束本次等待；即使原生等待先 resolve，若同轮随后来源退出，也不会交付过期成功结果，交付前重新核验原 liveAgent 和权限。
 
 Team 的 roster 与 roster$ 读取原生 listMembers 的运行态，和持久 state、members$ 分别表达运行状态与成员阶段。首次观察连接公开成员及 Agent 状态通知，再读取同一原生成员；冷会话保持 pending，不通过读取创建 Agent。运行态可与任务板和其他资源共同派生参与条件，不在业务 hook 里复制 waitForChange 循环。
 

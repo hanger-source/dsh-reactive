@@ -67,6 +67,7 @@ export const declaredNativeTools = (jobs: NativeJobs, mcp: NativeMcp) =>
 export const readMcpTools = (mcp: NativeMcp, signal: AbortSignal): Promise<readonly string[]> => mcp.toolNames.read(signal);
 export const nativeState = (jobs: NativeSessionJobs, schedule: NativeSessionSchedule, team: NativeSessionTeam) =>
   combineResources({ jobs: jobs.state, schedule: schedule.state, team: team.state });
+export const invalidateNativeJob = (job: NativeJob, signal: AbortSignal): void => job.invalidate({ signal });
 export function taskState(jobs: NativeSessionJobs, schedule: NativeSessionSchedule, team: NativeSessionTeam,
   ids: { readonly job: JobId; readonly scheduled: ScheduleId; readonly task: TeamTaskId }) {
   const job: NativeJob = jobs.job(ids.job), scheduled: NativeScheduleTask = schedule.task(ids.scheduled),

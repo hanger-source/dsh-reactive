@@ -1,7 +1,8 @@
 import type { JobRegistry, JobId, JobEvent, JobSpec, JobView, JobRead, JobOutputRead } from '@deepseek-ai/dsh-jobs';
+import { symbols } from '@deepseek-ai/cordis';
 import LocalJobs, { type Config as LocalJobsConfig } from '@deepseek-ai/dsh-jobs-local';
 import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs';
-import { Observable, defer, filter, firstValueFrom, fromEvent, map, of, takeUntil, timeout } from 'rxjs';
+import { Observable, Subject, defer, filter, firstValueFrom, fromEvent, map, of, takeUntil, timeout } from 'rxjs';
 import { fromSnapshot, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
 import { NativeCapabilityOwner, nativeObservation, nativeObservationScope, nativeResource, nativeToolNames, ownNativeValue, type NativeCapability, type NativeSessionSource } from '../native-capability.ts';
@@ -21,6 +22,25 @@ export interface NativeJobsOptions {
 /** owner 与 toolCall 不从业务参数补写；这里接原生正式 producer 合同。 */
 export type NativeJobSpec = Omit<JobSpec, 'owner' | 'toolCall'>;
 
+type JobInvalidation = Pick<JobView, 'id' | 'owner'>;
+/** 只共享失效通知；快照、输出、消费游标和执行始终属于正式注册表。 */
+const invalidations = new WeakMap<object, Subject<JobInvalidation>>();
+const observedToolResults = new WeakMap<object, WeakSet<object>>();
+function registrySource(registry: JobRegistry): object {
+  const source: unknown = Reflect.get(registry, symbols.original);
+  if (typeof source !== 'object' || source === null) throw new Error('REACTIVE_NATIVE_JOBS_SOURCE_REQUIRED');
+  return source;
+}
+function jobInvalidations(registry: JobRegistry): Subject<JobInvalidation> {
+  const source = registrySource(registry);
+  let changes = invalidations.get(source);
+  if (!changes) { changes = new Subject<JobInvalidation>(); invalidations.set(source, changes); }
+  return changes;
+}
+function invalidateJob(registry: JobRegistry, job: JobView): void {
+  jobInvalidations(registry).next({ id: job.id, owner: job.owner });
+}
+
 /** 固定原生 Job 目标的非消费读取与显式控制；未知或外来目标由原生读写边界拒绝。 */
 export interface NativeJob {
   readonly id: JobId;
@@ -34,6 +54,8 @@ export interface NativeJob {
   wait(timeoutMs: number, options?: CancellationOptions): Promise<JobView>;
   /** 显式消费模型游标；终态 result 仅由原生首次消费读取交付一次。 */
   collect(options?: CancellationOptions): JobRead;
+  /** 宿主直接消费原生注册表后显式重读；失效通知在同一注册表的可见读取对象间共享。 */
+  invalidate(options?: CancellationOptions): void;
   stop(reason: string, options?: CancellationOptions): 'requested' | 'already-finished';
   /** 删除终态记录；调用方决定何时清理，不读取结果或确认模型已经收取。 */
   remove(options?: CancellationOptions): void;
@@ -45,14 +67,10 @@ class NativeJobReader implements NativeJob {
   readonly state$: Observable<JobView>;
   readonly output$: Observable<JobOutputRead>;
   constructor(private readonly jobs: SessionJobs, readonly id: JobId, scope: Scope) {
-    const changes = (notify: () => void) => jobs.subscribe(event => {
-      if ((event.type === 'output' ? event.id : event.job.id) === id) notify();
-    });
+    const changes = (notify: () => void) => jobs.subscribeChanges(id, notify);
     this.state = nativeResource(scope, () => fromSnapshot({
       getSnapshot: () => this.snapshot(),
-      subscribe: notify => jobs.subscribe(event => {
-        if (event.type !== 'output' && event.job.id === id) notify();
-      }),
+      subscribe: changes,
     }).pipe(map(value => ({ status: 'ready', generation: 0, observedAt: Date.now(), value }))));
     this.output = nativeResource(scope, () => fromSnapshot({ getSnapshot: () => this.readAt(0), subscribe: changes })
       .pipe(map(value => ({ status: 'ready', generation: 0, observedAt: Date.now(), value }))));
@@ -82,7 +100,15 @@ class NativeJobReader implements NativeJob {
   }
   collect(options: CancellationOptions = {}): JobRead {
     this.jobs.signal(options).throwIfAborted();
-    return ownNativeValue(this.jobs.registry().read(this.id, this.jobs.ownerId));
+    const registry = this.jobs.registry();
+    const read = registry.read(this.id, this.jobs.ownerId);
+    invalidateJob(registry, read.job);
+    return ownNativeValue(read);
+  }
+  invalidate(options: CancellationOptions = {}): void {
+    this.jobs.signal(options).throwIfAborted();
+    const registry = this.jobs.registry();
+    invalidateJob(registry, registry.get(this.id, this.jobs.ownerId));
   }
   /** 停止是显式命令，不等于已经停止；需要确认时另行 wait。 */
   stop(reason: string, options: CancellationOptions = {}): 'requested' | 'already-finished' {
@@ -125,7 +151,7 @@ class SessionJobs implements NativeSessionJobs {
         catch (error) { subscriber.error(error); }
       })));
     this.state = nativeResource(this.#scope, () => fromSnapshot({
-      getSnapshot: () => this.list(), subscribe: notify => this.subscribe(notify),
+      getSnapshot: () => this.list(), subscribe: notify => this.subscribeChanges(undefined, notify),
     }).pipe(map(value => ({ status: 'ready', generation: 0, observedAt: Date.now(), value }))));
     this.list$ = this.state.values$;
   }
@@ -143,6 +169,20 @@ class SessionJobs implements NativeSessionJobs {
       // Service 的事件回调是 contained；观察错误必须交给 RxJS，而不是静默留旧值。
       accept(event);
     });
+  }
+  /** @internal 原生事件与显式失效分别连接；每个观察 owner 只持有自己的监听。 */
+  subscribeChanges(id: JobId | undefined, notify: () => void): () => void {
+    const registry = this.registry();
+    const changes = jobInvalidations(registry).subscribe(change => {
+      if ((id === undefined || change.id === id) && (change.owner === undefined || change.owner === this.ownerId)) notify();
+    });
+    let release: () => void;
+    try {
+      release = this.subscribe(event => {
+        if (id === undefined || (event.type === 'output' ? event.id : event.job.id) === id) notify();
+      });
+    } catch (error) { changes.unsubscribe(); throw error; }
+    return () => { try { release(); } finally { changes.unsubscribe(); } };
   }
   /** @internal 取消观察/等待，不取消 Job body。 */
   signal(options: CancellationOptions): AbortSignal {
@@ -190,7 +230,25 @@ export function createNativeJobs(options: NativeJobsOptions): NativeJobs {
     yield ctx.inject(['jobs'], native => {
       native.jobs.attachController('reactive-native-jobs-sdk');
     });
-    if (selected.tools) yield ctx.plugin(ToolJobs, selected.tools);
+    if (selected.tools) {
+      yield ctx.plugin(ToolJobs, selected.tools);
+      yield ctx.inject(['jobs', 'tools'], native => native.on('tools/result', execution => {
+        if (owner.scope.disposed || execution.name !== 'job_output') return;
+        const args = execution.arguments;
+        if (typeof args !== 'object' || args === null || !('job_id' in args) || typeof args.job_id !== 'string') return;
+        const registry = native.jobs;
+        const source = registrySource(registry);
+        let observed = observedToolResults.get(source);
+        if (!observed) { observed = new WeakSet<object>(); observedToolResults.set(source, observed); }
+        if (observed.has(execution)) return;
+        // 最终失败也可能发生在消费之后；只重读正式可见目标，不从工具结果推断Job状态。
+        const visible = registry.list(execution.agent?.id).find(job => job.id === args.job_id);
+        if (!visible) return;
+        const job = registry.get(visible.id, execution.agent?.id);
+        observed.add(execution);
+        invalidateJob(registry, job);
+      }));
+    }
   });
   const names = new Set(['job_list', 'job_output', 'job_kill']);
   const toolNames = selected.tools ? nativeToolNames(owner, name => names.has(name)) : nativeResource<readonly string[]>(owner.scope, () => {

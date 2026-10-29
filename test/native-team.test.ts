@@ -7,8 +7,9 @@ import { setImmediate as immediate } from 'node:timers/promises';
 import { useLayoutEffect, useMemo } from 'react';
 import { ReplaySubject, filter, firstValueFrom, of, timeout, type Subscription } from 'rxjs';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
+import { emitAgentEvent } from '@deepseek-ai/dsh-agent';
 import { symbols, type Fiber } from '@deepseek-ai/cordis';
-import TeamService from '@deepseek-ai/dsh-experimental-agent-team';
+import TeamService, { TeamId, TeamMessageId } from '@deepseek-ai/dsh-experimental-agent-team';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { combineResources, defineApplication, defineEnvironment, defineProgram, defineSurface, mapResource, resourceView, view, z, type Observation } from '@hanger-source/dsh-reactive';
 import { Expose, implementProgram, useResource } from '@hanger-source/dsh-reactive/program';
@@ -234,6 +235,83 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
     assert.equal(await dependent.read(), undefined);
     assert.equal(team.getTask(waiting.id).status, 'deleted', '原生墓碑与当前任务板保持各自语义');
     assert.equal(team.task(waiting.id), dependent, '任务撤下不改变原父对象中固定目标的身份');
+
+    const damaged = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
+    const damagedTeam = capability.forSession(damaged);
+    const damagedObservers: Subscription[] = [];
+    try {
+      const record = await damagedTeam.createTask({ subject: '损坏日志前的任务', description: '同一个原生投影进入failure后不能继续交付旧ready' }).result;
+      const target = damagedTeam.task(record.id);
+      // read结算会结束自身借用；整个试验持续持有观察，ready与failure才属于同一有效现场。
+      damagedObservers.push(damagedTeam.state.observations$.subscribe(), damagedTeam.roster.observations$.subscribe(), target.state.observations$.subscribe());
+      await Promise.all([damagedTeam.state.read(), damagedTeam.roster.read(), target.state.read()]);
+      assert.equal(damagedTeam.state.peek().status, 'ready');
+      assert.equal(damagedTeam.roster.peek().status, 'ready');
+      assert.equal(target.state.peek().status, 'ready');
+      const failures = Promise.all([
+        firstValueFrom(damagedTeam.state.observations$.pipe(filter(value => value.status === 'error'), timeout(5_000))),
+        firstValueFrom(damagedTeam.roster.observations$.pipe(filter(value => value.status === 'error'), timeout(5_000))),
+        firstValueFrom(target.state.observations$.pipe(filter(value => value.status === 'error'), timeout(5_000))),
+      ]);
+      const damagedLead = runtime.native.agents.get(SessionId(damaged.id))!;
+      // 正式日志载荷合法，但违反原生mailbox因果关系；由agentTeam自己校验并产生failure。
+      damagedLead.session.append('team/message/delivered', {
+        version: 2, teamId: TeamId(damagedLead.id), messageId: TeamMessageId('never-queued'), targetId: damagedLead.id,
+      });
+      for (const observation of await failures) {
+        assert.equal(observation.status, 'error');
+        if (observation.status === 'error') assert.match(String(observation.error), /delivered before queueing/);
+      }
+      assert.equal(damagedTeam.state.peek().status, 'error');
+      assert.equal(damagedTeam.roster.peek().status, 'error');
+      assert.equal(target.state.peek().status, 'error');
+      assert.throws(() => damagedTeam.listMembers(), /delivered before queueing/);
+      assert.throws(() => damagedTeam.listTasks(), /delivered before queueing/);
+      await assert.rejects(damagedTeam.readProjection(), /delivered before queueing/);
+      await assert.rejects(target.read(), /delivered before queueing/);
+    } finally {
+      for (const observer of damagedObservers) observer.unsubscribe();
+      damagedTeam.dispose();
+      await runtime.application.close(damaged.id); damaged.release();
+    }
+
+    const waitingSource = await runtime.application.open(session.id, program);
+    const waitingTeam = capability.forSession(waitingSource);
+    let retiredReason: unknown, stopStatus: (() => void) | undefined;
+    const waitObservations = waitingTeam.roster.observations$.subscribe(value => {
+      if (value.status === 'error') retiredReason = value.error;
+    });
+    const maintenanceEntered = Promise.withResolvers<AbortSignal>(), releaseMaintenance = Promise.withResolvers<void>();
+    let maintenance: Promise<void> | undefined, continued = false, retired = false;
+    try {
+      await waitingTeam.roster.read(); await lead.whenIdle();
+      maintenance = lead.runMaintenance(async signal => {
+        maintenanceEntered.resolve(signal); await releaseMaintenance.promise;
+        signal.throwIfAborted(); continued = true;
+      });
+      const executing = await maintenanceEntered.promise;
+      const cancelledWait = assert.rejects(waitingTeam.waitForChange(10_000), error => error === retiredReason);
+      // 原生Team listener先唤醒自己的waiter；后注册listener在同次同步分发中释放观察。
+      stopStatus = runtime.native.on('agent/status', ({ agent }) => {
+        if (agent !== lead) return;
+        waitingTeam.dispose(); retired = true;
+      });
+      // 公开维护任务保持idle；按exact Agent作用域发出其真实当前status，不伪造turn或模型执行。
+      emitAgentEvent(runtime.native, lead, 'agent/status', { status: lead.status });
+      assert.equal(retired, true);
+      await cancelledWait;
+      assert.ok(retiredReason instanceof Error);
+      assert.equal(retiredReason.message, 'REACTIVE_SCOPE_DISPOSED');
+      assert.equal(runtime.native.agents.get(lead.id), lead);
+      assert.equal(team.listMembers()[0]?.id, lead.id, '释放借用观察不能撤销原生Team成员');
+      assert.equal(executing.aborted, false, '观察退出只取消等待，不取消原生维护执行');
+      assert.equal(continued, false);
+      releaseMaintenance.resolve(); await maintenance;
+      assert.equal(continued, true, '原生执行仍由其owner正常结算');
+    } finally {
+      stopStatus?.(); releaseMaintenance.resolve(); await maintenance;
+      waitObservations.unsubscribe(); waitingTeam.dispose(); waitingSource.release();
+    }
 
     await runtime.application.close(session.id);
     const cold = team.task(original.id);
