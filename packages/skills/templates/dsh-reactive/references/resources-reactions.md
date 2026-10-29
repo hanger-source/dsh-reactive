@@ -95,7 +95,9 @@ ready 是最近一次读取切面，不是永久新鲜保证。单父目录的�
 
 可复用反应采用 `defineReaction({ name, params, event, result })`、`implementReaction`、`bindReaction`；局部采用 `createReaction(scope, options)`，name 可省略，多个局部对象仍各有自己的运行身份。两者都是 `instance.start()` 才执行。
 
-程序内用 `useReaction(implementation, params)` 取得程序拥有的相同参数实例，不手工创建 Scope 或绑定表。hook 不自动 start；同实例的重复并行 start 会失败。组件卸载不停止程序拥有的运行，显式 `run.stop()` 才结束关系；Program 失败或退出会释放查询、感知和排队工作，已受理业务仍归原 owner。Reaction 执行失败由 run 结算，只有业务明确传播时才进入 Program 失败。
+`start({ scope })` 在 observe、operator、execute 之前登记双方，同一 Scope 去重，双方须可用，各自 `closed` 等待 run 真正 settled。不要在 start 后用 `scope.own` 补登记。stop 后仍 draining 时同实例再次 start 报 `REACTIVE_REACTION_ALREADY_RUNNING`；StrictMode 或依赖变化不自动重启、延后或复活。每个组件代际需要独立运行时，使用 `createReaction(scope, options).start()` 创建独立实例。execute 不得等待自己 owner 的 `closed`，否则与 owner 等待 run 形成自等。失败由 run.state 的 failed 和 resolve 的 settled 表达，不改变 Scope.closed 的失败语义。
+
+程序内用 `useReaction(implementation, params)` 取得程序拥有的相同参数实例，不手工创建 Scope 或绑定表。hook 不自动 start；同实例的重复并行 start 会失败。默认运行由实例 Scope 持有；组件借用已有 Program 或 Workspace 实例时，在 `useScope` setup 中显式调用 `reaction.start({ scope })`，让组件 Scope 同时持有该 run，任一 owner 退出即停止；Program 失败或退出会释放查询、感知和排队工作，已受理业务仍归原 owner。Reaction 执行失败由 run 结算，只有业务明确传播时才进入 Program 失败。
 
 ```ts
 import { createReaction, z, type Scope } from '@hanger-source/dsh-reactive';

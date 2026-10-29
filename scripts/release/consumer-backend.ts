@@ -1,6 +1,6 @@
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction, createReaction, composeSurface, combineResources, mapResource, switchResource, abortable,
   resourceView, shareResource, type Scope, type ResourceSource, type OperationContract, type OperationHandle,
-  type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ProgramSession, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, type NativeToolAdmission, z } from '@hanger-source/dsh-reactive';
+  type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ReactionStartOptions, type ProgramSession, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, type NativeToolAdmission, z } from '@hanger-source/dsh-reactive';
 import { concatMap, firstValueFrom, map, type Observable } from 'rxjs';
 import { createElement } from 'react';
 import { Context, Expose, Module, Skill, NativeTools, HumanInput, implementModule, implementProgram, useAction, useResource, useResourceInstance, useReaction, useBeforeStep,
@@ -79,8 +79,8 @@ export function localWorkspaceCapabilities(workspace: Workspace, options: Return
   const resource = workspace.resource(options.resource), reaction = workspace.reaction(options.reaction);
   const shared: ResourceReadable<number> = workspace.shareResource(resource);
   const values: Observable<number> = resource.values$;
-  return { resource, shared, reaction, values, read: (): Promise<number> => resource.read(), start() {
-    const run = reaction.start(), results: Observable<number> = run.events$.pipe(map(event => event.result));
+  return { resource, shared, reaction, values, read: (): Promise<number> => resource.read(), start(options?: ReactionStartOptions) {
+    const run = reaction.start(options), results: Observable<number> = run.events$.pipe(map(event => event.result));
     return { run, results, state: run.state };
   } };
 }

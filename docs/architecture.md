@@ -46,6 +46,8 @@ Workspace 由原生 registry 持有目录、稳定身份与成员。`createWorks
 
 组件通过 `useScope(setup, dependencies)` 在提交后的 effect 中建立自身关系的子 Scope，卸载或依赖变化时立即撤销关系；异步清理与该 Scope 持有的已开始工作由 `closed` 等待。Scope 的销毁权不随借入对象扩展到 Program 或 Workspace。实例身份、运行归属和观察退出各自独立：Program hooks 持有的实例仍归 Program，Workspace 资源与反应归 Workspace，已受理的 Operation 则归独立业务 owner。
 
+Reaction 的实例 owner 始终保留；`start({ scope })` 可在开始 observe、operator 和 execute 之前，为同一 run 登记附加 owner。任一 owner 退出即停止，双方 `closed` 等待真实 settled，同一 Scope 去重，启动和运行准入检查双方。默认 `start()` 只使用实例 owner。运行停止后若仍在 draining，同实例不能重新 start；组件代际需要独立运行时创建独立实例。execute 不得等待自己的 owner.closed，以免形成自等。运行失败通过 failed 状态和 resolve 的 settled 表达，不改变 Scope.closed 的失败语义。
+
 Workspace 是独立的本地编程 owner。应用通过 application.workspace(id)、组件通过 props.workspace 取得同一对象，以 workspace.resource(implementation, params) 和 workspace.reaction(implementation, params) 复用现有绑定身份；局部选项则每次构造独立实例，返回对象可以显式组合和共享。两种入口都由实际工作区 Scope 持有，跨 Environment 和 Session 使用，同一实现与目标在不同工作区隔离。构造不读取、不执行，反应显式 start。原生登记成功删除或宿主退出时结束该 owner，撤销资源有效性及持续关系，不取消已受理业务。core/workspaces 拥有该编程合同与内核装配，原生登记、成员和持久化继续归 dsh。
 
 业务自定义 hook 可以直接返回资源、Action 和标准 Observable，供下一层业务 hook 继续派生。`invocations$` 表达新发生的调用，`activeInvocations$` 表达本绑定当前在途调用集合；单次 `Invocation.activity$`、`result` 和独立 `operation` 不合并为一个 loading 或完成标记。晚观察者读取当前集合不会重发命令，内存集合也不承担跨重启任务恢复。

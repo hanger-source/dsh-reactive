@@ -237,6 +237,95 @@ test('Scope 退出后真实文件写入的迟到拒绝仍结算原反应，不�
   } finally { release.resolve(); scope.dispose(); }
 });
 
+test('附加 owner 在启动链中同步退出会撤掉当前感知，实例可由另一 owner 显式重启', async () => {
+  for (const boundary of ['observe', 'subscribe', 'execute'] as const) {
+    const instanceScope = new Scope();
+    let relation = new Scope(), exitDuringStart = true, observations = 0, connections = 0, resultSubscriptions = 0;
+    const executed: number[] = [];
+    const instance = createReaction(instanceScope, { event: z.number(), result: z.number(), operator: concatMap,
+      observe() {
+        observations++;
+        if (exitDuringStart && boundary === 'observe') relation.dispose();
+        return new Observable<number>(subscriber => {
+          connections++;
+          if (exitDuringStart && boundary === 'subscribe') relation.dispose();
+          subscriber.next(1); subscriber.next(2); subscriber.complete();
+          return () => { connections--; };
+        });
+      },
+      execute(value) {
+        executed.push(value);
+        if (exitDuringStart && boundary === 'execute') relation.dispose();
+        return new Observable<number>(subscriber => {
+          resultSubscriptions++; subscriber.next(value); subscriber.complete();
+        });
+      },
+    });
+    const unavailable = new Scope(); unavailable.dispose();
+    assert.throws(() => instance.start({ scope: unavailable }), /REACTIVE_SCOPE_DISPOSED/);
+    assert.equal(observations, 0, '预退出的附加 owner 不得启动观察工厂');
+    const stopped = instance.start({ scope: relation });
+    assert.equal((await stopped.settled).status, 'stopped');
+    await relation.closed;
+    assert.equal(connections, 0);
+    assert.deepEqual(executed, boundary === 'execute' ? [1] : []);
+    assert.equal(resultSubscriptions, 0, '同步退出后不得订阅 execute 返回的冷来源');
+    exitDuringStart = false; relation = new Scope(); executed.length = 0;
+    try {
+      assert.equal((await instance.start({ scope: relation }).settled).status, 'completed');
+      assert.deepEqual(executed, [1, 2]);
+      assert.equal(connections, 0);
+    } finally { relation.dispose(); instanceScope.dispose(); }
+    await Promise.all([relation.closed, instanceScope.closed]);
+  }
+});
+
+test('任一运行 owner 退出都等待真实文件写入结算，独立、同一及父子 owner 不自等或提前关闭', async () => {
+  for (const ownership of ['relation-first', 'instance-first', 'same', 'parent-child'] as const) {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-reaction-owners-'));
+    await writeFile(join(directory, 'unavailable'), 'not a directory');
+    const instanceScope = new Scope();
+    const relation = ownership === 'same' ? instanceScope : ownership === 'parent-child' ? instanceScope.child() : new Scope();
+    const source = new Subject<number>(), release = Promise.withResolvers<void>();
+    const started: number[] = [], delivered: number[] = [];
+    let writeFailure: unknown, instanceClosed = false, relationClosed = false, settled = false;
+    const instance = createReaction(instanceScope, { event: z.number(), result: z.number(), observe: () => source, operator: concatMap,
+      async execute(value) {
+        started.push(value); await release.promise;
+        try { await writeFile(join(directory, 'unavailable', 'result'), String(value)); }
+        catch (error) { writeFailure = error; throw error; }
+        return value;
+      },
+    });
+    const run = instance.start({ scope: relation });
+    run.events$.subscribe(event => delivered.push(event.result));
+    void run.settled.then(() => { settled = true; });
+    void instanceScope.closed.then(() => { instanceClosed = true; });
+    void relation.closed.then(() => { relationClosed = true; });
+    try {
+      source.next(1); source.next(2);
+      if (ownership === 'instance-first') instanceScope.dispose();
+      else relation.dispose();
+      assert.equal(source.observed, false);
+      if (!instanceScope.disposed) assert.throws(() => instance.start(), /ALREADY_RUNNING/);
+      instanceScope.dispose(); relation.dispose();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(settled, false);
+      assert.equal(instanceClosed, false, `${ownership}: 实例 owner 必须等待已经开始的写入`);
+      assert.equal(relationClosed, false, `${ownership}: 附加 owner 必须等待同一运行`);
+      assert.equal(run.snapshot().status, 'draining');
+      release.resolve();
+      const settlement = await run.settled;
+      assert.equal(settlement.status, 'failed'); assert.ok(writeFailure);
+      if (settlement.status === 'failed') assert.equal(settlement.error, writeFailure);
+      await Promise.all([instanceScope.closed, relation.closed]);
+      assert.deepEqual(started, [1], '未执行的排队项不能在退出后开始');
+      assert.deepEqual(delivered, [], '已停止运行不补发迟到结果');
+      assert.equal(await readFile(join(directory, 'unavailable'), 'utf8'), 'not a directory');
+    } finally { release.resolve(); instanceScope.dispose(); relation.dispose(); }
+  }
+});
+
 test('来源与清理失败先停 RxJS 并发关系，所有已开始 Promise 的迟到失败仍保留且同错只记一次', async () => {
   const scope = new Scope(), source = new Subject<number>();
   const accepted = [Promise.withResolvers<number>(), Promise.withResolvers<number>(), Promise.withResolvers<number>()];

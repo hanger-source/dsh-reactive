@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Fragment, StrictMode, createElement as h, type ComponentType } from 'react';
 import { BehaviorSubject, Observable, Subject, concatMap, filter, firstValueFrom } from 'rxjs';
-import { createReaction, defineProgram, defineSurface, z, type ProgramProps } from '@hanger-source/dsh-reactive';
+import { createReaction, defineReaction, implementReaction, defineProgram, defineSurface, z, type ProgramProps, type ReactionInstance, type ReactionRun } from '@hanger-source/dsh-reactive';
 import { implementProgram, useObservable, useScope } from '@hanger-source/dsh-reactive/program';
 import { Conversation, ProgramInstance, Scope, createWorkspace } from '@hanger-source/dsh-reactive/kernel';
 
@@ -18,8 +18,73 @@ function createProgram(Component: ComponentType<ProgramProps<typeof contract>>, 
   const program = new ProgramInstance(scope, implementProgram(contract, { Component }), conversation, workspace, {
     execution() { throw new Error('SCOPE_TEST_HAS_NO_ACTION'); },
   });
-  return { owner, program };
+  return { owner, scope, workspace, program };
 }
+
+test('组件借用Workspace反应实例，切换目标只结束原关系，Program关闭等待原写入且不收走Workspace', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-borrowed-reaction-'));
+  const selected = new BehaviorSubject('a'), events = new Subject<{ target: string; sequence: number }>();
+  const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  const changes = defineReaction({ name: 'shared-worker', params: z.object({ target: z.string() }),
+    event: z.object({ target: z.string(), sequence: z.number() }), result: z.string() });
+  const runs = new Map<string, ReactionRun<typeof changes>>(), instances = new Map<string, ReactionInstance<typeof changes>>();
+  const executions: string[] = [];
+  let connected = 0;
+  const implementation = implementReaction(changes, {
+    observe: params => new Observable(subscriber => {
+      connected++;
+      const subscription = events.pipe(filter(event => event.target === params.target)).subscribe(subscriber);
+      return () => { connected--; subscription.unsubscribe(); };
+    }), operator: concatMap,
+    async execute(event, { params }) {
+      executions.push(params.target + ':' + event.sequence);
+      if (params.target === 'a') { entered.resolve(); await finish.promise; }
+      await writeFile(join(directory, params.target), String(event.sequence));
+      return params.target + ':' + event.sequence;
+    },
+  });
+  function Worker({ reaction }: { reaction: ReactionInstance<typeof changes> }) {
+    useScope(scope => { runs.set(reaction.params.target, reaction.start({ scope })); }, [reaction]);
+    return null;
+  }
+  function Root({ workspace }: ProgramProps<typeof contract>) {
+    const current = useObservable(selected);
+    if (current.status !== 'ready') return null;
+    const reaction = workspace.reaction(implementation, { target: current.value });
+    instances.set(current.value, reaction);
+    return h(StrictMode, null, h(Worker, { reaction }));
+  }
+  const { owner, scope, workspace, program } = createProgram(Root, directory);
+  try {
+    program.mount();
+    const original = runs.get('a')!;
+    assert.equal(connected, 1);
+    assert.equal(instances.get('a'), workspace.reaction(implementation, { target: 'a' }));
+    events.next({ target: 'a', sequence: 1 }); events.next({ target: 'a', sequence: 2 }); await entered.promise;
+    selected.next('b'); program.flush();
+    assert.equal(original.snapshot().status, 'draining');
+    assert.equal(connected, 1, '共享实例保留，原组件关系的来源仍须退出');
+    assert.throws(() => instances.get('a')!.start(), /REACTIVE_REACTION_ALREADY_RUNNING/);
+    const b = runs.get('b')!;
+    const updated = firstValueFrom(b.events$.pipe(filter(event => event.result === 'b:3')));
+    events.next({ target: 'b', sequence: 3 }); await updated;
+    assert.equal(await readFile(join(directory, 'b'), 'utf8'), '3');
+    let closed = false; void scope.closed.then(() => { closed = true; });
+    scope.dispose(); await b.settled;
+    assert.equal(connected, 0);
+    assert.equal(closed, false, 'Program仍拥有已退出组件发起的真实写入结算');
+    const independent = workspace.reaction(implementation, { target: 'b' }).start();
+    const continued = firstValueFrom(independent.events$.pipe(filter(event => event.result === 'b:4')));
+    events.next({ target: 'b', sequence: 4 }); await continued;
+    assert.equal(await readFile(join(directory, 'b'), 'utf8'), '4');
+    assert.equal(closed, false, '另一个Workspace运行不替代原Program的结算责任');
+    finish.resolve(); await original.settled; await scope.closed;
+    assert.equal(await readFile(join(directory, 'a'), 'utf8'), '1');
+    assert.deepEqual(executions, ['a:1', 'b:3', 'b:4']);
+    independent.stop(); await independent.settled;
+    assert.equal(owner.disposed, false);
+  } finally { finish.resolve(); selected.complete(); events.complete(); owner.dispose(); await owner.closed; }
+});
 
 test('组件关系代际独立，退出停止来源与排队，父关闭仍等待退出组件的真实写入和异步清理', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-program-scope-'));

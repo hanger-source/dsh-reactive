@@ -20,6 +20,10 @@ export interface ReactionEvent<D extends ReactionContract> {
   readonly event: ReactionInput<D>;
   readonly result: ReactionResult<D>;
 }
+export interface ReactionStartOptions {
+  /** 本次运行的附加 owner；实例仍归绑定时的 Scope 所有，任一 owner 退出都会停止运行。 */
+  readonly scope?: Scope;
+}
 
 function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
   return value !== null && (typeof value === 'object' || typeof value === 'function') && typeof Reflect.get(value, 'then') === 'function';
@@ -27,7 +31,7 @@ function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
 
 /** 一个运行持有唯一实际订阅；观察运行不会再次执行处理器。 */
 export class ReactionRun<D extends ReactionContract> {
-  readonly #scope: Scope;
+  readonly #scopes: readonly Scope[];
   #current: Extract<Observation<ReactionState>, { status: 'ready' }> = Object.freeze({
     status: 'ready', generation: 1, observedAt: Date.now(), value: Object.freeze({ status: 'running', emitted: 0 }),
   });
@@ -36,7 +40,7 @@ export class ReactionRun<D extends ReactionContract> {
   #connection = new Subscription();
   #controller = new AbortController();
   #completion = Promise.withResolvers<ReactionSettlement>();
-  #release: (() => void) | undefined;
+  #releases = new Set<() => void>();
   #activated = false;
   #ending: 'completed' | 'stopped' | 'failed' | undefined;
   #finished = false;
@@ -62,9 +66,9 @@ export class ReactionRun<D extends ReactionContract> {
   readonly settled = this.#completion.promise;
 
   /** @internal 运行构造与实际订阅分开，避免同步完成跨过实例的 active 身份登记。 */
-  constructor(readonly definition: D, readonly params: ReactionTarget<D>, scope: Scope,
+  constructor(readonly definition: D, readonly params: ReactionTarget<D>, scopes: readonly Scope[],
     private readonly implementation: ReactionImplementationOptions<D>, private readonly ended: () => void) {
-    this.#scope = scope;
+    this.#scopes = scopes;
   }
   snapshot(): ReactionState { return this.#current.value; }
 
@@ -74,10 +78,11 @@ export class ReactionRun<D extends ReactionContract> {
 
   /** @internal 只有 instance.start 在登记 active 后调用。 */
   activate(): void {
-    this.#scope.assertActive();
+    for (const scope of this.#scopes) scope.assertActive();
     if (this.#activated || this.#current.value.status !== 'running') throw new Error('REACTIVE_REACTION_ALREADY_STARTED');
     this.#activated = true;
-    this.#release = this.#scope.own(() => { this.stop(); return this.settled; });
+    // 所有 owner 都先登记；observe/operator/execute 内同步退出也必须停止并等待本次运行。
+    for (const scope of this.#scopes) this.#releases.add(scope.own(() => { this.stop(); return this.settled; }));
     let sequence = 0;
     const subscriber = new Subscriber<ReactionEvent<D>>({
       next: event => {
@@ -87,7 +92,7 @@ export class ReactionRun<D extends ReactionContract> {
         if (this.#current.value.status === 'running') this.#states.next();
       },
       error: (error: unknown) => this.fail(error),
-      complete: () => this.end(this.#scope.disposed ? 'stopped' : 'completed'),
+      complete: () => this.end(this.#scopes.some(scope => scope.disposed) ? 'stopped' : 'completed'),
     });
     // 同步来源也必须在首个业务回调之前取得 owner 的取消连接。
     this.#connection.add(subscriber);
@@ -112,7 +117,7 @@ export class ReactionRun<D extends ReactionContract> {
 
   private enter(): void { this.#depth++; }
   private leave(): void { this.#depth--; this.settle(); }
-  private accepting(): boolean { return this.#ending === undefined && !this.#scope.disposed; }
+  private accepting(): boolean { return this.#ending === undefined && this.#scopes.every(scope => !scope.disposed); }
 
   /** 同步 subscribe 返回前不交付终止，才能接收随后登记的 teardown。 */
   private source<T>(factory: () => Observable<T>): Observable<T> {
@@ -219,8 +224,10 @@ export class ReactionRun<D extends ReactionContract> {
     try {
       try { this.#connection.unsubscribe(); } catch (error) { this.record(error); }
       try { this.#controller.abort(); } catch (error) { this.record(error); }
-      const release = this.#release; this.#release = undefined;
-      try { release?.(); } catch (error) { this.record(error); }
+      const releases = this.#releases; this.#releases = new Set();
+      for (const release of releases) {
+        try { release(); } catch (error) { this.record(error); }
+      }
       this.#events.complete();
     } finally {
       if (this.#failures.length) this.#ending = 'failed';
@@ -258,11 +265,12 @@ export class ReactionInstance<D extends ReactionContract> {
   constructor(scope: Scope, readonly definition: D, readonly params: ReactionTarget<D>,
     private readonly implementation: ReactionImplementationOptions<D>) { this.#scope = scope; }
 
-  /** 副作用从此处显式发生；同实例不能无意建立第二条并行关系。 */
-  start(): ReactionRun<D> {
-    this.#scope.assertActive();
+  /** 副作用从此处显式发生；附加 owner 仅拥有本次运行，同实例仍只允许一个未结算的运行。 */
+  start(options: ReactionStartOptions = {}): ReactionRun<D> {
+    const scopes = [...new Set(options.scope === undefined ? [this.#scope] : [this.#scope, options.scope])];
+    for (const scope of scopes) scope.assertActive();
     if (this.#active) throw new Error('REACTIVE_REACTION_ALREADY_RUNNING');
-    const run = new ReactionRun<D>(this.definition, this.params, this.#scope, this.implementation,
+    const run = new ReactionRun<D>(this.definition, this.params, scopes, this.implementation,
       () => { if (this.#active === run) this.#active = undefined; });
     this.#active = run;
     run.activate();

@@ -216,7 +216,8 @@ export function useResourceInstance(source: ResourceImplementation | (() => Loca
 
 /**
  * 取得程序拥有的持续反应，不在 render 或 commit 隐式 start。
- * 运行属于程序，组件退出不冒充停止；调用 run.stop 或程序退出才释放感知和排队关系。
+ * start()默认归程序；start({scope})在执行前附加本次关系owner，任一owner退出即停止感知和排队。
+ * 实例仍归程序；同实例前一运行draining时不能重开，组件退出不取消已受理业务。
  * 局部 factory 使用 createReaction 的同一选项，不要求声明参数合同或另传 Scope。
  */
 export function useReaction<D extends ReactionContract>(implementation: ReactionImplementation<D>,

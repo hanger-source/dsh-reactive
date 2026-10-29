@@ -46,7 +46,7 @@ const recovered = await runtime.application.open(session.id, InventoryProgram);
 
 createWorkspace 注册原生 existing 目录，不隐式 mkdir。Environment 不拥有目录；一个环境可用于多个 workspace，一个 workspace 可含不同环境。已有会话从自身权威 binding 恢复，open/resume 传 expected Program 核同一合同；resume 显式激活，open 只读不借恢复名义执行。
 
-需要工作区级业务资源时，用 runtime.application.workspace(workspaceId) 借用本地 Workspace，再调用 workspace.resource(implementation, params) 或 workspace.reaction(implementation, params)，按正式实现与参数稳定复用实例。局部业务直接用 workspace.resource({ value, read, invalidations? }) 或 observe 分支，以及 workspace.reaction({ event, result, observe, operator, execute })；选项与 Program 局部入口相同，每次构造独立实例，相同名称或选项引用不合并。显式保留返回对象供函数、Promise、RxJS 和组件共用，在组件中借用已构造对象。不必先创建 Session 或从组件向外捕获 Scope；构造不读取、反应不自动启动，Session 退出不结束工作区实例。Workspace 类型从 core 的 /workspaces 或根入口导入；远程登记信息不携带本地 Scope，公开业务观察仍通过 Surface。
+需要工作区级业务资源时，用 runtime.application.workspace(workspaceId) 借用本地 Workspace，再调用 workspace.resource(implementation, params) 或 workspace.reaction(implementation, params)，按正式实现与参数稳定复用实例。局部业务直接用 workspace.resource({ value, read, invalidations? }) 或 observe 分支，以及 workspace.reaction({ event, result, observe, operator, execute })；选项与 Program 局部入口相同，每次构造独立实例，相同名称或选项引用不合并。显式保留返回对象供函数、Promise、RxJS 和组件共用，在组件中借用已构造对象。不必先创建 Session 或从组件向外捕获 Scope；构造不读取、反应不自动启动，Session 退出不结束工作区实例。组件要拥有已有 Workspace 反应的某次运行时，在 `useScope` setup 中显式调用 `reaction.start({ scope })`：实例仍归 Workspace，同一 run 同时归组件 Scope，任一退出即停止，双方 closed 等待真实 settled。hook 不自动启动；同实例停止后仍 draining 时不能再次 start，组件代际需要独立运行时创建独立反应实例。Workspace 类型从 core 的 /workspaces 或根入口导入；远程登记信息不携带本地 Scope，公开业务观察仍通过 Surface。
 
 正式登记删除后，原生 domain/changed 提交事实结束工作区 owner，不等待整个宿主退出。旧资源、共享流和持续关系一起撤销，清理重入不能利用原生尚未撤下的实体缓存重建 owner。目录和会话历史由原生保留，已受理业务不因查询退出而回滚。清理失败保留诊断并由宿主退出汇总，其他工作区仍须释放。
 
