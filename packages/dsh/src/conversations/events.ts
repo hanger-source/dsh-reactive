@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent';
 import { pluginRecordOf, type SessionEvent } from '@deepseek-ai/dsh-session';
 import type { AssistantStream, ConversationEvent } from '@hanger-source/dsh-reactive/kernel';
-import { childInputRecordSchema, operationNotStartedSchema, operationFollowUnregisteredSchema, recordSchema, waitRecordSchema, type NativeState } from './records.ts';
+import { childInputRecordSchema, operationNotStartedSchema, operationFollowUnregisteredSchema, actionInvocationRecordSchema, operationFollowCallRecordSchema, recordSchema, waitRecordSchema, type NativeState } from './records.ts';
 import { intentSchema, receiptSchema, deliverySchema } from '../operations/projection.ts';
 
 /** 只转换新的 append。历史读取只消费原生投影，不调用此入口。 */
@@ -12,17 +12,19 @@ export function sessionOccurrences(sessionId: string, event: SessionEvent, previ
   const record = pluginRecordOf(event);
   if (record?.type === 'plugin:reactive/operation-follow' || record?.type === 'plugin:reactive/operation-receipt'
     || record?.type === 'plugin:reactive/operation-delivery' || record?.type === 'plugin:reactive/operation-not-started'
-    || record?.type === 'plugin:reactive/operation-follow-unregistered') {
+    || record?.type === 'plugin:reactive/operation-follow-unregistered' || record?.type === 'plugin:reactive/operation-follow-call') {
     const id = record.type === 'plugin:reactive/operation-follow' ? intentSchema.parse(record.data).id
       : record.type === 'plugin:reactive/operation-receipt' ? receiptSchema.parse(record.data).id
       : record.type === 'plugin:reactive/operation-delivery' ? deliverySchema.parse(record.data).id
       : record.type === 'plugin:reactive/operation-follow-unregistered' ? operationFollowUnregisteredSchema.parse(record.data).id
+      : record.type === 'plugin:reactive/operation-follow-call' ? operationFollowCallRecordSchema.parse(record.data).id
       : operationNotStartedSchema.parse(record.data).id;
     const follow = current.activity.operationFollows.find(follow => follow.link.id === id);
     if (!follow) throw new Error('REACTIVE_OPERATION_FOLLOW_NOT_FOUND');
     const change = record.type === 'plugin:reactive/operation-follow' ? 'intent'
       : record.type === 'plugin:reactive/operation-receipt' ? 'receipt'
       : record.type === 'plugin:reactive/operation-delivery' ? 'delivery-prepared'
+      : record.type === 'plugin:reactive/operation-follow-call' ? 'call-associated'
       : record.type === 'plugin:reactive/operation-follow-unregistered' ? 'unregistered' : 'not-started';
     events.push({ ...origin, kind: 'operation.follow.changed', change, follow, inputs: follow.link.continuation.inputs });
   }
@@ -57,11 +59,18 @@ export function sessionOccurrences(sessionId: string, event: SessionEvent, previ
     const call = current.callAtSequence(event.seq);
     if (call) events.push({ ...origin, kind: 'tool.started', ...call });
   }
+  if (record?.type === 'plugin:reactive/action-invocation') {
+    const association = actionInvocationRecordSchema.parse(record.data);
+    const call = current.callAtSequence(association.callSequence);
+    if (!call) throw new Error('REACTIVE_ACTION_INVOCATION_CALL_REQUIRED');
+    events.push({ ...origin, kind: 'tool.invocation', ...call, invocationId: association.invocationId });
+  }
   if (event.type === 'tool/result' || event.type === 'tool/ptc-dispatch') {
     const call = current.resultCall(event);
     const failed = event.type === 'tool/result' ? event.data.message.isError : event.data.isError;
     const meta = z.object({ reactive: z.json() }).safeParse(event.data.meta);
-    if (call) events.push({ ...origin, kind: 'tool.settled', ...call, outcome: failed ? 'failed' : 'returned',
+    if (call) events.push({ ...origin, kind: 'tool.settled', ...call,
+      invocationId: current.value.calls[String(call.callSequence)]!.invocationId, outcome: failed ? 'failed' : 'returned',
       ...(event.data.meta === undefined ? {} : { meta: z.json().parse(event.data.meta) }),
       ...(meta.success ? { result: meta.data.reactive } : {}) });
   }

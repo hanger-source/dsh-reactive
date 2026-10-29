@@ -487,6 +487,12 @@ function observeWork(workId: string, sessions: readonly WorkSource[], signal: Ab
 
 每项保留完整 `value` 和解释命中依据的 `matchedInputs`；一次调用或回复可能因多条输入同时属于多个工作。调用保留正式 start 事件序号 `callSequence`，回复保留 `messageId` 和完整 inputs；provider 的 callId 可跨轮复用，不能用它合并不同发生。matchedInputs 只解释观察分组，不裁剪事实或授予续接权限。声明是持久请求事实，可在尚无 messageId 时命中，但它不是已受理的 InputReference。缺少输入关联证据的回复不归组。条件表达暂停、阻塞、等待、待答、调用失败及原续接资格，不能据此判断整个工作忙碌或完成。业务 Operation 阶段与资源错误可用现有 RxJS 资源组合表达。
 
+## 关联业务调用与原生结果
+
+同一会话的 Invocation 与工具通过 `ToolActivity.invocationId` 精确连接；业务 hook 从 action.invocations$ 取得的 `invocation.id` 可以直接匹配 progress、request.tools 或 Work.calls。provider 标签可能重复，不按 callId 选择最近一次，也不解析 Invocation.id。OperationFollowSnapshot.callSequence 再连接该参与所属的真实工具发生；显式 Follow 不一定创建业务 Invocation，SDK 参与调用也不一定有原生工具。
+
+原生工具的后置策略可以在业务函数返回后拒绝交付，所以 Invocation returned、ToolActivity failed 和 Operation running 可以同时成立。`tool.invocation` 只记录对象创建后的关联，`tool.settled` 保存原生终态，业务完成仍读取原 owner。缺证字段为 null，不能用它推断未执行；冷读取只恢复事实，不恢复 Promise 或重复调用。完整字段与固定 rc.3 的 PTC 读取限制见[业务调用与原生发生的关联](migration-invocation-observation.md)。
+
 ## 观察当前模型准备
 
 `session.progress.read(signal)` 的 `preparation` 是当前真实模型准备的 `ModelPreparation | null`。同一对象保留本次准备 id、当时已知的原始 inputs 与尚未结束的 `waiting`。等待描述来自实际执行边界：委托核验、输入准备、步骤检查、Context、Skill 服务与目录、工作目录、Skill 正文及原生 prompt 装配。Context 使用已有声明名，Skill 使用已有名称或目录；步骤检查只提供登记身份，不从函数名猜测业务含义。

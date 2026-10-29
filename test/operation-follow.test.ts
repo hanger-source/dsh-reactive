@@ -474,9 +474,11 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     assert.deepEqual(await notifying, { status: 'unregistered' });
     await session.whenIdle();
     const closed = session.snapshot().operationFollows[0]!;
-    assert.deepEqual(closed, { link: initial.link, receipt: null, preparedDelivery: null, notStarted: null,
+    assert.deepEqual(closed, { link: initial.link,
+      callSequence: session.snapshot().calls.find(call => call.callId === initial.link.source.callId)!.callSequence,
+      receipt: null, preparedDelivery: null, notStarted: null,
       unregistered: { id: initial.link.id, continuation: initial.link.continuation, wait: initial.link.wait } });
-    assert.deepEqual(changes.map(event => event.kind === 'operation.follow.changed' ? event.change : null), ['intent', 'unregistered']);
+    assert.deepEqual(changes.map(event => event.kind === 'operation.follow.changed' ? event.change : null), ['intent', 'call-associated', 'unregistered']);
     const closure = changes.at(-1)!;
     assert.ok(closure.kind === 'operation.follow.changed');
     assert.deepEqual(closure.follow, closed);
@@ -629,6 +631,9 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     const calls = session.snapshot().calls.filter(call => call.callId === first.source.callId);
     assert.equal(calls.length, 2);
     assert.notEqual(calls[0]!.callSequence, calls[1]!.callSequence);
+    assert.deepEqual(calls.map(call => call.invocationId), app.invocationIds);
+    assert.equal(session.snapshot().operationFollows.find(follow => follow.link.id === first.id)!.callSequence, calls[0]!.callSequence);
+    assert.equal(session.snapshot().operationFollows.find(follow => follow.link.id === second.id)!.callSequence, calls[1]!.callSequence);
     assert.deepEqual(first.continuation.inputs, calls[0]!.inputs);
     assert.deepEqual(second.continuation.inputs, calls[1]!.inputs);
     assert.deepEqual(first.continuation.inputs.map(input => input.requestId), ['original-goal']);
@@ -738,7 +743,9 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     await session.submit({ requestId: 'original-goal', content: '准备一次并等待商家的明确反馈', intent: 'goal', delivery: 'followup', scope: { merchantId: 'merchant-a' } });
     await session.whenIdle();
     const [link] = app.store.links(); assert.ok(link);
-    assert.deepEqual(session.snapshot().operationFollows, [{ link, receipt: { reference: app.store.read('prepare-a')!.reference },
+    assert.deepEqual(session.snapshot().operationFollows, [{ link,
+      callSequence: session.snapshot().calls.find(call => call.callId === link.source.callId)!.callSequence,
+      receipt: { reference: app.store.read('prepare-a')!.reference },
       preparedDelivery: null, notStarted: null, unregistered: null }]);
     assert.deepEqual(await app.store.notify(link.id), { status: 'pending' });
     assert.equal(acknowledgements.length, 0, '业务节点尚未就绪时不能消费outbox');
@@ -767,8 +774,10 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     assert.equal(session.snapshot().requests['operation:' + link.id]?.state, 'accepted');
     assert.deepEqual(session.snapshot().operationFollows, [acknowledgedFollow], '来源ACK重试不产生第二份准备正文或改写关联');
     assert.deepEqual(followEvents.map(event => event.kind === 'operation.follow.changed' ? event.change : null),
-      ['intent', 'receipt', 'delivery-prepared']);
-    const intentEvent = followEvents[0]!, receiptEvent = followEvents[1]!, deliveryEvent = followEvents[2]!;
+      ['intent', 'call-associated', 'receipt', 'delivery-prepared']);
+    const intentEvent = followEvents.find(event => event.kind === 'operation.follow.changed' && event.change === 'intent')!;
+    const receiptEvent = followEvents.find(event => event.kind === 'operation.follow.changed' && event.change === 'receipt')!;
+    const deliveryEvent = followEvents.find(event => event.kind === 'operation.follow.changed' && event.change === 'delivery-prepared')!;
     assert.ok(intentEvent.kind === 'operation.follow.changed' && receiptEvent.kind === 'operation.follow.changed'
       && deliveryEvent.kind === 'operation.follow.changed');
     assert.equal(intentEvent.follow.receipt, null);
@@ -1111,9 +1120,11 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     assert.equal(session.snapshot().requests['operation:' + link.id], undefined);
     assert.equal(session.snapshot().goal?.phase, 'active');
     const closedFollow = session.snapshot().operationFollows[0]!;
-    assert.deepEqual(closedFollow, { link, receipt: null, preparedDelivery: null, unregistered: null,
+    assert.deepEqual(closedFollow, { link,
+      callSequence: session.snapshot().calls.find(call => call.callId === link.source.callId)!.callSequence,
+      receipt: null, preparedDelivery: null, unregistered: null,
       notStarted: { id: link.id, continuation: link.continuation, wait: link.wait } });
-    assert.deepEqual(followChanges.map(event => event.kind === 'operation.follow.changed' ? event.change : null), ['intent', 'not-started']);
+    assert.deepEqual(followChanges.map(event => event.kind === 'operation.follow.changed' ? event.change : null), ['intent', 'call-associated', 'not-started']);
     const closure = followChanges.at(-1)!;
     assert.ok(closure.kind === 'operation.follow.changed');
     assert.deepEqual(closure.follow, closedFollow);
@@ -1564,6 +1575,13 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     const cold = await app.runtime.application.open(saved.sessionId, app.program);
     assert.equal(app.runtime.native.agents.get(SessionId(saved.sessionId)), undefined);
     assert.equal(cold.snapshot().waits.length, 0, 'crash 时 L2 intent 与业务登记已落盘，native wait 尚未登记');
+    for (const link of [first, second]) {
+      const follow = cold.snapshot().operationFollows.find(value => value.link.id === link.id)!;
+      assert.notEqual(follow.callSequence, null);
+      const call = cold.snapshot().calls.find(value => value.callSequence === follow.callSequence)!;
+      assert.equal(call.name, 'await_preparation');
+      assert.equal(call.invocationId, null, '显式 Follow 只登记原操作参与，不创建业务 Action Invocation');
+    }
     const reader = await cold.operations.preparation();
     const previous = reader.participation(first.id);
     const next = reader.participation(second.id);

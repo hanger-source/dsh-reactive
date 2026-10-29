@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import { pluginRecordOf, type SessionEvent } from '@deepseek-ai/dsh-session';
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection';
 import { inputReferenceSchema, requestActivitySchema, toolActivitySchema, replyActivitySchema, executionFailureSchema } from '@hanger-source/dsh-reactive/kernel';
-import { canonical, childInputRecordSchema, goalBindingSchema, inputEditRecordSchema, inputRecordIdentity, operationNotStartedSchema, operationFollowUnregisteredSchema, questionOriginRecordSchema, recordSchema, referenceOf, contentDigest, unique, waitRecordSchema, callForResult, ptcParent } from './records.ts';
+import { canonical, childInputRecordSchema, goalBindingSchema, inputEditRecordSchema, inputRecordIdentity, operationNotStartedSchema, operationFollowUnregisteredSchema, questionOriginRecordSchema, actionInvocationRecordSchema, operationFollowCallRecordSchema, recordSchema, referenceOf, contentDigest, unique, waitRecordSchema, callForResult, ptcParent } from './records.ts';
 
 const inputsSchema = inputReferenceSchema.array().readonly();
 const pendingOccurrenceSchema = z.object({ messageId: z.string(), inputs: inputsSchema, questionCallId: z.string().nullable() }).strict();
@@ -15,6 +15,7 @@ export const reactiveProjectionSchema = z.object({ sessionId: z.string(), delega
   records: z.record(z.string(), recordSchema), pendingEdits: z.record(z.string(), inputEditRecordSchema), goals: z.record(z.string(), inputsSchema),
   nativeInputs: z.record(z.string(), inputReferenceSchema),
   questionOrigins: z.record(z.string(), questionOriginRecordSchema.shape.goal),
+  operationCalls: z.record(z.string(), z.number().int().nonnegative()),
   inputs: inputsSchema, calls: z.record(z.string(), callOccurrenceSchema), replies: replyActivitySchema.array().readonly(), current: inputsSchema,
   openTurn: z.number().int().nonnegative().nullable(), openStep: stepSchema.nullable(),
   pending: z.object({ 'next-turn': pendingOccurrenceSchema.array(), 'next-step': pendingOccurrenceSchema.array() }).strict(),
@@ -29,9 +30,9 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
 
 /** 仅负责业务请求、原生输入和调用的关联；驱动、水位、冷恢复由原生注册表拥有。 */
 export const reactiveProjectionDefinition: ProjectionDefinition<'reactiveInputs'> = {
-  key: 'reactiveInputs', stateVersion: 14, stateSchema: reactiveProjectionSchema,
+  key: 'reactiveInputs', stateVersion: 15, stateSchema: reactiveProjectionSchema,
   init: (header, inheritedEventCount) => ({ sessionId: header.id, delegated: header.parentSession !== undefined, inheritedEventCount,
-    records: {}, pendingEdits: {}, goals: {}, nativeInputs: {}, questionOrigins: {}, inputs: [], calls: {}, replies: [], current: [], openTurn: null, openStep: null,
+    records: {}, pendingEdits: {}, goals: {}, nativeInputs: {}, questionOrigins: {}, operationCalls: {}, inputs: [], calls: {}, replies: [], current: [], openTurn: null, openStep: null,
     pending: { 'next-turn': [], 'next-step': [] },
     proposed: {}, requests: {}, waits: [], failures: [] }),
   apply: applyReactiveProjection,
@@ -49,6 +50,7 @@ function applyReactiveProjection(previous: ReactiveProjectionState, event: Sessi
     && record?.type !== 'plugin:reactive/input' && record?.type !== 'plugin:reactive/goal-inputs' && record?.type !== 'plugin:reactive/wait'
     && record?.type !== 'plugin:reactive/child-input' && record?.type !== 'plugin:reactive/operation-not-started'
     && record?.type !== 'plugin:reactive/operation-follow-unregistered'
+    && record?.type !== 'plugin:reactive/action-invocation' && record?.type !== 'plugin:reactive/operation-follow-call'
     && record?.type !== 'plugin:reactive/input-edit' && record?.type !== 'plugin:reactive/question-origin') return previous;
   let state = { ...previous };
   type RequestLifecycle = z.output<typeof requestLifecycleSchema>;
@@ -61,6 +63,27 @@ function applyReactiveProjection(previous: ReactiveProjectionState, event: Sessi
     input.sourceSessionId === state.sessionId && input.requestId !== null;
   const inOpenStep = (turn: number, step: number) => state.openTurn === turn
     && state.openStep?.turn === turn && state.openStep.step === step;
+  if (record?.type === 'plugin:reactive/action-invocation') {
+    const association = actionInvocationRecordSchema.parse(record.data), key = String(association.callSequence);
+    const call = own(state.calls, key);
+    if (!call || call.state !== 'running' || !inOpenStep(call.turn, call.step))
+      throw new Error('REACTIVE_ACTION_INVOCATION_CALL_REQUIRED');
+    if (call.invocationId !== null && call.invocationId !== association.invocationId)
+      throw new Error('REACTIVE_ACTION_INVOCATION_CONFLICT');
+    if (Object.values(state.calls).some(other => other.callSequence !== call.callSequence && other.invocationId === association.invocationId))
+      throw new Error('REACTIVE_ACTION_INVOCATION_ALREADY_ASSOCIATED');
+    state.calls = { ...state.calls, [key]: { ...call, invocationId: association.invocationId } };
+  }
+  if (record?.type === 'plugin:reactive/operation-follow-call') {
+    const association = operationFollowCallRecordSchema.parse(record.data);
+    const call = own(state.calls, String(association.callSequence));
+    if (!call || call.state !== 'running' || !inOpenStep(call.turn, call.step))
+      throw new Error('REACTIVE_OPERATION_FOLLOW_CALL_REQUIRED');
+    const before = own(state.operationCalls, association.id);
+    if (before !== undefined && before !== association.callSequence)
+      throw new Error('REACTIVE_OPERATION_FOLLOW_CALL_CONFLICT');
+    state.operationCalls = { ...state.operationCalls, [association.id]: association.callSequence };
+  }
   if (record?.type === 'plugin:reactive/question-origin') {
     const origin = questionOriginRecordSchema.parse(record.data), key = String(origin.callSequence);
     const call = own(state.calls, key);
@@ -180,7 +203,7 @@ function applyReactiveProjection(previous: ReactiveProjectionState, event: Sessi
     for (const input of inputs) if (localRequest(input)) update(input.requestId, { state: 'consumed', outcome: null });
   }
   const started = (call: Pick<z.output<typeof callOccurrenceSchema>, 'callId' | 'rootCallId' | 'parentCallId' | 'name' | 'inputs' | 'turn' | 'step'>) => {
-    state.calls = { ...state.calls, [String(event.seq)]: { ...call, callSequence: event.seq, state: 'running', observedAt: event.time } };
+    state.calls = { ...state.calls, [String(event.seq)]: { ...call, callSequence: event.seq, invocationId: null, state: 'running', observedAt: event.time } };
   };
   if (event.type === 'tool/call') started({ callId: event.data.callId, rootCallId: event.data.callId,
     parentCallId: null, name: event.data.name, turn: event.data.turn, step: event.data.step,

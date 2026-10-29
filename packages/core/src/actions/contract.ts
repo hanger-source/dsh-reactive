@@ -162,7 +162,7 @@ export interface ActionBindingOptions<D extends ActionContract> {
 /** 业务 execute 与准入消费 input schema 的解析结果。 */
 export type ActionParsedInput<D extends ActionContract> = z.output<D['input']>;
 
-export type InvocationPhase = 'input' | 'admission' | 'operation' | 'execute' | 'output';
+export type InvocationPhase = 'registration' | 'input' | 'admission' | 'operation' | 'execute' | 'output';
 /** 业务行为的调用事实，不代表原生工具后置策略的最终结果。 */
 export type InvocationActivity<Observed extends Json = Json> =
   | { readonly state: 'pending' }
@@ -261,7 +261,10 @@ type InputCapture = (raw: unknown) => Json;
 type ArgumentCapture = { readonly input: InputCapture; readonly scope: InputCapture };
 const implementationArgumentCaptures = new WeakMap<object, ArgumentCapture>();
 const invocationArguments = new WeakMap<ActionCallContext<unknown>, { readonly input: Json; readonly scope: Json }>();
-const executionGuards = new WeakMap<ActionExecutionContext, () => void>();
+const executionGuards = new WeakMap<ActionExecutionContext, {
+  readonly check: () => void;
+  readonly created?: (invocation: Invocation<unknown, Json>) => void;
+}>();
 type RawActionDispatcher = (raw: unknown, execution: ActionExecutionContext, admissionSignal?: AbortSignal) => Invocation<unknown, Json>;
 const boundDispatchers = new WeakMap<object, {
   readonly invoke: RawActionDispatcher;
@@ -311,10 +314,11 @@ export function actionInvocationArguments(call: ActionCallContext<unknown>): { r
   return arguments_;
 }
 
-/** @internal 宿主为原始执行对象登记一次同步检查，在实际 execute 前核验当前权威。 */
-export function guardActionExecution(execution: ActionExecutionContext, check: () => void): void {
+/** @internal 宿主为原始执行对象登记同步权威检查，以及完整调用对象创建后、执行和公开前的关联。 */
+export function guardActionExecution(execution: ActionExecutionContext, check: () => void,
+  created?: (invocation: Invocation<unknown, Json>) => void): void {
   if (executionGuards.has(execution)) throw new Error('REACTIVE_ACTION_EXECUTION_GUARD_DUPLICATE');
-  executionGuards.set(execution, check);
+  executionGuards.set(execution, { check, created });
 }
 
 function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.ZodType<Json>, Observed extends Json, P extends OperationContract>(
@@ -447,8 +451,10 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
       });
       let attached: OperationHandle<Operation> | undefined;
       let finished = false, invocation: ActionInvocation<Definition> | undefined;
-      const result = (async () => {
-        let phase: InvocationPhase = 'input';
+      const completion = Promise.withResolvers<z.output<O>>();
+      const result = completion.promise;
+      const run = async (created: ActionInvocation<Definition>) => {
+        let phase: InvocationPhase = 'registration';
         let qualification: ReturnType<typeof retainEligibility> | undefined;
         const releaseQualification = () => {
           const retained = qualification; qualification = undefined; retained?.release();
@@ -457,6 +463,8 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
         let started = false;
         let executionCleanup: { readonly error: unknown } | undefined;
         try {
+          executionGuards.get(execution)?.created?.(created);
+          phase = 'input';
           assertActive();
           call.signal.throwIfAborted();
           // 捕获发生在首个异步准入之前；仅持久委托使用明确的 JSON 快照合同。
@@ -479,7 +487,7 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
             await firstValueFrom(abortable(() => options.admit(input, call, execution, admitting), admitting));
           } catch (error) {
             // 宿主拥有具名出口与绑定身份的精确诊断；声明退出后仍由原签发者核验。
-            if (declarationSignal?.aborted) executionGuards.get(execution)?.();
+            if (declarationSignal?.aborted) executionGuards.get(execution)?.check();
             throw error;
           }
           // 等待准入期间退出的声明没有受理执行；已进入 execute 后不再依赖声明。
@@ -503,7 +511,7 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
             call.signal.throwIfAborted();
           }
           // 准入和持久准备的所有异步等待结束后，在副作用开始的同一同步边界核验宿主权威。
-          executionGuards.get(execution)?.();
+          executionGuards.get(execution)?.check();
           admitting.throwIfAborted();
           qualification?.check();
           call.signal.throwIfAborted();
@@ -570,7 +578,7 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
             if (released && !active.size) activeStates.complete();
           }
         }
-      })();
+      };
       // activity$ 也是正式的失败观察入口；仅观察它不制造未处理 Promise 拒绝。
       void result.catch(() => {});
       const operation = operationOwner ? result.then(() => {
@@ -581,6 +589,8 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
       invocation = Object.freeze({ id: invocationId, source, result, activity, activity$: activity.values$,
         wait(options: CancellationOptions = {}) { return firstValueFrom(abortable(() => result, options.signal)); },
         ...(operation ? { operation } : {}) }) as ActionInvocation<Definition>;
+      // Host 先关联这个完整句柄；同步失败仍在公开前形成终态，业务体不会先于关联开始。
+      void run(invocation).then(completion.resolve, completion.reject);
       if (!finished) { active.add(invocation); publishActive(); }
       // 所有入口汇入同一 invoke；观察者取得调用方返回的同一个句柄。
       // input 或同步准入可能已经失败，activity$ 保留该次调用的当前及终态。

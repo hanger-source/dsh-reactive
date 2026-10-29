@@ -42,6 +42,10 @@ export const operationFollowUnregisteredSchema = waitRecordSchema.extend({ id: z
 export const childInputRecordSchema = z.object({ messageId: z.string().min(1), input: inputReference }).strict();
 export const questionOriginRecordSchema = z.object({ callSequence: z.number().int().nonnegative(),
   goal: continuationSchema.shape.goal }).strict();
+export const actionInvocationRecordSchema = z.object({ callSequence: z.number().int().nonnegative(),
+  invocationId: z.string().min(1) }).strict();
+export const operationFollowCallRecordSchema = z.object({ id: z.string().min(1),
+  callSequence: z.number().int().nonnegative() }).strict();
 declare module '@deepseek-ai/dsh-session/types' {
   interface PluginRecordMap {
     'plugin:reactive/input': SubmissionRecord;
@@ -52,6 +56,8 @@ declare module '@deepseek-ai/dsh-session/types' {
     'plugin:reactive/operation-follow-unregistered': z.infer<typeof operationFollowUnregisteredSchema>;
     'plugin:reactive/child-input': z.infer<typeof childInputRecordSchema>;
     'plugin:reactive/question-origin': z.infer<typeof questionOriginRecordSchema>;
+    'plugin:reactive/action-invocation': z.infer<typeof actionInvocationRecordSchema>;
+    'plugin:reactive/operation-follow-call': z.infer<typeof operationFollowCallRecordSchema>;
   }
 }
 /** 原生投影切面的只读业务关联视图；不订阅、不推进、不缓存会话日志。 */
@@ -170,7 +176,7 @@ export function occurrenceOf(call: CallOccurrence): ToolOccurrence {
 }
 
 function toolActivityOf(call: CallOccurrence): ToolActivity {
-  return { ...occurrenceOf(call), state: call.state, observedAt: call.observedAt,
+  return { ...occurrenceOf(call), invocationId: call.invocationId, state: call.state, observedAt: call.observedAt,
     ...(call.result === undefined ? {} : { result: call.result }) };
 }
 

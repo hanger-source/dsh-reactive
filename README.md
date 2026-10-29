@@ -18,6 +18,8 @@ Program 派生资源、活动读侧及局部 Surface 调用查回见[Program 资
 
 Action、原生写入与上传共用 Invocation.wait({ signal })；调用者准入、单次结果等待和真实执行取消的边界见[调用回执等待](docs/migration-invocation-waits.md)。
 
+Invocation、原生工具终态与 Operation 参与通过正式发生关联连接；公共字段、登记失败及固定 rc.3 的 PTC 读取边界见[业务调用与原生发生的关联](docs/migration-invocation-observation.md)。
+
 调整公共合同时，按实际安装版本查看[共享 Program 合同迁移](docs/migration-shared-program-contracts.md)、[模块 SDK 迁移](docs/migration-sdk-modules.md)与[参与端口迁移](docs/migration-participant-ports.md)，对齐合同身份、局部模块、人工控制与服务来源。异步装配及资源寿命的变化见 [SDK 作用域迁移](docs/migration-sdk-scopes.md)、[资源有效性迁移](docs/migration-resource-ownership.md)及[来源完成与有效性迁移](docs/migration-resource-completion.md)。
 
 借用对象的生命周期权限、内核工作区装配及原生任务的同步构造见[借用能力迁移](docs/migration-borrowed-capabilities.md)。

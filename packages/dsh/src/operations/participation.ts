@@ -156,7 +156,7 @@ export class OperationParticipation {
                 continuation: execution.continuation, wait: { id: 'operation:' + id, operation: { kind: owner.definition.kind, version: owner.definition.version, command } },
                 scope: follow.scope, target: command, source: execution.source, mode: follow.mode,
                 ...follow.when === 'feedback' ? { when: 'feedback', after } : { when: 'settled', after: null },
-            }, access, {
+            }, this.authority.callSequence(execution), access, {
                 admit: async () => {
                     await firstValueFrom(abortable(() => eligibility?.ready, admissionSignal));
                     check();
@@ -218,7 +218,7 @@ export class OperationParticipation {
             command: event.command, continuation,
             wait: { id: 'operation:' + id, operation: { kind: event.owner.definition.kind, version: event.owner.definition.version, command: event.command } },
             scope: z.json().parse(follow.scope), target: z.json().parse(action.scope), source, mode: follow.mode,
-        }, { sessionId: execution.sessionId, source: execution.source, signal: execution.signal }));
+        }, this.authority.callSequence(execution), { sessionId: execution.sessionId, source: execution.source, signal: execution.signal }));
         if (follow.mode === 'wait')
             exec.concludeTurn();
     }

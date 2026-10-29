@@ -60,6 +60,8 @@ export const operationFollowLinkSchema = z.discriminatedUnion('when', [
 /** 同一会话切面中的持久关联事实；准备正文不表示原请求已经受理或消费。 */
 export interface OperationFollowSnapshot {
   readonly link: OperationFollowLink;
+  /** 实际发起 Follow 的原生调用；null 表示没有来源事实。 */
+  readonly callSequence: number | null;
   readonly receipt: { readonly reference: Json } | null;
   readonly preparedDelivery: {
     readonly requestId: string;
@@ -83,6 +85,7 @@ export interface OperationFollowSnapshot {
 
 export const operationFollowSnapshotSchema = z.object({
   link: operationFollowLinkSchema,
+  callSequence: z.number().int().nonnegative().nullable(),
   receipt: z.object({ reference: z.json() }).strict().nullable(),
   preparedDelivery: z.object({
     requestId: identity, actorId: identity, notifierId: identity,

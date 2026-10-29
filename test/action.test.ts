@@ -13,6 +13,25 @@ function participant(invocationId: string): ActionExecutionContext {
     inputs: [], signal: new AbortController().signal, continuation: null };
 }
 
+test('宿主关联登记失败结算同一Invocation，不进入输入、准入和业务，也不留下在途活动', async () => {
+  let parsed = 0, admitted = 0, executed = 0;
+  const failure = new Error('NATIVE_INVOCATION_ASSOCIATION_FAILED');
+  const action = bindAction(implementAction(defineAction({ name: 'registration', description: '具有原生关联的业务动作',
+    scope: z.null(), input: z.string().transform(value => { parsed++; return value; }), output: z.string() }),
+  { execute(input) { executed++; return input; } }), null, { admit() { admitted++; } });
+  const execution = participant('registration-failure');
+  let created: unknown, observed: unknown;
+  guardActionExecution(execution, () => {}, invocation => { created = invocation; throw failure; });
+  const subscription = action.invocations$.subscribe(invocation => { observed = invocation; });
+  const invocation = action.invoke('正式输入', execution);
+  assert.equal(created, invocation); assert.equal(observed, invocation);
+  await assert.rejects(invocation.result, failure);
+  assert.deepEqual(await invocation.activity.read(), { state: 'failed', phase: 'registration', error: failure });
+  assert.deepEqual(await action.activeInvocations.read(), []);
+  assert.equal(parsed, 0); assert.equal(admitted, 0); assert.equal(executed, 0);
+  subscription.unsubscribe(); action.release();
+});
+
 test('调用立即进入准入，多个观察者共享一次执行；声明退出不取消已开始业务，变换只在合同边界运行一次', async () => {
   const admission = Promise.withResolvers<void>();
   const started = Promise.withResolvers<void>();

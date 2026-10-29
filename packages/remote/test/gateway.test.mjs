@@ -986,16 +986,18 @@ test('获授权远程 notify 读取 SQLite 可靠 follow 与业务终态，沿�
   await next(reader.progress.observations$, value => value.status === 'ready' && value.value.activity.requests['operation:' + followId]?.state === 'settled');
   await next(operator.progress.observations$, value => value.status === 'ready' && value.value.activity.requests['operation:' + followId]?.state === 'settled');
   const followEvents = wireEvents.filter(event => event.kind === 'operation.follow.changed');
-  assert.deepEqual(followEvents.map(event => event.change), ['intent', 'receipt', 'delivery-prepared']);
+  assert.deepEqual(followEvents.map(event => event.change), ['intent', 'call-associated', 'receipt', 'delivery-prepared']);
   for (const event of followEvents) {
     const nativeEvent = events.find(item => item.seq === event.sequence);
     assert.ok(nativeEvent); assert.equal(event.time, nativeEvent.time);
-    assert.equal(pluginRecordOf(nativeEvent).type, 'plugin:reactive/operation-' + ({ intent: 'follow', receipt: 'receipt', 'delivery-prepared': 'delivery' })[event.change]);
+    assert.equal(pluginRecordOf(nativeEvent).type, 'plugin:reactive/operation-' + ({ intent: 'follow', 'call-associated': 'follow-call', receipt: 'receipt', 'delivery-prepared': 'delivery' })[event.change]);
+    if (event.change === 'call-associated') assert.equal(event.follow.callSequence, pluginRecordOf(nativeEvent).data.callSequence);
     assert.deepEqual(event.inputs, link.continuation.inputs); assert.deepEqual(event.follow.link, link);
     assert.equal(event.follow.notStarted, null);
   }
   assert.equal(followEvents[0].follow.receipt, null);
-  assert.ok(followEvents[2].follow.receipt); assert.equal(followEvents[2].follow.preparedDelivery.requestId, 'operation:' + followId);
+  const delivered = followEvents.find(event => event.change === 'delivery-prepared');
+  assert.ok(delivered.follow.receipt); assert.equal(delivered.follow.preparedDelivery.requestId, 'operation:' + followId);
   assert.ok(wireProgress.some(activity => activity.operationFollows.some(item => item.link.id === followId && item.preparedDelivery !== null)
     && !['accepted', 'settled'].includes(activity.requests['operation:' + followId]?.state)), '投递准备切面不能冒充请求受理');
   assert.deepEqual((await reader.progress.read()).activity.operationFollows, local.snapshot().operationFollows);
@@ -1186,11 +1188,12 @@ test('远程只读 Operation 槽捕获原命令，F1 后新 Follow 等 F2，Date
   const nativeEvents = runtime.native.agents.get(SessionId(sessionId)).session.snapshotEvents();
   for (const id of [firstId, secondId]) {
     const changes = wireEvents.filter(event => event.kind === 'operation.follow.changed' && event.follow.link.id === id);
-    assert.deepEqual(changes.map(event => event.change), id === firstId ? ['intent', 'receipt', 'delivery-prepared'] : ['intent', 'delivery-prepared']);
+    assert.deepEqual(changes.map(event => event.change), id === firstId ? ['intent', 'call-associated', 'receipt', 'delivery-prepared'] : ['intent', 'call-associated', 'delivery-prepared']);
     for (const event of changes) {
       const native = nativeEvents.find(item => item.seq === event.sequence);
       assert.ok(native); assert.equal(event.time, native.time); assert.deepEqual(event.inputs, event.follow.link.continuation.inputs);
-      assert.equal(pluginRecordOf(native).type, 'plugin:reactive/operation-' + ({ intent: 'follow', receipt: 'receipt', 'delivery-prepared': 'delivery' })[event.change]);
+      assert.equal(pluginRecordOf(native).type, 'plugin:reactive/operation-' + ({ intent: 'follow', 'call-associated': 'follow-call', receipt: 'receipt', 'delivery-prepared': 'delivery' })[event.change]);
+      if (event.change === 'call-associated') assert.equal(event.follow.callSequence, pluginRecordOf(native).data.callSequence);
       assert.equal(event.follow.notStarted, null);
     }
     const prepared = changes.at(-1).follow;

@@ -129,6 +129,10 @@ SDK 的解析与调用是两个明确阶段。解析只对调用者提交的原�
 
 `BoundAction.invocations$` 是具体绑定的新调用热流，不回放历史调用，订阅不会执行 Action。AI、程序与 SDK 经同一绑定创建 Invocation，流交付调用方取得的同一个句柄。句柄已经成立但输入或准入失败的调用仍可观察；无法取得可信执行来源、未建立句柄的调用不产生事实。
 
+完整 Invocation 构造后，同步调用宿主的可信创建接点，再进入原有输入、准入和业务链。真实工具签发者用私有 callSequence 追加 action-invocation 事实；普通参与调用不伪造工具关联。登记失败属于 registration 阶段，同一 result/activity 失败，不进入 Operation 准备或 handler，也不留下 active 项。原生 checkpoint 继续拥有耐久边界。
+
+reactiveInputs 直接在 calls 中记录 invocationId，并保存 Follow 到 callSequence 的来源关系，不复制 Invocation 的业务状态。新事实产生 tool.invocation 或 operation.follow.changed/call-associated；后续工具结果保留关联并独立结算原生终态。冷重放没有新事实时保留缺证，原 Source、业务命令、已登记参与和权限继续按各自原合同核验。
+
 当前调用的 result 与 activity$ 独立结算，单次失败不会终止调用流。流的发出不承诺调用仍在 pending；activity$ 保留它当下的状态。绑定释放完成新调用流，已开始的调用继续结算。result 返回只证明业务函数链返回，原生工具后处理、Operation 与 Goal 的完成各有原事实，不能互相替代。用 RxJS 高阶操作符等待异步结果；需要失败后继续接收下一次调用时，在每个 inner 中明确处理业务失败。
 
 ### 共同资格与准入寿命

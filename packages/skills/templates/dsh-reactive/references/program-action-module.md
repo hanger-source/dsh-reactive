@@ -74,6 +74,8 @@ return <>
 
 Invocation.id 是不透明身份。原生 tool 入口的新 ID 按真实 session 和 start 事件序号区分调用，即使 provider 复用 callId；source.callId 仍是 provider 标签。participant 入口继续使用原 UUID 机制。读取持久旧 link 时保留原 ID，不重命名。
 
+同一会话的 ToolActivity.invocationId 直接匹配 Invocation.id，OperationFollowSnapshot.callSequence 再匹配原生发生；不用解码 ID、工具名或选择最新 callId。tool.invocation 说明完整业务调用对象已经关联，tool.settled 仍是独立原生结果，业务 returned 与原生 failed 可同时成立。关联登记失败为 registration，不执行业务。null 表示缺证，不证明没有执行；冷读取不重建可调用句柄。固定 rc.3 的 PTC 重复根标签会生成重复子 ID，正式冷读取会拒绝该日志；实时关联与不同根标签的 PTC 恢复各有边界，不能绕私有身份或读取校验。
+
 `session.invocation(name, id)` 也适用于 `session.module(mount)` 和 `session.collection(name).instance(key)` 返回的局部 Surface；本地同步取得原对象，远程 await 取得原回执。查回只读精确原地址与 Action 合同，不要求 Expose 仍在，不重 execute；保存 Invocation.id 不能替代持久 Operation command。
 
 Context 默认 required=true：pending/error 阻止模型取得不完整现场。required=false 是显式非必需现场：pending/error 时撤掉该 Context，其他模块可以继续；公开资源仍保真实状态。不要丢弃错误后保留旧 ready。Offer 需按同一真实事实关闭相关行为。

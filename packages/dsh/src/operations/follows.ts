@@ -228,7 +228,7 @@ export class OperationFollows {
   hasPendingContinuation(agent: Agent, continuation: Continuation) {
     return this.pending(agent, canonical(continuation.goal ?? continuation)).length > 0;
   }
-  async prepare(agent: Agent, owner: OperationOwnerReference, raw: OperationFollowLink, access: OperationAccess,
+  async prepare(agent: Agent, owner: OperationOwnerReference, raw: OperationFollowLink, callSequence: number, access: OperationAccess,
     admission?: { admit(): void | PromiseLike<void>; enter(): void }) {
     const link = operationFollowLinkSchema.parse(raw);
     this.assertEntryCheckpoint(link);
@@ -253,6 +253,7 @@ export class OperationFollows {
     let appended = false;
     try {
       if (!previous) { appendPluginRecord(agent.session, 'plugin:reactive/operation-follow', intent); appended = true; }
+      appendPluginRecord(agent.session, 'plugin:reactive/operation-follow-call', { id: link.id, callSequence });
       // intent 在业务 side 的可靠关联之前落盘；恢复绝不重放 execute。
       await this.host.checkpoint(agent);
       if (admission) await admission.admit();

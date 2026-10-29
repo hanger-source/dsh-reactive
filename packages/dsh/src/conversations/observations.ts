@@ -49,7 +49,7 @@ export class ConversationObservations {
             throw new Error('REACTIVE_DSH_PROJECTION_REQUIRED');
         if (goal.failure)
             throw new Error('REACTIVE_GOAL_PROJECTION_INVALID: ' + goal.failure);
-        return new NativeState(state, goal.current, cursor, operationFollowSnapshots(operations));
+        return new NativeState(state, goal.current, cursor, operationFollowSnapshots(operations, state.operationCalls));
     }
     stateOf(inspection: SessionInspection) {
         const live = this.ctx.sessions.get(inspection.meta.id);
@@ -63,7 +63,7 @@ export class ConversationObservations {
         if (goal.failure)
             throw new Error('REACTIVE_GOAL_PROJECTION_INVALID: ' + goal.failure);
         const operations = followsSchema.parse(restored.checkpoint.reactiveOperations?.val);
-        return { state: new NativeState(state, goal.current, restored.snapshot.asOfSeq, operationFollowSnapshots(operations)),
+        return { state: new NativeState(state, goal.current, restored.snapshot.asOfSeq, operationFollowSnapshots(operations, state.operationCalls)),
             human: humanInputSnapshot(restored.snapshot, state, []) };
     }
     async inspect(sessionId: string, signal?: AbortSignal): Promise<SessionInspection> {

@@ -1,5 +1,5 @@
 import type { AttachmentIdType, ExecutionFailure, ModelPreparation, SessionImageAttachment as CoreSessionImageAttachment } from '@hanger-source/dsh-reactive';
-import type { ActionIdentity, ActionSource, Continuation, GoalActivity, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanReplyDelivery, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
+import type { ActionIdentity, ActionSource, InvocationPhase, Continuation, GoalActivity, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanReplyDelivery, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
   ProgramGoalControl as CoreProgramGoalControl, ProgramCancelResult as CoreProgramCancelResult, ProgramRequestStatus as CoreProgramRequestStatus,
   ProgramJournalEvent as CoreProgramJournalEvent, ProgramJournalEntry as CoreProgramJournalEntry,
   ProgramJournalPage as CoreProgramJournalPage, ProgramJournalWindow as CoreProgramJournalWindow,
@@ -165,4 +165,4 @@ export interface ProgramActionStart { readonly id: string; readonly name: string
 export type ProgramInvocationFrame =
   | { readonly state: 'pending' | 'running' }
   | { readonly state: 'returned'; readonly observation?: JsonValue; readonly observationError?: ProgramFailure }
-  | { readonly state: 'failed'; readonly phase: 'input' | 'admission' | 'execute' | 'output' | 'operation'; readonly error: ProgramFailure };
+  | { readonly state: 'failed'; readonly phase: InvocationPhase; readonly error: ProgramFailure };

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@deepseek-ai/cordis";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
+import { appendPluginRecord } from '@deepseek-ai/dsh-session';
 import { firstValueFrom } from 'rxjs';
 import { abortable } from '@hanger-source/dsh-reactive';
 import { z } from "zod";
@@ -121,6 +122,17 @@ export class ActionAuthority {
             beforeExecute?.();
             this.assertActionExecution(session, execution);
             this.sessions.assertSessionWorkspace(session);
+        }, invocation => {
+            const signed = this.#executions.get(execution);
+            if (!signed) throw new Error('REACTIVE_ACTION_EXECUTION_UNTRUSTED');
+            if (signed.callSequence === null) return;
+            this.assertActive();
+            this.assertActionExecution(session, execution);
+            this.sessions.assertSessionWorkspace(session);
+            if (!signed.native) throw new Error('REACTIVE_ACTION_TOOL_AUTHORITY_REQUIRED');
+            appendPluginRecord(signed.native.agent.session, 'plugin:reactive/action-invocation', {
+                callSequence: this.callSequence(execution), invocationId: invocation.id,
+            });
         });
         return execution;
     }

@@ -86,11 +86,11 @@ export const followsProjection: ProjectionDefinition<'reactiveOperations'> = {
 };
 
 /** 同一日志切面的只读投射；准备正文不代表原生受理，缺回执不代表业务未开始。 */
-export function operationFollowSnapshots(state: FollowState): readonly OperationFollowSnapshot[] {
+export function operationFollowSnapshots(state: FollowState, operationCalls: Readonly<Record<string, number>>): readonly OperationFollowSnapshot[] {
   return Object.freeze(Object.values(state.intents).map(intent => {
     const { publisherId: _publisherId, ...link } = intent;
     const receipt = state.receipts[intent.id], delivery = state.deliveries[intent.id];
-    return Object.freeze({ link,
+    return Object.freeze({ link, callSequence: Object.hasOwn(operationCalls, intent.id) ? operationCalls[intent.id]! : null,
       receipt: receipt === undefined ? null : { reference: receipt.reference },
       preparedDelivery: delivery === undefined ? null : {
         requestId: 'operation:' + intent.id, actorId: delivery.actorId, notifierId: delivery.notifierId,

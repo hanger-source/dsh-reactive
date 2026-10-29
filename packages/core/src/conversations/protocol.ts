@@ -93,6 +93,8 @@ export type FileUploadSource = Uint8Array | Blob;
 export interface UploadFileOptions extends SubmitOptions { name?: string; }
 
 export const toolActivitySchema = z.object({ callId: z.string(), callSequence: z.number().int().nonnegative(), rootCallId: z.string(), parentCallId: z.string().nullable(), name: z.string(),
+  /** null 只表示没有 Invocation 关联事实，不判定业务是否执行。 */
+  invocationId: z.string().min(1).nullable(),
   state: z.enum(['running', 'returned', 'failed']), inputs: inputReferenceSchema.array().readonly(),
   observedAt: z.number(), result: z.json().optional() }).strict();
 export type ToolActivity = Readonly<Omit<z.infer<typeof toolActivitySchema>, 'inputs' | 'result'>> & {
