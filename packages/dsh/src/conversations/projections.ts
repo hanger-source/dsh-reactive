@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import { pluginRecordOf, type SessionEvent } from '@deepseek-ai/dsh-session';
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection';
 import { inputReferenceSchema, requestActivitySchema, toolActivitySchema, replyActivitySchema, executionFailureSchema } from '@hanger-source/dsh-reactive/kernel';
-import { canonical, childInputRecordSchema, goalBindingSchema, inputEditRecordSchema, inputRecordIdentity, operationNotStartedSchema, operationFollowUnregisteredSchema, recordSchema, referenceOf, contentDigest, unique, waitRecordSchema, callForResult, ptcParent } from './records.ts';
+import { canonical, childInputRecordSchema, goalBindingSchema, inputEditRecordSchema, inputRecordIdentity, operationNotStartedSchema, operationFollowUnregisteredSchema, questionOriginRecordSchema, recordSchema, referenceOf, contentDigest, unique, waitRecordSchema, callForResult, ptcParent } from './records.ts';
 
 const inputsSchema = inputReferenceSchema.array().readonly();
 const pendingOccurrenceSchema = z.object({ messageId: z.string(), inputs: inputsSchema, questionCallId: z.string().nullable() }).strict();
@@ -14,6 +14,7 @@ const callOccurrenceSchema = toolActivitySchema.extend({ turn: z.number().int().
 export const reactiveProjectionSchema = z.object({ sessionId: z.string(), delegated: z.boolean(), inheritedEventCount: z.number().int().nonnegative(),
   records: z.record(z.string(), recordSchema), pendingEdits: z.record(z.string(), inputEditRecordSchema), goals: z.record(z.string(), inputsSchema),
   nativeInputs: z.record(z.string(), inputReferenceSchema),
+  questionOrigins: z.record(z.string(), questionOriginRecordSchema.shape.goal),
   inputs: inputsSchema, calls: z.record(z.string(), callOccurrenceSchema), replies: replyActivitySchema.array().readonly(), current: inputsSchema,
   openTurn: z.number().int().nonnegative().nullable(), openStep: stepSchema.nullable(),
   pending: z.object({ 'next-turn': pendingOccurrenceSchema.array(), 'next-step': pendingOccurrenceSchema.array() }).strict(),
@@ -28,9 +29,9 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
 
 /** 仅负责业务请求、原生输入和调用的关联；驱动、水位、冷恢复由原生注册表拥有。 */
 export const reactiveProjectionDefinition: ProjectionDefinition<'reactiveInputs'> = {
-  key: 'reactiveInputs', stateVersion: 13, stateSchema: reactiveProjectionSchema,
+  key: 'reactiveInputs', stateVersion: 14, stateSchema: reactiveProjectionSchema,
   init: (header, inheritedEventCount) => ({ sessionId: header.id, delegated: header.parentSession !== undefined, inheritedEventCount,
-    records: {}, pendingEdits: {}, goals: {}, nativeInputs: {}, inputs: [], calls: {}, replies: [], current: [], openTurn: null, openStep: null,
+    records: {}, pendingEdits: {}, goals: {}, nativeInputs: {}, questionOrigins: {}, inputs: [], calls: {}, replies: [], current: [], openTurn: null, openStep: null,
     pending: { 'next-turn': [], 'next-step': [] },
     proposed: {}, requests: {}, waits: [], failures: [] }),
   apply: applyReactiveProjection,
@@ -48,7 +49,7 @@ function applyReactiveProjection(previous: ReactiveProjectionState, event: Sessi
     && record?.type !== 'plugin:reactive/input' && record?.type !== 'plugin:reactive/goal-inputs' && record?.type !== 'plugin:reactive/wait'
     && record?.type !== 'plugin:reactive/child-input' && record?.type !== 'plugin:reactive/operation-not-started'
     && record?.type !== 'plugin:reactive/operation-follow-unregistered'
-    && record?.type !== 'plugin:reactive/input-edit') return previous;
+    && record?.type !== 'plugin:reactive/input-edit' && record?.type !== 'plugin:reactive/question-origin') return previous;
   let state = { ...previous };
   type RequestLifecycle = z.output<typeof requestLifecycleSchema>;
   const update = (id: string, change: Pick<RequestLifecycle, 'state'> & Partial<RequestLifecycle>) => {
@@ -60,6 +61,15 @@ function applyReactiveProjection(previous: ReactiveProjectionState, event: Sessi
     input.sourceSessionId === state.sessionId && input.requestId !== null;
   const inOpenStep = (turn: number, step: number) => state.openTurn === turn
     && state.openStep?.turn === turn && state.openStep.step === step;
+  if (record?.type === 'plugin:reactive/question-origin') {
+    const origin = questionOriginRecordSchema.parse(record.data), key = String(origin.callSequence);
+    const call = own(state.calls, key);
+    if (!call || call.name !== 'ask_user_question' || call.state !== 'running' || !inOpenStep(call.turn, call.step))
+      throw new Error('REACTIVE_HUMAN_QUESTION_ORIGIN_CALL_REQUIRED');
+    if (Object.hasOwn(state.questionOrigins, key) && canonical(state.questionOrigins[key]) !== canonical(origin.goal))
+      throw new Error('REACTIVE_HUMAN_QUESTION_ORIGIN_CONFLICT');
+    state.questionOrigins = { ...state.questionOrigins, [key]: origin.goal };
+  }
   if (record?.type === 'plugin:reactive/child-input') {
     const bound = childInputRecordSchema.parse(record.data);
     if (bound.input.sourceSessionId !== state.sessionId || bound.input.messageId !== bound.messageId) throw new Error('REACTIVE_CHILD_INPUT_SESSION_MISMATCH');

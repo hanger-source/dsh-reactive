@@ -4,7 +4,7 @@ import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { GoalRef } from '@deepseek-ai/dsh-goal';
 import type { UserMessage } from '@deepseek-ai/dsh-llm';
 import type { ExecutionFailure } from '@hanger-source/dsh-reactive/kernel';
-import { humanQuestionCall } from './records.ts';
+import { humanQuestionCall, humanQuestionOrigin } from './records.ts';
 import { appendPluginRecord } from "@deepseek-ai/dsh-session";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { conversationBindings, type ConversationIdentity, type Submission, type SubmitOptions } from "@hanger-source/dsh-reactive/kernel";
@@ -90,7 +90,7 @@ export class ConversationInputs {
             }
         }
         const independent = entry.claimed.some(message => {
-            if (isRecoveryControl(message)) return false;
+            if (isRecoveryControl(message) || message.source.kind === 'user-question-reply') return false;
             const requestId = 'rpcId' in message.source && typeof message.source.rpcId === 'string' ? message.source.rpcId : undefined;
             return requestId === undefined || !entry.session.state.record(requestId)?.result;
         });
@@ -99,14 +99,26 @@ export class ConversationInputs {
             const record = requestId === undefined ? undefined : entry.session.state.record(requestId);
             return record?.result ? [record] : [];
         });
+        const replies = entry.claimed.flatMap(message => message.source.kind === 'user-question-reply'
+            ? [humanQuestionOrigin(entry.session.state.value, message.source.callId).continuation] : []);
         const hasNewInput = entry.claimed.some(message => !isRecoveryControl(message)
+            && message.source.kind !== 'user-question-reply'
             && (message.source.kind === 'goal' || entry.session.state.reference(message).length > 0));
         // 结果先以原 continuation 取得准入，再由本次原生 resume 明确签出新 revision；prompt 使用同一 revision。
         const preparingGoal = this.ctx.goals.get(agent);
         let admittedGoal: GoalRef | null = preparingGoal ? Object.freeze({ id: preparingGoal.id, revision: preparingGoal.revision }) : null;
         const admitted = independent ? [] : results.filter(record => this.operations().shouldWake(entry, record));
         const goalResults = admitted.filter(record => Boolean(record.result?.continuation.goal));
-        const selected = goalResults.length ? goalResults : admitted;
+        const humanReady = (continuation: typeof replies[number]) => {
+            if (!continuation) return false;
+            const expected = continuation.goal;
+            if (!expected) return true;
+            const current = this.ctx.goals.get(agent);
+            return current?.phase === 'active' && current.id === expected.id && current.revision === expected.revision;
+        };
+        const admittedReplies = independent ? [] : replies.filter(humanReady);
+        const goalReplies = admittedReplies.filter(continuation => Boolean(continuation?.goal));
+        const hasGoal = goalResults.length > 0 || goalReplies.length > 0;
         let resumed: GoalRef | undefined;
         if (!independent) {
             const result = goalResults[0]?.result;
@@ -118,11 +130,13 @@ export class ConversationInputs {
             }
         }
         const ready = () => {
-            if (!independent) {
+            if (!independent && hasGoal) {
                 const current = this.ctx.goals.get(agent);
                 if (current ? admittedGoal?.id !== current.id || admittedGoal.revision !== current.revision : admittedGoal !== null) return false;
             }
-            return independent || !results.length || selected.some(record => this.operations().resultReady(entry, record));
+            if (independent || (!results.length && !replies.length)) return true;
+            return (hasGoal ? goalResults : admitted).some(record => this.operations().resultReady(entry, record))
+                || (hasGoal ? goalReplies : admittedReplies).some(humanReady);
         };
         let released = false;
         const release = () => {
@@ -133,9 +147,10 @@ export class ConversationInputs {
             if (current?.id === resumed.id && current.revision === resumed.revision && current.activation === 'armed')
                 this.ctx.goals.disarm(agent);
         };
-        let goal: GoalRef | null | undefined = goalResults.length ? admittedGoal : null;
-        if (!hasNewInput) goal = entry.progress.continuedGoal();
-        return { ready, release, fixedGoal: !hasNewInput || (!independent && results.length > 0), goal };
+        const feedbackOnly = !independent && (results.length > 0 || replies.length > 0);
+        let goal: GoalRef | null | undefined = hasGoal ? admittedGoal : null;
+        if (!hasNewInput && !feedbackOnly) goal = entry.progress.continuedGoal();
+        return { ready, release, fixedGoal: !hasNewInput || feedbackOnly, goal };
     }
     async revalidateCauses(causes: readonly InputReference[], signal: AbortSignal, seen = new Set<string>()) {
         for (const cause of causes) {
@@ -510,11 +525,11 @@ export class ConversationInputs {
                     }
                     admissionSignal.throwIfAborted();
                     this.sessions.assertSessionWorkspace(entry.session);
-                    if (!prepared.current()) throw new Error('REACTIVE_STEP_GOAL_CHANGED');
                     if (!prepared.ready()) {
                         retainClaimedInputs(agent, messages, 'next-step');
                         return { kind: 'reject' };
                     }
+                    if (!prepared.current()) throw new Error('REACTIVE_STEP_GOAL_CHANGED');
                     const entered = { ...decision, messages: decision.messages.filter(message => message.source.kind !== 'reactive-resume-signal') };
                     const inputs = entry.session.state.inputs(entered.messages);
                     if (canonical(inputs) !== canonical(prepared.inputs)) throw new Error('REACTIVE_STEP_INPUTS_CHANGED');

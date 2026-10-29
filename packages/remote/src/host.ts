@@ -656,7 +656,9 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     try {
       yield* frames(handle.human.values$, this.reading(handle, signal), ({ questions, foreground, replies }) => {
         const wireQuestion = <Q extends { readonly origin: HumanQuestionOrigin }>(question: Q) => ({
-          ...question, origin: { ...question.origin, inputs: this.wireInputs(question.origin.inputs) },
+          ...question, origin: { ...question.origin, inputs: this.wireInputs(question.origin.inputs),
+            continuation: question.origin.continuation === null ? null : { ...question.origin.continuation,
+              inputs: this.wireInputs(question.origin.continuation.inputs) } },
         });
         const frame: ProgramQuestionsFrame = { type: first ? 'baseline' : 'questions', value: {
           questions: { ...questions, active: questions.active.map(wireQuestion), settled: questions.settled.map(wireQuestion) },

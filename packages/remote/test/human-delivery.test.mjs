@@ -83,6 +83,8 @@ for (const failPreparation of [false, true]) test(failPreparation
     assert.equal(runtime.native.agents.get(SessionId(local.id)), undefined, '冷观察不激活 Agent');
     assert.deepEqual(question.origin.inputs.map(input => ({ actorId: input.actorId, requestId: input.requestId, scope: input.scope })),
       [{ actorId: 'alice', requestId: 'original', scope }]);
+    assert.deepEqual(question.origin.continuation, { sessionId: local.id, inputs: question.origin.inputs, goal: null },
+      'HTTP 保留原独立问题的已知参与关联，不能省略成缺证');
     const bound = await remote.question(question.callId);
     hold = true;
     const delivering = next(remote.human.values$, value => value.replies.some(reply => reply.state === 'proposed'));

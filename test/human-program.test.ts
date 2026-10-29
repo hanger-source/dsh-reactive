@@ -139,10 +139,12 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.deepEqual(invocation.source, call.source);
       const input = await accepted;
       assert.ok(input.kind === 'input.accepted');
-      const origin: HumanQuestionOrigin = { sessionId: session.id, callId: question.callId, callSequence: question.origin.callSequence, rootCallId,
-        parentCallId: call.source.callId, name: 'ask_user_question', inputs: [{ sourceSessionId: session.id,
+      const questionInputs: HumanQuestionOrigin['inputs'] = [{ sourceSessionId: session.id,
           messageId: input.messageId, requestId: 'original-merchant', source: 'user', intent: 'question',
-          scope: submittedScope, actorId: 'request-author', participant: 'human' }] };
+          scope: submittedScope, actorId: 'request-author', participant: 'human' }];
+      const origin: HumanQuestionOrigin = { sessionId: session.id, callId: question.callId, callSequence: question.origin.callSequence, rootCallId,
+        parentCallId: call.source.callId, name: 'ask_user_question', inputs: questionInputs,
+        continuation: { sessionId: session.id, inputs: questionInputs, goal: null } };
       assert.deepEqual(question.origin, origin, 'Action 内部提问必须是实际子调用，并保留未解码的原输入');
       const bound = await session.question(question.callId);
       assert.equal(await session.question(question.callId), bound, '同一 SDK 复用固定问题对象');

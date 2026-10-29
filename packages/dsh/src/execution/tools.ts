@@ -1,4 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis";
+import { appendPluginRecord } from '@deepseek-ai/dsh-session';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { ToolDefinition, ToolExecution } from "@deepseek-ai/dsh-tools";
@@ -13,6 +14,7 @@ import type { LiveConversation } from '../conversations/session.ts';
 import type { ConversationSessions } from '../conversations/sessions.ts';
 import type { ActionAuthority } from './authority.ts';
 import type { OperationParticipation } from '../operations/participation.ts';
+import { canonical } from '../conversations/records.ts';
 const nativeTools = new Set(['run_code', 'skill', 'get_goal', 'create_goal', 'update_goal']);
 type NativeAdmission = { readonly entry: LiveConversation; readonly admit: NativeToolAdmission | undefined;
     readonly eligibility: ResourceReader<Eligibility> | undefined; readonly qualification: ReturnType<typeof retainEligibility> | undefined;
@@ -150,6 +152,28 @@ export class ProgramTools {
     }
     installPolicies(): void {
         this.ctx.effect(() => () => this.#goalDispatch.disable());
+        this.ctx.on('tools/execute', (exec, next) => {
+            if (exec.name !== 'ask_user_question') return next();
+            const entry = exec.agent && this.sessions.forAgent(exec.agent);
+            if (!entry) return next();
+            exec.signal.throwIfAborted();
+            entry.scope.assertActive();
+            if (this.ctx.agents.get(entry.agent.id) !== exec.agent || entry.session.live.value !== entry)
+                throw new Error('REACTIVE_HUMAN_QUESTION_OWNER_MISMATCH');
+            const occurrence = entry.session.state.call(exec.callId);
+            const call = occurrence && entry.session.state.value.calls[String(occurrence.callSequence)];
+            const open = entry.session.state.value.openStep;
+            if (!call || call.name !== exec.name || call.rootCallId !== exec.rootCallId || !open
+                || call.turn !== open.turn || call.step !== open.step)
+                throw new Error('REACTIVE_HUMAN_QUESTION_ORIGIN_CALL_REQUIRED');
+            const goal = entry.progress.goal(call.turn, call.step);
+            if (goal === undefined) throw new Error('REACTIVE_CALL_STEP_NOT_ADMITTED');
+            const key = String(call.callSequence), origins = entry.session.state.value.questionOrigins;
+            if (Object.hasOwn(origins, key)) {
+                if (canonical(origins[key]) !== canonical(goal)) throw new Error('REACTIVE_HUMAN_QUESTION_ORIGIN_CONFLICT');
+            } else appendPluginRecord(entry.agent.session, 'plugin:reactive/question-origin', { callSequence: call.callSequence, goal });
+            return next();
+        });
         this.ctx.on('tools/execute', (exec, next) => {
             if (exec.name !== 'create_goal' && exec.name !== 'update_goal') return next();
             const entry = exec.agent && this.sessions.forAgent(exec.agent);

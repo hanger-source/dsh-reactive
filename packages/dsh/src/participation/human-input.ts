@@ -9,7 +9,7 @@ import { humanAnswerSchema, type HumanAnswer, type HumanSnapshot, type HumanRepl
 import type { HumanInputDeclaration } from '@hanger-source/dsh-reactive/kernel';
 import { Scope, type Value } from '@hanger-source/dsh-reactive/kernel';
 import type { ReactiveProjectionState } from '../conversations/projections.ts';
-import { canonical, humanQuestionCall, occurrenceOf } from '../conversations/records.ts';
+import { canonical, humanQuestionOrigin } from '../conversations/records.ts';
 
 interface HumanInputProgram {
   readonly humanInput: HumanInputDeclaration | undefined;
@@ -34,13 +34,12 @@ function ownHumanFact<T>(value: T): T {
   return owned;
 }
 
-function questionOrigin(source: Pick<ReactiveProjectionState, 'sessionId' | 'calls'>, callId: string): HumanQuestionOrigin {
-  const call = humanQuestionCall(source, callId);
-  return ownHumanFact({ sessionId: source.sessionId, ...occurrenceOf(call) });
+function questionOrigin(source: Pick<ReactiveProjectionState, 'sessionId' | 'calls' | 'questionOrigins'>, callId: string): HumanQuestionOrigin {
+  return ownHumanFact(humanQuestionOrigin(source, callId));
 }
 
 /** live 与 cold 以同一原生投影切面关联真实调用；不从当前输入推测旧问题来源。 */
-export function humanInputSnapshot(snapshot: ProjectionSnapshot, source: Pick<ReactiveProjectionState, 'sessionId' | 'calls' | 'proposed'>,
+export function humanInputSnapshot(snapshot: ProjectionSnapshot, source: Pick<ReactiveProjectionState, 'sessionId' | 'calls' | 'proposed' | 'questionOrigins'>,
   foreground: readonly HumanForegroundQuestion[]): HumanSnapshot {
   const questions = snapshot.values.userQuestions;
   if (!questions) throw new Error('REACTIVE_HUMAN_QUESTIONS_PROJECTION_REQUIRED');

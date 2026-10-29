@@ -43,6 +43,8 @@ Program 中的 `<HumanInput admitResponder={policy} />` 可由多个模块贡献
 
 origin 保留真实 start 事件的 callSequence。rc.3 原生问题只提供 callId，框架要求同一会话中有唯一的同 ID `ask_user_question` 发生；后来同 ID 普通工具不改变旧问题来源。同 ID 多次提问无法核验代际时，明确报 `REACTIVE_HUMAN_QUESTION_ORIGIN_AMBIGUOUS`，问题观察终止，前台接入或响应准入也可能拒绝；不能猜最新调用或宣称能够自动恢复。
 
+origin.continuation 是提问实际模型步骤的持久关联，由同一原 call 派生 session 和 inputs，Goal 固定为原 id/revision 或明确 null。continuation 为 null 表示缺少可信关联；它不同于已知独立问题的 continuation.goal:null。纯迟答只沿原参与处理，不借当前 Goal；原 Goal 不再 exact active 时，答案保留队列并通过 Work 的 question.reply-blocked 解释 unavailable、superseded、inactive。新的真实输入可以同时消费旧答案事实，回答本身不扩大业务权限、不额外 resume Goal、不解除 Operation 等待。观察关联不签发控制权，不要由应用重组 continuation 代替正式问答入口。
+
 回答必须恰好覆盖原问题的所有题目，每个 id 只出现一次。框架在首次异步操作前保存解析后的答案；冷晚答先验证完整批次再准入和激活，准入期间修改原对象不会改变提交内容。响应者准入和前台 claim 的等待可取消；调用者、SDK 或 Program 退出后，迟到准入结果不会继续答题。不配合取消的政策函数不会阻止当前消费者退等，政策函数内部的外部副作用仍由其自身负责。
 
 Program 的 conversation、本地和远程 SDK 提供 `human` 只读资源，questions 与 foreground 来自同一个快照，可直接 read、组合 observations$ 或交给 useResource。人工 SDK 的 `const question = await session.question(callId, options)` 绑定该会话里已知的原问题；同一 SDK 重复取得同一个对象。`question.state` 保留原 active、foreground、settled 事实，`question.answer(answer, options)` 与 `question.attachWait(options)` 委托原响应准入和真实前台 claim，不再重复传 callId。只读绑定不创建问题、计时器或批准权；三个事实均缺失时不能推断业务取消或完成。读取与退订不回答问题、不停止原问答。

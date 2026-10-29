@@ -209,11 +209,15 @@ rc.3 的原生问题只按 callId 寻址，没有公开调用发生序号。框�
 
 answerQuestion 和 attachWait 都核验真实 actor、原问题、响应通道和当前策略。claim 准入的 answer 为 null，提交准入取得完整答案批次；异步准入后再次核验策略身份、问题和 signal，避免撤下策略后迟到答复进入原生服务。无声明硬拒，不委派其他 answerer 绕过准入。
 
-当前策略通过 admission.question.origin 核验原工作的参与范围；观察与准入各取得自有快照，消费者不能通过修改问题对象改变权威关联。origin.inputs 保留原始 JSON 与 sourceSessionId，不重复执行 Program 的输入转换。它不携带 Goal 的继续权限，也不使回答者继承原请求者的授权。
+当前策略通过 admission.question.origin 核验原工作的参与范围；观察与准入各取得自有快照，消费者不能通过修改问题对象改变权威关联。origin.inputs 保留原始 JSON 与 sourceSessionId，不重复执行 Program 的输入转换。origin.continuation 是原参与的只读关联，不使回答者继承原请求者的业务授权或取得新的 Goal 控制权。
 
 attachWait 接手原生前台计时，物理流取消释放 claim。句柄退出、策略撤下与问题取消具有不同含义；撤入口只释放所属连接，问题仍由原生 owner 保留。冷 continued 回答在恢复 Agent 之前预审，恢复后仍走实际原生准入。
 
 continued 答复按原问题的 callId 恢复工具调用保存的输入集合，保留原请求、操作者和业务范围。响应者另行准入，不改写原工作身份，也不产生新的输入授权。缺少原调用记录时拒绝恢复，不能拿当前输入或宿主身份补齐。
+
+正式提问工具进入执行时，宿主将实际 callSequence 与该模型步骤固定的 GoalRef 或明确 null 一起保存；问题、前台等待、迟答和冷恢复由同一事实派生 origin.continuation。continuation 本身为 null 表示缺少这份可信记录；continuation.goal 为 null 则明确表示原问题没有 Goal，两者不互换。历史缺证可以观察，但不能从当前 Goal 推测原参与权限。
+
+迟答是原问题的反馈，不是独立新要求。纯迟答只沿已知的原 continuation 处理：原来没有 Goal 的答复仍无 Goal；有 Goal 时必须仍为相同 id/revision 且 active。暂停、替换或修订变化使答复保留在原生队列，等待新的可信输入；异步装配后再次复核。回答不额外 resume Goal，也不解除业务 Operation 等待；当前仍有效的原问题可以消费人工补充，具体业务行为和完成条件继续由业务 owner 核验。与真正新输入共同消费时，旧答案只贡献原事实，不单独扩展新输入的权限。
 
 相同策略函数在无关声明更新时保留身份，不重置前台 claim；更换函数表示更换策略。应用需要用稳定函数表达稳定策略，并把事实读取与正式权限核验放在业务服务中。
 

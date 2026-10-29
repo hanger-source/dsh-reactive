@@ -1,10 +1,13 @@
 import { z } from 'zod';
 import type { ToolCallId } from '@deepseek-ai/dsh-llm/brand';
 import type { ToolOccurrence } from '../conversations/events.ts';
+import type { Continuation } from '../conversations/causality.ts';
 
 /** 原生问题和答案的公开词汇；本层不保存另一份问题生命周期。 */
 export interface HumanQuestionOrigin extends Readonly<ToolOccurrence> {
   readonly sessionId: string;
+  /** 原提问的持久续接关联；null 表示缺少可信记录，已知独立问题的关联则保留 goal:null。 */
+  readonly continuation: Continuation | null;
 }
 export interface HumanQuestion {
   readonly callId: ToolCallId;

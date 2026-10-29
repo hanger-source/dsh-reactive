@@ -61,6 +61,8 @@ export type WorkCondition =
   | ({ readonly kind: 'wait.pending' } & WorkOccurrence<WorkWait>)
   | ({ readonly kind: 'call.failed' } & WorkOccurrence<ToolActivity>)
   | ({ readonly kind: 'question.reply-pending' } & WorkOccurrence<HumanReplyDelivery>)
+  | ({ readonly kind: 'question.reply-blocked'; readonly reason: 'unavailable' | 'superseded' | 'inactive';
+      readonly currentGoal: GoalActivity | null } & WorkOccurrence<HumanReplyDelivery>)
   | { readonly kind: 'continuation.unconsumed' | 'continuation.superseded' | 'continuation.inactive';
       readonly request: WorkRequestOccurrence; readonly continuation: Continuation;
       readonly currentGoal: GoalActivity | null; readonly matchedInputs: readonly InputReference[] }
@@ -204,7 +206,21 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
       const conditions: WorkCondition[] = [];
       if (preparation && preparation.value.waiting.length) conditions.push(Object.freeze({ kind: 'preparation.waiting', ...preparation }));
       for (const failure of failures) conditions.push(Object.freeze({ kind: 'execution.failed', ...failure }));
-      for (const reply of humanReplies) conditions.push(Object.freeze({ kind: 'question.reply-pending', ...reply }));
+      for (const reply of humanReplies) {
+        conditions.push(Object.freeze({ kind: 'question.reply-pending', ...reply }));
+        const continuation = reply.value.origin.continuation;
+        const currentGoal = activity.goal;
+        if (continuation === null) {
+          conditions.push(Object.freeze({ kind: 'question.reply-blocked', ...reply, reason: 'unavailable', currentGoal }));
+        } else if (continuation.goal !== null) {
+          const expectedGoal = continuation.goal;
+          if (currentGoal === null || currentGoal.id !== expectedGoal.id || currentGoal.revision !== expectedGoal.revision) {
+            conditions.push(Object.freeze({ kind: 'question.reply-blocked', ...reply, reason: 'superseded', currentGoal }));
+          } else if (currentGoal.phase !== 'active') {
+            conditions.push(Object.freeze({ kind: 'question.reply-blocked', ...reply, reason: 'inactive', currentGoal }));
+          }
+        }
+      }
       for (const goal of goals) {
         if (goal.value.phase === 'paused') conditions.push(Object.freeze({ kind: 'goal.paused', ...goal }));
         if (goal.value.phase === 'blocked') conditions.push(Object.freeze({ kind: 'goal.blocked', ...goal, blockedReason: goal.value.blockedReason }));

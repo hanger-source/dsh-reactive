@@ -142,7 +142,10 @@ export interface ProgramOperationNotification extends ProgramSessionAddress { re
 export type ProgramOperationNotificationResult = { readonly status: 'unknown' | 'pending' | 'not-started' | 'unregistered' }
   | { readonly status: 'accepted'; readonly receipt: ProgramInputReceipt };
 type WireHumanQuestion<Q extends { readonly origin: HumanQuestionOrigin }> = Omit<Q, 'origin'> & {
-  readonly origin: Omit<Q['origin'], 'inputs'> & { readonly inputs: readonly InputReference<JsonValue>[] };
+  readonly origin: Omit<Q['origin'], 'inputs' | 'continuation'> & {
+    readonly inputs: readonly InputReference<JsonValue>[];
+    readonly continuation: (Omit<Continuation, 'inputs'> & { readonly inputs: readonly InputReference<JsonValue>[] }) | null;
+  };
 };
 export interface ProgramQuestions {
   readonly questions: Omit<HumanInputState, 'active' | 'settled'> & {

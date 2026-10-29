@@ -149,11 +149,13 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.deepEqual(pending.questions, questions);
       const initialAccepted = await acceptedInput;
       assert.ok(initialAccepted.kind === 'input.accepted');
+      const questionInputs: HumanQuestionOrigin['inputs'] = [{ sourceSessionId: session.id, messageId: initialAccepted.messageId,
+        requestId: 'merchant-question', source: 'user', intent: 'question', scope: { merchantId: 'merchant-a' },
+        actorId: 'operator-test', participant: 'human' }];
       const origin: HumanQuestionOrigin = { sessionId: session.id, callId: pending.callId, callSequence: pending.origin.callSequence,
         rootCallId: mode === 'native' ? 'human-foreground' : 'human-foreground-root',
         parentCallId: mode === 'native' ? null : 'human-foreground-root', name: 'ask_user_question',
-        inputs: [{ sourceSessionId: session.id, messageId: initialAccepted.messageId, requestId: 'merchant-question', source: 'user',
-          intent: 'question', scope: { merchantId: 'merchant-a' }, actorId: 'operator-test', participant: 'human' }] };
+        inputs: questionInputs, continuation: { sessionId: session.id, inputs: questionInputs, goal: null } };
       assert.deepEqual(pending.origin, origin, '前台问题关联实际原生调用或 PTC 子调用及其完整原输入');
       const exposedInput = pending.origin.inputs[0]!;
       assert.ok(exposedInput.scope !== null && typeof exposedInput.scope === 'object' && !Array.isArray(exposedInput.scope));
@@ -278,11 +280,13 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.ok(pending);
       const initialAccepted = await acceptedInput;
       assert.ok(initialAccepted.kind === 'input.accepted');
+      const questionInputs: HumanQuestionOrigin['inputs'] = [{ sourceSessionId: session.id, messageId: initialAccepted.messageId,
+        requestId: 'merchant-question', source: 'user', intent: 'question', scope: { merchantId: 'merchant-a' },
+        actorId: 'alice', participant: 'human' }];
       const origin: HumanQuestionOrigin = { sessionId: session.id, callId: pending.callId, callSequence: pending.origin.callSequence,
         rootCallId: mode === 'native' ? 'human-continued' : 'human-continued-root',
         parentCallId: mode === 'native' ? null : 'human-continued-root', name: 'ask_user_question',
-        inputs: [{ sourceSessionId: session.id, messageId: initialAccepted.messageId, requestId: 'merchant-question', source: 'user',
-          intent: 'question', scope: { merchantId: 'merchant-a' }, actorId: 'alice', participant: 'human' }] };
+        inputs: questionInputs, continuation: { sessionId: session.id, inputs: questionInputs, goal: null } };
       assert.deepEqual(pending.origin, origin);
       const claimSignal = new AbortController();
       const claim = session.attachWait(pending.callId, { actorId: 'alice', signal: claimSignal.signal })[Symbol.asyncIterator]();

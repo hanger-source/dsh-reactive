@@ -483,6 +483,8 @@ function observeWork(workId: string, sessions: readonly WorkSource[], signal: Ab
 
 `WorkHandle.sessions` 为每个显式来源提供 WorkSessionHandle，其 identity、state、state$、events$ 和 progressFrames$ 对应该来源；通过 `sessions[i].state.read()` 读取局部 ResourceReader；整体资源只有全部来源 ready 才 ready，某来源退出后其他局部资源仍可继续，不以其他来源兜底，也不授予权限。每个 WorkSessionSnapshot 的 operationFollows 保留匹配事实及 resultRequest；条件包括 operation.not-started、operation.follow-unregistered、operation.delivery-prepared、continuation.unconsumed 和 goal.round-limit。
 
+人工问题的 `origin.continuation` 保留原模型步骤的参与关联；continuation 为 null 表示缺少可信记录，已知的独立问题则是 continuation.goal 为 null。迟答不会借用会话后来出现的 Goal。原 Goal 暂停、被替换或修订变化时，答案已经排队仍不表示模型可以继续。`question.reply-pending` 描述未消费交付；`question.reply-blocked` 同时提供 unavailable、superseded 或 inactive 原因及当前 Goal。这些条件来自原问题和当前事实，不需要业务另存诊断状态。
+
 每项保留完整 `value` 和解释命中依据的 `matchedInputs`；一次调用或回复可能因多条输入同时属于多个工作。调用保留正式 start 事件序号 `callSequence`，回复保留 `messageId` 和完整 inputs；provider 的 callId 可跨轮复用，不能用它合并不同发生。matchedInputs 只解释观察分组，不裁剪事实或授予续接权限。声明是持久请求事实，可在尚无 messageId 时命中，但它不是已受理的 InputReference。缺少输入关联证据的回复不归组。条件表达暂停、阻塞、等待、待答、调用失败及原续接资格，不能据此判断整个工作忙碌或完成。业务 Operation 阶段与资源错误可用现有 RxJS 资源组合表达。
 
 ## 观察当前模型准备

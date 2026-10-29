@@ -708,7 +708,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     assert.equal(preferenceCalls.length, 2);
     assert.deepEqual(deliveryQuestion.origin, { sessionId, callId: deliveryQuestion.callId, callSequence: deliveryQuestion.origin.callSequence,
       rootCallId: 'remote-delivery-preferences', parentCallId: 'remote-delivery-preferences', name: 'ask_user_question',
-      inputs: preferenceCalls[1].inputs });
+      inputs: preferenceCalls[1].inputs, continuation: { sessionId, inputs: preferenceCalls[1].inputs, goal: null } });
     assert.deepEqual(deliveryQuestion.origin.inputs.map(input => ({ sourceSessionId: input.sourceSessionId, requestId: input.requestId,
       actorId: input.actorId, scope: input.scope })),
     [{ sourceSessionId: sessionId, requestId: 'delivery-once', actorId: 'alice', scope: { merchantId: 'merchant-7' } }]);

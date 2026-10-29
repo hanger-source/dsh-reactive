@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { SessionEvent, UserMessage } from '@deepseek-ai/dsh-session';
 import type { GoalProjection } from '@deepseek-ai/dsh-goal';
-import type { ToolOccurrence } from '@hanger-source/dsh-reactive/kernel';
+import type { ToolOccurrence, HumanQuestionOrigin } from '@hanger-source/dsh-reactive/kernel';
 import type { InputReference, NormalizedSubmission, Continuation, WaitReference, GoalReference } from '@hanger-source/dsh-reactive/kernel';
 import type { Admission } from '@hanger-source/dsh-reactive';
 import type { ToolActivity } from '@hanger-source/dsh-reactive';
@@ -40,6 +40,8 @@ export const operationNotStartedSchema = waitRecordSchema.extend({ id: z.string(
 /** 只结案未进入 owner 的 Follow，不判定原业务操作是否执行。 */
 export const operationFollowUnregisteredSchema = waitRecordSchema.extend({ id: z.string().min(1) }).strict();
 export const childInputRecordSchema = z.object({ messageId: z.string().min(1), input: inputReference }).strict();
+export const questionOriginRecordSchema = z.object({ callSequence: z.number().int().nonnegative(),
+  goal: continuationSchema.shape.goal }).strict();
 declare module '@deepseek-ai/dsh-session/types' {
   interface PluginRecordMap {
     'plugin:reactive/input': SubmissionRecord;
@@ -49,6 +51,7 @@ declare module '@deepseek-ai/dsh-session/types' {
     'plugin:reactive/operation-not-started': z.infer<typeof operationNotStartedSchema>;
     'plugin:reactive/operation-follow-unregistered': z.infer<typeof operationFollowUnregisteredSchema>;
     'plugin:reactive/child-input': z.infer<typeof childInputRecordSchema>;
+    'plugin:reactive/question-origin': z.infer<typeof questionOriginRecordSchema>;
   }
 }
 /** 原生投影切面的只读业务关联视图；不订阅、不推进、不缓存会话日志。 */
@@ -150,6 +153,15 @@ export function humanQuestionCall(source: CallSource, callId: string): CallOccur
   if (matches.length === 0) throw new Error('REACTIVE_HUMAN_QUESTION_CALL_NOT_FOUND');
   if (matches.length > 1) throw new Error('REACTIVE_HUMAN_QUESTION_ORIGIN_AMBIGUOUS');
   return matches[0]!;
+}
+
+/** 续接只从原提问的持久关联派生；缺记录仍可读取问题，但不能取得旧步骤权限。 */
+export function humanQuestionOrigin(source: Pick<ReactiveProjectionState, 'sessionId' | 'calls' | 'questionOrigins'>,
+  callId: string): HumanQuestionOrigin {
+  const call = humanQuestionCall(source, callId);
+  const goal = source.questionOrigins[String(call.callSequence)];
+  return { sessionId: source.sessionId, ...occurrenceOf(call),
+    continuation: goal === undefined ? null : { sessionId: source.sessionId, inputs: call.inputs, goal } };
 }
 
 export function occurrenceOf(call: CallOccurrence): ToolOccurrence {
