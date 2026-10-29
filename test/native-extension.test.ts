@@ -193,7 +193,12 @@ test('所有服务均核provider身份；真实Cordis依赖退出后旧扩展不
   const isolated = app.native.isolate('fs');
   const foreignProvider = isolated.plugin(LocalFileSystem, { cwd: home });
   const wrong = createNativeSessionCapability({ name: 'extension-wrong-second-provider', services: ['tools', 'fs'],
-    session: () => ({}) });
+    session: context => ({ file: context.resource(() => defer(() => {
+      const fs = context.context().get('fs');
+      assert.ok(fs, '已激活的官方LocalFileSystem必须提供fs');
+      return from(fs.resolve(foreignPath).then(target => fs.readText(target))).pipe(map(value =>
+        ({ status: 'ready' as const, generation: 1, observedAt: Date.now(), value })));
+    })) }) });
   const fs = app.native.get('fs')!;
   const sharedMarker = {};
   let foreignReads = 0;
@@ -241,12 +246,19 @@ test('所有服务均核provider身份；真实Cordis依赖退出后旧扩展不
   let replacement: (Fiber & PromiseLike<Fiber>) | undefined;
   try {
     await requireActivePlugin(foreignProvider);
+    const foreignFs: FileSystem = Reflect.get(isolated.fs, symbols.original);
+    assert.equal(Reflect.get(isolated.tools, symbols.original), Reflect.get(app.native.tools, symbols.original));
+    assert.notEqual(foreignFs, Reflect.get(fs, symbols.original));
+    const foreignResolve = foreignFs.resolve.bind(foreignFs);
+    let foreignResolves = 0;
+    foreignFs.resolve = (...args) => { foreignResolves++; return foreignResolve(...args); };
     await requireActivePlugin(plainProvider); await requireActivePlugin(foreignPlainProvider);
     await wrong.install(isolated, home); await capability.install(app.native, home);
     await plain.install(app.native, home); await foreignPlain.install(plainIsolated, home);
     const source = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
     assert.throws(() => wrong.forSession(source), /REACTIVE_NATIVE_CAPABILITY_HOST_MISMATCH/u,
       '第一依赖tools相同仍须核第二依赖fs');
+    assert.equal(foreignResolves, 0, '公共扩展与builtin均在取得时拒绝来源，不开始隔离官方fs路径解析');
     assert.equal(await plain.forSession(source).read(), '正式provider文件', '普通对象provider的匹配来源仍实际读取官方fs');
     assert.throws(() => foreignPlain.forSession(source), /REACTIVE_NATIVE_CAPABILITY_HOST_MISMATCH/u,
       '第一依赖tools相同，两份没有trace original的普通对象provider仍须按exact身份隔离');

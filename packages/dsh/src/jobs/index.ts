@@ -156,7 +156,7 @@ class SessionJobs implements NativeSessionJobs {
   /** @internal 每次控制/读取都重新核 exact Host、成员及官方服务。 */
   registry(): JobRegistry {
     this.#scope.assertActive();
-    const context = this.native.session(this.access, 'jobs');
+    const context = this.native.session(this.access);
     const registry: JobRegistry | undefined = context.get('jobs');
     if (!registry) throw new Error('REACTIVE_NATIVE_JOBS_REQUIRED');
     return registry;
@@ -190,7 +190,7 @@ class SessionJobs implements NativeSessionJobs {
   list(): readonly JobView[] { return ownNativeValue(this.registry().list(this.ownerId)); }
   job(id: JobId): NativeJob {
     this.#scope.assertActive();
-    this.native.session(this.access, 'jobs');
+    this.native.session(this.access);
     let job = this.#jobs.get(id);
     if (!job) { job = new NativeJobReader(this, id, this.#scope); this.#jobs.set(id, job); }
     return job;
@@ -254,7 +254,7 @@ export function createNativeJobs(options: NativeJobsOptions): NativeJobs {
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(), toolNames, toolNames$: toolNames.values$,
     forSession(session: NativeSessionSource) {
       const access = nativeSessionAccess(session);
-      owner.session(access, 'jobs');
+      owner.session(access);
       let current = sessions.get(session);
       if (!current) {
         const reader = new SessionJobs(owner, access);

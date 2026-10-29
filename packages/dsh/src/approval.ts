@@ -53,18 +53,18 @@ class SessionApproval implements NativeSessionApproval {
   }
   /** 完整原生日志审计；历史 asked 不是一个仍待批准的请求或可再次使用的 grant。 */
   async readAudit(options: CancellationOptions = {}): Promise<readonly NativeApprovalEvent[]> {
-    this.#scope.assertActive(); this.owner.session(this.access, 'approval');
+    this.#scope.assertActive(); this.owner.session(this.access);
     const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
     signal.throwIfAborted();
     const inspection = await this.access.inspect(signal);
-    signal.throwIfAborted(); this.owner.session(this.access, 'approval');
+    signal.throwIfAborted(); this.owner.session(this.access);
     if (inspection.meta.id !== this.access.sessionId) throw new Error('REACTIVE_NATIVE_SESSION_MISMATCH');
     return ownNativeValue(inspection.events.filter((event): event is NativeApprovalEvent =>
       event.type === 'approval/asked' || event.type === 'approval/decided' || event.type === 'approval/policy'));
   }
   setPolicy(policy: ApprovalPolicy, options: CancellationOptions = {}): void {
     this.#scope.assertActive(); options.signal?.throwIfAborted();
-    const ctx = this.owner.session(this.access, 'approval');
+    const ctx = this.owner.session(this.access);
     const agent = this.access.liveAgent();
     if (!agent || agent.id !== this.access.sessionId) throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
     const service: Approval | undefined = ctx.get('approval');
@@ -122,7 +122,7 @@ export function createNativeApproval(options: NativeApprovalOptions): NativeAppr
   });
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
     forSession(session: NativeSessionSource) {
-      const access = nativeSessionAccess(session); owner.session(access, 'approval');
+      const access = nativeSessionAccess(session); owner.session(access);
       let current = sessions.get(session);
       if (!current) {
         const reader = new SessionApproval(owner, access, policy);

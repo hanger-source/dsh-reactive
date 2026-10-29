@@ -51,8 +51,7 @@ export function createNativeSessionCapability<T extends object>(options: NativeS
   if (typeof createSession !== 'function' || (setup !== undefined && typeof setup !== 'function')) {
     throw new TypeError('REACTIVE_NATIVE_CAPABILITY_FACTORY_REQUIRED');
   }
-  const services = Object.freeze([...options.services]);
-  const owner = new NativeCapabilityOwner(name, services, function* (context, home) {
+  const owner = new NativeCapabilityOwner(name, options.services, function* (context, home) {
     if (setup) yield* setup(context, home);
   });
   const sessions = new WeakMap<object, Readonly<T>>();
@@ -60,10 +59,7 @@ export function createNativeSessionCapability<T extends object>(options: NativeS
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
     forSession(source: NativeSessionSource): Readonly<T> {
       const access = nativeSessionAccess(source);
-      const check = (): Context => {
-        for (const service of services) owner.session(access, service);
-        return owner.context();
-      };
+      const check = (): Context => owner.session(access);
       check();
       const previous = sessions.get(source);
       if (previous) return previous;

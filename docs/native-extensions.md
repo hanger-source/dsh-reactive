@@ -33,6 +33,8 @@ const capability = createNativeSessionCapability({
 
 每次 `forSession(source)` 都先核验 Host 登记的真实对象、读取资格及全部服务的原始 provider。普通 `provide` 对象按自身比较，Cordis trace 代理按其原对象比较；同名服务不能跨隔离域互相借用。相同会话 ID 不会合并不同句柄，也不能用字段相同的普通对象冒充来源。相同 exact 来源共享同一个冻结业务面；独立句柄拥有各自的读取寿命。
 
+内置能力和公共扩展使用同一服务组边界。Files 的文件服务与 filesystem、Skills 的 registry 与工作目录、启用工具的 Jobs 及 Approval 的工具服务，均须属于这次能力安装的完整依赖组；仅主服务相同不能借用其他依赖不同的安装。查询与实际调用继续复核同一组身份，命中已有业务面也不跳过来源核验。
+
 需要安装自有原生 provider 时提供同步 generator `setup(context, home)`，逐项 yield 正式 Cordis Fiber 或清理函数。`home` 来自安装入口，不从进程 cwd 或全局变量猜测。依赖 provider 未活跃或安装失败时沿原生安装路径回滚；不要使用 async generator 丢失 Fiber 与 disposer 的身份。
 
 `session(source)` 同步构造资源和方法闭包。它不读取来源、不订阅、不执行命令，也不返回 Promise。实际观察、`context()`、`liveAgent()` 和 `invoke()` 在构造成功前拒绝执行；构造失败释放本次派生关系，不缓存一个不完整对象。

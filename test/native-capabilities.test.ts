@@ -13,6 +13,7 @@ import { Context, symbols } from '@deepseek-ai/cordis';
 import Registry from '@deepseek-ai/dsh-typert-registry';
 import SandboxPolicy from '@deepseek-ai/dsh-sandbox-policy';
 import WorkspaceFiles from '@deepseek-ai/dsh-api-workspace-files';
+import LocalFileSystem from '@deepseek-ai/dsh-fs-local';
 import type { FileSystem } from '@deepseek-ai/dsh-fs';
 import type { FileUploads } from '@deepseek-ai/dsh-client-file-upload';
 import LocalJobs from '@deepseek-ai/dsh-jobs-local';
@@ -485,9 +486,20 @@ test('本地Files惰性借入精确会话，真实文件变化与取消不越过
       stream() { models++; return text('文件读取无需模型'); }
     }() }),
   });
+  const isolated = runtime.native.isolate('fs');
+  const foreignProvider = isolated.plugin(LocalFileSystem, { cwd: root });
+  const foreignFiles = createNativeFiles({ service: 'provided' });
   try {
+    await requireActivePlugin(foreignProvider);
+    await foreignFiles.install(isolated, root);
     const fs: FileSystem = Reflect.get(runtime.native.fs, symbols.original);
+    const foreignFs: FileSystem = Reflect.get(isolated.fs, symbols.original);
     const service: WorkspaceFiles = Reflect.get(runtime.native.workspaceFiles, symbols.original);
+    assert.equal(Reflect.get(isolated.workspaceFiles, symbols.original), service);
+    assert.notEqual(foreignFs, fs);
+    const foreignResolve = foreignFs.resolve.bind(foreignFs);
+    let foreignResolves = 0;
+    foreignFs.resolve = (...args) => { foreignResolves++; return foreignResolve(...args); };
     const uploads: FileUploads = Reflect.get(runtime.native.fileUploads, symbols.original);
     const resolve = fs.resolve.bind(fs), watch = fs.watch.bind(fs), read = service.read.bind(service), bytes = service.readBytes.bind(service);
     const upload = uploads.upload.bind(uploads);
@@ -529,6 +541,9 @@ test('本地Files惰性借入精确会话，真实文件变化与取消不越过
     };
     const workspace = await runtime.application.createWorkspace({ directory });
     const session = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
+    assert.throws(() => foreignFiles.forSession(session), /REACTIVE_NATIVE_CAPABILITY_HOST_MISMATCH/u,
+      '共享WorkspaceFiles但第二依赖fs隔离时，取得读侧即拒绝根Host来源');
+    assert.equal(foreignResolves, 0, '拒绝来源不得开始隔离官方fs的实际路径解析');
     const baseline = { resolves: resolved.length, watches: watches.length, reads };
     const files = session.files, nativeFiles = capability.forSession(session);
     const range = { offset: 2, limit: 1 }, page = files.text('artifact.txt', range), metadata = files.metadata('artifact.txt');
@@ -617,10 +632,12 @@ test('本地Files惰性借入精确会话，真实文件变化与取消不越过
     assert.equal((await service.stat({ sessionId: SessionId(session.id), workspaceRoot: directory }, 'artifact.txt', new AbortController().signal)).absolutePath,
       artifact, 'Host只退出借入读侧，正式外部WorkspaceFiles仍由原宿主持有');
     assert.throws(() => session.files);
+    assert.equal(foreignResolves, 0, '匹配来源真实读取、观察和退出全程不能借入另一官方fs');
     assert.equal(models, 0); assert.deepEqual(errors, []);
   } finally {
     releaseResolve.resolve(); releaseRead.resolve(); releaseUnwatch.resolve(); releaseUpload.resolve();
     subscriptions.forEach(subscription => subscription.unsubscribe());
+    await foreignFiles.dispose(); await foreignProvider.dispose();
     await runtime.dispose(); await capability.dispose();
   }
 });

@@ -43,7 +43,7 @@ class SessionSkills implements NativeSessionSkills {
 
   private resource<T>(read: (registry: SkillRegistry, agent: Agent, cwd: string, signal: AbortSignal) => Promise<T>): NativeSkillResource<T> {
     return nativeAgentResource(this.scope, {
-      assertCurrent: () => { this.owner.session(this.access, 'skills'); },
+      assertCurrent: () => { this.owner.session(this.access); },
       liveAgent: () => this.access.liveAgent(), liveAgent$: this.access.liveAgent$,
     }, {
       changes: agent => new Observable<void>(subscriber => {
@@ -58,7 +58,7 @@ class SessionSkills implements NativeSessionSkills {
       read: (agent, signal) => {
         const registry: SkillRegistry | undefined = agent.ctx.get('skills');
         if (!registry) throw new Error('REACTIVE_NATIVE_SKILLS_REQUIRED');
-        const directory = this.owner.session(this.access, 'workingDirectory').get('workingDirectory');
+        const directory = this.owner.session(this.access).get('workingDirectory');
         if (!directory) throw new Error('REACTIVE_NATIVE_WORKING_DIRECTORY_REQUIRED');
         // 观察只读取正式已提交的目录，不ensure、恢复目录或改变文件权限root。
         return read(registry, agent, directory.get(agent.session), signal);
@@ -68,7 +68,7 @@ class SessionSkills implements NativeSessionSkills {
 
   definition(name: string): NativeSkillResource<SkillDefinition | undefined> {
     this.scope.assertActive();
-    this.owner.session(this.access, 'skills');
+    this.owner.session(this.access);
     if (!isSkillName(name)) throw new Error('REACTIVE_SKILL_NAME_INVALID: ' + name);
     let resource = this.#definitions.get(name);
     if (!resource) {
@@ -93,7 +93,7 @@ export function createNativeSkills(options: NativeSkillsOptions): NativeSkills {
   const sessions = new WeakMap<object, NativeSessionSkills>();
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
     forSession(session: NativeSessionSource) {
-      const access = nativeSessionAccess(session); owner.session(access, 'skills');
+      const access = nativeSessionAccess(session); owner.session(access);
       let current = sessions.get(session);
       if (!current) {
         const reader = new SessionSkills(owner, access);

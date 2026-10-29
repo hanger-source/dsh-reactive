@@ -92,7 +92,7 @@ class SessionTeam implements NativeSessionTeam {
     this.members$ = this.projection$.pipe(map(projection => projection.members));
     this.tasks$ = this.projection$.pipe(map(projection => projection.tasks));
     const roster = nativeAgentResource<readonly TeamMemberView[]>(this.#scope, {
-      assertCurrent: () => { owner.session(access, 'agentTeams'); },
+      assertCurrent: () => { owner.session(access); },
       liveAgent: () => access.liveAgent(), liveAgent$: access.liveAgent$,
     }, {
       changes: agent => merge(changes$, new Observable<void>(subscriber => {
@@ -118,7 +118,7 @@ class SessionTeam implements NativeSessionTeam {
   }
   private context() {
     this.#scope.assertActive();
-    return this.owner.session(this.access, 'agentTeams');
+    return this.owner.session(this.access);
   }
   private service(): TeamService {
     const service: TeamService | undefined = this.context().get('agentTeams');
@@ -230,7 +230,7 @@ export function createNativeTeam(options: NativeTeamOptions): NativeTeam {
   const sessions = new WeakMap<object, NativeSessionTeam>();
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
     forSession(session: NativeSessionSource) {
-      const access = nativeSessionAccess(session); owner.session(access, 'agentTeams');
+      const access = nativeSessionAccess(session); owner.session(access);
       let current = sessions.get(session);
       if (!current) {
         const reader = new SessionTeam(owner, access);

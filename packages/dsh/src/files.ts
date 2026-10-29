@@ -147,7 +147,7 @@ class SessionFiles implements NativeSessionFiles {
   assertCurrent(): void {
     this.scope.assertActive();
     if (this.#closing) throw new Error('REACTIVE_NATIVE_FILES_DISPOSED');
-    this.owner.session(this.access, 'workspaceFiles');
+    this.owner.session(this.access);
   }
   private signal(options: CancellationOptions): AbortSignal {
     this.assertCurrent();
@@ -159,7 +159,7 @@ class SessionFiles implements NativeSessionFiles {
   async resolve(path: string, signal: AbortSignal, baseFile?: string) {
     signal.throwIfAborted(); this.assertCurrent();
     const workspaceRoot = this.access.workspaceRoot();
-    const ctx = this.owner.session(this.access, 'workspaceFiles');
+    const ctx = this.owner.session(this.access);
     const service: WorkspaceFiles | undefined = ctx.get('workspaceFiles');
     const fs: FileSystem | undefined = ctx.get('fs');
     if (!service || !fs) throw new Error('REACTIVE_NATIVE_FILES_REQUIRED');
@@ -278,7 +278,7 @@ export function createNativeFiles(options: NativeFilesOptions): NativeFiles {
   });
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
     forSession(session: NativeSessionSource) {
-      const access = nativeSessionAccess(session); owner.session(access, 'workspaceFiles');
+      const access = nativeSessionAccess(session); owner.session(access);
       let current = sessions.get(session);
       if (!current || current.disposed) {
         const created = new SessionFiles(owner, access, () => active.delete(created));

@@ -63,7 +63,7 @@ class SessionSubagents implements NativeSessionSubagents {
     this.descendants$ = this.descendants.values$;
   }
 
-  private context() { this.#scope.assertActive(); return this.owner.session(this.access, 'subagents'); }
+  private context() { this.#scope.assertActive(); return this.owner.session(this.access); }
 
   private service(): SubagentRuntime {
     const service: SubagentRuntime | undefined = this.context().get('subagents');
@@ -108,7 +108,7 @@ export function createNativeSubagents(options: NativeSubagentsOptions): NativeSu
   const sessions = new WeakMap<object, NativeSessionSubagents>();
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
     forSession(session: NativeSessionSource) {
-      const access = nativeSessionAccess(session); owner.session(access, 'subagents');
+      const access = nativeSessionAccess(session); owner.session(access);
       let current = sessions.get(session);
       if (!current) {
         const reader = new SessionSubagents(owner, access);

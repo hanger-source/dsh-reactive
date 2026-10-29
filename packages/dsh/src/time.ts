@@ -46,7 +46,7 @@ export function createNativeClock(options: NativeClockOptions): NativeClock {
       return new Intl.DateTimeFormat('zh-CN', { ...format, timeZone }).format(instant);
     },
     forSession(session: NativeSessionSource) {
-      const access = nativeSessionAccess(session); owner.session(access, 'sessionProjections');
+      const access = nativeSessionAccess(session); owner.session(access);
       let current = sessions.get(session);
       if (!current) {
         const reader = new SessionClock(owner, access);

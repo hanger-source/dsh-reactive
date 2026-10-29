@@ -58,6 +58,8 @@ createWorkspace 注册原生 existing 目录，不隐式 mkdir。Environment 不
 
 所有 `capability.forSession(source)` 返回同一 exact 来源的稳定共享业务面，不提供 dispose、Scope 或内部服务。消费者退出自己的订阅或取消本次等待，不关闭其他模块的观察。需要独立读取寿命时先显式 open 一个自己持有的 Session 句柄，再用它取得能力，最后 release 该句柄；Program conversation 是借入来源，不能由模块释放。真正的能力安装 owner 才调用 capability.dispose。Files、Journal、Attachments 的实际 I/O 与监听释放登记到原 Host，来源退出后仍由 Host 与安装 owner 等待结算；files.watch(path) 显式创建的单个 watch 保留自己的 dispose/closed。
 
+内置能力与公共扩展均核验完整安装服务组，包括配置中启用的工具服务；只共享主服务不能借用其余 provider 不同的安装。缓存命中、查询和调用仍复核同一组身份。普通对象或函数按本体比较，只有正式 trace 代理使用原对象；同名服务、相同会话 ID 或自报的 original 字段都不能替代身份。日志和附件保持延迟安装，实际 I/O 等待正式安装活跃，provider 替换不复活旧读侧。
+
 原生子 Agent 发现从 `@hanger-source/dsh-reactive-dsh/subagents` 导入 `createNativeSubagents({ service: 'provided' })`。它使用宿主已有的底座 subagents 服务，不安装另一套 provider。安装后取得 `const children = capability.forSession(source)`：children.catalog 是直接目录资源，children.descendants 是正式递归查询的资源，相应 catalog$、descendants$ 是原资源的值流，支持普通函数、Promise、RxJS 和 hooks；children.readDescendants({ signal }) 显式取得独立查询结果。保留 one-shot、continuable、external 原生身份及不可读分支诊断，不把目录模式当成业务阶段。后代 activity 沿用原生 resident 判断，不表示模型本轮是否结束。冷读不恢复 Agent 或启动模型。
 
 `children.interrupt(targetId, { signal })` 在调用前核验来源与取消，再以该来源真实 Agent 的 ancestor 权限调用原生中断；冷来源无法控制，其他分支与父 Agent 不因本次选择被中断。未驻留目标沿用原生无操作语义，权限失败保留原生 SubagentError，返回不表示执行已经完成。观察退出只结束当前消费者；来源或安装 owner 退出撤销对应读侧，已有 Activation 继续由原生 owner 管理。普通原生发现不要求 Goal；带独立 Goal 的子程序委托继续通过 assembly.implementDelegation 和 NativeChildWork 组合 Action、Operation 与反馈。此入口不包装缺少可信 Program 执行前准入的 raw start/send，也不把这个缺口扩大为整个子 Agent 域不可用。

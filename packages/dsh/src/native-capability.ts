@@ -19,6 +19,12 @@ function nativeServiceIdentity(service: unknown): object {
   return original;
 }
 
+/** @internal 冷安装与活跃安装共用同一服务身份规则。 */
+export function nativeServiceMatches(installed: unknown, current: unknown): boolean {
+  if (installed === undefined || current === undefined) return false;
+  return nativeServiceIdentity(installed) === nativeServiceIdentity(current);
+}
+
 /** 宿主选择的一次能力安装；必需服务退出会撤销实例，不转向替换后的provider。 */
 export interface NativeCapability {
   readonly install: NativeInstallation;
@@ -65,8 +71,10 @@ export class NativeCapabilityOwner {
   #draining?: Promise<void>;
   #pending = new Set<Promise<void>>();
   #failures = new Set<unknown>();
+  readonly #services: readonly string[];
 
   constructor(private readonly name: string, services: readonly string[], setup: (ctx: Context, home: string) => Iterable<NativeSetupResource>) {
+    this.#services = Object.freeze([...services]);
     this.install = async (parent, home) => {
       this.scope.assertActive();
       if (this.#installation) throw new Error('REACTIVE_NATIVE_CAPABILITY_ALREADY_INSTALLED');
@@ -79,7 +87,7 @@ export class NativeCapabilityOwner {
         const resources = (function* (): Generator<NativeSetupResource, void> {
           yield stopAndDrain;
           yield* setup(ctx, home);
-          const queries = ctx.plugin({ name: name + ':queries', inject: [...services], apply(readContext: Context) {
+          const queries = ctx.plugin({ name: name + ':queries', inject: [...owner.#services], apply(readContext: Context) {
             owner.scope.assertActive();
             readContext.effect(() => () => {
               try { stop(); }
@@ -129,17 +137,14 @@ export class NativeCapabilityOwner {
   }
 
   /** 只接受本能力实际服务所在的 Host；同进程其他隔离服务不能借此访问。 */
-  session(access: NativeSessionAccess, service: string): Context {
+  session(access: NativeSessionAccess): Context {
     const context = this.context();
     access.signal.throwIfAborted();
     access.assertCurrent();
-    const installed: unknown = context.get(service);
-    const current: unknown = access.context.get(service);
-    if (installed === undefined || current === undefined) {
-      throw new Error('REACTIVE_NATIVE_CAPABILITY_HOST_MISMATCH');
-    }
-    if (nativeServiceIdentity(installed) !== nativeServiceIdentity(current)) {
-      throw new Error('REACTIVE_NATIVE_CAPABILITY_HOST_MISMATCH');
+    for (const service of this.#services) {
+      if (!nativeServiceMatches(context.get(service), access.context.get(service))) {
+        throw new Error('REACTIVE_NATIVE_CAPABILITY_HOST_MISMATCH');
+      }
     }
     return context;
   }

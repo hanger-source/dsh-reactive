@@ -1,10 +1,10 @@
-import { symbols, type Context } from '@deepseek-ai/cordis';
+import type { Context } from '@deepseek-ai/cordis';
 import type SessionController from '@deepseek-ai/dsh-api-session-controller';
 import { firstValueFrom } from 'rxjs';
 import { abortable, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import { Scope } from '@hanger-source/dsh-reactive/kernel';
 import type { AttachmentIdType, SessionAttachments, SessionImageAttachment } from '@hanger-source/dsh-reactive/attachments';
-import { NativeCapabilityOwner, ownNativeValue, type NativeCapability, type NativeSessionSource } from './native-capability.ts';
+import { NativeCapabilityOwner, nativeServiceMatches, ownNativeValue, type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
 
 export type { AttachmentIdType, ImageAttachmentRef, ImageMediaType, SessionAttachments, SessionImageAttachment } from '@hanger-source/dsh-reactive/attachments';
@@ -16,8 +16,6 @@ export interface NativeAttachments extends NativeCapability {
   readonly install: (ctx: Context, home?: string) => Promise<void>;
   forSession(source: NativeSessionSource): NativeSessionAttachments;
 }
-
-const original = (value: object | undefined): unknown => value && Reflect.get(value, symbols.original);
 
 class SessionAttachmentsReader implements NativeSessionAttachments {
   readonly reader: NativeSessionAttachments = Object.freeze({ readImage: this.readImage.bind(this) });
@@ -40,7 +38,7 @@ class SessionAttachmentsReader implements NativeSessionAttachments {
   private assertCurrent(): void {
     this.scope.assertActive(); this.access.signal.throwIfAborted(); this.access.assertCurrent();
     const controller: SessionController | undefined = this.access.context.get('sessionController');
-    if (!controller || original(controller) !== original(this.controller)) {
+    if (!nativeServiceMatches(this.controller, controller)) {
       const error = new Error('REACTIVE_NATIVE_ATTACHMENTS_SOURCE_CHANGED');
       this.scope.dispose(error); throw error;
     }
@@ -58,16 +56,16 @@ class SessionAttachmentsReader implements NativeSessionAttachments {
     signal.throwIfAborted();
     await firstValueFrom(abortable(() => this.ready, signal));
     signal.throwIfAborted(); this.assertCurrent();
-    this.owner.session(this.access, 'sessionController');
+    this.owner.session(this.access);
     // Controller从当前会话正式日志核验引用；不借全局附件存储绕过会话授权。
     const reading = this.track(async () => {
       const value = await this.controller.attachment({ sessionId: this.access.sessionId, attachmentId });
-      this.assertCurrent(); this.owner.session(this.access, 'sessionController');
+      this.assertCurrent(); this.owner.session(this.access);
       return Object.freeze({ attachment: ownNativeValue(value.attachment), data: Uint8Array.from(Buffer.from(value.data, 'base64')) });
     });
     const value = await firstValueFrom(abortable(() => reading, signal));
     signal.throwIfAborted(); this.assertCurrent();
-    this.owner.session(this.access, 'sessionController');
+    this.owner.session(this.access);
     return value;
   }
   dispose(): Promise<void> {
@@ -111,7 +109,7 @@ export function createNativeAttachments(options: NativeAttachmentsOptions): Nati
     forSession(source: NativeSessionSource): NativeSessionAttachments {
       const access = nativeSessionAccess(source); owner.scope.assertActive();
       if (!controller || !ready) throw new Error('REACTIVE_NATIVE_CAPABILITY_NOT_ACTIVE');
-      if (original(access.context.get('sessionController')) !== original(controller)) throw new Error('REACTIVE_NATIVE_CAPABILITY_HOST_MISMATCH');
+      if (!nativeServiceMatches(controller, access.context.get('sessionController'))) throw new Error('REACTIVE_NATIVE_CAPABILITY_HOST_MISMATCH');
       const cached = sessions.get(source);
       if (cached) return cached.reader;
       const reader = new SessionAttachmentsReader(owner, access, ready, controller, () => active.delete(reader));

@@ -1,4 +1,4 @@
-import { symbols, type Context } from '@deepseek-ai/cordis';
+import type { Context } from '@deepseek-ai/cordis';
 import type SessionController from '@deepseek-ai/dsh-api-session-controller';
 import type SessionQuery from '@deepseek-ai/dsh-session-query';
 import { SessionLogOffset, type Session, type SessionEvent } from '@deepseek-ai/dsh-session';
@@ -8,7 +8,7 @@ import { abortable, z, type CancellationOptions } from '@hanger-source/dsh-react
 import { Scope } from '@hanger-source/dsh-reactive/kernel';
 import type { SessionJournal, ProgramJournalEntry, ProgramJournalFrame, ProgramJournalPage,
   ProgramJournalPageQuery, ProgramJournalWindow } from '@hanger-source/dsh-reactive/journal';
-import { NativeCapabilityOwner, ownNativeValue, type NativeCapability, type NativeSessionSource } from './native-capability.ts';
+import { NativeCapabilityOwner, nativeServiceMatches, ownNativeValue, type NativeCapability, type NativeSessionSource } from './native-capability.ts';
 import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
 
 export type { SessionJournal, ProgramJournalEvent, ProgramJournalEntry, ProgramJournalPage,
@@ -23,7 +23,6 @@ export interface NativeJournal extends NativeCapability {
 }
 
 type Providers = { readonly controller: SessionController; readonly query: SessionQuery };
-const original = (value: object | undefined): unknown => value && Reflect.get(value, symbols.original);
 const tailLimit = 1024 * 1024;
 
 class SessionJournalReader implements NativeSessionJournal {
@@ -51,7 +50,7 @@ class SessionJournalReader implements NativeSessionJournal {
     this.scope.assertActive(); this.access.assertCurrent();
     const controller: SessionController | undefined = this.access.context.get('sessionController');
     const query: SessionQuery | undefined = this.access.context.get('sessionQuery');
-    if (!controller || !query || original(controller) !== original(this.providers.controller) || original(query) !== original(this.providers.query)) {
+    if (!nativeServiceMatches(this.providers.controller, controller) || !nativeServiceMatches(this.providers.query, query)) {
       const error = new Error('REACTIVE_NATIVE_JOURNAL_SOURCE_CHANGED');
       this.scope.dispose(error); throw error;
     }
@@ -64,7 +63,7 @@ class SessionJournalReader implements NativeSessionJournal {
   private async available(signal: AbortSignal): Promise<void> {
     await firstValueFrom(abortable(() => this.ready, signal));
     signal.throwIfAborted(); this.assertCurrent();
-    this.owner.session(this.access, 'sessionController'); this.owner.session(this.access, 'sessionQuery');
+    this.owner.session(this.access);
   }
   /** 真实工作先登记，消费者取消只退等，原page/observation仍可由dispose加入。 */
   private track<T>(run: () => PromiseLike<T> | T): Promise<T> {
@@ -242,8 +241,8 @@ export function createNativeJournal(options: NativeJournalOptions): NativeJourna
     forSession(source: NativeSessionSource): NativeSessionJournal {
       const access = nativeSessionAccess(source); owner.scope.assertActive();
       if (!providers || !ready) throw new Error('REACTIVE_NATIVE_CAPABILITY_NOT_ACTIVE');
-      if (original(access.context.get('sessionController')) !== original(providers.controller)
-        || original(access.context.get('sessionQuery')) !== original(providers.query)) throw new Error('REACTIVE_NATIVE_CAPABILITY_HOST_MISMATCH');
+      if (!nativeServiceMatches(providers.controller, access.context.get('sessionController'))
+        || !nativeServiceMatches(providers.query, access.context.get('sessionQuery'))) throw new Error('REACTIVE_NATIVE_CAPABILITY_HOST_MISMATCH');
       let current = sessions.get(source);
       if (!current || current.disposed) {
         const created = new SessionJournalReader(owner, access, ready, providers, () => active.delete(created));
