@@ -169,6 +169,8 @@ Surface 显式列出视图 schema、Action 定义与只读 Operation 定义。�
 
 operations 槽的 resolver 从当前声明取得原 command，之后的查询保留这份绑定；旧句柄不会因组件切对象而重定向。已登记参与还可以按持久身份单独恢复读取，不要求当前组件继续公开它。读取与新参与登记是不同接口，SDK 不能通过只读句柄借用当前 Goal 权限。
 
+NativeSession 递归提供标准 SurfaceClient 的模块与集合消费，资源包装沿用同一来源，并受同一 UI 作用域和代际约束。模块和集合视图观察稳定地址；已解析 Action 固定原绑定，新调用重新核验 UI，公开 Operation 固定原 command 并借用 UI 的取消信号。根 `invocation(handle)` 观察已有调用活动，`lookupInvocation(name, id, options)` 和模块 `invocation(name, id)` 查回原调用；已受理调用、结果和业务 Operation 不因 UI 退出改变寿命。SDK 和原生引用由取得它们的 owner 释放。
+
 输入的持久原值和事件 wire 保持 JSON；`Program.input` 在本地程序与远程客户端的读侧解析成领域值。单向输入 transform 不承担视图的反向编码责任。`InputReference.sourceSessionId` 标明消息真实所属会话；每个程序只解析本会话输入，跨会话 cause 保留原合同下的原始值和来源，不塞入当前程序的 typed 输入集合。
 
 `view(schema)` 明确消费值事件，`resourceView(schema)` 明确消费资源 Observation；后者保留 pending/error，只有 ready 才产生领域值和 wire。两者的本地 SDK 均使用 `z.output` 领域类型。出口持有一次来源连接，并用同一 schema 的 `z.encode` 得到 wire 值，再核验其确实是 JSON。普通验证 schema 可以使用恒等方向，单向 transform 不能冒充可逆编码；Date 等领域值需要显式双向 Zod codec。

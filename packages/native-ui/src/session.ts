@@ -9,12 +9,14 @@ import { assertProgramDefinition, type HumanQuestion,
   shareResource, mapResource, ResourceReader, type SessionFiles, type FileResource, type FileWatch,
   type SessionAttachments, type SessionImageAttachment,
   type ToolActionBinding } from '@hanger-source/dsh-reactive';
-import { Scope } from '@hanger-source/dsh-reactive/reactivity';
+import type { Surface, SurfaceMount, SurfaceClient, SurfaceCollectionDefinition, SurfaceCollectionClient,
+  SurfaceInstanceClient, ActionContract, CollectionResolvedAction } from '@hanger-source/dsh-reactive';
+import { Scope, normalizeResource } from '@hanger-source/dsh-reactive/reactivity';
 import type { RemoteProgramSession } from '@hanger-source/dsh-reactive-client';
 import { assertProgramSessionConnection } from '@hanger-source/dsh-reactive-client';
 import type { SessionBinding } from '@deepseek-ai/dsh-api-session-controller/client';
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots';
-import { defer, fromEvent, takeUntil, type Observable } from 'rxjs';
+import { defer, fromEvent, map, takeUntil, type Observable } from 'rxjs';
 import { nativeSource, type NativeReadable } from './sources.ts';
 
 export interface NativeHumanQuestion {
@@ -58,6 +60,8 @@ export class NativeSession<P extends ProgramContract> implements Disposable, Asy
   #fileWatches = new Set<NativeFileWatchLease>();
   #cleanupFailures = new Set<unknown>();
   #closing?: Promise<void>;
+  #readers = new WeakMap<object, object>();
+  #surfaceClient?: SurfaceClient<ProgramSurface<P>, CancellationOptions, true>;
 
   /** @internal 通过 bindNativeSession 建立并核验关联。 */
   constructor(readonly definition: P, readonly native: SessionBinding, private readonly sdk: RemoteProgramSession<P>) {
@@ -94,6 +98,108 @@ export class NativeSession<P extends ProgramContract> implements Disposable, Asy
     options.signal?.throwIfAborted();
     return { signal: options.signal ? AbortSignal.any([this.scope.signal, options.signal]) : this.scope.signal };
   }
+
+  /** 借用同一事实与连接，只把读取资格收窄到本 UI generation。 */
+  private borrowReader<T>(source: ResourceReader<T>): ResourceReader<T> {
+    this.assertActive();
+    const previous = this.#readers.get(source);
+    if (previous) return previous as ResourceReader<T>;
+    const reader = new ResourceReader({
+      observations$: normalizeResource(defer(() => {
+        this.assertActive();
+        return source.observations$.pipe(map(observation => { this.assertActive(); return observation; }));
+      })),
+      peek: () => { this.assertActive(); const value = source.peek(); this.assertActive(); return value; },
+    }, { signal: this.scope.signal, onObserverError: error => this.scope.observerError(error),
+      onCleanupError: error => this.#cleanupFailures.add(error) });
+    this.#readers.set(source, reader);
+    return reader;
+  }
+
+  private borrowAction<D extends ActionContract>(action: CollectionResolvedAction<D, CancellationOptions, true>):
+    CollectionResolvedAction<D, CancellationOptions, true> {
+    this.assertActive();
+    // 受理后仍返回原 Invocation；本 UI 退出不改变已受理结果的寿命。
+    return Object.freeze(Object.assign((...args: Parameters<typeof action>) => action(args[0], this.options(args[1])), {
+      definition: action.definition, bindingId: action.bindingId, scope: action.scope,
+      ...action.eligibility ? { eligibility: this.borrowReader(action.eligibility) } : {},
+    }));
+  }
+
+  private borrowSurface<S extends Surface>(source: SurfaceClient<S, CancellationOptions, true>): SurfaceClient<S, CancellationOptions, true> {
+    this.assertActive();
+    const viewResource: SurfaceClient<S, CancellationOptions, true>['viewResource'] = name => {
+      this.assertActive(); return this.borrowReader(source.viewResource(name));
+    };
+    const client: SurfaceClient<S, CancellationOptions, true> = {
+      surface: source.surface,
+      views: Object.freeze(Object.fromEntries(Object.keys(source.surface.views).map(name => [name,
+        defer(() => viewResource(name).values$)]))) as SurfaceClient<S, CancellationOptions, true>['views'],
+      viewResource,
+      observeView: name => viewResource(name).observations$,
+      readView: async (name, options) => {
+        const cancellation = this.options(options);
+        const value = await viewResource(name).read(cancellation.signal);
+        this.assertActive(); return value;
+      },
+      resolveAction: async (name, scope, options) => {
+        const action = await source.resolveAction(name, scope, this.options(options));
+        this.assertActive(); return this.borrowAction(action);
+      },
+      invocation: async (name, id, options) => {
+        const invocation = await source.invocation(name, id, this.options(options));
+        this.assertActive(); return invocation;
+      },
+      operations: Object.freeze(Object.fromEntries(Object.keys(source.surface.operations).map(name => [name,
+        async (options?: CancellationOptions) => {
+          const operation = await source.operations[name]!(this.options(options));
+          this.assertActive(); return operation;
+        }]))) as SurfaceClient<S, CancellationOptions, true>['operations'],
+      module: mount => { this.assertActive(); return this.borrowSurface(source.module(mount)); },
+      collection: name => { this.assertActive(); return this.borrowCollection(source.collection(name)); },
+    };
+    return Object.freeze(client);
+  }
+
+  private borrowCollection<C extends SurfaceCollectionDefinition>(source: SurfaceCollectionClient<C, CancellationOptions, true>):
+    SurfaceCollectionClient<C, CancellationOptions, true> {
+    this.assertActive();
+    const instances = new WeakMap<object, SurfaceInstanceClient<C['surface'], CancellationOptions, true>>();
+    const readDirectory = () => { this.assertActive(); return this.borrowReader(source.instances); };
+    return Object.freeze({
+      get instances() { return readDirectory(); },
+      get instances$() { return readDirectory().values$; },
+      instance: (key: string) => {
+        this.assertActive();
+        const instance = source.instance(key);
+        let borrowed = instances.get(instance);
+        if (!borrowed) {
+          borrowed = Object.freeze({ key: instance.key, ...this.borrowSurface(instance) });
+          instances.set(instance, borrowed);
+        }
+        return borrowed;
+      },
+    });
+  }
+
+  private get surfaceClient(): SurfaceClient<ProgramSurface<P>, CancellationOptions, true> {
+    this.assertActive();
+    return this.#surfaceClient ??= this.borrowSurface(this.sdk);
+  }
+
+  module<Source extends Surface, Selected extends Surface>(mount: SurfaceMount<Source, Selected>): SurfaceClient<Selected, CancellationOptions, true> {
+    return this.surfaceClient.module(mount);
+  }
+
+  collection<K extends keyof ProgramSurface<P>['collections'] & string>(name: K):
+    SurfaceCollectionClient<ProgramSurface<P>['collections'][K], CancellationOptions, true> {
+    return this.surfaceClient.collection(name);
+  }
+
+  get operations(): SurfaceClient<ProgramSurface<P>, CancellationOptions, true>['operations'] { return this.surfaceClient.operations; }
+
+  readonly lookupInvocation: RemoteProgramSession<P>['invocation'] = (name, id, options) =>
+    this.surfaceClient.invocation(name, id, options);
 
   /** 持有的原资源仍由原 scope 决定有效性，UI 不再发起一次查询。 */
   source<T>(source: NativeReadable<T>): HostObservable<T> {
@@ -263,20 +369,14 @@ export class NativeSession<P extends ProgramContract> implements Disposable, Asy
   }
 
   readonly resolveAction: RemoteProgramSession<P>['resolveAction'] = async (name, scope, options) => {
-    const action = await this.sdk.resolveAction(name, scope, this.options(options));
-    this.assertActive();
-    // 保留 exact bindingId / definition / parsed scope；只加本 UI generation 的受理边界。
-    return Object.assign((...args: Parameters<typeof action>) => {
-      this.assertActive();
-      return action(args[0], this.options(args[1]));
-    }, { definition: action.definition, bindingId: action.bindingId, scope: action.scope });
+    return this.surfaceClient.resolveAction(name, scope, options);
   };
 
   readonly submit: RemoteProgramSession<P>['submit'] = (input, options) => this.sdk.submit(input, this.options(options));
   readonly editQueuedInput: RemoteProgramSession<P>['editQueuedInput'] = (id, content, options) => this.sdk.editQueuedInput(id, content, this.options(options));
   /** UI 退出可阻止尚未分派的准备；分派后只结束等待，返回 SDK 的原调用对象。 */
   readonly uploadFile: RemoteProgramSession<P>['uploadFile'] = (data, options) => this.sdk.uploadFile(data, { ...options, ...this.options(options) });
-  readonly readView: RemoteProgramSession<P>['readView'] = (name, options) => this.sdk.readView(name, this.options(options));
+  readonly readView: RemoteProgramSession<P>['readView'] = (name, options) => this.surfaceClient.readView(name, options);
   readonly attachOperation: RemoteProgramSession<P>['attachOperation'] = (definition, reference, options) => this.sdk.attachOperation(definition, reference, this.options(options));
   readonly locateOperation: RemoteProgramSession<P>['locateOperation'] = (definition, command, options) => this.sdk.locateOperation(definition, command, this.options(options));
   readonly readOperationFeedback: RemoteProgramSession<P>['readOperationFeedback'] = (definition, command, id, options) => this.sdk.readOperationFeedback(definition, command, id, this.options(options));

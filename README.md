@@ -34,6 +34,8 @@ Program、本地与远程 SDK 通过共同 `session.files` 读取会话文件：
 
 原生扩展用 `retainNativeSession(Program, clientContext, sessionId)` 取得拥有原生代际引用、独立 SDK 和 UI 观察的对象，使用 `reference.session` 并在退出时 `await reference.release()`。共享客户端装配、目录和 Host 工作仍由原 owner 管理；已经持有原生 binding 与 SDK 的消费者继续用同步 `bindNativeSession` 借用它们。
 
+NativeSession 消费完整 Surface：模块、集合及其嵌套成员使用标准 SurfaceClient，视图、Action、Operation 和调用查回均来自同一 SDK 事实，并受当前 UI 作用域和代际约束。已受理调用及其结果和业务操作的寿命独立于 UI。
+
 远程 SDK 工厂与 retainNativeSession 要求 `defineProgram({ name, version, input, surface })` 签发的共享 Program；合同 version 默认 1，与 npm 版本分开。宿主在创建、补齐创建、恢复及会话请求前核验目标合同，SDK 复核返回身份。纯本地 Program 可以保持无名，本地实际定义仍核 exact 对象；通用会话与模块消费者不因此要求共享名称。
 
 `@hanger-source/dsh-reactive-skills` 提供同版本的应用开发 Skill 与按需 references。安装后运行 `dsh-reactive-skill` 取得该版本入口的绝对路径，编码 Agent 按需读取；它不安装运行时业务 Skill，也不修改全局 Agent 配置。

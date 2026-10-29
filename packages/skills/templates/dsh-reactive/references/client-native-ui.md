@@ -183,6 +183,8 @@ Action 受理 ACK 已确认后，即使 SDK 在构造观察时退出，仍保留
 
 NativeSession.dispose 退出 UI 观察/贡献，不 release 借入 SDK/SessionReference，不取消已受理工作。代际变化或 SDK.release 后旧参与端口硬拒。人工回答走绑定的纯 SDK 与原 question.origin，不接 Controller 当前页的默认路径冒充准入。
 
+NativeSession 的 `module(mount)` 返回标准 SurfaceClient；`collection(name)` 返回集合客户端，其 `instance(key)` 继续支持同一局部视图、Action、`operations` 和调用查回合同；根 `resolveAction` 保留同源 `eligibility`。资源包装共享原 SDK 事实，并受同一 UI Scope 和 generation 约束。模块和集合视图观察稳定地址，旧 Action 保持原绑定，新调用核验 UI；旧 Operation 保持原 command，查询借用 UI signal。根 `invocation(handle)` 观察已有调用活动，`lookupInvocation(name, id, options)` 和模块 `invocation(name, id)` 查回原调用。已受理的 Invocation、result 和业务 Operation 不因 UI 退出改变寿命；SDK 与原生引用由取得它们的 owner 释放。
+
 `nativeSession.human` 保留 SDK 的完整人工快照；questions 和 foregroundQuestions 同样传递 pending/error，不在断线时继续展示旧 ready。`await nativeSession.question(callId, options)` 返回固定问题的原生 UI 绑定，state 是原生 HostObservable，answer 与 attachWait 继续核验这个 UI generation，并委托原 SDK；绑定不创建新问题、不自动 claim 或代答。
 
 dsh rc.3 SessionController 缺 Program 创建/prompt/队列执行前接点，不能声称其默认输入框已贯通框架准入；这不妨碍 typed slots、节点、资源与明确 SDK 参与组合。后台 React 19 renderer 与原生 React 18 UI 需独立编译、独立部署。

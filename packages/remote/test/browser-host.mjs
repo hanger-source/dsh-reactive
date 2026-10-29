@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { createElement as h, Fragment } from 'react';
 import { BehaviorSubject, of } from 'rxjs';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol';
@@ -14,12 +15,12 @@ import WorkspaceFiles from '@deepseek-ai/dsh-api-workspace-files';
 import SandboxPolicy from '@deepseek-ai/dsh-sandbox-policy';
 import Registry from '@deepseek-ai/dsh-typert-registry';
 import { implementAction, implementOperation, defineApplication, defineEnvironment } from '@hanger-source/dsh-reactive';
-import { implementProgram, useAction, Expose } from '@hanger-source/dsh-reactive/program';
+import { implementModule, implementProgram, useAction, useObservable, useOperation, Expose } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeModel, requireActivePlugin } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeFiles } from '@hanger-source/dsh-reactive-dsh/files';
 import { mountProgramGateway, RemoteAuthenticationError } from '@hanger-source/dsh-reactive-remote';
 import { bootInjections } from '@deepseek-ai/dsh-client-modules';
-import { operation, check, surface, program } from './browser-contracts.mjs';
+import { operation, check, surface, program, save, local, layout, rowKey, nativeProgram } from './browser-contracts.mjs';
 
 const ports = process.argv.slice(2).filter(value => value.startsWith('--port='));
 if (ports.length > 1 || ports.some(value => !/^--port=\d+$/u.test(value)
@@ -75,8 +76,38 @@ await writeFile(join(home, 'native.txt'), '原生文件第一份');
 const files = createNativeFiles({ service: 'provided' });
 const current = new BehaviorSubject(new Date('2026-10-26T00:00:00Z'));
 let executions = 0, queries = 0, models = 0, parsedAmount, nativeActionGate;
-const owner = implementOperation(operation, { locate: () => ({ status: 'unknown' }), observe() {
+let revision = 1, generation = 0;
+const moduleFile = join(home, 'native-records.json');
+await writeFile(moduleFile, '[]');
+const moduleLayout = new BehaviorSubject(1);
+const ready = value => ({ status: 'ready', generation: ++generation, observedAt: Date.now(), value });
+const qualification = new BehaviorSubject(ready({ allowed: true }));
+await writeFile(join(home, 'native-module.txt'), '原生模块第一份');
+const record = new BehaviorSubject(ready(await readFile(join(home, 'native-module.txt'), 'utf8')));
+const owner = implementOperation(operation, { async locate(command) {
+  const records = JSON.parse(await readFile(moduleFile, 'utf8'));
+  return records.some(record => record.command === command)
+    ? { status: 'accepted', reference: command, state: { phase: 'done', at: '2026-10-26T00:00:08Z' } } : { status: 'unknown' };
+}, observe() {
   queries++; return of({ status: 'ready', generation: 0, observedAt: Date.now(), value: { phase: 'done', at: '2026-10-26T00:00:08Z' } });
+} });
+const moduleAction = implementAction(save, { operationOwner: owner, async execute(input, call) {
+  if (call.source.actorId !== 'browser-participant') throw new Error('WRONG_AUTHENTICATED_ACTOR');
+  const gate = nativeActionGate;
+  if (gate) { gate.entered.resolve(); await gate.release.promise; call.signal.throwIfAborted();
+    if (nativeActionGate === gate) nativeActionGate = undefined; }
+  const records = JSON.parse(await readFile(moduleFile, 'utf8'));
+  await writeFile(moduleFile, JSON.stringify([...records, { command: call.scope, input }]));
+  return call.scope;
+} });
+const rootModule = implementModule(surface, { Component() {
+  const action = useAction(implementation, () => null, [], { eligibility: qualification });
+  return h(Expose, { surface, value: { views: { current }, actions: { check: action } } });
+} });
+const recordModule = implementModule(local, { Component({ target }) {
+  const action = useAction(moduleAction, () => target, [target], { eligibility: qualification });
+  const work = useOperation(owner, () => target, [target]);
+  return h(Expose, { surface: local, value: { views: { record }, actions: { save: action }, operations: { current: work } } });
 } });
 const implementation = implementAction(check, { operationOwner: owner, async execute(input, call) {
   if (call.source.actorId !== 'browser-participant') throw new Error('WRONG_AUTHENTICATED_ACTOR');
@@ -98,6 +129,15 @@ const definition = defineApplication({ name: 'browser-proof', admit: async () =>
     const action = useAction(implementation, () => null, []);
     return Expose({ surface, value: { views: { current }, actions: { check: action } } });
   } }),
+}), defineEnvironment({ id: 'native-work', instructions: '原生消费者沿完整模块合同读取与调用',
+  program: implementProgram(nativeProgram, { modules: { root: rootModule, record: recordModule }, Component({ modules }) {
+    const rows = useObservable(() => moduleLayout, [moduleLayout]);
+    return h(Fragment, null,
+      h(modules.root.Component, { mount: layout.mounts.root }),
+      h(modules.record.Component, { mount: layout.mounts.overview, target: 'overview:1' }),
+      rows.status === 'ready' && rows.value ? h(modules.record.Component, { key: rows.value,
+        mount: layout.mounts.rows.instance(rowKey), target: rowKey + ':' + rows.value }) : null);
+  } }),
 })] });
 const runtime = await createRuntime(() => definition, { home: join(home, 'home'), operations: [owner], files, tools: 'native',
   async installNative(ctx) {
@@ -112,6 +152,7 @@ const runtime = await createRuntime(() => definition, { home: join(home, 'home')
 const workspace = await runtime.application.createWorkspace({ directory: home, title: '浏览器共享工作目录' });
 const sessionId = randomUUID();
 const credential = randomUUID();
+const nativeSessionId = randomUUID();
 let origin;
 const gateway = await mountProgramGateway(runtime.native, { application: runtime.application, registry: 'provided',
   model: { provider: 'browser-proof', model: 'unused' }, participant: principal => ({ participant: 'human', actorId: principal.id }),
@@ -122,7 +163,14 @@ const gateway = await mountProgramGateway(runtime.native, { application: runtime
         name: 'participate', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/view', 'reactivePrograms/questions', 'reactivePrograms/resolveAction', 'reactivePrograms/startAction',
           'reactivePrograms/fileRead', 'reactivePrograms/fileReadBytes', 'reactivePrograms/fileStat', 'reactivePrograms/fileList', 'reactivePrograms/fileChanges',
           'reactivePrograms/actionResult', 'reactivePrograms/observeAction', 'reactivePrograms/observeOperation', 'reactivePrograms/observeInvocationOperation', 'session/list', 'session/control', 'session/follow', 'session/projections', 'session/page', 'commands/list'],
-      }, resource: { kind: 'session', id: sessionId } }];
+      }, resource: { kind: 'session', id: sessionId } },
+      { role: { name: 'native-module-participate', resource: 'session', actions: [
+        'reactivePrograms/open', 'reactivePrograms/view', 'reactivePrograms/questions', 'reactivePrograms/resolveAction',
+        'reactivePrograms/startAction', 'reactivePrograms/actionInvocation', 'reactivePrograms/actionResult', 'reactivePrograms/observeAction',
+        'reactivePrograms/resolveOperation', 'reactivePrograms/locateOperation', 'reactivePrograms/observeOperation', 'reactivePrograms/observeInvocationOperation',
+        'reactivePrograms/fileRead', 'reactivePrograms/fileReadBytes', 'reactivePrograms/fileStat', 'reactivePrograms/fileList', 'reactivePrograms/fileChanges',
+        'session/list', 'session/control', 'session/follow', 'session/projections', 'session/page', 'commands/list',
+      ] }, resource: { kind: 'session', id: nativeSessionId } }];
   } }), carrier: { async authenticate(request) {
     if (!request.headers.get('cookie')?.split(';').some(part => part.trim() === 'remote-proof=' + credential)
       || (request.headers.has('origin') && request.headers.get('origin') !== origin)) throw new RemoteAuthenticationError(401);
@@ -137,7 +185,22 @@ const app = createServer(async (incoming, outgoing) => {
     });
     upstream.on('error', error => outgoing.destroy(error)); incoming.once('aborted', () => upstream.destroy()); incoming.pipe(upstream); return;
   }
-  if (incoming.url === '/setup' || incoming.url === '/proof') { outgoing.setHeader('content-type', 'application/json'); outgoing.end(JSON.stringify({ workspaceId: workspace.workspaceId, sessionId, executions, queries, parsedAmount, models })); return; }
+  if (incoming.url === '/setup' || incoming.url === '/proof') { outgoing.setHeader('content-type', 'application/json'); outgoing.end(JSON.stringify({ workspaceId: workspace.workspaceId, sessionId, nativeSessionId, executions, queries, parsedAmount, models,
+    records: JSON.parse(await readFile(moduleFile, 'utf8')) })); return; }
+  if (incoming.url?.startsWith('/native-surface/') && incoming.method === 'POST') {
+    if (!nativeAssets) { outgoing.writeHead(503); outgoing.end('NATIVE_ASSETS_REQUIRED'); return; }
+    const action = incoming.url.slice('/native-surface/'.length);
+    if (action === 'pending') qualification.next({ status: 'pending', generation: ++generation });
+    else if (action === 'denied') qualification.next(ready({ allowed: false, reason: '原生资料尚未确认' }));
+    else if (action === 'allowed') qualification.next(ready({ allowed: true }));
+    else if (action === 'remove') moduleLayout.next(0);
+    else if (action === 'replace') moduleLayout.next(++revision);
+    else if (action === 'update') {
+      await writeFile(join(home, 'native-module.txt'), '原生模块实际更新');
+      record.next(ready(await readFile(join(home, 'native-module.txt'), 'utf8')));
+    } else { outgoing.writeHead(400); outgoing.end('NATIVE_SURFACE_CONTROL_INVALID'); return; }
+    outgoing.setHeader('content-type', 'application/json'); outgoing.end(JSON.stringify({ ok: true })); return;
+  }
   if (incoming.url === '/native-file/update' && incoming.method === 'POST') {
     if (!nativeAssets) { outgoing.writeHead(503); outgoing.end('NATIVE_ASSETS_REQUIRED'); return; }
     await writeFile(join(home, 'native.txt'), '原生文件实际更新');

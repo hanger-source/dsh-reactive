@@ -1,4 +1,4 @@
-import { defineAction, defineProgram, defineSurface, resourceView, z, type OperationContract, type OperationHandle, type Invocation, type Json } from '@hanger-source/dsh-reactive';
+import { collectionSurface, composeSurface, defineAction, defineOperation, defineProgram, defineSurface, resourceView, z, type OperationContract, type OperationHandle, type Invocation, type Json } from '@hanger-source/dsh-reactive';
 import { bindProgramClient, type RemoteProgramSession, type RemoteServiceProgramSession } from '@hanger-source/dsh-reactive-client';
 import { createNativeActionViews, defineNativeActionView, bindNativeSession, retainNativeSession,
   nativeHooks, type NativeSession, type NativeActionViewProps } from '@hanger-source/dsh-reactive-native-ui';
@@ -16,6 +16,20 @@ export const nativeImage = (native: NativeSession<typeof program>, attachmentId:
   sessionImage(native, attachmentId, signal);
 export const portableControls = (session: Session, signal: AbortSignal) => sessionControls(session, signal);
 export const portableModuleRevision = (session: RemoteProgramSession<typeof ConsumerModuleProgram>, signal: AbortSignal) => readSelectedRevision(session, signal);
+const operation = defineOperation({ kind: 'release-ui-record', version: 1, command: z.string(), reference: z.string(),
+  state: z.object({ done: z.boolean() }), settled: state => state.done ? state : undefined });
+const moduleSurface = defineSurface({ views: { version: resourceView(z.string()) }, actions: { read: action }, operations: { current: operation } });
+const modules = composeSurface({ record: moduleSurface, rows: collectionSurface(moduleSurface) });
+const NativeModuleProgram = defineProgram({ name: 'release_ui_modules', input: z.null(), surface: modules.surface });
+export async function nativeModuleSurface(native: NativeSession<typeof NativeModuleProgram>, signal: AbortSignal) {
+  const record = native.module(modules.mounts.record), rows = native.collection('rows');
+  const row = rows.instance('record'), read = await row.resolveAction('read', { subject: 'record' }, { signal });
+  return { version: await record.readView('version', { signal }), resource: record.viewResource('version'),
+    instances: rows.instances, eligibility: read.eligibility, operation: await record.operations.current({ signal }),
+    rootOperation: await native.operations['record.current']({ signal }),
+    invocation: (id: string) => row.invocation('read', id, { signal }),
+    rootInvocation: (id: string) => native.lookupInvocation('record.read', id, { signal }) };
+}
 export const portableCall = async (session: Session, signal: AbortSignal) => {
   const invocation = await callPublishedAction(session, 'read', { subject: 'release' }, null);
   return invocationReceipt(invocation, signal);
