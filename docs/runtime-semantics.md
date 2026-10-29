@@ -87,6 +87,12 @@ dsh 的实际顺序是：inbox 提取并报告本步输入，执行 `system-prom
 
 通过准备边界的文本与工具 schema 构成本步装配。后续事实可以继续变化，原生请求保留已取得的步骤声明，工具开始执行时再核验当前绑定、enabled 与业务准入。这里的稳定性检查服务进程内装配，不构成多个权威业务 owner 之间的原子事务。
 
+Goal id 与 revision 同样属于原生准备事实。结果输入先按原 continuation、等待和 Operation 事实取得准入，必要的原生 resume 在 prompt 装配前完成；异步准备和 pre-step 返回后再核验同一事实。实际准入的 turn/step 固定 GoalRef 或明确的 null，工具与 PTC 子调用沿真实调用发生坐标取得它。外部编辑 Goal 不改写旧步骤权限；completeGoal 使用原生精确修订核验，wait 与 Operation Follow 保留原关联。
+
+没有新输入的自然下一步沿用上一准入关联，包括明确的 null。原生 Agent 在真实执行边界成功改变 Goal 时，正式 Goal 变更提供后续步骤的新关联，原步骤不变；会话其他工作和外部 Native API 的变更不会借此转移权限。该运行内关联随 turn 结束释放，持久等待与反馈继续使用各自已登记的 continuation，不恢复 JavaScript 调用栈。
+
+正式 Goal 工具的 dispatch 关联只在实际执行及其受信任中间件存续期间有效，后台 Promise 继承的 Agent 身份不授予后续步骤权限；同步重入时只接受仍与当前原生事实一致的精确变更。结果已经 rearm、步骤却拒准入时，框架仅 disarm 自己这次尚未消费且仍为当前修订的 rearm，保留原结果及原关联等待新的真实输入或显式原生 Goal 恢复。拒准入不会回滚修订，也不会自动把旧结果签给新修订；宿主 resume 只恢复会话，不等于恢复 Goal。
+
 普通业务通知更新组件、查询和公开视图；模型推进来自显式可信输入、原生 Goal 或有效续接。需要自动投递时，由程序关系显式调用 `conversation.submit`，仍经过同一输入准入与持久回执边界。
 
 ## Action 绑定与三类调用

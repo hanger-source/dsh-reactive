@@ -365,14 +365,23 @@ export class OperationParticipation {
         const result = input.result;
         if (!result)
             return input.delivery !== 'inject';
-        if (!result.ready)
+        if (!result.continuation.goal)
+            return this.resultReady(entry, input);
+        const goal = this.ctx.goals.get(entry.agent);
+        return goal?.phase === 'active' && goal.id === result.continuation.goal.id && goal.revision === result.continuation.goal.revision
+            && this.resultReady(entry, input);
+    }
+    /** 只复核原结果和等待事实；Goal 准入身份由 shouldWake 或本次已准备的精确关联负责。 */
+    resultReady(entry: LiveConversation, input: AdmittedSubmission): boolean {
+        const result = input.result;
+        if (!result?.ready)
             return false;
         if (!result.continuation.goal)
             return !this.#follows.hasPendingContinuation(entry.agent, result.continuation);
         const goal = this.ctx.goals.get(entry.agent);
-        return goal?.phase === 'active' && goal.id === result.continuation.goal.id && goal.revision === result.continuation.goal.revision
-            && goal.roundsStarted < goal.maxGoalRounds && !entry.session.state.hasWaits(result.continuation.goal)
-            && !this.#follows.hasPendingGoal(entry.agent, result.continuation.goal);
+        return goal?.phase === 'active' && goal.roundsStarted < goal.maxGoalRounds
+            && !entry.session.state.hasWaits(result.continuation.goal) && !this.#follows.hasPendingGoal(entry.agent, result.continuation.goal)
+            && !entry.session.state.hasWaits(goal) && !this.#follows.hasPendingGoal(entry.agent, goal);
     }
     validateContinuation(entry: LiveConversation, continuation: Continuation, wait: WaitReference) {
         if (continuation.sessionId !== entry.agent.id)

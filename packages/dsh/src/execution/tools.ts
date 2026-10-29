@@ -1,4 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis";
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { ToolDefinition, ToolExecution } from "@deepseek-ai/dsh-tools";
 import { firstValueFrom } from "rxjs";
@@ -16,11 +17,24 @@ const nativeTools = new Set(['run_code', 'skill', 'get_goal', 'create_goal', 'up
 type NativeAdmission = { readonly entry: LiveConversation; readonly admit: NativeToolAdmission | undefined;
     readonly eligibility: ResourceReader<Eligibility> | undefined; readonly qualification: ReturnType<typeof retainEligibility> | undefined;
     readonly signal: AbortSignal; readonly stop: () => void };
+type GoalDispatch = {
+    readonly entry: LiveConversation;
+    readonly exec: ToolExecution;
+    readonly name: string;
+    readonly callId: string;
+    readonly rootCallId: string;
+    readonly callSequence: number;
+    readonly turn: number;
+    readonly step: number;
+    readonly signal: AbortSignal;
+    active: boolean;
+};
 /** 原生工具与 PTC 取得同一能力表；缓存仅属于真实 Agent 和声明绑定。 */
 export class ProgramTools {
     #toolDefinitions = new WeakMap<Agent, WeakMap<BoundOffer | BoundFollow, ToolDefinition>>();
     // 只证明本次原生调用已通过哪份政策；最终guard或原生结果交付即释放。
     #nativeAdmissions = new WeakMap<ToolExecution, NativeAdmission>();
+    #goalDispatch = new AsyncLocalStorage<GoalDispatch>();
     constructor(private readonly ctx: Context, private readonly workspaces: Workspaces, private readonly sessions: ConversationSessions, private readonly authority: ActionAuthority, private readonly operations: OperationParticipation) { }
     private releaseNativeAdmission(exec: ToolExecution) {
         const admission = this.#nativeAdmissions.get(exec);
@@ -135,6 +149,50 @@ export class ProgramTools {
         return definition;
     }
     installPolicies(): void {
+        this.ctx.effect(() => () => this.#goalDispatch.disable());
+        this.ctx.on('tools/execute', (exec, next) => {
+            if (exec.name !== 'create_goal' && exec.name !== 'update_goal') return next();
+            const entry = exec.agent && this.sessions.forAgent(exec.agent);
+            if (!entry) return next();
+            const occurrence = entry.session.state.call(exec.callId);
+            const call = occurrence && entry.session.state.value.calls[String(occurrence.callSequence)];
+            const open = entry.session.state.value.openStep;
+            if (!call || call.name !== exec.name || call.rootCallId !== exec.rootCallId
+                || !open || open.turn !== call.turn || open.step !== call.step
+                || entry.progress.goal(call.turn, call.step) === undefined)
+                throw new Error('REACTIVE_GOAL_CONTROL_STEP_NOT_ADMITTED');
+            const dispatch: GoalDispatch = { entry, exec, name: exec.name, callId: exec.callId, rootCallId: exec.rootCallId,
+                callSequence: call.callSequence, turn: call.turn, step: call.step, signal: exec.signal, active: true };
+            return this.#goalDispatch.run(dispatch, async () => {
+                try { return await next(); }
+                finally { dispatch.active = false; }
+            });
+        });
+        this.ctx.on('goal/changed', ({ agent, change }) => {
+            const dispatch = this.#goalDispatch.getStore();
+            if (!dispatch?.active) return;
+            const { entry, exec } = dispatch;
+            if (exec.agent !== agent || entry.agent !== agent || exec.name !== dispatch.name
+                || exec.callId !== dispatch.callId || exec.rootCallId !== dispatch.rootCallId
+                || dispatch.signal.aborted || exec.signal.aborted || entry.scope.signal.aborted
+                || entry.session.program.signal.aborted || this.ctx.agents.currentInitiator() !== agent
+                || this.ctx.agents.get(agent.id) !== agent || this.sessions.forAgent(agent) !== entry
+                || entry.session.live.value !== entry) return;
+            const call = entry.session.state.value.calls[String(dispatch.callSequence)];
+            const open = entry.session.state.value.openStep;
+            if (!call || call.callId !== dispatch.callId || call.rootCallId !== dispatch.rootCallId || call.name !== dispatch.name
+                || call.turn !== dispatch.turn || call.step !== dispatch.step || !open || open.turn !== dispatch.turn
+                || open.step !== dispatch.step || entry.progress.goal(dispatch.turn, dispatch.step) === undefined) return;
+            // 当前值只核验此原生事件仍为权威；签发的 ref 始终取事件，拒绝同步重入后的旧通知。
+            const current = this.ctx.goals.get(agent), goal = change.goal;
+            if (change.operation === 'clear') {
+                if (current !== undefined) return;
+            } else if (!goal || goal.id !== change.ref.id || goal.revision !== change.ref.revision
+                || current?.id !== change.ref.id || current.revision !== change.ref.revision) return;
+            const continues = ['create', 'edit', 'resume'].includes(change.operation) && goal?.phase === 'active';
+            entry.progress.controlledGoal(dispatch.turn, dispatch.step,
+                continues ? Object.freeze({ id: change.ref.id, revision: change.ref.revision }) : null);
+        });
         this.ctx.on('tools/pre-execute', async (exec, next) => {
             const entry = exec.agent && this.sessions.forAgent(exec.agent);
             if (!entry)

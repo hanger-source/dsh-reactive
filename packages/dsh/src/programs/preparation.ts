@@ -1,5 +1,6 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
+import type { GoalRef } from '@deepseek-ai/dsh-goal';
 import { type Conversation, conversationBindings } from "@hanger-source/dsh-reactive/kernel";
 import { ProgramInstance } from "@hanger-source/dsh-reactive/kernel";
 import { ProgramSkills } from "./program-skills.ts";
@@ -82,6 +83,12 @@ export class ConversationPrograms {
             program.flush();
             this.tools.prepareNativeTools(entry);
             const revision = program.revision.peek();
+            const nativeGoal = this.ctx.goals.get(entry.agent);
+            const goal: GoalRef | null = nativeGoal ? Object.freeze({ id: nativeGoal.id, revision: nativeGoal.revision }) : null;
+            const goalCurrent = () => {
+                const current = this.ctx.goals.get(entry.agent);
+                return current ? goal?.id === current.id && goal.revision === current.revision : goal === null;
+            };
             try {
                 await program.prepare(signal, observer);
                 const skillsStable = await entry.skills.prepare(signal, observer);
@@ -93,15 +100,15 @@ export class ConversationPrograms {
                     if (signal.aborted)
                         return false;
                     program.flush();
-                    return revision === program.revision.peek() && contextsStable() && skillsStable();
+                    return revision === program.revision.peek() && contextsStable() && skillsStable() && goalCurrent();
                 };
                 if (stable())
-                    return stable;
+                    return { stable, goal: nativeGoal?.phase === 'active' ? goal : null, goalCurrent };
             }
             catch (error) {
                 signal.throwIfAborted();
                 program.flush();
-                if (revision !== program.revision.peek())
+                if (revision !== program.revision.peek() || !goalCurrent())
                     continue;
                 throw error;
             }
@@ -142,6 +149,7 @@ export class ConversationPrograms {
                 return () => { if (waiting.delete(token)) publish(); };
             };
             signal.addEventListener('abort', close, { once: true });
+            let releaseInputs: (() => void) | undefined;
             try {
                 bindings.publishPreparation(snapshot());
                 signal.throwIfAborted();
@@ -149,27 +157,39 @@ export class ConversationPrograms {
                     () => firstValueFrom(abortable(() => this.delegations.beforeStep(entry.agent, signal), signal)));
                 signal.throwIfAborted();
                 this.sessions.assertSessionWorkspace(entry.session);
-                await observePreparation(observer, { kind: 'inputs' }, signal, () => this.inputs.prepare(entry, signal));
+                const inputPreparation = await observePreparation(observer, { kind: 'inputs' }, signal, async () => {
+                    const prepared = await this.inputs.prepare(entry, signal);
+                    releaseInputs = prepared.release;
+                    return prepared;
+                });
                 signal.throwIfAborted();
                 publish();
                 // 只使用公开装配 API：重新收集已更新的声明和上下文，不修改 loop 保存的旧快照。
                 for (;;) {
-                    const stable = await this.prepareBindings(entry, signal, observer);
+                    const prepared = await this.prepareBindings(entry, signal, observer);
                     const assembled = await observePreparation(observer, { kind: 'assembly' }, signal,
                         () => firstValueFrom(abortable(() => entry.agent.ctx.systemPrompt.assemble({ ...context, reactivePrepared: true }), signal)));
                     signal.throwIfAborted();
                     this.sessions.assertSessionWorkspace(entry.session);
-                    if (!stable())
+                    if (!prepared.stable())
                         continue;
                     const declared = entry.session.program.offers;
-                    return { ...assembled, tools: assembled.tools.filter(tool => this.tools.nativeToolEnabled(entry, tool.name)
+                    const assembly = { ...assembled, tools: assembled.tools.filter(tool => this.tools.nativeToolEnabled(entry, tool.name)
                             || declared.has(tool.name) || entry.session.program.follows.has(tool.name)) };
+                    entry.progress.prepared({ signal: context.signal, inputs: entry.session.state.inputs(entry.claimed),
+                        goal: inputPreparation.fixedGoal ? inputPreparation.goal : prepared.goal,
+                        current: prepared.goalCurrent, ready: inputPreparation.ready, release: inputPreparation.release });
+                    releaseInputs = undefined;
+                    return assembly;
                 }
             }
             finally {
-                signal.removeEventListener('abort', close);
-                close();
-                entry.preparing = false;
+                try { releaseInputs?.(); }
+                finally {
+                    signal.removeEventListener('abort', close);
+                    close();
+                    entry.preparing = false;
+                }
             }
         });
     }

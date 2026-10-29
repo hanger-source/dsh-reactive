@@ -180,9 +180,12 @@ export class ActionAuthority {
         if (!occurrence || occurrence.rootCallId !== exec.rootCallId)
             throw new Error('REACTIVE_CALL_INPUT_UNAVAILABLE');
         const inputs = occurrence.inputs;
-        const goal = this.ctx.goals.get(entry.agent);
+        const call = entry.session.state.value.calls[String(occurrence.callSequence)];
+        if (!call) throw new Error('REACTIVE_CALL_INPUT_UNAVAILABLE');
+        const goal = entry.progress.goal(call.turn, call.step);
+        if (goal === undefined) throw new Error('REACTIVE_CALL_STEP_NOT_ADMITTED');
         const continuation: Continuation = { sessionId: entry.agent.id, inputs,
-            goal: goal?.phase === 'active' ? { id: goal.id, revision: goal.revision } : null };
+            goal };
         const execution: ToolExecution = { invocationId: JSON.stringify([entry.agent.id, occurrence.callSequence]), sessionId: entry.agent.id,
             source: { kind: 'tool', callId: exec.callId, rootCallId: exec.rootCallId, parentCallId: occurrence.parentCallId },
             inputs, signal: exec.signal, continuation,

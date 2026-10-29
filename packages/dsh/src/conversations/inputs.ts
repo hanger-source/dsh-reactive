@@ -1,6 +1,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { firstValueFrom } from 'rxjs';
 import type { Agent } from "@deepseek-ai/dsh-agent";
+import type { GoalRef } from '@deepseek-ai/dsh-goal';
 import type { UserMessage } from '@deepseek-ai/dsh-llm';
 import type { ExecutionFailure } from '@hanger-source/dsh-reactive/kernel';
 import { humanQuestionCall } from './records.ts';
@@ -88,6 +89,53 @@ export class ConversationInputs {
                 }
             }
         }
+        const independent = entry.claimed.some(message => {
+            if (isRecoveryControl(message)) return false;
+            const requestId = 'rpcId' in message.source && typeof message.source.rpcId === 'string' ? message.source.rpcId : undefined;
+            return requestId === undefined || !entry.session.state.record(requestId)?.result;
+        });
+        const results = entry.claimed.flatMap(message => {
+            const requestId = 'rpcId' in message.source && typeof message.source.rpcId === 'string' ? message.source.rpcId : undefined;
+            const record = requestId === undefined ? undefined : entry.session.state.record(requestId);
+            return record?.result ? [record] : [];
+        });
+        const hasNewInput = entry.claimed.some(message => !isRecoveryControl(message)
+            && (message.source.kind === 'goal' || entry.session.state.reference(message).length > 0));
+        // 结果先以原 continuation 取得准入，再由本次原生 resume 明确签出新 revision；prompt 使用同一 revision。
+        const preparingGoal = this.ctx.goals.get(agent);
+        let admittedGoal: GoalRef | null = preparingGoal ? Object.freeze({ id: preparingGoal.id, revision: preparingGoal.revision }) : null;
+        const admitted = independent ? [] : results.filter(record => this.operations().shouldWake(entry, record));
+        const goalResults = admitted.filter(record => Boolean(record.result?.continuation.goal));
+        const selected = goalResults.length ? goalResults : admitted;
+        let resumed: GoalRef | undefined;
+        if (!independent) {
+            const result = goalResults[0]?.result;
+            const goal = this.ctx.goals.get(agent);
+            if (result?.continuation.goal && goal?.phase === 'active' && goal.activation === 'disarmed'
+                && goal.id === result.continuation.goal.id && goal.revision === result.continuation.goal.revision) {
+                const next = this.ctx.goals.resume(agent, goal);
+                resumed = admittedGoal = Object.freeze({ id: next.id, revision: next.revision });
+            }
+        }
+        const ready = () => {
+            if (!independent) {
+                const current = this.ctx.goals.get(agent);
+                if (current ? admittedGoal?.id !== current.id || admittedGoal.revision !== current.revision : admittedGoal !== null) return false;
+            }
+            return independent || !results.length || selected.some(record => this.operations().resultReady(entry, record));
+        };
+        let released = false;
+        const release = () => {
+            if (released) return;
+            released = true;
+            if (!resumed || this.ctx.agents.get(agent.id) !== agent) return;
+            const current = this.ctx.goals.get(agent);
+            if (current?.id === resumed.id && current.revision === resumed.revision && current.activation === 'armed')
+                this.ctx.goals.disarm(agent);
+        };
+        let goal: GoalRef | null | undefined = goalResults.length ? admittedGoal : null;
+        if (!hasNewInput) goal = entry.progress.continuedGoal();
+        return { ready, release, fixedGoal: !hasNewInput || (!independent && results.length > 0), goal };
     }
     async revalidateCauses(causes: readonly InputReference[], signal: AbortSignal, seen = new Set<string>()) {
         for (const cause of causes) {
@@ -451,41 +499,29 @@ export class ConversationInputs {
             if (!entry)
                 return next();
             entry.stepSignal = signal;
+            const prepared = entry.progress.preparedFor(signal);
             const admissionSignal = AbortSignal.any([signal, entry.scope.signal, entry.session.scope.signal]);
-            return admitPendingRecovery(agent, messages, signal, async () => {
-                const decision = await firstValueFrom(abortable(() => next(), admissionSignal));
-                if (decision.kind !== 'enter')
-                    return decision;
-                admissionSignal.throwIfAborted();
-                this.sessions.assertSessionWorkspace(entry.session);
-                const independent = messages.some(message => {
-                    if (isRecoveryControl(message))
-                        return false;
-                    const requestId = 'rpcId' in message.source && typeof message.source.rpcId === 'string' ? message.source.rpcId : undefined;
-                    return requestId === undefined || !entry.session.state.record(requestId)?.result;
-                });
-                const results = messages.flatMap(message => {
-                    const requestId = 'rpcId' in message.source && typeof message.source.rpcId === 'string' ? message.source.rpcId : undefined;
-                    const record = requestId === undefined ? undefined : entry.session.state.record(requestId);
-                    return record?.result ? [record] : [];
-                });
-                if (!independent && results.length && !results.some(record => this.operations().shouldWake(entry, record))) {
-                    retainClaimedInputs(agent, messages, 'next-step');
-                    return { kind: 'reject' };
-                }
-                // 人的新要求可以处理其他工作；同行旧结果不借此取得 Goal 续接权限。
-                if (!independent) {
-                    const result = results.find(record => this.operations().shouldWake(entry, record))?.result;
-                    const goal = this.ctx.goals.get(agent);
-                    if (result?.continuation.goal && goal?.phase === 'active' && goal.activation === 'disarmed'
-                        && goal.id === result.continuation.goal.id && goal.revision === result.continuation.goal.revision) {
-                        this.ctx.goals.resume(agent, goal);
+            try {
+                return await admitPendingRecovery(agent, messages, signal, async () => {
+                    const decision = await firstValueFrom(abortable(() => next(), admissionSignal));
+                    if (decision.kind !== 'enter') {
+                        if (!admissionSignal.aborted) retainClaimedInputs(agent, messages, 'next-step');
+                        return decision;
                     }
-                }
-                const entered = { ...decision, messages: decision.messages.filter(message => message.source.kind !== 'reactive-resume-signal') };
-                entry.progress.admitted(turn, step, entry.session.state.inputs(entered.messages));
-                return entered;
-            });
+                    admissionSignal.throwIfAborted();
+                    this.sessions.assertSessionWorkspace(entry.session);
+                    if (!prepared.current()) throw new Error('REACTIVE_STEP_GOAL_CHANGED');
+                    if (!prepared.ready()) {
+                        retainClaimedInputs(agent, messages, 'next-step');
+                        return { kind: 'reject' };
+                    }
+                    const entered = { ...decision, messages: decision.messages.filter(message => message.source.kind !== 'reactive-resume-signal') };
+                    const inputs = entry.session.state.inputs(entered.messages);
+                    if (canonical(inputs) !== canonical(prepared.inputs)) throw new Error('REACTIVE_STEP_INPUTS_CHANGED');
+                    entry.progress.admitted(turn, step, inputs, prepared);
+                    return entered;
+                });
+            } finally { entry.progress.discardPreparation(prepared); }
         }, { prepend: true });
     }
 }

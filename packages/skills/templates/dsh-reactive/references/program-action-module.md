@@ -46,6 +46,8 @@ Operation 代表业务 owner 持有的跨调用事实。局部 Action 若声明 
 
 Offer 自动读取 action.eligibility；enabled 仍只是模型声明开关。Context 的 eligibility 可接同一源或 action.eligibility：denied 撤声明，pending/error 对 required 阻塞、对 optional 撤声明，不阻塞无关模块。Expose 可稳定暴露合同。
 
+模型工具的 Goal 关联来自实际准备并准入的原生 step，PTC 子调用沿同一根步骤。wait、Operation Follow 与 completeGoal 共同使用固定引用，不在工具返回时选择当前 Goal。无 Goal 关联时 completeGoal 拒绝；无新输入的连续步骤保留原关联，正式原生 Goal 控制可以为后续步骤建立新关联。Goal 编辑后的旧模型工具仍持有旧修订，由原生 CAS 拒绝错误完成。业务副作用、读取和权限仍按各自 owner 及原输入核验，不能把修改 Goal 等同于取消已受理业务。
+
 ## 组件只贡献当前声明
 
 一个业务模块通常将同一资源接到三处：

@@ -110,6 +110,8 @@ defineAction 和 implementAction 都不执行业务；useAction(prepareMerchant,
 
 Action 绑定保存已解析目标的自有冻结快照。它不会在执行途中改用页面最新选择。原生工具取得真实 callId、rootCallId、parentCallId、输入关联和适用 Goal；独立参与者调用有自己的身份，不从环境中借用当前 Goal 权限。
 
+工具的 Goal 关联固定在该模型步实际准备、准入的边界。模型请求发出后修改 Goal，迟到工具仍保留原引用；完成交给原生精确修订核验，wait 和 Operation 关联也不升级到新修订。没有 Goal 关联的步骤不能通过 completeGoal 完成会话中已有的目标；无新输入的连续模型步骤保留原关联，明确成功的原生 Goal 控制才为后续步骤建立新关联。框架自己的结果续接在装配前完成准入及 rearm，使 prompt 和本步引用一致；之后异步等待中的 Goal 变化不会重新签发权限。
+
 ### 共同业务资格
 
 绑定可以接收 `eligibility: ResourceSource<Eligibility>`，其中 `Eligibility` 是 `{ allowed: true } | { allowed: false, reason: string }`。`bindAction` 在绑定选项中传入；`useAction(implementation, target, dependencies, { eligibility })` 使用第四个参数，局部 factory 则在返回选项中提供 `eligibility`。绑定通过 `action.eligibility` 暴露只读 `ResourceReader`，保留资源 Observation 的 pending、ready（允许或拒绝）和 error，不把拒绝压成资源错误。
