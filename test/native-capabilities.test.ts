@@ -21,7 +21,7 @@ import type { JobEvent, JobOutcome } from '@deepseek-ai/dsh-jobs';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import type { ToolDefinition, ToolExecutionResult } from '@deepseek-ai/dsh-tools';
-import { collectionSurface, defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, composeSurface, readActionPresentation, ConversationAccessRevokedError, SessionFileOutsideWorkspaceError, Scope, ScopeDisposedError, z, type NativeToolCall, type NativeToolAdmission, type ProgramSession, type SessionFiles } from '@hanger-source/dsh-reactive';
+import { collectionSurface, defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface, composeSurface, readActionPresentation, ConversationAccessRevokedError, SessionFileOutsideWorkspaceError, Scope, ScopeDisposedError, z, type Eligibility, type Observation, type NativeToolCall, type NativeToolAdmission, type ProgramSession, type SessionFiles } from '@hanger-source/dsh-reactive';
 import { implementProgram, NativeTools, Offer, Expose, Module, useAction, useObservable, useResource, useRelation } from '@hanger-source/dsh-reactive/program';
 import { boot, text, tool } from './native-support.ts';
 import type { ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
@@ -109,9 +109,10 @@ for (const mode of ['native', 'ptc'] as const) {
     const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-native-capabilities-'));
     const enabled$ = new BehaviorSubject(true), commits$ = new Subject<boolean>();
     const selected = new BehaviorSubject<readonly string[]>(['left', 'right']);
+    const eligibility = new BehaviorSubject<Observation<Eligibility>>({ status: 'ready', generation: 1, value: { allowed: true }, observedAt: Date.now() });
     const entered = Promise.withResolvers<NativeToolCall>(), release = Promise.withResolvers<void>();
     const sharedEntered = Promise.withResolvers<NativeToolCall>(), sharedRelease = Promise.withResolvers<void>();
-    const gates = new Map(['cancelled', 'replaced', 'downstream', 'failed'].map(marker => [marker, {
+    const gates = new Map(['cancelled', 'replaced', 'downstream', 'failed', 'eligibility-pending', 'eligibility-denied'].map(marker => [marker, {
       entered: Promise.withResolvers<NativeToolCall>(), release: Promise.withResolvers<void>(),
       settled: Promise.withResolvers<Readonly<ToolExecutionResult>>(),
     }]));
@@ -144,7 +145,7 @@ for (const mode of ['native', 'ptc'] as const) {
           if (broken.status === 'ready' && broken.value) throw failure;
           return members.status === 'ready' && admission.status === 'ready' ? h(Fragment, null, members.value.map(member =>
             h(Module, { key: member, mount: composed.mounts.dependencies.instance(member) },
-              NativeTools({ names: ['native_tool'], enabled, admit: current })))) : null;
+              NativeTools({ names: ['native_tool'], enabled, admit: current, eligibility })))) : null;
         },
       }),
     })] });
@@ -212,6 +213,32 @@ for (const mode of ['native', 'ptc'] as const) {
         '政策收到独立的输入快照，不能修改原生调用的原请求权限事实');
       assert.equal(agent.ctx.tools.schemas(agent).filter(value => value.name === 'native_tool').length, 1);
       assert.ok(!agent.ctx.tools.schemas(agent).some(value => value.name === 'undeclared_tool'), '同一registry可见性决定PTC SDK，不仅过滤模型列表');
+      const unavailable: readonly [string, Observation<Eligibility>][] = [
+        ['pending', { status: 'pending', generation: 2 }],
+        ['denied', { status: 'ready', generation: 4, value: { allowed: false, reason: '业务资格撤销' }, observedAt: Date.now() }],
+      ];
+      for (const [reason, observation] of unavailable) {
+        const marker = 'eligibility-' + reason, gate = gates.get(marker)!;
+        await send('native_tool', marker);
+        const waiting = await firstValueFrom(from(gate.entered.promise).pipe(timeout(3_000)));
+        assert.equal(waiting.signal.aborted, false);
+        // 同一tick恢复，React可能只提交恢复后的值；实际借用必须保留中间撤销事实。
+        eligibility.next(observation);
+        eligibility.next({ status: 'ready', generation: observation.generation + 1, value: { allowed: true }, observedAt: Date.now() });
+        assert.equal(waiting.signal.aborted, true, '资格恢复不能复活已经撤销的原调用signal');
+        await idle();
+        assert.equal((await gate.settled.promise).isError, true, '不等待迟到admit也结算旧调用');
+        gate.release.resolve();
+        await immediate();
+        await assert.rejects(access(join(root, marker + '.txt')), { code: 'ENOENT' });
+        assert.equal(agent.ctx.tools.schemas(agent).filter(value => value.name === 'native_tool').length, 1,
+          '两个同源贡献没有因局部通知时序冲突，恢复后保留同一原生入口');
+        const recovered = 'recovered-' + reason;
+        await send('native_tool', recovered); await idle();
+        const written = await readFile(join(root, recovered + '.txt'), 'utf8');
+        assert.equal(written, admissions.find(call => nativeArguments.parse(call.arguments).marker === recovered)?.source.callId);
+        assert.equal(waiting.signal.aborted, true);
+      }
       await send('native_tool', 'shared');
       const shared = await sharedEntered.promise;
       const retained = firstValueFrom(members.instances$.pipe(filter(ids => ids.length === 1 && ids[0] === 'right'), timeout(3_000)));
@@ -279,7 +306,7 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.equal(agent.ctx.tools.schemas(agent).some(value => value.name === 'native_tool'), false,
         '最后一个贡献退出才撤销本会话原生工具可见性，registry中的实际工具仍由安装方持有');
       assert.ok(app.native.tools.get('native_tool'));
-      assert.deepEqual(executions, ['accepted', 'shared']);
+      assert.deepEqual(executions, ['accepted', 'recovered-pending', 'recovered-denied', 'shared']);
       assert.deepEqual(app.errors, []);
       const reinstated = firstValueFrom(members.instances$.pipe(filter(ids => ids.length === 1), timeout(3_000)));
       selected.next(['right']); await reinstated;
@@ -296,7 +323,7 @@ for (const mode of ['native', 'ptc'] as const) {
       release.resolve(); sharedRelease.resolve(); downstreamRelease.resolve();
       for (const gate of gates.values()) gate.release.resolve();
       removeGuard(); removeDownstream(); removeResults(); removeUndeclared(); removeNative();
-      selected.complete(); enabled$.complete(); commits$.complete(); policy.complete(); failed.complete(); await app.dispose();
+      selected.complete(); enabled$.complete(); commits$.complete(); policy.complete(); failed.complete(); eligibility.complete(); await app.dispose();
     }
   });
 
@@ -356,21 +383,24 @@ for (const mode of ['native', 'ptc'] as const) {
   });
 }
 
-test('同会话模块原生工具的enabled或admit冲突在取得时硬失败，不进入准入或文件副作用', { timeout: 15_000 }, async () => {
+test('同会话模块原生工具的enabled、admit或资格来源冲突在取得时硬失败，不进入准入或文件副作用', { timeout: 15_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-native-contribution-conflict-'));
   const empty = defineSurface({ views: {}, actions: {} });
   const composed = composeSurface({ dependencies: collectionSurface(empty) });
   const program = defineProgram({ input: z.null(), surface: composed.surface });
   let admissions = 0, executions = 0, models = 0;
   const admit = async () => { admissions++; }, otherAdmit = async () => { admissions++; };
+  const allowed: Observation<Eligibility> = { status: 'ready', generation: 1, value: { allowed: true }, observedAt: Date.now() };
+  const eligibility = new BehaviorSubject(allowed), otherEligibility = new BehaviorSubject(allowed);
   const definition = defineApplication({ name: 'native-contribution-conflict', admit: async () => {}, environments:
-    (['enabled', 'admit'] as const).map(conflict => defineEnvironment({ id: conflict, instructions: '相同名称必须有一致的实际参与政策。',
+    (['enabled', 'admit', 'eligibility'] as const).map(conflict => defineEnvironment({ id: conflict, instructions: '相同名称必须有一致的实际参与政策。',
       program: implementProgram(program, { Component() {
         return h(Fragment, null,
           h(Module, { mount: composed.mounts.dependencies.instance('left') },
-            NativeTools({ names: ['native_tool'], enabled: true, admit })),
+            NativeTools({ names: ['native_tool'], enabled: true, admit, eligibility })),
           h(Module, { mount: composed.mounts.dependencies.instance('right') },
-            NativeTools({ names: ['native_tool'], enabled: conflict !== 'enabled', admit: conflict === 'admit' ? otherAdmit : admit })));
+            NativeTools({ names: ['native_tool'], enabled: conflict !== 'enabled', admit: conflict === 'admit' ? otherAdmit : admit,
+              eligibility: conflict === 'eligibility' ? otherEligibility : eligibility })));
       } }),
     })),
   });
@@ -383,7 +413,7 @@ test('同会话模块原生工具的enabled或admit冲突在取得时硬失败�
     async execute() { executions++; await writeFile(join(root, 'unexpected.txt'), 'executed'); return null; },
   });
   try {
-    for (const environment of ['enabled', 'admit'] as const) {
+    for (const environment of ['enabled', 'admit', 'eligibility'] as const) {
       const sessionId = 'native-conflict-' + environment;
       await assert.rejects(app.host.create(environment, { workspaceId: app.workspace.workspaceId, sessionId }),
         /REACTIVE_NATIVE_TOOL_CONTRIBUTION_CONFLICT: native_tool/u);
@@ -392,7 +422,7 @@ test('同会话模块原生工具的enabled或admit冲突在取得时硬失败�
     assert.equal(admissions, 0); assert.equal(executions, 0); assert.equal(models, 0);
     await assert.rejects(access(join(root, 'unexpected.txt')), { code: 'ENOENT' });
     assert.deepEqual(app.errors, []);
-  } finally { remove(); await app.dispose(); }
+  } finally { remove(); eligibility.complete(); otherEligibility.complete(); await app.dispose(); }
 });
 
 test('声明未安装的原生工具在模型装配边界硬失败，不静默过滤为可运行会话', async () => {

@@ -43,7 +43,7 @@ export class ConversationPrograms {
         const installation = this.bindings.create(agent, session.scope, session.program.signal, () => skills?.dispose());
         session.program.signal.throwIfAborted();
         installation.scope.assertActive();
-        skills = new ProgramSkills(agent, installation.context);
+        skills = new ProgramSkills(agent, installation.context, session.program.signal);
         return { agent, session, scope: installation.scope, closed: installation.closed, dispose: installation.dispose,
             claimed: previous ? previous.claimed : [], stepSignal: previous?.stepSignal, preparing: false,
             recovery: previous ? previous.recovery : new Set(), recoveryErrors: previous ? previous.recoveryErrors : [], skills,
@@ -84,6 +84,8 @@ export class ConversationPrograms {
             try {
                 await program.prepare(signal);
                 const skillsStable = await entry.skills.prepare(signal);
+                if (!skillsStable())
+                    continue;
                 const contextsStable = await this.bindings.prepare(entry.agent, signal);
                 await program.prepare(signal);
                 const stable = () => {

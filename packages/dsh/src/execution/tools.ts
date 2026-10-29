@@ -3,8 +3,8 @@ import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { ToolDefinition, ToolExecution } from "@deepseek-ai/dsh-tools";
 import { firstValueFrom } from "rxjs";
 import { z } from "zod";
-import { abortable, type NativeToolAdmission } from "@hanger-source/dsh-reactive";
-import { observeBoundAction } from "@hanger-source/dsh-reactive/kernel";
+import { abortable, type Eligibility, type ResourceReader, type NativeToolAdmission } from "@hanger-source/dsh-reactive";
+import { observeBoundAction, retainEligibility } from "@hanger-source/dsh-reactive/kernel";
 import { type BoundOffer, type BoundFollow } from "@hanger-source/dsh-reactive/kernel";
 import { toolSchema } from "./schema.ts";
 import { type Workspaces } from "../workspaces/workspaces.ts";
@@ -14,6 +14,7 @@ import type { ActionAuthority } from './authority.ts';
 import type { OperationParticipation } from '../operations/participation.ts';
 const nativeTools = new Set(['run_code', 'skill', 'get_goal', 'create_goal', 'update_goal']);
 type NativeAdmission = { readonly entry: LiveConversation; readonly admit: NativeToolAdmission | undefined;
+    readonly eligibility: ResourceReader<Eligibility> | undefined; readonly qualification: ReturnType<typeof retainEligibility> | undefined;
     readonly signal: AbortSignal; readonly stop: () => void };
 /** 原生工具与 PTC 取得同一能力表；缓存仅属于真实 Agent 和声明绑定。 */
 export class ProgramTools {
@@ -24,13 +25,16 @@ export class ProgramTools {
     private releaseNativeAdmission(exec: ToolExecution) {
         const admission = this.#nativeAdmissions.get(exec);
         this.#nativeAdmissions.delete(exec);
-        admission?.stop();
+        try { admission?.stop(); } finally { admission?.qualification?.release(); }
         return admission;
     }
     nativeToolEnabled(entry: LiveConversation, name: string): boolean {
         const declared = entry.session.program.nativeTools[name];
-        if (declared)
-            return declared.enabled;
+        if (declared) {
+            if (!declared.enabled) return false;
+            const eligibility = declared.eligibility?.peek();
+            return eligibility === undefined || (eligibility.status === 'ready' && eligibility.value.allowed);
+        }
         return name === 'ask_user_question' ? !!entry.session.program.humanInput : nativeTools.has(name);
     }
     prepareNativeTools(entry: LiveConversation) {
@@ -140,30 +144,39 @@ export class ProgramTools {
             const policy = program.nativeTools[exec.name];
             if (!policy)
                 return next();
-            if (!policy.enabled)
+            if (!this.nativeToolEnabled(entry, exec.name))
                 return { kind: 'deny', reason: 'REACTIVE_CAPABILITY_UNAVAILABLE: ' + exec.name };
+            if (this.ctx.agents.get(entry.agent.id) !== exec.agent || entry.session.live.value !== entry)
+                return { kind: 'deny', reason: 'REACTIVE_NATIVE_TOOL_POLICY_CHANGED: ' + exec.name };
+            this.workspaces.assertMember(entry.agent.session, entry.session.workspace, entry.session.environment);
             this.sessions.assertSessionWorkspace(entry.session);
             const occurrence = entry.session.state.call(exec.callId);
             if (!occurrence || occurrence.rootCallId !== exec.rootCallId)
                 throw new Error('REACTIVE_CALL_INPUT_UNAVAILABLE');
             const changed = new AbortController();
-            const signal = AbortSignal.any([exec.signal, program.signal, entry.scope.signal, changed.signal]);
-            signal.throwIfAborted();
-            const stop = entry.scope.effect(() => {
-                program.revision.get();
-                const current = program.nativeTools[exec.name];
-                // 同政策的共享贡献合并后仍是一份准入，不以每帧新建的声明对象判身份。
-                if (!current?.enabled || current.admit !== policy.admit)
-                    changed.abort(new Error('REACTIVE_NATIVE_TOOL_POLICY_CHANGED: ' + exec.name));
-            });
-            this.#nativeAdmissions.set(exec, { entry, admit: policy.admit, signal, stop });
+            const lifetime = AbortSignal.any([exec.signal, program.signal, entry.scope.signal, entry.session.scope.signal, changed.signal]);
             try {
+                lifetime.throwIfAborted();
+                const qualification = policy.eligibility === undefined ? undefined : retainEligibility(exec.name, policy.eligibility, lifetime);
+                const signal = qualification === undefined ? lifetime : AbortSignal.any([lifetime, qualification.signal]);
+                let stop: (() => void) | undefined;
+                this.#nativeAdmissions.set(exec, { entry, admit: policy.admit, eligibility: policy.eligibility, qualification, signal, stop: () => stop?.() });
+                stop = entry.scope.effect(() => {
+                    program.revision.get();
+                    const current = program.nativeTools[exec.name];
+                    // 贡献合并后的政策按显式开关、授权函数与共享事实来源判身份。
+                    if (!current?.enabled || current.admit !== policy.admit || current.eligibility !== policy.eligibility)
+                        changed.abort(new Error('REACTIVE_NATIVE_TOOL_POLICY_CHANGED: ' + exec.name));
+                });
+                qualification?.check();
+                signal.throwIfAborted();
                 await firstValueFrom(abortable(() => policy.admit?.({ name: exec.name,
                     arguments: z.json().parse(exec.arguments), sessionId: entry.agent.id,
                     workspaceId: entry.session.workspace.native.id, directory: entry.session.workspace.native.path,
                     source: { kind: 'tool', callId: exec.callId, rootCallId: exec.rootCallId, parentCallId: occurrence.parentCallId },
                     inputs: structuredClone(occurrence.inputs), signal }), signal));
                 signal.throwIfAborted();
+                qualification?.check();
             } catch (error) {
                 this.releaseNativeAdmission(exec);
                 if (exec.signal.aborted) return { kind: 'cancel' };
@@ -194,10 +207,11 @@ export class ProgramTools {
                 entry.session.program.flush();
                 admission?.signal.throwIfAborted();
                 const policy = entry.session.program.nativeTools[exec.name];
-                if (policy && (!admission || !policy.enabled || policy.admit !== admission.admit))
+                if (policy && (!admission || !policy.enabled || policy.admit !== admission.admit || policy.eligibility !== admission.eligibility))
                     return 'REACTIVE_NATIVE_TOOL_POLICY_CHANGED: ' + exec.name;
                 if (admission && !policy)
                     return 'REACTIVE_NATIVE_TOOL_POLICY_CHANGED: ' + exec.name;
+                admission?.qualification?.check();
                 const offer = entry.session.program.offers.get(exec.name);
                 const follow = entry.session.program.follows.get(exec.name);
                 if (follow)

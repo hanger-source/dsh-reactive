@@ -1,5 +1,5 @@
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction, createReaction, composeSurface, combineResources, mapResource, switchResource, abortable,
-  resourceView, shareResource, type Scope, type ResourceSource, type OperationContract, type OperationHandle,
+  resourceView, shareResource, type Scope, type ResourceSource, type Eligibility, type OperationContract, type OperationHandle,
   type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ReactionStartOptions, type ProgramSession, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, type NativeToolAdmission, z } from '@hanger-source/dsh-reactive';
 import { concatMap, firstValueFrom, map, type Observable } from 'rxjs';
 import { createElement } from 'react';
@@ -22,11 +22,11 @@ const application = defineApplication({ name: 'registry-consumer', admit: async 
 export const backend = (options: RuntimeOptions) => createRuntime(() => application, options);
 export const clientContract = () => contract;
 export function sharedDependencyProgram(skillName: string, toolNames: readonly string[], admit: NativeToolAdmission,
-  admitResponder: HumanInputProps['admitResponder'], owner: OperationOwner) {
+  admitResponder: HumanInputProps['admitResponder'], owner: OperationOwner, eligibility: ResourceSource<Eligibility>) {
   const moduleSurface = defineSurface({ views: {}, actions: {} });
   function Dependencies() {
-    return [createElement(Skill, { key: 'skill', name: skillName }),
-      createElement(NativeTools, { key: 'native-tools', names: toolNames, enabled: true, admit }),
+    return [createElement(Skill, { key: 'skill', name: skillName, eligibility }),
+      createElement(NativeTools, { key: 'native-tools', names: toolNames, enabled: true, admit, eligibility }),
       createElement(HumanInput, { key: 'human', admitResponder })];
   }
   const shared = implementModule(moduleSurface, { operations: [owner], Component: Dependencies });

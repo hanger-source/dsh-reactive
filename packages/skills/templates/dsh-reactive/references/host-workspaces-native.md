@@ -88,6 +88,8 @@ Team 的 createTask、updateTask、task.update 与 Schedule 的 task.update/dele
 
 组件用 `<NativeTools names={actualInstalledNames} enabled={condition} admit={policy} />` 选择原生已安装工具，保持原执行/guard/PTC语义。它不安装后端，enabled 不等于业务授权。
 
+`eligibility?: ResourceSource<Eligibility>` 可借用同一业务资格 reader，owner 不变。可见性要求 enabled 且资格当前 ready.allowed；pending、error、denied 不可用，不缓存上次允许值。每次 admit 仍核真实来源、参数和原始输入；框架持有资格跨越异步 admit 和原生 Approval，瞬态撤销永久拒绝本次调用，恢复只允许新调用。已受理的审批按原 owner 结算，正式 guard 复核后才进入工具。已进入 execute 的工作继续按原 owner 结算。同名贡献须使用一致的 enabled、admit 函数和 reader 身份。独立 SDK 与原生服务保持各自准入，不反向受模型声明控制。
+
 Jobs、Schedule、Team、Files、Approval、Clock 用 `capability.forSession(conversation)` 消费 Program 收到的原 conversation，也可消费 Host 签发的本地 SDK 句柄。不得拼接 `{ id }` 或复制 identity 对象代替原对象。取得会话能力不建立观察，首次订阅才连接；业务 hook 可以用 `useObservable(() => jobs.list$, [jobs])` 读同一流。启动 Job 或写入仍是显式命令，须在真实会话 owner 已经活跃时调用，不在 render 中执行。
 
 同一原来源共享 SDK 实例，Program 来源和外部句柄分别拥有观察寿命。Jobs、Schedule、Team 会话与固定任务的 `state` 是可直接传给 `useResource` 的只读资源，Job 的 `output` 独立表示非消费输出切面。`state.read(signal)`、peek、subscribe、values$、observations$ 共用现有资源机制；原 state$/list$/catalog$/projection$ 是相应值流，不能用它们推断旧值仍有效。最后一个资源消费者退出会撤销查询并撤下旧 ready，组件退订不 dispose 会话 SDK，也不停止已受理工作。SDK dispose、Program 失败或来源退出释放其会话资源观察，不杀死 Job、不撤回提醒、不取消 Team 成员；独立的有限调用活动仍沿原 result 结算。Program 来源不自动取得人工、ToolOccurrence 或 Goal 权限。

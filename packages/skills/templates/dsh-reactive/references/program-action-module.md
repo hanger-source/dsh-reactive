@@ -80,7 +80,9 @@ Context 默认 required=true：pending/error 阻止模型取得不完整现场�
 
 `Skill({ name })` 选择原生方法正文进入步骤上下文。异步准备期间，声明、原生 catalog 或本会话工作目录变化会取消旧查询并准备当前集合，不等待旧 provider 返回。迟到结果不能写回，共享 provider 的注册及其他会话查询保持原有寿命。当前方法缺失、禁止模型调用或读取失败仍拒绝准备；步骤取消或程序退出结束等待，不把查询取消解释为业务命令。
 
-模块可自带 Skill 与 NativeTools 依赖，不要求应用中央重复装配。Skill 按相同 name 或精确 directory 共享；directory 必须是绝对路径，宿主用 path.normalize 合并词法规范化后相同的目录，cwd 仅参与原生命名 Skill 方法解析。最后一项贡献退出才撤下本声明拥有的 provider/context，不卸载外部 provider。NativeTools 按真实全局工具名逐项共享，只有 enabled 一致（省略为 true）且 admit 同函数引用或均省略才成立。政策函数从共同装配处借入，策略或参与条件不同直接失败。最后一项退出只撤本声明贡献及其政策，内建工具仍遵循原生基础规则。与实际 Offer/Follow 同名仍冲突；HumanInput 多贡献须共享同一个必需的 admitResponder 函数引用，最后一项退出撤资格。
+`Skill({ name, eligibility })` 与目录声明均可借用 `ResourceSource<Eligibility>`。资格只决定当前 Program 的方法贡献；pending、error、denied 撤贡献，不等待或阻塞无关模块，需要屏障时使用 required Context。它不授予 Registry 或 skill 工具权限。同目标同 reader 去重，不同来源保留；任一有效贡献保留接点，最后有效贡献退出才撤下。每轮准备选择一个有效来源，持有资格至正文采用；选中来源失效就丢弃该轮读取，重新收集当前贡献，恢复不会复活旧准备。provider 释放等待原 Fiber 静止。
+
+模块可自带 Skill 与 NativeTools 依赖，不要求应用中央重复装配。Skill 按相同 name 或精确 directory 共享；directory 必须是绝对路径，宿主用 path.normalize 合并词法规范化后相同的目录，cwd 仅参与原生命名 Skill 方法解析。最后一项有效贡献退出才撤下本声明拥有的 provider/context，不卸载外部 provider。NativeTools 按真实全局工具名逐项共享，只有 enabled 一致（省略为 true）、admit 同函数引用或均省略、eligibility reader 身份一致才成立。政策函数从共同装配处借入，策略或参与条件不同直接失败。最后一项退出只撤本声明贡献及其政策，内建工具仍遵循原生基础规则。与实际 Offer/Follow 同名仍冲突；HumanInput 多贡献须共享同一个必需的 admitResponder 函数引用，最后一项退出撤资格。
 
 Program 的 Context、Tool 与 Skill 声明安装归实际 Agent 下的正式 Fiber，借用同一安装作用域。关闭 Agent 或 Program 失败会撤下注册、目录监听及准备查询，异步清理由原安装等待；已受理 Action 与业务 Operation 继续按自己的 owner 结算。公开句柄可以保留关闭后的冷 Program 图，恢复时重新安装原生声明。open、service、resume 先核对预期合同，合同不符不求值新程序；原生恢复失败只回滚本次实际取得的句柄，不销毁已有冷观察。
 

@@ -4,10 +4,10 @@ import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { useLayoutEffect } from 'react';
-import { filter, firstValueFrom, from, timeout, type Subscription } from 'rxjs';
+import { BehaviorSubject, filter, firstValueFrom, from, timeout, type Subscription } from 'rxjs';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
-import { combineResources, defineApplication, defineEnvironment, defineProgram, defineSurface, ScopeDisposedError, z, type Observation } from '@hanger-source/dsh-reactive';
+import { combineResources, defineApplication, defineEnvironment, defineProgram, defineSurface, ScopeDisposedError, z, type Eligibility, type NativeToolCall, type Observation } from '@hanger-source/dsh-reactive';
 import { implementProgram, NativeTools, useResource } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeCapabilities, nativeModel, type ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeApproval, type ApprovalOutcome, type ApprovalPolicy, type ApprovalRequestEvent, type NativeApprovalEvent, type NativeSessionApproval } from '@hanger-source/dsh-reactive-dsh/approval';
@@ -136,6 +136,96 @@ test('Approval政策资源与原生日志、hooks和Tool组合同源，冷读恢
     assert.equal(await second.policy.read(), 'ask');
     assert.equal(models, 0); assert.equal(answers, 0); assert.deepEqual(errors, []);
   } finally { subscription?.unsubscribe(); resumed?.release(); one?.release(); two?.release(); await runtime.dispose(); }
+});
+
+test('原生工具资格瞬态撤销保留已受理Approval审计，晚批准不能复活旧调用，恢复后新调用可执行', { timeout: 20_000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-approval-eligibility-'));
+  const eligibility = new BehaviorSubject<Observation<Eligibility>>({ status: 'ready', generation: 1, value: { allowed: true }, observedAt: Date.now() });
+  const entered = Promise.withResolvers<ApprovalRequestEvent>();
+  const late = Promise.withResolvers<ApprovalOutcome>(), answered = Promise.withResolvers<void>();
+  t.signal.addEventListener('abort', () => late.resolve('allowed-once'), { once: true });
+  let answers = 0;
+  const approval = createNativeApproval({ policy: 'ask',
+    require: call => call.name === 'approval_eligibility' ? { reason: '写入文件前批准本次调用' } : undefined,
+    async answer(request) {
+      if (++answers !== 1) return 'allowed-once';
+      entered.resolve(request);
+      try { return await late.promise; }
+      finally { answered.resolve(); }
+    },
+  });
+  const admissions: NativeToolCall[] = [];
+  const program = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+  const definition = defineApplication({ name: 'approval-eligibility', admit: async () => {}, environments: [defineEnvironment({
+    id: 'work', instructions: '只执行资格仍有效且取得本次批准的工具',
+    program: implementProgram(program, { Component: () => NativeTools({ names: ['approval_eligibility'], eligibility,
+      admit: call => { admissions.push(call); } }) }),
+  })] });
+  const errors: unknown[] = [], audit: NativeApprovalEvent[] = [], results: string[] = [];
+  let planned: 'withdrawn' | 'recovered' | undefined;
+  const runtime = await createRuntime(() => definition, { home: root, actorId: 'approval-owner', tools: 'native',
+    onError: event => errors.push(event.error), installNative: nativeCapabilities(approval),
+    model: nativeModel({ provider: 'approval-eligibility', model: 'scripted', create: () => new class extends LlmAdapter {
+      async *stream() {
+        const current = planned; planned = undefined;
+        if (current) yield* tool('approval_eligibility', 'eligibility-' + current, { marker: current });
+        else yield* text('已取得本次工具结果');
+      }
+    }() }),
+  });
+  let session: ConversationHandle<typeof program> | undefined;
+  const removeAudit = runtime.native.on('session/event', (current, event) => {
+    if (current.id === session?.id && (event.type === 'approval/asked' || event.type === 'approval/decided')) audit.push(event);
+  });
+  const removeResults = runtime.native.on('tools/result', execution => {
+    if (execution.name === 'approval_eligibility') results.push(execution.callId);
+  });
+  const removeTool = runtime.native.get('tools')!.register({ name: 'approval_eligibility', description: '批准后写入实际调用身份',
+    parameters: { type: 'object', properties: { marker: { type: 'string' } }, required: ['marker'], additionalProperties: false },
+    output: { schema: { type: 'null' }, render: () => [{ type: 'text', text: 'null' }] },
+    async execute(raw, execution) {
+      const { marker } = z.object({ marker: z.enum(['withdrawn', 'recovered']) }).parse(raw);
+      await writeFile(join(root, marker + '.txt'), execution.callId);
+      return null;
+    },
+  });
+  try {
+    const workspace = await runtime.application.createWorkspace({ directory: root });
+    session = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
+    planned = 'withdrawn';
+    await session.submit({ requestId: 'withdrawn', content: '等待本次文件写入批准', intent: 'question', delivery: 'followup', scope: null });
+    const request = await firstValueFrom(from(entered.promise).pipe(timeout(5_000)));
+    assert.equal(request.callId, 'eligibility-withdrawn');
+    assert.equal(admissions[0]?.signal.aborted, false);
+    eligibility.next({ status: 'pending', generation: 2 });
+    eligibility.next({ status: 'ready', generation: 3, value: { allowed: true }, observedAt: Date.now() });
+    assert.equal(admissions[0]?.signal.aborted, true, '同tick恢复也永久撤销旧准入');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(request.signal?.aborted, false, '资格退出不取消由正式Approval持有的已受理请求');
+    assert.equal(audit.filter(event => event.type === 'approval/asked').length, 1);
+    assert.equal(audit.filter(event => event.type === 'approval/decided').length, 0, '回答尚未交付，不伪造cancelled审计');
+    assert.deepEqual(results, [], '原生管线仍等待原审批结算');
+    await assert.rejects(access(join(root, 'withdrawn.txt')), { code: 'ENOENT' });
+
+    late.resolve('allowed-once'); await answered.promise;
+    await session.whenIdle();
+    assert.deepEqual(results, ['eligibility-withdrawn']);
+    await assert.rejects(access(join(root, 'withdrawn.txt')), { code: 'ENOENT' });
+    assert.equal(admissions[0]?.signal.aborted, true, '晚批准不恢复旧准入');
+    planned = 'recovered';
+    await session.submit({ requestId: 'recovered', content: '恢复后重新请求写入', intent: 'question', delivery: 'followup', scope: null });
+    await session.whenIdle();
+    assert.equal(await readFile(join(root, 'recovered.txt'), 'utf8'), 'eligibility-recovered');
+    const asked = audit.filter(event => event.type === 'approval/asked');
+    const decided = audit.filter(event => event.type === 'approval/decided');
+    assert.deepEqual(asked.map(event => event.data.callId), ['eligibility-withdrawn', 'eligibility-recovered']);
+    assert.deepEqual(decided.map(event => event.data.id), asked.map(event => event.data.id));
+    assert.deepEqual(decided.map(event => event.data.outcome), ['allowed-once', 'allowed-once'], '实际批准与工具资格分别结算，不篡改审批事实');
+    assert.equal(answers, 2); assert.deepEqual(errors, []);
+  } finally {
+    late.resolve('allowed-once'); session?.release(); removeAudit(); removeResults(); removeTool(); eligibility.complete();
+    await runtime.dispose();
+  }
 });
 
 for (const answerer of ['owned', 'provided'] as const) {

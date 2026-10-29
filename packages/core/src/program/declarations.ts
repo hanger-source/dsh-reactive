@@ -63,24 +63,28 @@ export interface ExposeDeclaration {
   readonly kind: 'expose'; readonly surface: Surface; readonly value: SurfaceBindingReferences;
 }
 /** 会话级方法依赖；多个模块选择同一name或目录时共享，最后一项贡献退出才撤下。 */
-export type SkillProps =
+type SkillTarget =
   | { readonly name: string; readonly directory?: never }
   | { readonly name?: never; readonly directory: string };
+export type SkillProps = SkillTarget & { readonly eligibility?: ResourceSource<Eligibility> };
 /** name 选择原生已声明方法；directory 由原生 scoped filesystem provider 提供。 */
-export type SkillDeclaration = { readonly kind: 'skill' } & SkillProps;
+export type SkillDeclaration = SkillTarget & { readonly kind: 'skill'; readonly eligibility?: ResourceReader<Eligibility> };
 /** 会话级响应参与策略；相同 admitResponder 引用共享，最后一项贡献退出才撤下。 */
 export interface HumanInputProps extends HumanInputPolicy {}
 export interface HumanInputDeclaration extends HumanInputPolicy { readonly kind: 'human-input'; }
 export interface NativeToolsProps {
-  /** 原生工具的真实全局名称，不随Module改名；重复贡献必须使用相同enabled与admit。 */
+  /** 原生工具的真实全局名称，不随Module改名；重复贡献必须使用相同enabled、admit与资格来源。 */
   readonly names: readonly string[];
   /** 省略时为true；同名贡献的准入开关必须一致，不合并权限。 */
   readonly enabled?: boolean;
   /** 同名贡献必须借用同一函数引用（或均省略）；异步准入后仍核验当前策略。 */
   readonly admit?: NativeToolAdmission;
+  /** 当前共享业务前提；不代替本次真实调用的admit授权。 */
+  readonly eligibility?: ResourceSource<Eligibility>;
 }
 export interface NativeToolDeclaration {
   readonly kind: 'native-tool'; readonly name: string; readonly enabled: boolean; readonly admit?: NativeToolAdmission;
+  readonly eligibility?: ResourceReader<Eligibility>;
 }
 export type ProgramDeclaration = ContextDeclaration | OfferDeclaration | FollowDeclaration | ExposeDeclaration | SkillDeclaration | HumanInputDeclaration | ModuleDeclaration | NativeToolDeclaration;
 
@@ -220,13 +224,21 @@ export function Expose<S extends Surface, const B extends PartialSurfaceBindings
 
 /** 声明会话级方法依赖；目录存在性和scope/cwd解析由原生装配核验，此处不读文件或创建provider。 */
 export function Skill(props: SkillProps): ReactElement {
+  return props.eligibility === undefined ? skillLeaf(props) : createElement(EligibleSkill, props);
+}
+
+function EligibleSkill(props: SkillProps): ReactElement {
+  return skillLeaf(props, useSharedResource(props.eligibility!));
+}
+
+function skillLeaf(props: SkillProps, eligibility?: ResourceReader<Eligibility>): ReactElement {
   if (props.name !== undefined && props.directory === undefined) {
     name(props.name, 'REACTIVE_SKILL_NAME_REQUIRED');
-    return leaf({ kind: 'skill', name: props.name });
+    return leaf({ kind: 'skill', name: props.name, ...eligibility === undefined ? {} : { eligibility } });
   }
   if (props.directory !== undefined && props.name === undefined) {
     name(props.directory, 'REACTIVE_SKILL_DIRECTORY_REQUIRED');
-    return leaf({ kind: 'skill', directory: props.directory });
+    return leaf({ kind: 'skill', directory: props.directory, ...eligibility === undefined ? {} : { eligibility } });
   }
   throw new Error('REACTIVE_SKILL_SOURCE_INVALID');
 }
@@ -239,6 +251,17 @@ export function HumanInput(props: HumanInputProps): ReactElement {
 
 /** 贡献宿主已安装的全局工具；相同策略共享至最后一项贡献退出，执行与准入仍归原生管线。 */
 export function NativeTools(props: NativeToolsProps): ReactElement {
+  return props.eligibility === undefined ? nativeToolsLeaf(props) : createElement(EligibleNativeTools, props);
+}
+
+function EligibleNativeTools(props: NativeToolsProps): ReactElement {
+  const eligibility = useSharedResource(props.eligibility!);
+  // 通知推进声明帧；同名贡献比较共享reader身份，不比较各组件通知时刻的局部值。
+  useResource(eligibility);
+  return nativeToolsLeaf(props, eligibility);
+}
+
+function nativeToolsLeaf(props: NativeToolsProps, eligibility?: ResourceReader<Eligibility>): ReactElement {
   if (!Array.isArray(props.names)) throw new Error('REACTIVE_NATIVE_TOOLS_REQUIRED');
   if (props.enabled !== undefined && typeof props.enabled !== 'boolean') throw new Error('REACTIVE_NATIVE_TOOL_ENABLED_INVALID');
   if (props.admit !== undefined && typeof props.admit !== 'function') throw new Error('REACTIVE_NATIVE_TOOL_ADMISSION_INVALID');
@@ -248,7 +271,8 @@ export function NativeTools(props: NativeToolsProps): ReactElement {
     if (names.has(tool)) return [];
     names.add(tool);
     return [createElement(Fragment, { key: tool }, leaf({ kind: 'native-tool', name: tool,
-      enabled: props.enabled ?? true, ...props.admit ? { admit: props.admit } : {} }))];
+      enabled: props.enabled ?? true, ...props.admit ? { admit: props.admit } : {},
+      ...eligibility === undefined ? {} : { eligibility } }))];
   });
   // Fragment 只组合声明，不产生新的原生注册或执行 owner。
   return createElement(Fragment, null, ...children);

@@ -6,7 +6,7 @@
 
 框架处于 0.x 建设阶段，公共编程模型与生命周期合同仍在收敛。API 与组件主链、SDK、原生接入按公共合同和版本记录演进；公开能力的限制以本文和分域文档为准，聚焦试验不代表完整框架已经验收。
 
-共同资格名称与独立 Follow 准入见[共同资格迁移](docs/migration-eligibility.md)。
+Action、Context、Follow、NativeTools 与 Skill 可共享业务资格；具体可见性与调用边界见[共同资格迁移](docs/migration-eligibility.md)。
 
 跨作用域派生、Reaction 停止后的真实结算及异步准入寿命见[响应式读取与执行结算](docs/migration-reactive-lifetimes.md)。
 

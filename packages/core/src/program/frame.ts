@@ -40,7 +40,7 @@ export function collectProgramFrame(frame: Frame<ProgramDeclaration>): ProgramFr
   const nativeTools = entries<NativeToolDeclaration>();
   const toolNames = new Set<string>();
   const skills: SkillDeclaration[] = [];
-  const skillKeys = new Set<string>();
+  const skillSources = new Map<string, Set<SkillDeclaration['eligibility']>>();
   const surfaces = new Map<Surface, MutableContribution>();
   const mounts: SurfaceMount[] = [];
   const mounted = new Map<Surface, Set<string>>();
@@ -80,7 +80,7 @@ export function collectProgramFrame(frame: Frame<ProgramDeclaration>): ProgramFr
       case 'native-tool': {
         const previous = nativeTools[declaration.name];
         if (previous) {
-          if (previous.enabled !== declaration.enabled || previous.admit !== declaration.admit)
+          if (previous.enabled !== declaration.enabled || previous.admit !== declaration.admit || previous.eligibility !== declaration.eligibility)
             throw new Error('REACTIVE_NATIVE_TOOL_CONTRIBUTION_CONFLICT: ' + declaration.name);
           break;
         }
@@ -91,8 +91,10 @@ export function collectProgramFrame(frame: Frame<ProgramDeclaration>): ProgramFr
       }
       case 'skill': {
         const key = declaration.name === undefined ? 'directory:' + declaration.directory : 'name:' + declaration.name;
-        if (skillKeys.has(key)) break;
-        skillKeys.add(key);
+        let sources = skillSources.get(key);
+        if (!sources) { sources = new Set(); skillSources.set(key, sources); }
+        if (sources.has(declaration.eligibility)) break;
+        sources.add(declaration.eligibility);
         skills.push(declaration);
         break;
       }

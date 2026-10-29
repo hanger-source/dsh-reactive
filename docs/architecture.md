@@ -115,6 +115,8 @@ Environment 定义捕获自有 Skill 声明数组；Application 定义捕获环�
 
 动态 Skill 目录由 Agent scope 下的原生 filesystem provider 持有，其 catalog 与工具调用沿原生 SkillRegistry 工作。`Skill` 的 name 声明在当前 scope、cwd 和取消信号下加载既有方法，以原生 `renderSkillContent` 生成正文并贡献 required context；它会实际改变模型取得的方法现场。
 
+Skill 资格只决定当前 Program 的方法正文或目录贡献，不授予 Registry 或工具权限。pending、error、denied 局部撤贡献，不等待或阻塞无关模块；需要屏障时使用 required Context。同目标同 reader 去重，不同 reader 保留；任一有效贡献保留接点，最后有效贡献退出才撤下，外部 provider 不卸载。ProgramSkills 拥有借用订阅，直接从 reader 派生有效集合；资格变化推进修订并取消旧准备。每轮每目标选择一个有效来源，持有资格至正文采用；失效则废弃该轮并由外层重新收集。provider 释放等待原 Fiber 静止。
+
 ## Action 的三类入口
 
 `defineAction` 只保存共享合同与可选 Operation 映射，`implementAction` 保存宿主执行与实际业务 owner。`useAction` 将实现绑定到不可变业务目标，同一个绑定可以提供给模型、程序和公开出口。Action 定义对象本身决定合同身份，结构相同的另一对象不自动成为同一合同。
@@ -131,7 +133,9 @@ Environment 定义捕获自有 Skill 声明数组；Application 定义捕获环�
 
 声明撤下会阻止后续受理。已经进入执行的 Action 沿原调用信号和业务 owner 继续结算；Invocation 的结果和活动观察不受消费者订阅次数控制。业务结果返回、原生工具最终结算与业务任务正式完成各有自己的事实来源。
 
-共同业务资格是资源层的 `Eligibility`，可由 Action、Context 和 Follow 绑定同一来源，供声明、发现和各调用入口共享；业务 owner 仍负责真实调用者、原始输入、目标与事务的逐次准入。Offer 自动消费资格，Context 可借用相同来源或绑定的 reader；Expose 保持合同稳定。本地和远程解析所得 Action 的 `eligibility` 是同源只读观察，不授予执行权。远程观察随既有 `resolveAction` 流传递，不另建订阅协议或执行缓存。
+共同业务资格是资源层的 `Eligibility`，可由 Action、Context、Follow、NativeTools 和 Skill 绑定同一来源，供声明、发现和各调用入口共享；业务 owner 仍负责真实调用者、原始输入、目标与事务的逐次准入。Offer 自动消费资格，Context 可借用相同来源或绑定的 reader；Expose 保持合同稳定。本地和远程解析所得 Action 的 `eligibility` 是同源只读观察，不授予执行权。远程观察随既有 `resolveAction` 流传递，不另建订阅协议或执行缓存。
+
+NativeTools 只在 enabled 且资格当前 ready.allowed 时可见。异步 admit 逐次核验真实来源、参数和原始输入；框架持有资格跨越 admit 和原生 Approval，瞬态撤销永久拒绝该次调用。已受理审批沿原 owner 结算，正式 guard 最后复核并释放资格；已进入 execute 的工作按原 owner 结算。同名全局工具须共享一致的 enabled、admit 函数和 reader 身份，不合并权限；独立 SDK 与原生服务保持各自准入。
 
 ## 长期业务操作与人工参与
 
