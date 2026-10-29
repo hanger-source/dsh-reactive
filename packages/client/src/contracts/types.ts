@@ -1,4 +1,4 @@
-import type { AttachmentIdType, SessionImageAttachment as CoreSessionImageAttachment } from '@hanger-source/dsh-reactive';
+import type { AttachmentIdType, ExecutionFailure, SessionImageAttachment as CoreSessionImageAttachment } from '@hanger-source/dsh-reactive';
 import type { ActionIdentity, ActionSource, Continuation, GoalActivity, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanReplyDelivery, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
   ProgramGoalControl as CoreProgramGoalControl, ProgramCancelResult as CoreProgramCancelResult, ProgramRequestStatus as CoreProgramRequestStatus,
   ProgramJournalEvent as CoreProgramJournalEvent, ProgramJournalEntry as CoreProgramJournalEntry,
@@ -11,6 +11,13 @@ export type { ProgramJournalPageQuery } from '@hanger-source/dsh-reactive';
 export type ProgramGoalControl = CoreProgramGoalControl;
 export type ProgramCancelResult = CoreProgramCancelResult;
 export type ProgramRequestStatus = CoreProgramRequestStatus;
+/** 原生 turn 失败的 wire 形态；仅输入 scope 经过 JSON 边界，保留原生 LlmFailure。 */
+export type ProgramExecutionFailure = Omit<ExecutionFailure, 'inputs' | 'unentered'> & {
+  readonly inputs: readonly InputReference<JsonValue>[];
+  readonly unentered: readonly (Omit<ExecutionFailure['unentered'][number], 'inputs'> & {
+    readonly inputs: readonly InputReference<JsonValue>[];
+  })[];
+};
 
 /** 官方 failure 的 wire 形态；details 按 Typert 边界限定为 JSON 对象或数组。 */
 export type ProgramFailure = Omit<RemoteStreamFailure, 'details'> & {

@@ -80,12 +80,12 @@ export async function resumePendingInput(agent: Agent, requestId: string, canWak
 }
 
 /** 保留原生尚未消费的业务消息；原生 Goal round 与恢复控制仍由各自 owner 结算。 */
-export function retainClaimedInputs(agent: Agent, messages: readonly UserMessage[]) {
+export function retainClaimedInputs(agent: Agent, messages: readonly UserMessage[], target: 'next-turn' | 'next-step') {
   const queued = new Set([...agent.inbox.nextStep, ...agent.inbox.nextTurn].map(message => message.id));
   for (const message of [...messages].reverse()) {
     if (isRecoveryControl(message) || message.source.kind === 'goal') continue;
     if (queued.has(message.id)) continue;
-    agent.inbox.prepend('next-step', message);
+    agent.inbox.prepend(target, message);
     queued.add(message.id);
   }
 }

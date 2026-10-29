@@ -577,16 +577,18 @@ test('正式成员撤销结束不配合取消的响应准入，迟到allow不答
   }
 });
 
-test('晚答已提出但装配失败时退出提议窗口，保留原请求结算和原生 continued 问题', { timeout: 15_000 }, async () => {
+test('晚答已提出但装配失败时保留原答复和失败因果，明确新输入才消费同一消息', { timeout: 15_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-human-reply-preparation-'));
   const proposed = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const pauseEntered = Promise.withResolvers<void>(), releasePause = Promise.withResolvers<void>();
   const failure = new Error('HUMAN_REPLY_BUSINESS_PREPARATION_REJECTED');
-  let rejectReply = false, modelCalls = 0;
+  let rejectReply = false, pauseReply = false, modelCalls = 0;
   const program = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
   const definition = defineApplication({ name: 'human-reply-preparation', admit: async () => {}, environments: [defineEnvironment({
     id: 'work', instructions: '许可超时后继续独立工作，收到晚答时重新核验业务条件',
     program: implementProgram(program, { Component() {
       useBeforeStep(async () => {
+        if (pauseReply) { pauseEntered.resolve(); await releasePause.promise; return; }
         if (!rejectReply) return;
         proposed.resolve();
         await release.promise;
@@ -598,7 +600,7 @@ test('晚答已提出但装配失败时退出提议窗口，保留原请求结�
   const app = await boot(join(root, 'home'), definition, async function* () {
     modelCalls++;
     if (modelCalls === 1) yield* tool('ask_user_question', 'reply-preparation-question', { questions, timeout: 1 });
-    else yield* text('许可尚未返回，本轮独立工作已经结束');
+    else yield* text(modelCalls === 2 ? '许可尚未返回，本轮独立工作已经结束' : '已经收到原晚答和修复后的明确要求');
   });
   try {
     const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
@@ -618,6 +620,7 @@ test('晚答已提出但装配失败时退出提议窗口，保留原请求结�
     assert.equal(modelCalls, 2);
 
     rejectReply = true;
+    const liveError = firstValueFrom(session.rawEvents$.pipe(filter(event => event.kind === 'execution.error')));
     assert.equal(await session.answerQuestion(question.callId, answer), true);
     await proposed.promise;
     const deliveryFrame = await session.human.read();
@@ -633,6 +636,7 @@ test('晚答已提出但装配失败时退出提议窗口，保留原请求结�
     const eventCount = beforeFailure.length;
     release.resolve();
     await native.whenIdle();
+    await session.whenIdle();
     const failedEvents = native.session.snapshotEvents().slice(eventCount);
     assert.ok(failedEvents.some(event => event.type === 'turn/end' && event.data.reason.kind === 'error'),
       '真实装配错误必须结束提议所属 turn');
@@ -640,6 +644,58 @@ test('晚答已提出但装配失败时退出提议窗口，保留原请求结�
       '被提出的晚答没有进入正式模型输入历史');
     assert.ok(app.errors.some(error => String(error).includes(failure.message)));
     assert.equal(modelCalls, 2, '装配失败没有执行下一次模型请求');
+    const observedError = await liveError;
+    assert.ok(observedError.kind === 'execution.error');
+    assert.equal(observedError.error, failure, 'live 失败保留原 Error 身份');
+    assert.deepEqual(observedError.inputs?.map(input => input.requestId), ['original-question']);
+    const retained = await session.human.read();
+    assert.deepEqual(retained.replies, [{ ...delivery, state: 'queued' }], '普通 error 后同一消息落回原队列，不因退出提议窗口丢失答案');
+    assert.deepEqual(retained.questions, before.questions, '保留答案不伪造问题已经进入模型');
+    const [failureFact] = session.snapshot().failures;
+    assert.ok(failureFact);
+    const ended = failedEvents.find(event => event.type === 'turn/end');
+    assert.ok(ended);
+    assert.equal(failureFact.sequence, ended.seq);
+    assert.equal(failureFact.observedAt, ended.time);
+    assert.deepEqual(failureFact.unentered.map(item => [item.messageId, item.questionCallId]), [[delivery.messageId, question.callId]]);
+    const failedRequest = session.snapshot().requests['original-question'];
+    assert.ok(failedRequest);
+    assert.equal(failedRequest.state, original.state);
+    assert.equal(failedRequest.outcome, original.outcome);
+    assert.equal(failedRequest.reply, original.reply);
+    assert.deepEqual(failedRequest.failures, [failureFact]);
+    assert.deepEqual((await (await session.question(question.callId)).state.read()).replies, retained.replies);
+
+    rejectReply = false;
+    const goal = app.native.goals.create(native, { objective: '保留原问题答案，明确暂停时不得丢失或恢复 Goal' });
+    app.native.goals.disarm(native);
+    pauseReply = true;
+    await session.submit({ requestId: 'prepare-pause', content: '在当前业务条件下核验原答案',
+      intent: 'question', delivery: 'followup', scope: null });
+    await pauseEntered.promise;
+    assert.equal((await session.human.read()).replies[0]?.state, 'proposed');
+    const pausing = session.pause();
+    releasePause.resolve();
+    await pausing;
+    await session.whenIdle();
+    const paused = await session.human.read();
+    assert.deepEqual(paused.replies, retained.replies, '正式 Goal pause 在 keepInbox 前保留已 claim 的原晚答');
+    assert.deepEqual(paused.questions, before.questions);
+    assert.equal(session.snapshot().goal?.id, goal.id);
+    assert.equal(session.snapshot().goal?.phase, 'paused');
+    assert.equal(modelCalls, 2, '暂停不唤醒模型或恢复 Goal');
+    pauseReply = false;
+    await session.submit({ requestId: 'continue-after-repair', content: '业务条件已修复，继续处理已受理的原答案',
+      intent: 'question', delivery: 'followup', scope: null });
+    await session.whenIdle();
+    assert.equal(modelCalls, 3);
+    assert.equal(native.session.snapshotEvents().filter(event => event.type === 'user/message' && event.data.id === delivery.messageId).length, 1,
+      '明确新输入唤醒后消费原答复 ID，未重新 answer 或生成第二份答案消息');
+    const entered = await session.human.read();
+    assert.deepEqual(entered.replies, []);
+    assert.deepEqual(entered.questions.active, []);
+    assert.deepEqual(entered.questions.settled, [{ callId: question.callId, origin: question.origin, answers: answer.answers }]);
+    assert.equal(session.snapshot().goal?.phase, 'paused', '明确新问题消费原答案仍不自动恢复 Goal');
 
     const id = session.id;
     await app.host.close(id);
@@ -648,12 +704,11 @@ test('晚答已提出但装配失败时退出提议窗口，保留原请求结�
     try {
       assert.equal(app.native.agents.get(SessionId(id)), undefined);
       const recovered = await cold.human.read();
-      assert.deepEqual(recovered.replies, [], '已结束的提议窗口不作为冷恢复中的未消费晚答遗留');
-      assert.deepEqual(recovered.questions, before.questions, '提议失败不伪造问题已经回答或取消');
-      assert.deepEqual(cold.snapshot().requests['original-question'], original,
-        '没有 user/message 的晚答只引用原问题，不能把原请求的既有结算改写为本次错误');
+      assert.deepEqual(recovered.replies, [], '原晚答消费后没有遗留的排队或提议');
+      assert.deepEqual(recovered.questions, entered.questions);
+      assert.deepEqual(cold.snapshot().failures, [failureFact], '后续消费及冷恢复保留原生失败发生，而非仅保留瞬态 Error');
       assert.deepEqual((await (await cold.question(question.callId)).state.read()).replies, []);
-      assert.equal(modelCalls, 2, '读取恢复事实不唤醒模型');
+      assert.equal(modelCalls, 3, '读取恢复事实不唤醒模型');
     } finally { cold.release(); }
-  } finally { release.resolve(); await app.dispose(); }
+  } finally { release.resolve(); releasePause.resolve(); await app.dispose(); }
 });

@@ -1,6 +1,9 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { firstValueFrom } from 'rxjs';
 import type { Agent } from "@deepseek-ai/dsh-agent";
+import type { UserMessage } from '@deepseek-ai/dsh-llm';
+import type { ExecutionFailure } from '@hanger-source/dsh-reactive/kernel';
+import { humanQuestionCall } from './records.ts';
 import { appendPluginRecord } from "@deepseek-ai/dsh-session";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { conversationBindings, type ConversationIdentity, type Submission, type SubmitOptions } from "@hanger-source/dsh-reactive/kernel";
@@ -317,14 +320,121 @@ export class ConversationInputs {
             assertOwner();
         })(), 'reactive.input.commit.failed', { requestId });
     }
+    /** 失败事实先发布；离开原生 append 后仅接回本次未入历史的原晚答，不重答或唤醒。 */
+    retainFailedReplies(entry: LiveConversation, failure: ExecutionFailure, signal: AbortSignal | undefined): void {
+        if (!failure.unentered.some(item => item.questionCallId !== null)) return;
+        void retainRecovery(entry, Promise.resolve().then(async () => {
+            if (!signal) throw new Error('REACTIVE_REPLY_FAILURE_SIGNAL_REQUIRED');
+            await this.restoreFailedReplies(entry, [failure], signal);
+        }), 'reactive.human.reply-retention.failed', { failureSequence: failure.sequence, turn: failure.turn });
+    }
+    /** 实际 Agent 准入与 live 交接共用；failure 仅限定原消息，内容及终止事实仍由原生日志决定。 */
+    async restoreFailedReplies(entry: LiveConversation, failures: readonly ExecutionFailure[], signal: AbortSignal): Promise<void> {
+        const selected = new Map<string, ExecutionFailure['unentered'][number]>();
+        for (const failure of failures) for (const cause of failure.unentered) if (cause.questionCallId !== null) {
+            const previous = selected.get(cause.messageId);
+            if (previous && (previous.questionCallId !== cause.questionCallId || canonical(previous.inputs) !== canonical(cause.inputs)))
+                throw new Error('REACTIVE_REPLY_FAILURE_CONFLICT');
+            selected.set(cause.messageId, cause);
+        }
+        const causes = [...selected.values()];
+        if (!causes.length) return;
+        const failureSequence = Math.max(...failures.map(failure => failure.sequence));
+        const stillOwned = () => !signal.aborted && !this.signal.aborted && !entry.scope.disposed && !entry.session.scope.disposed
+            && entry.session.live.value === entry && this.ctx.agents.get(entry.agent.id) === entry.agent;
+        if (!stillOwned()) return;
+        this.sessions.assertSessionWorkspace(entry.session);
+        const ids = new Set(causes.map(item => item.messageId));
+        const originals = new Map<string, UserMessage>();
+        const consumed = new Set<string>();
+        const removed = new Map<string, 'claimed' | 'cancelled'>();
+        const claimOrder = new Map<string, number>();
+        const claimTurns = new Map<string, number | null>();
+        let nextOrder = 0;
+        let openTurn: number | null = null;
+        const queues: Record<'next-turn' | 'next-step', string[]> = { 'next-turn': [], 'next-step': [] };
+        // failure 的精确 ID 限定查找范围；日志只提供原内容和后续消费/取消事实，不签发重放权限。
+        for (const event of entry.agent.session.snapshotEvents()) {
+            if (event.type === 'turn/start') openTurn = event.data.turn;
+            if (event.type === 'turn/end') {
+                if (event.data.reason.kind === 'aborted') for (const [id, turn] of claimTurns)
+                    if (turn === event.data.turn && removed.get(id) === 'claimed') removed.set(id, 'cancelled');
+                openTurn = null;
+            }
+            if (event.type === 'user/message' && ids.has(event.data.id)) consumed.add(event.data.id);
+            if (event.type !== 'agent/inbox/spliced') continue;
+            const { target, start, removedCount = 0, inserted, outcome } = event.data;
+            const taken = queues[target].splice(start, removedCount, ...inserted.map(message => message.id));
+            for (const message of inserted) if (ids.has(message.id)) {
+                const original = originals.get(message.id);
+                if (original && canonical(original) !== canonical(message)) throw new Error('REACTIVE_REPLY_MESSAGE_CONFLICT');
+                if (event.seq >= entry.agent.session.inheritedEventCount && event.seq <= failureSequence) originals.set(message.id, message);
+                removed.delete(message.id);
+                claimTurns.delete(message.id);
+            }
+            for (const id of taken) if (ids.has(id)) {
+                removed.set(id, outcome === 'canceled' ? 'cancelled' : 'claimed');
+                claimOrder.set(id, nextOrder++);
+                claimTurns.set(id, openTurn);
+            }
+        }
+        const questions = this.ctx.sessionProjections.snapshot(entry.agent.session, ['userQuestions']).values.userQuestions;
+        if (!questions) throw new Error('REACTIVE_HUMAN_QUESTIONS_PROJECTION_REQUIRED');
+        // 统一按真实 claim 顺序逆序 prepend，避免跨 failure 分批恢复翻转原队列。
+        const ordered = causes.filter(cause => removed.get(cause.messageId) === 'claimed')
+            .sort((left, right) => claimOrder.get(right.messageId)! - claimOrder.get(left.messageId)!);
+        let discarded = false;
+        const stopDiscarded = this.ctx.on('agent/inbox/discarded', ({ agent, message }) => {
+            if (agent === entry.agent && ids.has(message.id)) discarded = true;
+        });
+        try {
+            for (const cause of ordered) {
+                const original = originals.get(cause.messageId);
+                if (!original || original.source.kind !== 'user-question-reply' || original.source.callId !== cause.questionCallId)
+                    throw new Error('REACTIVE_REPLY_ORIGINAL_REQUIRED');
+                const questionCallId = original.source.callId;
+                const call = humanQuestionCall(entry.session.state.value, questionCallId);
+                if (canonical(call.inputs) !== canonical(cause.inputs)) throw new Error('REACTIVE_REPLY_INPUT_CONFLICT');
+                if (consumed.has(cause.messageId) || removed.get(cause.messageId) === 'cancelled') continue;
+                if (!questions.active.some(question => question.callId === questionCallId && question.state === 'continued')) continue;
+                const pending = [...entry.agent.inbox.nextStep, ...entry.agent.inbox.nextTurn];
+                if (pending.some(message => message.source.kind === 'user-question-reply'
+                    && message.source.callId === questionCallId && message.id !== original.id)
+                    || Object.values(entry.session.state.value.proposed).some(item => item.questionCallId === cause.questionCallId && item.messageId !== original.id))
+                    throw new Error('REACTIVE_REPLY_DELIVERY_CONFLICT');
+                if (pending.some(message => message.id === original.id)) continue;
+                if (removed.get(original.id) !== 'claimed') throw new Error('REACTIVE_REPLY_CLAIM_REQUIRED');
+                if (!stillOwned() || discarded) return;
+                retainClaimedInputs(entry.agent, [original], cause.target);
+                if (!stillOwned() || discarded) return;
+            }
+        } finally { stopDiscarded(); await this.facts.flush(entry.agent); }
+    }
     retainPausedResults(entry: LiveConversation): void {
         // 原生 pause 会取消活动 turn 并保留 inbox；已 claim 的结果须先回到同一 inbox。
-        if (entry.stepSignal && !entry.stepSignal.aborted)
-            retainClaimedInputs(entry.agent, entry.claimed.filter(message => {
-                const requestId = 'rpcId' in message.source && typeof message.source.rpcId === 'string' ? message.source.rpcId : undefined;
-                return requestId !== undefined && entry.session.state.record(requestId)?.result?.ready === true
-                    && entry.session.state.activity.requests[requestId]?.state === 'accepted';
-            }));
+        const signal = entry.stepSignal;
+        if (!signal) return;
+        const stillOwned = () => !signal.aborted && !this.signal.aborted && !entry.scope.disposed && !entry.session.scope.disposed
+            && entry.session.live.value === entry && this.ctx.agents.get(entry.agent.id) === entry.agent;
+        if (!stillOwned()) return;
+        const retained = entry.claimed.filter(message => {
+            if (message.source.kind === 'user-question-reply') {
+                if ([...entry.agent.inbox.nextStep, ...entry.agent.inbox.nextTurn].some(pending => pending.id === message.id)) return false;
+                const call = humanQuestionCall(entry.session.state.value, message.source.callId);
+                const proposal = entry.session.state.value.proposed[message.id];
+                if (!proposal || proposal.questionCallId !== message.source.callId || canonical(call.inputs) !== canonical(proposal.inputs))
+                    throw new Error('REACTIVE_REPLY_INPUT_CONFLICT');
+                return true;
+            }
+            const requestId = 'rpcId' in message.source && typeof message.source.rpcId === 'string' ? message.source.rpcId : undefined;
+            return requestId !== undefined && entry.session.state.record(requestId)?.result?.ready === true
+                && entry.session.state.activity.requests[requestId]?.state === 'accepted';
+        });
+        for (const message of retained.toReversed()) {
+            if (!stillOwned()) return;
+            retainClaimedInputs(entry.agent, [message], 'next-step');
+            if (!stillOwned()) return;
+        }
     }
     installClaimed(): void {
         this.ctx.on('agent/inbox/claimed', ({ agent, message }) => {
@@ -358,7 +468,7 @@ export class ConversationInputs {
                     return record?.result ? [record] : [];
                 });
                 if (!independent && results.length && !results.some(record => this.operations().shouldWake(entry, record))) {
-                    retainClaimedInputs(agent, messages);
+                    retainClaimedInputs(agent, messages, 'next-step');
                     return { kind: 'reject' };
                 }
                 // 人的新要求可以处理其他工作；同行旧结果不借此取得 Goal 续接权限。

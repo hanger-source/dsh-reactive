@@ -269,6 +269,10 @@ activity 是同源有限调用事实，activity$ 是其 values$。pending 表达
 
 相同 requestId 必须命中同一原请求。重试先核已有记录，再处理 receipt；已受理的输入返回原确认，不重新提升附件。prepared record 已持久但尚未进入 inbox 时，同身份显式重试使用原记录的持久正文完成受理，即使 receipt 已随进程消失也不另换文件。仅有 prepared record 仍是 declared；原生 inbox 表示 accepted，user/message 表示 consumed，后续 turn/end 才结算相关轮次。回执丢失保留未知受理状态，客户端不自动重发；调用方可以观察原 requestId，并使用同一身份核对或重试。一次步骤可以消费多个输入，工具沿真实输入集合关联，后续 Goal 轮次保留原目标输入。
 
+原生 `turn/end:error` 是 ExecutionFailure 的唯一持久来源。输入投影在清理该 turn 的 proposal 前，关联已进入历史的 current 和未进入历史的实际消息；不从之后到达的队列消息反推本次失败，不伪造原生记录中没有的 step 或 phase。live execution.error 继续保留真实 Error 身份，关联本次确认过的输入；持久诊断沿 failures 投影，不再写另一份错误日志或故障状态。
+
+晚答保留在该失败事件发布结束后以 managed 微任务执行，避免在原生 append 中重入追加。实际 Agent attach 也等待同一恢复操作与 flush 完成，再交付可用宿主；只读 compose/open 不获得修改队列的责任。恢复按失败中的精确原消息核验来源、消费、取消、问题与竞争关系，逐次追加前后核验原 signal 和 owner，防止同步取消后继续投递。保留只交还原生 inbox，不唤醒、不 armed Goal、不重执行答复或业务命令。
+
 ## 等待、退出与持久续接
 
 使用 `Offer.follow` 时，框架先持久化原调用与业务命令的 intent，再等待 owner 的 `registerFollow` 可靠关联 ACK；wait 模式还需原生等待的持久 ACK，之后才执行业务。没有 Operation 的原生工具也可以显式 `await call.wait(reference)`；Promise 完成才表示等待已经跨过原生持久边界。登记阻塞等待会解除精确匹配 Goal 的自推进，并结论当前工具所在轮次。业务事务与会话日志没有共同的原子提交，可靠通知使用业务已有的事务、outbox 或等价设施。

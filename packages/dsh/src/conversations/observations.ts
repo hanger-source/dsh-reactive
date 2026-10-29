@@ -5,8 +5,8 @@ import { SessionPersistenceNotFoundError, type SessionInspection } from "@deepse
 import { goalProjectionDefinition } from "@deepseek-ai/dsh-goal";
 import { conversationBindings } from "@hanger-source/dsh-reactive/kernel";
 import { humanInputSnapshot } from "../participation/human-input.ts";
-import { NativeState, type ConversationActivity } from "./records.ts";
-import type { ConversationEvent } from "@hanger-source/dsh-reactive/kernel";
+import { NativeState, unique, type ConversationActivity } from "./records.ts";
+import type { ConversationEvent, ExecutionFailure } from "@hanger-source/dsh-reactive/kernel";
 import { reactiveProjectionSchema } from "./projections.ts";
 import { followsSchema, operationFollowSnapshots } from '../operations/projection.ts';
 import { sessionOccurrences, assistantFrame } from "./events.ts";
@@ -80,13 +80,15 @@ export class ConversationObservations {
         if (!await this.ctx.sessions.flush(agent.session))
             throw new Error('REACTIVE_PERSISTENCE_UNAVAILABLE');
     }
-    install(sessions: Pick<ConversationSessions, 'forAgent' | 'get'>, onGoalPause: (entry: LiveConversation) => void): void {
+    install(sessions: Pick<ConversationSessions, 'forAgent' | 'get'>, onGoalPause: (entry: LiveConversation) => void,
+        onFailure: (entry: LiveConversation, failure: ExecutionFailure, signal: AbortSignal | undefined) => void): void {
         this.ctx.on('session/event', (session, event) => {
             const agent = this.ctx.agents.get(session.id);
             const entry = agent && sessions.forAgent(agent);
             if (!entry)
                 return;
             const previous = entry.session.state;
+            const stepSignal = entry.stepSignal;
             if (event.type === 'turn/start' || event.type === 'turn/end') {
                 entry.claimed = [];
                 entry.stepSignal = undefined;
@@ -101,6 +103,11 @@ export class ConversationObservations {
             this.publish(entry.session);
             for (const occurrence of sessionOccurrences(session.id, event, previous, entry.session.state))
                 this.emit(entry.session, occurrence);
+            if (event.type === 'turn/end' && event.data.reason.kind === 'error') {
+                const failure = entry.session.conversation[conversationBindings]().activity.peek().failures.find(value => value.sequence === event.seq);
+                if (!failure) throw new Error('REACTIVE_EXECUTION_FAILURE_REQUIRED');
+                onFailure(entry, failure, stepSignal);
+            }
         });
         this.ctx.on('agent/status', ({ agent, status }) => {
             const entry = sessions.forAgent(agent);
@@ -144,7 +151,10 @@ export class ConversationObservations {
             if (!entry || entry.session.scope.disposed)
                 return;
             this.publish(entry.session);
-            const inputs = entry.progress.inputs(turn, step);
+            const admitted = entry.progress.inputs(turn, step);
+            const proposed = entry.session.state.value.openTurn === turn
+                ? entry.claimed.flatMap(message => entry.session.state.reference(message)) : [];
+            const inputs = admitted === undefined && !proposed.length ? undefined : unique([...(admitted ?? []), ...proposed]);
             this.emit(entry.session, { sessionId: agent.id, time: Date.now(), sequence: null, kind: 'execution.error', error, turn, step,
                 ...(inputs === undefined ? {} : { inputs }) });
         });

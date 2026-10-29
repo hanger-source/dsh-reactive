@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { Context } from '@deepseek-ai/cordis';
 import { pluginRecordOf, type SessionEvent } from '@deepseek-ai/dsh-session';
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection';
-import { inputReferenceSchema, requestActivitySchema, toolActivitySchema, replyActivitySchema } from '@hanger-source/dsh-reactive/kernel';
+import { inputReferenceSchema, requestActivitySchema, toolActivitySchema, replyActivitySchema, executionFailureSchema } from '@hanger-source/dsh-reactive/kernel';
 import { canonical, childInputRecordSchema, goalBindingSchema, inputEditRecordSchema, inputRecordIdentity, operationNotStartedSchema, operationFollowUnregisteredSchema, recordSchema, referenceOf, contentDigest, unique, waitRecordSchema, callForResult, ptcParent } from './records.ts';
 
 const inputsSchema = inputReferenceSchema.array().readonly();
@@ -18,6 +18,7 @@ export const reactiveProjectionSchema = z.object({ sessionId: z.string(), delega
   openTurn: z.number().int().nonnegative().nullable(), openStep: stepSchema.nullable(),
   pending: z.object({ 'next-turn': pendingOccurrenceSchema.array(), 'next-step': pendingOccurrenceSchema.array() }).strict(),
   proposed: z.record(z.string(), proposedOccurrenceSchema), requests: z.record(z.string(), requestLifecycleSchema),
+  failures: executionFailureSchema.array().readonly(),
   waits: waitRecordSchema.array().readonly(),
 }).strict();
 export type ReactiveProjectionState = z.infer<typeof reactiveProjectionSchema>;
@@ -27,11 +28,11 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
 
 /** 仅负责业务请求、原生输入和调用的关联；驱动、水位、冷恢复由原生注册表拥有。 */
 export const reactiveProjectionDefinition: ProjectionDefinition<'reactiveInputs'> = {
-  key: 'reactiveInputs', stateVersion: 12, stateSchema: reactiveProjectionSchema,
+  key: 'reactiveInputs', stateVersion: 13, stateSchema: reactiveProjectionSchema,
   init: (header, inheritedEventCount) => ({ sessionId: header.id, delegated: header.parentSession !== undefined, inheritedEventCount,
     records: {}, pendingEdits: {}, goals: {}, nativeInputs: {}, inputs: [], calls: {}, replies: [], current: [], openTurn: null, openStep: null,
     pending: { 'next-turn': [], 'next-step': [] },
-    proposed: {}, requests: {}, waits: [] }),
+    proposed: {}, requests: {}, waits: [], failures: [] }),
   apply: applyReactiveProjection,
 };
 
@@ -197,6 +198,13 @@ function applyReactiveProjection(previous: ReactiveProjectionState, event: Sessi
     state.replies = previousReply ? state.replies.map(before => before.messageId === reply.messageId ? reply : before) : [...state.replies, reply];
   }
   if (event.type === 'turn/end') {
+    if (event.data.reason.kind === 'error') {
+      const unentered = Object.values(state.proposed).filter(item => item.turn === event.data.turn).map(item => ({
+        messageId: item.messageId, questionCallId: item.questionCallId, target: item.target, inputs: item.inputs,
+      }));
+      state.failures = [...state.failures, { sequence: event.seq, observedAt: event.time, turn: event.data.turn,
+        error: event.data.reason.error, inputs: unique([...state.current, ...unentered.flatMap(item => item.inputs)]), unentered }];
+    }
     // 未进入 user/message 的晚答只引用原问题来源，不能替原请求结算本 turn。
     const proposedInputs = Object.values(state.proposed).flatMap(item => item.questionCallId === null ? item.inputs : []);
     for (const input of unique([...state.current, ...proposedInputs])) if (localRequest(input)) {

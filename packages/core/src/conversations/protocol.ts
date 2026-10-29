@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { LlmFailure } from '@deepseek-ai/dsh-llm';
 import type { AdmittedPromptContentPart, PromptContentPart as NativePromptContentPart } from '@deepseek-ai/dsh-attachment/types';
 import type { FileUploadReceiptId } from '../files/contract.ts';
 import { continuationSchema, inputReferenceSchema, waitSchema, type Continuation, type InputParticipant, type InputReference, type InputResult, type Json, type WaitReference } from './causality.ts';
@@ -12,6 +13,30 @@ export { continuationSchema, goalReferenceSchema, inputReferenceSchema, waitSche
 /** 原始文件输入只接受同会话上传签发的 receipt，不接受客户端提供持久文件引用。 */
 export type PromptContentPart = NativePromptContentPart | { readonly type: 'file'; readonly receiptId: FileUploadReceiptId };
 export type InputDelivery = 'followup' | 'steer' | 'inject';
+/** 原生 turn/end:error 的同源投影，不另造故障记录或请求生命周期。 */
+export interface ExecutionFailure {
+  readonly sequence: number;
+  readonly observedAt: number;
+  readonly turn: number;
+  readonly error: LlmFailure;
+  readonly inputs: readonly InputReference[];
+  readonly unentered: readonly {
+    readonly messageId: string;
+    readonly questionCallId: string | null;
+    readonly target: 'next-turn' | 'next-step';
+    readonly inputs: readonly InputReference[];
+  }[];
+}
+const llmFailureSchema: z.ZodType<LlmFailure> = z.object({ message: z.string(), code: z.string(),
+  status: z.number().optional(), providerRetryAfterMs: z.number().optional(),
+  requestId: z.custom<NonNullable<LlmFailure['requestId']>>(value => typeof value === 'string').optional(),
+  offloadImages: z.number().optional() }).strict();
+export const executionFailureSchema: z.ZodType<ExecutionFailure> = z.object({
+  sequence: z.number().int().nonnegative(), observedAt: z.number(), turn: z.number().int().nonnegative(),
+  error: llmFailureSchema, inputs: inputReferenceSchema.array().readonly(),
+  unentered: z.object({ messageId: z.string(), questionCallId: z.string().nullable(),
+    target: z.enum(['next-turn', 'next-step']), inputs: inputReferenceSchema.array().readonly() }).strict().array().readonly(),
+}).strict();
 const imageMediaTypeSchema = z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const textPartSchema = z.object({ type: z.literal('text'), text: z.string() }).strict();
 const promptPartSchema = z.discriminatedUnion('type', [textPartSchema,
@@ -90,7 +115,8 @@ export type ReplyActivity = Readonly<Omit<z.infer<typeof replyActivitySchema>, '
 };
 export const requestActivitySchema = z.object({ requestId: z.string(), state: z.enum(['declared', 'accepted', 'consumed', 'settled']),
   declaration: requestDeclarationSchema.nullable(), inputs: inputReferenceSchema.array().readonly(),
-  reply: z.string().nullable(), outcome: z.string().nullable(), tools: toolActivitySchema.array().readonly() }).strict();
+  reply: z.string().nullable(), outcome: z.string().nullable(), tools: toolActivitySchema.array().readonly(),
+  failures: executionFailureSchema.array().readonly() }).strict();
 export type RequestActivity = Readonly<Omit<z.infer<typeof requestActivitySchema>, 'tools' | 'declaration' | 'inputs'>> & {
   readonly declaration: RequestDeclaration | null;
   readonly inputs: readonly InputReference[];
@@ -111,6 +137,7 @@ export const conversationActivitySchema = z.object({ sessionId: z.string(), sequ
   goal: goalActivitySchema.nullable(),
   operationFollows: operationFollowSnapshotSchema.array().readonly(),
   requests: z.record(z.string(), requestActivitySchema),
+  failures: executionFailureSchema.array().readonly(),
   waits: z.object({ continuation: continuationSchema, wait: waitSchema }).array().readonly() }).strict();
 export type ConversationActivity = Readonly<Omit<z.infer<typeof conversationActivitySchema>, 'goal' | 'requests' | 'waits' | 'inputs' | 'calls' | 'replies' | 'operationFollows'>> & {
   readonly inputs: readonly InputReference[];

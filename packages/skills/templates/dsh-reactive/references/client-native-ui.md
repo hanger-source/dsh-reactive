@@ -85,6 +85,12 @@ Program 的 conversation.progress 与 conversation.request(id).state、SDK 和�
 
 答复取消、重新入队或提议窗口结束都可能让 replies 消失；不能据空集合声称从未回答或模型已消费。冷读的 proposed 只是最后持久事实，不证明当前有 Agent 在执行。前台回答沿原生工具返回结算；晚答进入 user/message 才推进原生问题结算，仍不证明模型已处理或业务成功。观察不签发原 Goal 的续接权限。
 
+## 读取执行失败
+
+`session.progress.read(signal)` 的 activity.failures、`session.request(id).state.read(signal)` 的 activity?.failures，以及 WorkSessionSnapshot.failures 共用 ExecutionFailure。该事实来自原生 turn/end:error，带原生 LlmFailure、turn/sequence/observedAt、原 inputs 和尚未入历史的 unentered 消息。Work 条件 execution.failed 保同一来源；不能把它解释为整个业务、Goal 或 Operation 的最终失败。自定义 Activity/Request 来源必须提供 failures，不能用读侧 error 代替有效的失败事实。
+
+未入历史的晚答会沿原 ID、原内容保留回正式 inbox，当前有交付时仍读 human.replies；保留不自动重试。实际 Agent 激活会核验进程中断留下的精确失败关联并等待恢复，纯 open/观察不激活或改队列。已消费/取消/结算不复活，同题竞争明确冲突。显式新输入仍走 native Program/member/Goal 准入，不重 answer、不找最近 Goal。持久性沿原生 checkpoint/flush，不增加另一层日志或队列。
+
 ## 读取原生日志
 
 用同一个 `session.journal` 消费本地或远程的人工、服务会话。`page({ throughSeq, beforeSeq?, maxMessages?, turnWindow? }, { signal })` 使用 Controller 的原生消息分页；`follow(window, { signal })` 先交 `opened` 的 cursor/page，再交水位后的原生 entry。它保留持久原始日志，不把瞬态 `events$` 或 assistant stream 拼成历史。

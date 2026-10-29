@@ -12,7 +12,8 @@ import { defer, endWith, firstValueFrom, fromEvent, ignoreElements, merge, take,
 import type { ProgramActionRequest, ProgramActionStart, ProgramAddress, ProgramSessionAddress, ProgramCreateRequest, ProgramCompleteCreationRequest, ProgramIdentity, ProgramInputReceipt, ProgramInvocationAddress, ProgramInvocationLookupRequest, ProgramInvocationFrame, ProgramSubmitRequest, ProgramWorkspaceRegistration, ProgramViewFrame, ProgramViewRequest, WireObservation, ProgramFailure, ProgramActionBindingRequest, ProgramActionBinding, ProgramUploadFileRequest, ProgramFileUploadValue, ProgramInputEditRequest } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramOperationRequest, ProgramOperationLocateRequest, ProgramInvocationOperationRequest, ProgramOperationLocation, ProgramOperationNotification, ProgramOperationNotificationResult, ProgramAnswerRequest, ProgramQuestionRequest, ProgramQuestionsFrame, ProgramWaitFrame, ProgramOperationBindingRequest, ProgramOperationBinding, ProgramOperationFeedbackRequest, ProgramOperationFeedbackRead } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramRequestAddress, ProgramRequestStatus, ProgramWorkspace, ProgramGoalControl, ProgramCancelResult, ProgramJournalOpenRequest, ProgramJournalPageRequest, ProgramJournalFrame } from '@hanger-source/dsh-reactive-client/types';
-import type { ProgramProgressFrame, ProgramConversationEvent } from '@hanger-source/dsh-reactive-client/types';
+import type { ProgramProgressFrame, ProgramConversationEvent, ProgramExecutionFailure } from '@hanger-source/dsh-reactive-client/types';
+import type { ConversationActivity, ExecutionFailure } from '@hanger-source/dsh-reactive';
 import { Inbox } from '@hanger-source/dsh-reactive-client/inbox';
 import { createProgramActionOwner, type ProgramActionOwner, type ProgramActionOwnerOptions } from './actions.ts';
 import { resolveProgramParticipant, type ProgramParticipant } from './participant.ts';
@@ -211,6 +212,18 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   private wireInputs(references: readonly InputReference[]): readonly InputReference<JsonValue>[] {
     return references.map(reference => ({ ...reference, scope: z.json().parse(reference.scope) }));
   }
+  private wireExecutionFailure(value: ExecutionFailure): ProgramExecutionFailure {
+    return { ...value, inputs: this.wireInputs(value.inputs),
+      unentered: value.unentered.map(input => ({ ...input, inputs: this.wireInputs(input.inputs) })) };
+  }
+  private wireActivity(value: ConversationActivity): JsonValue {
+    return z.json().parse({ ...value,
+      failures: value.failures.map(failure => this.wireExecutionFailure(failure)),
+      requests: Object.fromEntries(Object.entries(value.requests).map(([id, request]) => [id, {
+        ...request, failures: request.failures.map(failure => this.wireExecutionFailure(failure)),
+      }])),
+    });
+  }
   /** 直接消费原始事实；只核验 JSON 字段，不逆编码或再次解析业务 input。 */
   private occurrence(value: ConversationEvent): ProgramConversationEvent {
     if (value.kind === 'operation.follow.changed') return { ...value,
@@ -371,7 +384,9 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
       signal.throwIfAborted();
       // open 等待期间发生的 start 已进入同一 Conversation owner。此同步 cut 到订阅完成没有 await。
       const initial = handle.progressSnapshot();
-      const observation: WireObservation = initial.status === 'ready' ? { ...initial, value: z.json().parse(initial.value) }
+      const observation: WireObservation = initial.status === 'ready' ? { ...initial, value: z.json().parse({
+        ...initial.value, activity: this.wireActivity(initial.value.activity),
+      }) }
         : initial.status === 'error' ? { ...initial, error: this.failure(initial.error) } : initial;
       inbox.push({ type: 'baseline', observation });
       let activity = initial.status === 'ready' ? initial.value.activity : undefined;
@@ -380,7 +395,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
         next: value => {
           if (value === activity) return;
           activity = value;
-          try { inbox.push({ type: 'activity', activity: z.json().parse(value) }); }
+          try { inbox.push({ type: 'activity', activity: this.wireActivity(value) }); }
           catch (error) { inbox.fail(error); }
         }, error: (error: unknown) => inbox.fail(signal.aborted ? signal.reason : error),
       }), handle.progressFrames$.subscribe({

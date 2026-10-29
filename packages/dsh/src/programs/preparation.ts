@@ -112,13 +112,13 @@ export class ConversationPrograms {
                 return next();
             if (!context.signal)
                 throw new Error('REACTIVE_ASSEMBLY_SIGNAL_REQUIRED');
+            entry.stepSignal = context.signal;
             const signal = AbortSignal.any([context.signal, entry.scope.signal, entry.session.scope.signal]);
             signal.throwIfAborted();
             this.sessions.assertSessionWorkspace(entry.session);
             await firstValueFrom(abortable(() => this.delegations.beforeStep(entry.agent, signal), signal));
             signal.throwIfAborted();
             this.sessions.assertSessionWorkspace(entry.session);
-            entry.stepSignal = context.signal;
             if (entry.preparing)
                 throw new Error('REACTIVE_ASSEMBLY_CONCURRENT');
             entry.progress.beginPreparation();

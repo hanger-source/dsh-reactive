@@ -82,7 +82,7 @@ test('局部复合hook用同一Resource、Action和Reaction跨函数消费；组
   const programs = ['one', 'two'].map(sessionId => {
     const sessionScope = scope.child();
     const conversation = new Conversation(sessionScope, { sessionId, workspaceId: workspace.id, environmentId: 'work', directory: root, parentSessionId: null },
-      workspace, definition, { sessionId, sequence: -1, source: 'live', execution: 'idle', inputs: [], calls: [], replies: [], goal: null, requests: {}, waits: [], operationFollows: [] });
+      workspace, definition, { sessionId, sequence: -1, source: 'live', execution: 'idle', inputs: [], calls: [], replies: [], goal: null, requests: {}, waits: [], operationFollows: [], failures: [] });
     return new ProgramInstance(sessionScope, implementation, conversation, workspace, {
       execution() { return { invocationId: crypto.randomUUID(), sessionId,
         source: { kind: 'participant', actorId: sessionId, participant: 'service', entrypoint: 'local-hook-consumer' },

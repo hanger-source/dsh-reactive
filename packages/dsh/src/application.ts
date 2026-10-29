@@ -69,7 +69,8 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
         delegations.install();
         this.stopDelegationUpdates = this.operations.installDelegationUpdates();
         this.sessions.installDisposed();
-        this.facts.install(this.sessions, entry => this.inputs.retainPausedResults(entry));
+        this.facts.install(this.sessions, entry => this.inputs.retainPausedResults(entry),
+            (entry, failure, signal) => this.inputs.retainFailedReplies(entry, failure, signal));
         this.inputs.installClaimed();
         this.programs.installAssembly();
         this.inputs.installPreStep();

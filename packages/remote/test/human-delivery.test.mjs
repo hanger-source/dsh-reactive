@@ -16,17 +16,22 @@ import { mountProgramGateway, RemoteAuthenticationError } from '@hanger-source/d
 
 const next = (source, predicate) => firstValueFrom(source.pipe(filter(predicate), timeout(5000)));
 
-test('冷会话晚答经过真实 HTTP，交付中的原消息和问题归属与模型输入结算分开', { timeout: 15000 }, async () => {
+for (const failPreparation of [false, true]) test(failPreparation
+  ? '晚答装配失败经过真实 HTTP 保留失败因果，明确新输入消费原消息，冷读仍解释原失败'
+  : '冷会话晚答经过真实 HTTP，交付中的原消息和问题归属与模型输入结算分开', { timeout: 15000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-human-delivery-'));
   const proposed = Promise.withResolvers(), release = Promise.withResolvers();
-  let hold = false, modelCalls = 0, gateway, client, local;
+  let hold = false, reject = failPreparation, modelCalls = 0, gateway, client, local;
   const requests = [], admissions = [], errors = [];
   const scope = { workId: 'knowledge', submittedAt: '2026-10-29T00:00:00.000Z' };
   const program = defineProgram({ name: 'human_delivery', input: z.object({ workId: z.string(), submittedAt: z.iso.datetime() })
     .transform(value => ({ ...value, submittedAt: new Date(value.submittedAt) })), surface: defineSurface({ views: {}, actions: {} }) });
   const definition = defineApplication({ name: 'human-delivery', admit: async () => {}, environments: [defineEnvironment({
     id: 'work', instructions: '补充资料不代表新的操作授权', program: implementProgram(program, { Component() {
-      useBeforeStep(async () => { if (hold) { proposed.resolve(); await release.promise; } }, []);
+      useBeforeStep(async () => { if (hold) {
+        proposed.resolve(); await release.promise;
+        if (reject) throw new Error('REMOTE_REPLY_PREPARATION_FAILED');
+      } }, []);
       return h(HumanInput, { admitResponder(admission) {
         assert.equal(admission.actorId, 'bob'); admissions.push(admission.question.origin);
       } });
@@ -59,7 +64,8 @@ test('冷会话晚答经过真实 HTTP，交付中的原消息和问题归属与
     gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
       model: { provider: 'human-delivery', model: 'controlled' }, participant: principal => ({ participant: 'human', actorId: principal.id }),
       access: access => access.registerPolicy('delivery', { bindings: () => [{
-        role: { name: 'participate', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/questions', 'reactivePrograms/answerQuestion'] },
+        role: { name: 'participate', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/questions',
+          'reactivePrograms/answerQuestion', 'reactivePrograms/progress', 'reactivePrograms/submit'] },
         resource: { kind: 'session', id: local.id },
       }] }), carrier: { onError: error => errors.push(error), async authenticate(request) {
         if (request.headers.get('authorization') !== 'Bearer bob') throw new RemoteAuthenticationError(401);
@@ -93,14 +99,49 @@ test('冷会话晚答经过真实 HTTP，交付中的原消息和问题归属与
     const agent = runtime.native.agents.get(SessionId(local.id));
     assert.equal(agent.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.id === reply.messageId), false);
     assert.equal(modelCalls, 2, '提议尚未进入模型输入或启动新模型请求');
-    hold = false; release.resolve();
+    const original = (await remote.request('original').state.read()).activity;
+    release.resolve();
     await local.whenIdle();
+    if (failPreparation) {
+      const retained = await next(remote.human.values$, value => value.replies.some(item => item.state === 'queued'));
+      assert.equal(retained.replies[0].messageId, reply.messageId);
+      assert.deepEqual(retained.questions, snapshot.questions, '装配失败不结算原问题');
+      const failed = await next(remote.progress.values$, value => value.activity.failures.length === 1);
+      const [failure] = failed.activity.failures;
+      const ended = agent.session.snapshotEvents().find(event => event.seq === failure.sequence);
+      assert.equal(ended.type, 'turn/end'); assert.equal(ended.data.reason.kind, 'error');
+      assert.deepEqual(failure.error, ended.data.reason.error, 'HTTP 保留原生 LlmFailure');
+      assert.match(failure.error.message, /REMOTE_REPLY_PREPARATION_FAILED/);
+      assert.deepEqual(failure.inputs, question.origin.inputs);
+      assert.deepEqual(failure.unentered, [{ messageId: reply.messageId, questionCallId: question.callId,
+        target: reply.target, inputs: question.origin.inputs }]);
+      const request = (await remote.request('original').state.read()).activity;
+      assert.deepEqual(request.failures, [failure]);
+      assert.deepEqual([request.state, request.outcome, request.reply], [original.state, original.outcome, original.reply]);
+      const failedWork = selector.select('knowledge', [{ identity: local.identity, progress: failed, human: retained }]).sessions[0];
+      assert.ok(failedWork.conditions.some(condition => condition.kind === 'execution.failed' && condition.value.sequence === failure.sequence));
+      assert.equal(modelCalls, 2, '失败保留答复没有自动重试或重新调用模型');
+      assert.equal(agent.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.id === reply.messageId), false);
+      hold = false; reject = false;
+      await remote.submit({ requestId: 'continue', content: '明确继续处理原始证据', scope, intent: 'question', delivery: 'followup' });
+      await local.whenIdle();
+    }
+    hold = false;
     const settled = await next(remote.human.values$, value => value.questions.settled.some(item => item.callId === question.callId));
     assert.deepEqual(settled.replies, []);
     assert.ok(agent.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.id === reply.messageId));
     assert.ok(requests[2].some(message => message.role === 'user' && message.id === reply.messageId));
     assert.equal(modelCalls, 3); assert.equal(admissions.length, 2, '冷预审和真实 live 准入沿同一原问题');
-    assert.deepEqual(errors, []);
+    if (failPreparation) {
+      assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'user/message' && event.data.id === reply.messageId).length, 1);
+      assert.equal(errors.length, 1); assert.match(String(errors[0]), /REMOTE_REPLY_PREPARATION_FAILED/);
+      const failure = (await remote.progress.read()).activity.failures[0];
+      await runtime.application.close(local.id);
+      const cold = await client.open(local.id);
+      assert.deepEqual((await cold.request('original').state.read()).activity.failures, [failure]);
+      assert.equal(runtime.native.agents.get(SessionId(local.id)), undefined, '失败历史的冷读不激活 Agent');
+      assert.equal(modelCalls, 3);
+    } else assert.deepEqual(errors, []);
   } finally {
     hold = false; release.resolve(); await client?.dispose(); local?.release();
     try { await gateway?.close(); } finally { await runtime.dispose(); }

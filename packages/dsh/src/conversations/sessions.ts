@@ -355,6 +355,10 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             const entry = session.live.value;
             if (!entry || entry.agent !== agent) throw new Error('REACTIVE_AGENT_NOT_BOUND');
             await this.programs().attach(entry);
+            await this.inputs().restoreFailedReplies(entry, session.state.activity.failures, nativeSignal);
+            nativeSignal.throwIfAborted();
+            if (this.ctx.agents.get(agent.id) !== agent || session.live.value !== entry || entry.scope.disposed || session.scope.disposed)
+                throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
             this.facts.publish(session);
             return entry;
         }
@@ -632,8 +636,11 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
                 const entry = session.live.value;
                 if (!entry || entry.agent !== previous.agent) throw new Error('REACTIVE_AGENT_NOT_BOUND');
                 await this.programs().attach(entry);
+                await this.inputs().restoreFailedReplies(entry, session.state.activity.failures, this.signal);
+                this.signal.throwIfAborted();
                 this.assertSessionWorkspace(session);
-                if (this.ctx.agents.get(previous.agent.id) !== previous.agent || this.#entries.get(previous.agent) !== entry)
+                if (this.ctx.agents.get(previous.agent.id) !== previous.agent || this.#entries.get(previous.agent) !== entry
+                    || entry.scope.disposed || session.scope.disposed)
                     throw new Error('REACTIVE_CONVERSATION_NOT_RUNNING');
                 this.facts.publish(session);
             } catch (error) {

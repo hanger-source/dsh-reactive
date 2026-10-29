@@ -4,6 +4,7 @@ export type { Json, InputReference, GoalReference, Continuation, WaitReference, 
 export { InputEditRejectedError } from './input-edit.ts';
 export type { ConversationActivity, GoalActivity, RequestActivity, ToolActivity, CreationReference, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions } from './protocol.ts';
 export type { RequestDeclaration, ReplyActivity, InputResult } from './protocol.ts';
+export type { ExecutionFailure } from './protocol.ts';
 export type { ConversationEvent, RequestEvent, ToolOccurrence, AssistantStream, AssistantAttemptSnapshot, AssistantProgressFrame } from './events.ts';
 export { ownConversationEvent } from './events.ts';
 export { createRequestHandle, createAssistantProgress, parseAssistantAttempt, parseConversationProgress, parseAssistantProgressFrame } from './request.ts';

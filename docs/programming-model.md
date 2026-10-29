@@ -483,6 +483,14 @@ function observeWork(workId: string, sessions: readonly WorkSource[], signal: Ab
 
 每项保留完整 `value` 和解释命中依据的 `matchedInputs`；一次调用或回复可能因多条输入同时属于多个工作。调用保留正式 start 事件序号 `callSequence`，回复保留 `messageId` 和完整 inputs；provider 的 callId 可跨轮复用，不能用它合并不同发生。matchedInputs 只解释观察分组，不裁剪事实或授予续接权限。声明是持久请求事实，可在尚无 messageId 时命中，但它不是已受理的 InputReference。缺少输入关联证据的回复不归组。条件表达暂停、阻塞、等待、待答、调用失败及原续接资格，不能据此判断整个工作忙碌或完成。业务 Operation 阶段与资源错误可用现有 RxJS 资源组合表达。
 
+## 观察执行失败与保留交付
+
+会话的 `progress.activity.failures`、请求的 `state.activity.failures` 与 Work 的 `failures` 读取同一组 `ExecutionFailure`。每项保留原生错误、turn、sequence、observedAt 和完整原输入；`unentered` 标识该次提议中尚未进入输入历史的实际消息，包含 messageId、原队列、问题 callId 及其输入关联。Work 的 `execution.failed` 条件是失败事实，不代表整个业务失败或已经完成。
+
+晚答在入历史前遇到执行错误时，框架保留原消息到正式 inbox，不重复回答、不另建请求、不自动重试。之后明确提交新要求仍沿原生队列、Program 准入和 Goal 控制继续。进程中断留下的失败关联在实际 Agent 激活时核验并恢复；只读打开会话可以观察失败，不修改 inbox 或启动模型。原消息已消费、已取消或问题已结算时不复活；同一问题出现另一份交付会明确报告冲突。
+
+晚答指向的原问题请求保留自己的状态与 outcome，相关失败通过 `failures` 观察。进入输入历史、模型实际处理、Goal 完成及业务 Operation 结算仍是不同事实。错误记录与队列保留沿现有 session checkpoint/flush 的可靠性边界，不把一个回调返回解释成额外落盘承诺。
+
 ## 读取原生日志
 
 本地、远程的人工与服务会话，以及后台 Program 的 conversation，共用 `session.journal`。`page({ throughSeq, beforeSeq, maxMessages, turnWindow }, { signal })` 读取包含式原生水位内的消息对齐历史；`follow(window, { signal })` 返回一次独立的异步连接，先交付 `opened` 的 cursor 和 page，之后交付该水位后的原生 entry。这些持久事件与只通知新事实的 `events$` 各有责任，不从 ConversationEvent 重建历史。

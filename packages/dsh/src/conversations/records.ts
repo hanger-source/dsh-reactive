@@ -82,11 +82,12 @@ export class NativeState {
       return [requestId, { ...lifecycle,
         declaration: record ? { scope: record.scope, intent: record.intent, actorId: record.actorId, participant: record.participant,
           result: record.result ?? null } : null,
+        failures: value.failures.filter(failure => requestIds(failure.inputs).has(requestId)),
         ...related.get(requestId)! }];
     }));
     this.activity = { sessionId: value.sessionId, sequence, source: 'durable', execution: 'unavailable',
       goal: goal ? { ...goal.goal, roundsStarted: goal.roundsStarted, activation: null, inputs: this.goalInputs(goal.goal.id) } : null,
-      inputs: value.inputs, calls, replies: value.replies, requests, waits: value.waits, operationFollows };
+      inputs: value.inputs, calls, replies: value.replies, requests, waits: value.waits, operationFollows, failures: value.failures };
   }
   record(id: string) { return Object.hasOwn(this.value.records, id) ? this.value.records[id] : undefined; }
   goalInputs(id: string): readonly InputReference[] { return Object.hasOwn(this.value.goals, id) ? this.value.goals[id]! : []; }

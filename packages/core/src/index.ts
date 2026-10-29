@@ -58,6 +58,7 @@ export type { ActionPresentation, ActionPresentationMetadata, ToolActionBinding 
 
 export type { ConversationActivity, GoalActivity, RequestActivity, ToolActivity, CreationReference, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions } from './conversations/protocol.ts';
 export type { RequestDeclaration, ReplyActivity, InputResult } from './conversations/protocol.ts';
+export type { ExecutionFailure } from './conversations/protocol.ts';
 export type { ConversationEvent, RequestEvent, ToolOccurrence, AssistantStream, AssistantAttemptSnapshot, AssistantProgressFrame } from './conversations/events.ts';
 export { ownConversationEvent } from './conversations/events.ts';
 export { createRequestHandle, createAssistantProgress, parseAssistantAttempt, parseConversationProgress, parseAssistantProgressFrame } from './conversations/request.ts';

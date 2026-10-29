@@ -4,12 +4,19 @@ import type { SessionFiles, FileResource, WorkspaceFileText, WorkspaceFileBytes 
 import type { SessionJournal, ProgramJournalFrame, ProgramJournalPage } from '@hanger-source/dsh-reactive/journal';
 import type { AttachmentIdType, SessionImageAttachment } from '@hanger-source/dsh-reactive/attachments';
 import type { HumanReplyDelivery } from '@hanger-source/dsh-reactive/participation';
+import type { ExecutionFailure } from '@hanger-source/dsh-reactive/conversations';
 import { SessionJournalUnavailableError } from '@hanger-source/dsh-reactive/journal';
 
 export const sessionJournalFailure = (error: unknown) => error instanceof SessionJournalUnavailableError;
 
 export async function questionDeliveries<P extends ProgramContract>(session: ProgramSessionClient<P>, signal: AbortSignal): Promise<readonly HumanReplyDelivery[]> {
   return (await session.human.read(signal)).replies;
+}
+
+export async function requestFailures<P extends ProgramContract>(session: ProgramSessionClient<P>, requestId: string,
+  signal: AbortSignal): Promise<readonly ExecutionFailure[]> {
+  const request = await session.request(requestId).state.read(signal);
+  return request.activity === null ? [] : request.activity.failures;
 }
 
 export function sessionImage(session: Pick<ProgramSessionClient<ProgramContract>, 'attachments'>,

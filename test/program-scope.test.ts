@@ -14,7 +14,7 @@ function createProgram(Component: ComponentType<ProgramProps<typeof contract>>, 
   const owner = new Scope(), workspace = createWorkspace(owner, { id: 'scope-workspace', directory });
   const scope = owner.child(), sessionId = crypto.randomUUID();
   const conversation = new Conversation(scope, { sessionId, workspaceId: workspace.id, environmentId: 'work', directory, parentSessionId: null },
-    workspace, contract, { sessionId, sequence: -1, source: 'live', execution: 'idle', inputs: [], calls: [], replies: [], goal: null, requests: {}, waits: [], operationFollows: [] });
+    workspace, contract, { sessionId, sequence: -1, source: 'live', execution: 'idle', inputs: [], calls: [], replies: [], goal: null, requests: {}, waits: [], operationFollows: [], failures: [] });
   const program = new ProgramInstance(scope, implementProgram(contract, { Component }), conversation, workspace, {
     execution() { throw new Error('SCOPE_TEST_HAS_NO_ACTION'); },
   });
