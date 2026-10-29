@@ -5,16 +5,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as immediate } from 'node:timers/promises';
 import { Fragment, createElement as h } from 'react';
-import type { Context } from '@deepseek-ai/cordis';
+import { symbols, type Context } from '@deepseek-ai/cordis';
 import { assembleContextFor } from '@deepseek-ai/dsh-agent';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import type { SkillProviderControl } from '@deepseek-ai/dsh-skill';
-import { BehaviorSubject, filter, firstValueFrom, from, timeout } from 'rxjs';
+import { FileSystemSkillProvider } from '@deepseek-ai/dsh-skill-filesystem';
+import type SystemPrompt from '@deepseek-ai/dsh-system-prompt';
+import { BehaviorSubject, filter, firstValueFrom, from, timeout, type Subscription } from 'rxjs';
 import { collectionSurface, composeSurface, defineApplication, defineEnvironment, defineProgram, defineSurface, z,
   type ApplicationDefinition, type AnyEnvironment } from '@hanger-source/dsh-reactive';
 import { implementProgram, Module, Skill, useObservable } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
+import { createNativeSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 
 const contract = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
 const wait = <T>(work: Promise<T>) => firstValueFrom(from(work).pipe(timeout(3_000)));
@@ -30,7 +33,7 @@ async function start<E extends readonly AnyEnvironment[]>(root: string, definiti
   return { runtime, native, errors, models: () => models };
 }
 
-test('集合模块共享真实目录和方法正文，单项退出保留依赖，最后退出撤销原生贡献', { timeout: 15_000 }, async () => {
+test('集合模块共享真实目录和方法正文，最后退出无需装配即撤贡献，原owner仍等provider释放', { timeout: 15_000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-skill-contributions-'));
   const directory = join(root, 'method'), name = 'shared-method';
   await mkdir(directory);
@@ -51,7 +54,32 @@ test('集合模块共享真实目录和方法正文，单项退出保留依赖�
           h(Module, { key: member, mount: composed.mounts.dependencies.instance(member) }, h(Dependency, { member })))) : null;
       } }) }),
   ] }));
+  const capability = createNativeSkills({ service: 'provided' });
+  const subscriptions: Subscription[] = [];
+  const releasedContexts: string[] = [];
+  const prompt: SystemPrompt = Reflect.get(app.native.get('systemPrompt')!, symbols.original);
+  const registerContext = prompt.context;
+  prompt.context = function (context) {
+    const release = registerContext.call(this, context);
+    return () => {
+      release();
+      if (context.name === 'reactive:skill:' + name) releasedContexts.push(context.name);
+    };
+  };
+  const disposeProvider = FileSystemSkillProvider.prototype.dispose;
+  const closing = Promise.withResolvers<void>(), releaseClose = Promise.withResolvers<void>();
+  let provider: string | undefined, providerClosing: Promise<void> | undefined, providerClosed = false;
+  FileSystemSkillProvider.prototype.dispose = function () {
+    const actual = disposeProvider.call(this);
+    if (this.name !== provider) return actual;
+    if (!providerClosing) {
+      closing.resolve();
+      providerClosing = actual.then(async () => { await releaseClose.promise; providerClosed = true; });
+    }
+    return providerClosing;
+  };
   try {
+    await capability.install(app.native, join(root, 'home'));
     const workspace = await app.runtime.application.createWorkspace({ directory: root });
     const session = await app.runtime.application.create('work', { workspaceId: workspace.workspaceId });
     const members = session.collection('dependencies');
@@ -61,26 +89,94 @@ test('集合模块共享真实目录和方法正文，单项退出保留依赖�
     const catalog = () => app.native.get('skills')!.list({ scope: agent, cwd: root, signal });
     const initial = await assemble();
     assert.deepEqual(await members.instances.read(), ['left', 'right']);
-    const provider = (await catalog()).find(skill => skill.name === name)?.provider;
+    provider = (await catalog()).find(skill => skill.name === name)?.provider;
     assert.ok(provider);
     assert.equal(initial.contexts.filter(context => context.name === 'reactive:skill:' + name).length, 1);
     assert.ok(JSON.stringify(initial.contexts).includes('SHARED_METHOD_BODY'));
+    const reader = capability.forSession(session), body = reader.definition(name);
+    subscriptions.push(reader.catalog.values$.subscribe(), body.values$.subscribe());
+    assert.equal((await body.read())?.content.trim(), 'SHARED_METHOD_BODY');
 
     const retained = firstValueFrom(members.instances$.pipe(filter(ids => ids.length === 1 && ids[0] === 'right'), timeout(3_000)));
     selected.next(['right']); await retained;
+    assert.equal((await catalog()).find(skill => skill.name === name)?.provider, provider);
+    assert.deepEqual(releasedContexts, [], '还有一个声明时不退休共享named context');
+    assert.equal(providerClosing, undefined, '还有一个声明时不退休共享目录provider');
     const single = await assemble();
     assert.equal((await catalog()).find(skill => skill.name === name)?.provider, provider);
     assert.equal(single.contexts.filter(context => context.name === 'reactive:skill:' + name).length, 1);
     assert.ok(JSON.stringify(single.contexts).includes('SHARED_METHOD_BODY'));
 
     const removed = firstValueFrom(members.instances$.pipe(filter(ids => ids.length === 0), timeout(3_000)));
+    const catalogRemoved = firstValueFrom(reader.catalog.values$.pipe(filter(value => !value.skills.some(skill => skill.name === name)), timeout(3_000)));
+    const bodyRemoved = firstValueFrom(body.values$.pipe(filter(value => value === undefined), timeout(3_000)));
     selected.next([]); await removed;
-    const absent = await assemble();
+    await wait(closing.promise);
+    await Promise.all([catalogRemoved, bodyRemoved]);
+    t.diagnostic('skills.withdrawn 原生catalog与同源资源已撤贡献，provider实际释放回执仍未完成');
     assert.equal((await catalog()).some(skill => skill.name === name), false);
+    assert.deepEqual(releasedContexts, ['reactive:skill:' + name], '最后退出在任何后续装配前释放原named context');
+    assert.equal(providerClosed, false);
+    // 只按正式scope读取已经注册的prompt；不提供agent，因此不进入Program准备续体。
+    const absent = await wait(agent.ctx.systemPrompt.assemble({ scope: agent, signal }));
     assert.equal(absent.contexts.some(context => context.name === 'reactive:skill:' + name), false);
+    let stopped = false;
+    const stopping = app.runtime.application.close(session.id).then(() => { stopped = true; });
+    await immediate(); assert.equal(stopped, false, '原Agent关闭仍加入已退休provider的同一清理回执');
+    releaseClose.resolve(); await wait(stopping);
+    assert.equal(providerClosed, true);
     assert.equal(app.models(), 0); assert.deepEqual(app.errors, []);
     session.release();
-  } finally { selected.complete(); await app.runtime.dispose(); }
+  } finally {
+    releaseClose.resolve(); subscriptions.forEach(subscription => subscription.unsubscribe()); selected.complete();
+    try { await capability.dispose(); await app.runtime.dispose(); }
+    finally { prompt.context = registerContext; FileSystemSkillProvider.prototype.dispose = disposeProvider; }
+  }
+});
+
+test('撤下named Skill时一个原生释放失败仍释放其他贡献，准备和owner退出保留原错误', { timeout: 15_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-skill-withdrawal-failure-'));
+  const selected = new BehaviorSubject(true), names = ['first-method', 'second-method'];
+  const app = await start(root, defineApplication({ name: 'skill-withdrawal-failure', admit: async () => {}, environments: [
+    defineEnvironment({ id: 'work', instructions: '方法贡献退出的清理责任', program: implementProgram(contract, { Component() {
+      const active = useObservable(() => selected, []);
+      return active.status === 'ready' && active.value ? h(Fragment, null, names.map(name => h(Skill, { key: name, name }))) : null;
+    } }) }),
+  ] }));
+  const failure = new Error('NATIVE_NAMED_SKILL_RELEASE_FAILED');
+  const released = new Set<string>(), releasedAll = Promise.withResolvers<void>();
+  const prompt: SystemPrompt = Reflect.get(app.native.get('systemPrompt')!, symbols.original);
+  const registerContext = prompt.context;
+  prompt.context = function (context) {
+    const release = registerContext.call(this, context);
+    return () => {
+      release();
+      if (!names.some(name => context.name === 'reactive:skill:' + name)) return;
+      released.add(context.name);
+      if (released.size === names.length) releasedAll.resolve();
+      if (context.name === 'reactive:skill:' + names[0]) throw failure;
+    };
+  };
+  const registrations = names.map(name => app.native.get('skills')!.register({ name, description: name,
+    source: 'runtime', content: 'CURRENT_METHOD_' + name }));
+  const hasCause = (error: unknown): boolean => error === failure || error instanceof AggregateError && error.errors.some(hasCause);
+  try {
+    const workspace = await app.runtime.application.createWorkspace({ directory: root });
+    const session = await app.runtime.application.create('work', { workspaceId: workspace.workspaceId });
+    const agent = app.native.get('agents')!.get(SessionId(session.id))!, signal = new AbortController().signal;
+    const assemble = () => agent.ctx.systemPrompt.assemble(assembleContextFor(agent, signal));
+    const initial = await wait(assemble());
+    assert.equal(initial.contexts.filter(context => context.name.startsWith('reactive:skill:')).length, names.length);
+    selected.next(false); await wait(releasedAll.promise);
+    const absent = await wait(agent.ctx.systemPrompt.assemble({ scope: agent, signal }));
+    assert.equal(absent.contexts.some(context => context.name.startsWith('reactive:skill:')), false);
+    await assert.rejects(wait(assemble()), hasCause);
+    await assert.rejects(app.runtime.dispose(), hasCause);
+    assert.equal(app.models(), 0);
+  } finally {
+    selected.complete(); registrations.forEach(release => release());
+    await app.runtime.dispose().catch(() => {}); prompt.context = registerContext;
+  }
 });
 
 test('真实Skill准备替换声明，不配合取消的共享provider不阻塞新集合或取消另一会话', { timeout: 15_000 }, async () => {

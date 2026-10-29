@@ -8,7 +8,9 @@ import type {} from '@deepseek-ai/dsh-working-directory';
 import type {} from '@deepseek-ai/dsh-fs';
 import type { SkillDeclaration } from '@hanger-source/dsh-reactive/kernel';
 
-type NamedSkill = { text: string; release(): void };
+// 原生注册可同步发布通知；先登记身份，撤销后才返回的资源仍归原注册收拢。
+type NamedSkill = { text: string; release?: () => void };
+type DirectorySkill = { fiber?: Fiber };
 
 /** 当前程序的原生 Skill 接点；目录与方法正文分别沿原生 provider 和 prompt context 生存。 */
 export class ProgramSkills {
@@ -19,7 +21,7 @@ export class ProgramSkills {
   #revision = 0;
   #lookupRevision = 0;
   #preparing = new Set<AbortController>();
-  #providers = new Map<string, Fiber>();
+  #providers = new Map<string, DirectorySkill>();
   #contexts = new Map<string, NamedSkill>();
   #retiring = new Set<Promise<void>>();
   #failures: unknown[] = [];
@@ -61,7 +63,27 @@ export class ProgramSkills {
     this.#names = [...names];
     this.#directories = [...directories];
     this.#revision++;
+    this.withdraw(names, directories);
     this.invalidatePreparation();
+  }
+
+  /** 声明提交即退休失效贡献；先摘身份，再进入可能同步重入的原生释放。 */
+  private withdraw(names: ReadonlySet<string>, directories: ReadonlySet<string>) {
+    const contexts: NamedSkill[] = [];
+    const providers: DirectorySkill[] = [];
+    for (const [name, binding] of this.#contexts) if (!names.has(name)) {
+      this.#contexts.delete(name); contexts.push(binding);
+    }
+    for (const [directory, binding] of this.#providers) if (!directories.has(directory)) {
+      this.#providers.delete(directory); providers.push(binding);
+    }
+    for (const binding of contexts) this.releaseContext(binding);
+    for (const binding of providers) if (binding.fiber) this.retire(binding.fiber);
+  }
+
+  private releaseContext(binding: NamedSkill) {
+    try { binding.release?.(); }
+    catch (error) { this.#failures.push(error); }
   }
 
   /** 在原生 pre-step 的 Skill catalog 收集之前等待；相同目录与名称保留原生注册身份。 */
@@ -77,27 +99,34 @@ export class ProgramSkills {
       const revision = this.#revision;
       const directories = new Set(this.#directories);
       const names = new Set(this.#names);
-      for (const [directory, fiber] of this.#providers) if (!directories.has(directory)) {
-        this.#providers.delete(directory);
-        this.retire(fiber);
+      for (const directory of directories) if (!this.#disposed && this.#directories.includes(directory) && !this.#providers.has(directory)) {
+        const binding: DirectorySkill = {};
+        this.#providers.set(directory, binding);
+        try {
+          const fiber = ctx.plugin(skillFilesystem, {
+            providerName: 'reactive-program:' + encodeURIComponent(this.agent.id) + ':' + encodeURIComponent(directory),
+            includeDefaultRoots: false, customSkillDirs: [directory], watch: true, watchFollowSymlinks: false,
+          });
+          binding.fiber = fiber;
+          if (this.#disposed || this.#providers.get(directory) !== binding) this.retire(fiber);
+        } catch (error) {
+          if (this.#providers.get(directory) === binding) this.#providers.delete(directory);
+          throw error;
+        }
       }
-      for (const directory of directories) if (!this.#providers.has(directory)) {
-        this.#providers.set(directory, ctx.plugin(skillFilesystem, {
-          providerName: 'reactive-program:' + encodeURIComponent(this.agent.id) + ':' + encodeURIComponent(directory),
-          includeDefaultRoots: false, customSkillDirs: [directory], watch: true, watchFollowSymlinks: false,
-        }));
+      for (const name of names) if (!this.#disposed && this.#names.includes(name) && !this.#contexts.has(name)) {
+        const binding: NamedSkill = { text: '' };
+        this.#contexts.set(name, binding);
+        try {
+          binding.release = ctx.systemPrompt.context({ name: 'reactive:skill:' + name, order: 1000,
+            required: true, interpolate: false, text: () => binding.text });
+          if (this.#disposed || this.#contexts.get(name) !== binding) this.releaseContext(binding);
+        } catch (error) {
+          if (this.#contexts.get(name) === binding) this.#contexts.delete(name);
+          throw error;
+        }
       }
-      for (const [name, binding] of this.#contexts) if (!names.has(name)) {
-        binding.release();
-        this.#contexts.delete(name);
-      }
-      for (const name of names) if (!this.#contexts.has(name)) {
-        const binding = { text: '' };
-        const release = ctx.systemPrompt.context({ name: 'reactive:skill:' + name, order: 1000,
-          required: true, interpolate: false, text: () => binding.text });
-        this.#contexts.set(name, Object.assign(binding, { release }));
-      }
-      const results = await Promise.allSettled([...this.#providers.values()].map(fiber => fiber.await()));
+      const results = await Promise.allSettled([...this.#providers.values()].map(binding => binding.fiber?.await()));
       await Promise.all([...this.#retiring]);
       this.assertActive();
       signal.throwIfAborted();
@@ -183,15 +212,9 @@ export class ProgramSkills {
     void (async () => {
       this.#disposed = true;
       this.#lifetime.abort(new Error('REACTIVE_SKILLS_DISPOSED'));
-      const failures: unknown[] = [];
-      for (const binding of this.#contexts.values()) {
-        try { binding.release(); } catch (error) { failures.push(error); }
-      }
-      this.#contexts.clear();
-      for (const fiber of this.#providers.values()) this.retire(fiber);
-      this.#providers.clear();
+      this.withdraw(new Set(), new Set());
       await Promise.all([...this.#retiring]);
-      failures.push(...this.#failures);
+      const failures = [...this.#failures];
       if (failures.length) throw new AggregateError(failures, 'REACTIVE_SKILL_BINDINGS_DISPOSAL_FAILED');
     })().then(completion.resolve, completion.reject);
     return this.#bindingsClosing;
