@@ -6,6 +6,19 @@ import { Scope, connect } from '@hanger-source/dsh-reactive/kernel';
 import { requireActivePlugin, type NativeInstallation } from './native-installation.ts';
 import type { NativeSessionAccess } from './conversations/session-access.ts';
 
+/** 官方 trace 代理使用原对象身份；普通对象及函数 provider 使用自身身份。 */
+function nativeServiceIdentity(service: unknown): object {
+  if (service === null || (typeof service !== 'object' && typeof service !== 'function')) {
+    throw new TypeError('REACTIVE_NATIVE_SERVICE_OBJECT_REQUIRED');
+  }
+  if (!Reflect.get(service, symbols.tracker)) return service;
+  const original: unknown = Reflect.get(service, symbols.original);
+  if (original === null || (typeof original !== 'object' && typeof original !== 'function')) {
+    throw new TypeError('REACTIVE_NATIVE_SERVICE_OBJECT_REQUIRED');
+  }
+  return original;
+}
+
 /** 宿主选择的一次能力安装；必需服务退出会撤销实例，不转向替换后的provider。 */
 export interface NativeCapability {
   readonly install: NativeInstallation;
@@ -25,7 +38,7 @@ export interface NativeInvocationSource {
  * wait默认沿原SDK等待资格；退出不改变result，也不回滚已经开始的原生写入。 */
 export interface NativeInvocation<T> extends Invocation<T, Json, NativeInvocationSource> {}
 
-type NativeSetupResource = (Fiber & PromiseLike<Fiber>) | (() => unknown);
+export type NativeSetupResource = (Fiber & PromiseLike<Fiber>) | (() => unknown);
 
 /** 仅用于编程时选择句柄；真正身份由 Host 的 exact 对象登记核验。 */
 export interface NativeSessionHandle { readonly id: string; }
@@ -53,8 +66,8 @@ export class NativeCapabilityOwner {
   #pending = new Set<Promise<void>>();
   #failures = new Set<unknown>();
 
-  constructor(private readonly name: string, services: readonly string[], setup: (ctx: Context) => Iterable<NativeSetupResource>) {
-    this.install = async parent => {
+  constructor(private readonly name: string, services: readonly string[], setup: (ctx: Context, home: string) => Iterable<NativeSetupResource>) {
+    this.install = async (parent, home) => {
       this.scope.assertActive();
       if (this.#installation) throw new Error('REACTIVE_NATIVE_CAPABILITY_ALREADY_INSTALLED');
       const stop = () => this.stopObservations();
@@ -65,7 +78,7 @@ export class NativeCapabilityOwner {
       const installation = parent.plugin({ name, async apply(ctx: Context) {
         const resources = (function* (): Generator<NativeSetupResource, void> {
           yield stopAndDrain;
-          yield* setup(ctx);
+          yield* setup(ctx, home);
           const queries = ctx.plugin({ name: name + ':queries', inject: [...services], apply(readContext: Context) {
             owner.scope.assertActive();
             readContext.effect(() => () => {
@@ -120,9 +133,12 @@ export class NativeCapabilityOwner {
     const context = this.context();
     access.signal.throwIfAborted();
     access.assertCurrent();
-    const installed: object | undefined = context.get(service);
-    const current: object | undefined = access.context.get(service);
-    if (!installed || !current || Reflect.get(installed, symbols.original) !== Reflect.get(current, symbols.original)) {
+    const installed: unknown = context.get(service);
+    const current: unknown = access.context.get(service);
+    if (installed === undefined || current === undefined) {
+      throw new Error('REACTIVE_NATIVE_CAPABILITY_HOST_MISMATCH');
+    }
+    if (nativeServiceIdentity(installed) !== nativeServiceIdentity(current)) {
       throw new Error('REACTIVE_NATIVE_CAPABILITY_HOST_MISMATCH');
     }
     return context;
@@ -230,7 +246,10 @@ export function nativeToolNames(owner: NativeCapabilityOwner, accept: (name: str
 export function nativeObservationScope(owner: NativeCapabilityOwner, access: NativeSessionAccess): Scope {
   owner.context(); access.assertCurrent(); access.signal.throwIfAborted();
   const scope = owner.scope.child();
-  const stop = () => scope.dispose(access.signal.reason);
+  const stop = () => {
+    try { scope.dispose(access.signal.reason); }
+    catch (error) { owner.recordCleanupFailure(error); }
+  };
   access.signal.addEventListener('abort', stop, { once: true });
   scope.own(() => access.signal.removeEventListener('abort', stop));
   if (access.signal.aborted) stop();

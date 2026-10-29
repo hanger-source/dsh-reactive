@@ -123,6 +123,8 @@ React 负责组件身份和声明提交，RxJS 负责业务流组合，dsh 负�
 
 会话能力的 `forSession` 也接受 Program 收到的原 `conversation`，沿同一 Host 身份链核验。相同来源返回稳定的共享业务面，不公开共享读侧的销毁权；消费者退出自己的订阅或等待，独立读取寿命由自己取得的 Session 句柄持有。首次观察才建立原生读侧连接；Program 失败只释放该来源的观察，已受理的原生工作保留各自 owner。释放边界见[原生会话能力的借用与释放](docs/migration-native-borrowed-readers.md)。
 
+新增原生会话能力使用 `@hanger-source/dsh-reactive-dsh/native` 的 `createNativeSessionCapability`。它复用内置能力的安装、全部服务核验、exact 来源缓存、资源和 NativeInvocation；扩展不需要修改中央 Host 或导入内部 Scope。Tools 与 Schedule 也使用这条公共链路，详见[原生会话能力扩展](docs/native-extensions.md)。
+
 `/schedule` 提供现有原生提醒的绑定、变更与历史观察、CAS 更新和删除；`/team` 提供真实成员和任务板的观察、任务创建与 CAS、等待及 interrupt；`/files` 在明确提供 WorkspaceFiles 的宿主按原会话目录读取并异步释放文件监听。它们位于 `@hanger-source/dsh-reactive-dsh` 的独立可选入口，未安装的能力不会进入宿主根入口的类型依赖。Schedule 创建与 Team spawn/send 的 Program 来源准入仍受上述原生接点限制。
 
 Team.roster 提供可与任务板共同组合的实时成员资源；持久成员阶段继续来自 Team.state 与 members$。Team 和 Schedule 的写入返回 NativeInvocation，保存 `const call = task.update(request)` 后用 `call.result` 取得完整结果、`call.activity` 观察同一次调用，或用 `call.wait({ signal })` 独立等待回执。释放 SDK 不改写原调用结果。迁移方式见[原生调用与独立等待](docs/migration-native-invocations.md)。

@@ -91,7 +91,10 @@ class SessionTeam implements NativeSessionTeam {
     this.projection$ = this.state.values$;
     this.members$ = this.projection$.pipe(map(projection => projection.members));
     this.tasks$ = this.projection$.pipe(map(projection => projection.tasks));
-    const roster = nativeAgentResource<readonly TeamMemberView[]>(owner, access, this.#scope, { service: 'agentTeams',
+    const roster = nativeAgentResource<readonly TeamMemberView[]>(this.#scope, {
+      assertCurrent: () => { owner.session(access, 'agentTeams'); },
+      liveAgent: () => access.liveAgent(), liveAgent$: access.liveAgent$,
+    }, {
       changes: agent => merge(changes$, new Observable<void>(subscriber => {
         const ctx = this.context();
         const notify = (id: SessionId) => {

@@ -42,7 +42,10 @@ class SessionSkills implements NativeSessionSkills {
   }
 
   private resource<T>(read: (registry: SkillRegistry, agent: Agent, cwd: string, signal: AbortSignal) => Promise<T>): NativeSkillResource<T> {
-    return nativeAgentResource(this.owner, this.access, this.scope, { service: 'skills',
+    return nativeAgentResource(this.scope, {
+      assertCurrent: () => { this.owner.session(this.access, 'skills'); },
+      liveAgent: () => this.access.liveAgent(), liveAgent$: this.access.liveAgent$,
+    }, {
       changes: agent => new Observable<void>(subscriber => {
         const releases = [
           agent.ctx.on('skills/change', () => subscriber.next()),

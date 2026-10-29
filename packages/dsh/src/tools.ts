@@ -2,11 +2,8 @@ import type { ToolSchema } from '@deepseek-ai/dsh-llm';
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools';
 import { Observable } from 'rxjs';
 import type { ResourceReadable } from '@hanger-source/dsh-reactive';
-import type { Scope } from '@hanger-source/dsh-reactive/kernel';
-import { NativeCapabilityOwner, nativeObservationScope,
-  type NativeCapability, type NativeSessionSource } from './native-capability.ts';
-import { nativeAgentResource } from './conversations/agent-resource.ts';
-import { nativeSessionAccess, type NativeSessionAccess } from './conversations/session-access.ts';
+import type { NativeCapability, NativeSessionSource } from './native-capability.ts';
+import { createNativeSessionCapability } from './native.ts';
 
 export type { ToolSchema } from '@deepseek-ai/dsh-llm';
 
@@ -26,23 +23,6 @@ export interface NativeSessionTools {
   readonly catalog: NativeToolCatalog;
 }
 
-class SessionTools implements NativeSessionTools {
-  readonly catalog: NativeToolCatalog;
-  readonly scope: Scope;
-
-  constructor(owner: NativeCapabilityOwner, access: NativeSessionAccess) {
-    this.scope = nativeObservationScope(owner, access);
-    this.catalog = nativeAgentResource(owner, access, this.scope, { service: 'tools',
-      changes: agent => new Observable<void>(subscriber => agent.ctx.on('tools/change', () => subscriber.next())),
-      read: agent => {
-        const tools: ToolRuntime | undefined = agent.ctx.get('tools');
-        if (!tools) throw new Error('REACTIVE_NATIVE_TOOLS_REQUIRED');
-        return tools.schemas(agent);
-      },
-    });
-  }
-}
-
 export interface NativeTools extends NativeCapability {
   forSession(session: NativeSessionSource): NativeSessionTools;
 }
@@ -50,20 +30,18 @@ export interface NativeTools extends NativeCapability {
 /** 读取与 NativeTools 声明使用同一注册表；执行继续由原生调用管线和 guard 负责。 */
 export function createNativeTools(options: NativeToolsOptions): NativeTools {
   if (options.service !== 'provided') throw new Error('REACTIVE_NATIVE_TOOLS_SERVICE_SELECTION_INVALID');
-  const owner = new NativeCapabilityOwner('reactive-native-tools', ['tools'], function* (ctx) {
-    if (!ctx.get('tools')) throw new Error('REACTIVE_NATIVE_TOOLS_REQUIRED');
-  });
-  const sessions = new WeakMap<object, NativeSessionTools>();
-  return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
-    forSession(session: NativeSessionSource) {
-      const access = nativeSessionAccess(session); owner.session(access, 'tools');
-      let current = sessions.get(session);
-      if (!current) {
-        const reader = new SessionTools(owner, access);
-        current = Object.freeze({ catalog: reader.catalog });
-        sessions.set(session, current);
-      }
-      return current;
+  return createNativeSessionCapability<NativeSessionTools>({
+    name: 'reactive-native-tools', services: ['tools'],
+    setup: function* (ctx) {
+      if (!ctx.get('tools')) throw new Error('REACTIVE_NATIVE_TOOLS_REQUIRED');
     },
+    session: source => ({ catalog: source.agentResource({
+      changes: agent => new Observable<void>(subscriber => agent.ctx.on('tools/change', () => subscriber.next())),
+      read: agent => {
+        const tools: ToolRuntime | undefined = agent.ctx.get('tools');
+        if (!tools) throw new Error('REACTIVE_NATIVE_TOOLS_REQUIRED');
+        return tools.schemas(agent);
+      },
+    }) }),
   });
 }

@@ -16,6 +16,10 @@
       "import": "./lib/index.js"
     },
     "./package.json": "./package.json",
+    "./native": {
+      "types": "./lib/native.d.ts",
+      "import": "./lib/native.js"
+    },
     "./jobs": {
       "types": "./lib/jobs/index.d.ts",
       "import": "./lib/jobs/index.js"

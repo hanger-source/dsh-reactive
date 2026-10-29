@@ -24,3 +24,6 @@ export type { RuntimeModel, DeepSeekOptions, PiAiOptions } from './models.ts';
 export type { ServiceConversation } from './conversations/handle.ts';
 export { nativeCapabilities } from './native-capability.ts';
 export type { NativeCapability, NativeSessionHandle, NativeSessionSource, NativeInvocation, NativeInvocationSource } from './native-capability.ts';
+export { createNativeSessionCapability } from './native.ts';
+export type { NativeSessionCapability, NativeSessionCapabilityOptions, NativeSessionContext, NativeSetupResource,
+  NativeAgentResource, NativeAgentResourceOptions } from './native.ts';

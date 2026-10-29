@@ -3,10 +3,9 @@ import ScheduleService, { ScheduleId as NativeScheduleId, type Config, type Sche
   type ScheduleDeliveryHistoryRequest, type ScheduleDeliveryHistoryResult } from '@deepseek-ai/dsh-schedule';
 import { Observable, firstValueFrom, map } from 'rxjs';
 import { abortable, observeResource, mapResource, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
-import type { Scope } from '@hanger-source/dsh-reactive/kernel';
-import { NativeCapabilityOwner, nativeResource, nativeObservationScope, ownNativeValue,
+import { ownNativeValue,
   type NativeCapability, type NativeInvocation, type NativeSessionSource } from '../native-capability.ts';
-import { nativeSessionAccess, type NativeSessionAccess } from '../conversations/session-access.ts';
+import { createNativeSessionCapability, type NativeSessionContext } from '../native.ts';
 
 export const ScheduleId = NativeScheduleId;
 export type ScheduleId = import('./client.ts').ScheduleId;
@@ -53,25 +52,22 @@ class SessionSchedule implements NativeSessionSchedule {
   readonly state: ResourceReader<readonly ScheduleCatalogEntry[]>;
   readonly active$: Observable<readonly ScheduleRecord[]>;
   readonly catalog$: Observable<readonly ScheduleCatalogEntry[]>;
-  readonly scope: Scope;
   #tasks = new Map<ScheduleId, NativeScheduleTask>();
 
-  constructor(private readonly owner: NativeCapabilityOwner, private readonly access: NativeSessionAccess) {
-    this.scope = nativeObservationScope(owner, access);
+  constructor(private readonly source: NativeSessionContext) {
     const changes$ = new Observable<void>(subscriber => {
       const ctx = this.context();
       const release = ctx.on('schedule/changed', () => subscriber.next());
       subscriber.next();
       return release;
     });
-    this.state = nativeResource(this.scope, () => observeResource({ key$: changes$, read: (_key, signal) => this.catalog({ signal }) }));
+    this.state = source.resource(() => observeResource({ key$: changes$, read: (_key, signal) => this.catalog({ signal }) }));
     this.catalog$ = this.state.values$;
     // 同一提交切面同时含 active/inactive；不另起一条原生变更监听。
     this.active$ = this.catalog$.pipe(map(records => Object.freeze(records.filter(record => record.status === 'active').map(scheduleRecord))));
   }
   private context() {
-    this.scope.assertActive();
-    return this.owner.session(this.access, 'schedule');
+    return this.source.context();
   }
   service(): ScheduleService {
     const service: ScheduleService | undefined = this.context().get('schedule');
@@ -80,13 +76,13 @@ class SessionSchedule implements NativeSessionSchedule {
   }
   signal(options: CancellationOptions): AbortSignal {
     this.context();
-    const signal = options.signal ? AbortSignal.any([this.scope.signal, options.signal]) : this.scope.signal;
+    const signal = options.signal ? AbortSignal.any([this.source.signal, options.signal]) : this.source.signal;
     signal.throwIfAborted();
     return signal;
   }
   async active(options: CancellationOptions = {}): Promise<readonly ScheduleRecord[]> {
     const signal = this.signal(options);
-    const records = await firstValueFrom(abortable(() => this.service().list({ sessionId: this.access.sessionId }), signal));
+    const records = await firstValueFrom(abortable(() => this.service().list({ sessionId: this.source.sessionId }), signal));
     signal.throwIfAborted(); this.context();
     return ownNativeValue(records);
   }
@@ -94,13 +90,13 @@ class SessionSchedule implements NativeSessionSchedule {
     const signal = this.signal(options);
     const records = await firstValueFrom(abortable(() => this.service().catalog(), signal));
     signal.throwIfAborted(); this.context();
-    return ownNativeValue(records.filter(record => record.sessionId === this.access.sessionId));
+    return ownNativeValue(records.filter(record => record.sessionId === this.source.sessionId));
   }
   task(id: ScheduleId): NativeScheduleTask {
     this.context();
     let task = this.#tasks.get(id);
     if (!task) {
-      const state = nativeResource(this.scope, () => this.state.observations$.pipe(mapResource(current => current.find(record => record.id === id))));
+      const state = this.source.resource(() => this.state.observations$.pipe(mapResource(current => current.find(record => record.id === id))));
       task = Object.freeze({ id,
         state, state$: state.values$,
         read: async (opts: CancellationOptions = {}) => {
@@ -109,26 +105,26 @@ class SessionSchedule implements NativeSessionSchedule {
         },
         history: async (page: NativeScheduleHistory, opts: CancellationOptions = {}) => {
           const signal = this.signal(opts);
-          const result = await firstValueFrom(abortable(() => this.service().history({ ...structuredClone(page), id, sessionId: this.access.sessionId }), signal));
+          const result = await firstValueFrom(abortable(() => this.service().history({ ...structuredClone(page), id, sessionId: this.source.sessionId }), signal));
           signal.throwIfAborted(); this.context();
           return ownNativeValue(result);
         },
         update: (request: NativeScheduleUpdate, opts: CancellationOptions = {}) => {
           const executionSignal = opts.signal;
-          const waitSignal = this.signal({ signal: executionSignal });
+          this.source.assertCurrent(); executionSignal?.throwIfAborted();
           const selected = structuredClone(request);
           if (selected.expected.id !== id) throw new Error('REACTIVE_NATIVE_SCHEDULE_EXPECTED_MISMATCH');
-          const service = this.service(), sessionId = this.access.sessionId;
+          const service = this.service(), sessionId = this.source.sessionId;
           // 只有显式调用信号约束FIFO后的执行前取消；SDK退出只结束本调用方的等待。
-          return this.owner.invoke({ sessionId, operation: 'update' }, async () =>
-            ownNativeValue(await service.update({ ...selected, id, sessionId }, executionSignal)), waitSignal);
+          return this.source.invoke('update', async () =>
+            ownNativeValue(await service.update({ ...selected, id, sessionId }, executionSignal)), opts);
         },
         delete: (opts: CancellationOptions = {}) => {
           const executionSignal = opts.signal;
-          const waitSignal = this.signal({ signal: executionSignal });
-          const service = this.service(), sessionId = this.access.sessionId;
-          return this.owner.invoke({ sessionId, operation: 'delete' }, async () =>
-            ownNativeValue(await service.delete({ id, sessionId }, executionSignal)), waitSignal);
+          this.source.assertCurrent(); executionSignal?.throwIfAborted();
+          const service = this.service(), sessionId = this.source.sessionId;
+          return this.source.invoke('delete', async () =>
+            ownNativeValue(await service.delete({ id, sessionId }, executionSignal)), opts);
         },
       });
       this.#tasks.set(id, task);
@@ -148,22 +144,16 @@ export interface NativeSchedule extends NativeCapability {
 export function createNativeSchedule(options: NativeScheduleOptions): NativeSchedule {
   const selected = structuredClone(options);
   if (selected.service.kind !== 'install' && selected.service.kind !== 'provided') throw new Error('REACTIVE_NATIVE_SCHEDULE_SERVICE_SELECTION_INVALID');
-  const owner = new NativeCapabilityOwner('reactive-native-schedule', ['schedule'], function* (ctx) {
-    if (selected.service.kind === 'install') yield ctx.plugin(ScheduleService, selected.service.config ?? {});
-    else if (!ctx.get('schedule')) throw new Error('REACTIVE_NATIVE_SCHEDULE_REQUIRED');
-  });
-  const sessions = new WeakMap<object, NativeSessionSchedule>();
-  return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
-    forSession(session: NativeSessionSource) {
-      const access = nativeSessionAccess(session); owner.session(access, 'schedule');
-      let current = sessions.get(session);
-      if (!current) {
-        const reader = new SessionSchedule(owner, access);
-        current = Object.freeze({ state: reader.state, active$: reader.active$, catalog$: reader.catalog$,
-          active: reader.active.bind(reader), catalog: reader.catalog.bind(reader), task: reader.task.bind(reader) });
-        sessions.set(session, current);
-      }
-      return current;
+  return createNativeSessionCapability<NativeSessionSchedule>({
+    name: 'reactive-native-schedule', services: ['schedule'],
+    setup: function* (ctx) {
+      if (selected.service.kind === 'install') yield ctx.plugin(ScheduleService, selected.service.config ?? {});
+      else if (!ctx.get('schedule')) throw new Error('REACTIVE_NATIVE_SCHEDULE_REQUIRED');
+    },
+    session: source => {
+      const reader = new SessionSchedule(source);
+      return { state: reader.state, active$: reader.active$, catalog$: reader.catalog$,
+        active: reader.active.bind(reader), catalog: reader.catalog.bind(reader), task: reader.task.bind(reader) };
     },
   });
 }
