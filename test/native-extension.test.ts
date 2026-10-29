@@ -8,6 +8,7 @@ import { Observable, defer, from, map, type Subscription } from 'rxjs';
 import { symbols, type Context, type Fiber } from '@deepseek-ai/cordis';
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local';
 import type { FileSystem } from '@deepseek-ai/dsh-fs';
+import type { ToolRuntime } from '@deepseek-ai/dsh-tools';
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, z, type Observation } from '@hanger-source/dsh-reactive';
 import { implementProgram } from '@hanger-source/dsh-reactive/program';
 import { requireActivePlugin } from '@hanger-source/dsh-reactive-dsh';
@@ -34,7 +35,12 @@ test('公共扩展冷构造后读取真实文件和Agent；exact来源缓存与�
     }));
     const catalog = context.agentResource({
       changes: agent => new Observable(subscriber => agent.ctx.on('tools/change', () => subscriber.next(undefined))),
-      read: agent => { queries++; return agent.ctx.get('tools')!.schemas(agent).map(tool => tool.name).sort(); },
+      read: agent => {
+        queries++;
+        const tools: ToolRuntime | undefined = agent.ctx.get('tools');
+        if (!tools) throw new Error('EXTENSION_TOOLS_REQUIRED');
+        return tools.schemas(agent).map(tool => tool.name).sort();
+      },
     });
     return { file, catalog, agents: context.liveAgent$ };
   } });
