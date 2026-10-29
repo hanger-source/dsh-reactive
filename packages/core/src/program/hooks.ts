@@ -346,7 +346,7 @@ export function useScope(setup: ScopeSetup, dependencies: DependencyList): void 
   }, [owner, current]);
 }
 
-/** 声明幂等的步骤前检查；依赖替换或组件退出撤销本登记的信号和等待，真实失败仍交宿主处理。 */
+/** 声明幂等的步骤前检查；退出立即撤销等待，Program关闭仍等真实检查结算，当前失败继续交宿主处理。 */
 export function useBeforeStep(check: (signal: AbortSignal) => void | Promise<void>, dependencies: DependencyList): void {
   const owner = useOwner();
   const current = useMemo(() => check, dependencies);

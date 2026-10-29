@@ -55,7 +55,7 @@ export interface ProgramInstanceOptions {
     access: OperationAccessContext): Promise<OperationFeedbackRead<OperationReference<D>, OperationFeedbackPayload<D>>>;
 }
 type TrustedExecution = { readonly action: ActionReference; readonly allowed: () => boolean };
-type StepBoundary = { readonly id: string; readonly check: (signal: AbortSignal) => void | Promise<void>; readonly signal: AbortSignal };
+type StepBoundary = { readonly id: string; readonly check: (signal: AbortSignal) => void | Promise<void>; readonly scope: Scope };
 
 /** 会话拥有组件树、声明快照与查询；原生执行及已受理业务拥有各自生存期。 */
 export class ProgramInstance<P extends ProgramContract> implements ProgramHookOwner {
@@ -207,16 +207,23 @@ export class ProgramInstance<P extends ProgramContract> implements ProgramHookOw
   }
   beforeStep(check: (signal: AbortSignal) => void | Promise<void>): () => void {
     this.assertActive();
-    const controller = new AbortController();
-    const boundary = { id: globalThis.crypto.randomUUID(), check, signal: controller.signal };
-    const release = this.reactivityScope.own(() => {
+    const scope = this.reactivityScope.child();
+    const boundary = { id: globalThis.crypto.randomUUID(), check, scope };
+    scope.own(() => {
       this.#boundaries.delete(boundary);
-      controller.abort();
       if (this.scope.disposed || this.signal.aborted) return;
       this.revision.update(value => value + 1);
     });
     this.#boundaries.add(boundary); this.revision.update(value => value + 1);
-    return release;
+    return () => scope.dispose();
+  }
+  private runCheck(boundary: StepBoundary, signal: AbortSignal): Promise<void> {
+    const completed = Promise.withResolvers<void>();
+    // 进入检查前登记真实结算，检查同步撤下自己时也不能让 owner 提前关闭。
+    const release = boundary.scope.own(() => completed.promise);
+    const finish = () => { completed.resolve(); release(); };
+    try { return Promise.resolve(boundary.check(signal)).finally(finish); }
+    catch (error) { finish(); throw error; }
   }
   async prepare(signal: AbortSignal, observer?: PreparationObserver): Promise<void> {
     for (;;) {
@@ -232,13 +239,13 @@ export class ProgramInstance<P extends ProgramContract> implements ProgramHookOw
       try {
         // 同次检查并列连接；任一失败由forkJoin立即撤其余本次等待，不撤销登记身份。
         await firstValueFrom(forkJoin(boundaries.map(boundary => {
-          const checking = AbortSignal.any([signal, this.signal, boundary.signal, changed.signal]);
+          const checking = AbortSignal.any([signal, this.signal, boundary.scope.signal, changed.signal]);
           return defer(() => {
             const release = observer?.({ kind: 'check', id: boundary.id });
-            return abortable(current => boundary.check(AbortSignal.any([checking, current])), checking).pipe(finalize(() => release?.()));
+            return abortable(current => this.runCheck(boundary, AbortSignal.any([checking, current])), checking).pipe(finalize(() => release?.()));
           }).pipe(catchError((error: unknown) => {
             signal.throwIfAborted(); this.assertActive();
-            return this.#boundaries.has(boundary) ? throwError(() => error) : of(undefined);
+            return !boundary.scope.disposed && this.#boundaries.has(boundary) ? throwError(() => error) : of(undefined);
           }));
         })));
       } catch (error) {

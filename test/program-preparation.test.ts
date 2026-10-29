@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, open, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as immediate } from 'node:timers/promises';
@@ -99,7 +99,7 @@ test('步骤前检查替换结束旧等待，步骤取消与Program失败也不�
     program.fail(failure);
     await assert.rejects(wait(failing), error => error === failure);
     assert.equal(failedSignal.aborted, true); assert.equal(parent.signal.aborted, false);
-  } finally { retired.resolve(); steadyWait.resolve(); nativeWait.resolve(); failedWait.resolve(); selected.complete(); scope.dispose(); }
+  } finally { retired.resolve(); steadyWait.resolve(); nativeWait.resolve(); failedWait.resolve(); selected.complete(); scope.dispose(); await wait(scope.closed); }
 });
 
 test('独立检查的pending读取不遮住真实文件失败，失败释放本次读取而保留登记供后续准备', async () => {
@@ -141,7 +141,7 @@ test('独立检查的pending读取不遮住真实文件失败，失败释放本�
     release.resolve();
     await wait(preparing);
     assert.equal(reads[0]!.aborted, true, '旧读取迟到拒绝不能改变新准备结果');
-  } finally { release.resolve(); scope.dispose(); }
+  } finally { release.resolve(); scope.dispose(); await wait(scope.closed); }
 });
 
 test('两个组件共享检查函数时，卸载其中一个仍执行另一组件的真实文件条件，当前失败继续拒绝准备', async () => {
@@ -164,3 +164,113 @@ test('两个组件共享检查函数时，卸载其中一个仍执行另一组�
     await wait(program.prepare(new AbortController().signal));
   } finally { showLeft.complete(); scope.dispose(); }
 });
+
+test('检查依赖替换和组件卸载立即更新准备，旧检查持有的文件工作仍属于原Scope结算', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-retired-check-settlement-'));
+  const path = join(directory, 'original-check');
+  await writeFile(join(directory, 'replacement'), 'ready');
+  const selected = new BehaviorSubject<string | null>('original');
+  const entered = Promise.withResolvers<AbortSignal>(), proceed = Promise.withResolvers<void>();
+  const lateFailure = new Error('RETIRED_CHECK_FAILED_AFTER_FILE_CLOSE');
+  let replacementChecks = 0, closed = false;
+  function Guard({ target }: { target: string }) {
+    useBeforeStep(async signal => {
+      if (target === 'replacement') {
+        assert.equal(await readFile(join(directory, target), { encoding: 'utf8', signal }), 'ready');
+        replacementChecks++;
+        return;
+      }
+      const file = await open(path, 'w');
+      try {
+        await file.writeFile('entered');
+        entered.resolve(signal);
+        await proceed.promise;
+        await file.writeFile('\nsettled');
+      } finally { await file.close(); }
+      throw lateFailure;
+    }, [target]);
+    return null;
+  }
+  function Root() {
+    const target = useObservable(() => selected, []);
+    return target.status === 'ready' && target.value ? h(Guard, { target: target.value }) : null;
+  }
+  const { scope, program } = programFor(Root, directory);
+  try {
+    program.mount();
+    const preparing = program.prepare(new AbortController().signal);
+    const signal = await wait(entered.promise);
+    selected.next('replacement'); program.flush();
+    await wait(preparing);
+    assert.equal(signal.aborted, true);
+    assert.ok(replacementChecks > 0, '新帧准备不等待旧检查持有的文件句柄');
+    await wait(program.prepare(new AbortController().signal));
+    selected.next(null); program.flush();
+    await wait(program.prepare(new AbortController().signal));
+    program.scope.dispose();
+    const closing = program.scope.closed.then(() => { closed = true; });
+    await immediate();
+    assert.equal(closed, false, '已替换并卸载的检查仍保留真实工作结算归属');
+    assert.equal(await readFile(path, 'utf8'), 'entered');
+    proceed.resolve();
+    await wait(closing);
+    assert.equal(await readFile(path, 'utf8'), 'entered\nsettled');
+    assert.equal(scope.disposed, false, '原Program退出不要求Workspace先退出');
+    scope.dispose();
+    await wait(scope.closed);
+  } finally { proceed.resolve(); selected.complete(); scope.dispose(); await wait(scope.closed); }
+});
+
+for (const exit of ['external', 'synchronous', 'unmount'] as const) {
+  const trigger = { external: 'Program退出', synchronous: '检查同步触发Program退出', unmount: '检查组件卸载' }[exit];
+  test(`${trigger}结束旧准备等待但Scope结算仍等待原检查关闭真实文件`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-program-check-settlement-'));
+    const path = join(directory, 'check-work');
+    const entered = Promise.withResolvers<AbortSignal>(), proceed = Promise.withResolvers<void>();
+    const file = await open(path, 'w');
+    const visible = new BehaviorSubject(true);
+    let closed = false;
+    const owner: { program?: ReturnType<typeof programFor>['program'] } = {};
+    function Guard() {
+      useBeforeStep(signal => {
+        if (exit === 'synchronous') owner.program!.scope.dispose();
+        return (async () => {
+          try {
+            await file.writeFile('entered');
+            entered.resolve(signal);
+            await proceed.promise;
+            await file.writeFile('\nsettled');
+          } finally { await file.close(); }
+        })();
+      }, []);
+      return null;
+    }
+    function Root() {
+      const show = useObservable(() => visible, []);
+      return show.status === 'ready' && show.value ? h(Guard) : null;
+    }
+    const { scope, program } = programFor(Root, directory);
+    owner.program = program;
+    try {
+      program.mount();
+      const preparing = program.prepare(new AbortController().signal);
+      const waiting = exit === 'unmount' ? wait(preparing)
+        : assert.rejects(wait(preparing), /REACTIVE_SCOPE_DISPOSED/);
+      const signal = await wait(entered.promise);
+      if (exit === 'external') program.scope.dispose();
+      if (exit === 'unmount') { visible.next(false); program.flush(); }
+      await waiting;
+      assert.equal(signal.aborted, true);
+      if (exit === 'unmount') program.scope.dispose();
+      const closing = program.scope.closed.then(() => { closed = true; });
+      await immediate();
+      assert.equal(closed, false, '取消准备不能把正在执行的原检查Promise当作已经结算');
+      assert.equal(await readFile(path, 'utf8'), 'entered');
+      proceed.resolve();
+      await wait(closing);
+      assert.equal(await readFile(path, 'utf8'), 'entered\nsettled');
+      scope.dispose();
+      await wait(scope.closed);
+    } finally { proceed.resolve(); visible.complete(); scope.dispose(); await wait(scope.closed); await file.close(); }
+  });
+}
