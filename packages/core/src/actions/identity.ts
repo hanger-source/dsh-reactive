@@ -21,6 +21,18 @@ export class ActionContractMismatchError extends Error {
   }
 }
 
+/** 同一宿主受理身份已经绑定另一份请求；不泄漏原请求的参与者或业务参数。 */
+export class ActionInvocationConflictError extends Error {
+  override readonly name = 'ActionInvocationConflictError';
+  constructor(readonly invocationId: string) { super('REACTIVE_ACTION_INVOCATION_CONFLICT'); }
+}
+
+/** 同步受理回调重入时，原Invocation尚未构造完成；原受理继续结算。 */
+export class ActionAdmissionInProgressError extends Error {
+  override readonly name = 'ActionAdmissionInProgressError';
+  constructor(readonly invocationId: string) { super('REACTIVE_ACTION_ADMISSION_IN_PROGRESS'); }
+}
+
 export function assertActionIdentity(expected: ActionIdentity, actual: ActionIdentity): void {
   if (expected.name !== actual.name || expected.version !== actual.version) throw new ActionContractMismatchError(expected, actual);
 }

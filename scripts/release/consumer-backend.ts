@@ -1,6 +1,6 @@
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction, createReaction, composeSurface, combineResources, mapResource, switchResource, abortable,
   resourceView, shareResource, type Scope, type ResourceSource, type Eligibility, type OperationContract, type OperationHandle,
-  type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ReactionStartOptions, type ProgramContract, type ProgramSession, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, type NativeToolAdmission, z } from '@hanger-source/dsh-reactive';
+  type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ReactionStartOptions, type ProgramContract, type ProgramSession, type ActionInput, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, type NativeToolAdmission, z } from '@hanger-source/dsh-reactive';
 import { concatMap, firstValueFrom, map, type Observable } from 'rxjs';
 import { createElement } from 'react';
 import { Context, Expose, Module, Skill, NativeTools, HumanInput, implementModule, implementProgram, useAction, useResource, useResourceInstance, useReaction, useBeforeStep,
@@ -8,7 +8,7 @@ import { Context, Expose, Module, Skill, NativeTools, HumanInput, implementModul
 import { createRuntime, mountApplication, type ApplicationAssembly, type ConversationHandle, type ServiceConversation, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-reactive-dsh/tools';
-import { createProgramClient, createServiceProgramClient, type RemoteProgramSession, type RemoteServiceProgramSession } from '@hanger-source/dsh-reactive-client';
+import { createProgramClient, createServiceProgramClient, ActionAdmissionUnknownError, type RemoteProgramSession, type RemoteServiceProgramSession } from '@hanger-source/dsh-reactive-client';
 import { mountProgramGateway } from '@hanger-source/dsh-reactive-remote';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
 import { ConsumerModuleProgram, sessionResources, sessionControls, sessionFileUpload, receiveFileUpload, readSessionView, readSelectedRevision, invocationReceipt } from './consumer-session.js';
@@ -63,6 +63,12 @@ export function useCurrentProgram<P extends ProgramContract>(expected: P) {
   const conversation: ProgramSession<P> = useProgramSession(expected);
   return { workspace, conversation, identity: useProgramSession().identity };
 }
+export function invokeWithIdentity<P extends ProgramContract, K extends keyof P['surface']['actions'] & string>(
+  conversation: ConversationHandle<P> | ServiceConversation<P>, name: K, bindingId: string, input: ActionInput<P['surface']['actions'][K]>, invocationId: string,
+) { return conversation.invokeAction(name, bindingId, input, { invocationId }); }
+export function recoverUnknownInvocation<P extends ProgramContract, K extends keyof P['surface']['actions'] & string>(
+  conversation: RemoteProgramSession<P>, name: K, error: ActionAdmissionUnknownError,
+) { return conversation.invocation(name, error.invocationId); }
 export const invocationActivity = <T, O extends Json, Source>(invocation: Invocation<T, O, Source>) => invocation.activity;
 export const invocationResult = <T, O extends Json, Source>(invocation: Invocation<T, O, Source>, signal: AbortSignal) => invocationReceipt(invocation, signal);
 export const useInvocationActivity = <T, O extends Json, Source>(invocation: Invocation<T, O, Source>) => useResource(invocation.activity);

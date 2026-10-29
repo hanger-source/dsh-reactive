@@ -29,7 +29,7 @@ import type { ConversationSessions } from './sessions.ts';
 import type { ConversationInputs } from './inputs.ts';
 import type { ConversationObservations } from './observations.ts';
 import type { ActionAuthority } from '../execution/authority.ts';
-import { InvocationUnavailableError } from '../execution/invocation.ts';
+import { InvocationUnavailableError, type ActionInvocationOptions } from '../execution/invocation.ts';
 import type { OperationParticipation } from '../operations/participation.ts';
 import type { ConversationQuestions } from '../participation/questions.ts';
 import { nativeSessionAccess } from './session-access.ts';
@@ -48,7 +48,7 @@ export interface ServiceConversation<P extends ProgramContract = ProgramContract
     readonly rawEvents$: Observable<ConversationEvent>;
     observeWireView(name: string): Observable<Observation<Json>>;
     uploadEncodedFile(request: EncodedFileUploadRequest, options?: CancellationOptions): FileUploadInvocation;
-    invokeAction<K extends keyof P['surface']['actions'] & string>(name: K, bindingId: string, input: ActionInput<P['surface']['actions'][K]>, options?: CancellationOptions): ActionInvocation<P['surface']['actions'][K]>;
+    invokeAction<K extends keyof P['surface']['actions'] & string>(name: K, bindingId: string, input: ActionInput<P['surface']['actions'][K]>, options?: CancellationOptions & Pick<ActionInvocationOptions, 'invocationId'>): ActionInvocation<P['surface']['actions'][K]>;
     resolveOperation<K extends keyof P['surface']['operations'] & string>(name: K, options?: CancellationOptions): BoundOperation<P['surface']['operations'][K]>;
     snapshot(): ConversationActivity;
     progressSnapshot(): Observation<ConversationProgressSnapshot>;
@@ -200,12 +200,12 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
         if (surfaceSlotDefinition(this.surface, 'actions', name) !== definition) throw new Error('REACTIVE_SURFACE_ACTION_CONTRACT_MISMATCH');
     }
     /** 已认证 transport 的第二阶段受理；必填 bindingId 只核对原绑定，不授予权限。 */
-    invokeAction<K extends keyof P['surface']['actions'] & string>(name: K, bindingId: string, input: ActionInput<P['surface']['actions'][K]>, options: SubmitOptions = {}): ActionInvocation<P['surface']['actions'][K]> {
+    invokeAction<K extends keyof P['surface']['actions'] & string>(name: K, bindingId: string, input: ActionInput<P['surface']['actions'][K]>, options: ActionInvocationOptions = {}): ActionInvocation<P['surface']['actions'][K]> {
         const definition = surfaceSlotDefinition(this.surface, 'actions', name);
         if (!definition) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
         return this.invokeActionAt(name, definition, bindingId, input, options);
     }
-    private invokeActionAt<D extends ActionContract>(name: string, definition: D, bindingId: string, input: ActionInput<D>, options: SubmitOptions): ActionInvocation<D> {
+    private invokeActionAt<D extends ActionContract>(name: string, definition: D, bindingId: string, input: ActionInput<D>, options: ActionInvocationOptions): ActionInvocation<D> {
         this.assertActive();
         assertParticipantOptions(this.participant, options);
         this.assertActionDefinition(name, definition);

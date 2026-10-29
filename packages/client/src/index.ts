@@ -266,18 +266,25 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
             const starting = signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal;
             starting.throwIfAborted();
             // input 本来就是 z.input；客户端仅核验 JSON，唯一业务解析仍在 Host。
-            const started = await remote.startAction({ ...address, name, contract: binding.contract, bindingId: binding.bindingId,
-              input: json(input) }, starting);
+            const capturedInput = json(input);
+            starting.throwIfAborted();
+            const invocationId = globalThis.crypto.randomUUID();
+            let started: Awaited<ReturnType<typeof remote.startAction>>;
+            try {
+              started = await remote.startAction({ ...address, name, contract: binding.contract, bindingId: binding.bindingId,
+                invocationId, input: capturedInput }, starting);
+            } catch (cause) { throw new ActionAdmissionUnknownError(identity.sessionId, name, invocationId, cause); }
             if (!started.ok) {
               if (started.error.code === 'gateway/internal' || started.error.code === 'gateway/cancelled')
-                throw new ActionAdmissionUnknownError(identity.sessionId, name, started.error);
+                throw new ActionAdmissionUnknownError(identity.sessionId, name, invocationId, started.error);
               throw revokeConversationAccess(owner, started.error);
             }
             // ACK 已可能受理业务；矛盾回执不能被描述成确定未执行，也不能自动重发。
             try {
+              if (started.value.id !== invocationId) throw new Error('REACTIVE_ACTION_INVOCATION_ID_MISMATCH');
               if (started.value.name !== name) throw new Error('REACTIVE_ACTION_INVOCATION_SLOT_MISMATCH');
               assertActionIdentity(contract, started.value.contract);
-            } catch (error) { throw new ActionAdmissionUnknownError(identity.sessionId, name, error); }
+            } catch (error) { throw new ActionAdmissionUnknownError(identity.sessionId, name, invocationId, error); }
             return invocation(ctx.remote, identity.sessionId, started.value, contract, lifetime, invocationQueries, callRemote);
           };
           // schema 输出只在明确合同的传输边界恢复类型；不要求 scope 支持反向 encode。
@@ -290,6 +297,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
           if (!Object.is(surfaceSlotDefinition(surface, 'actions', name), contract)) throw new Error('REACTIVE_SURFACE_ACTION_CONTRACT_MISMATCH');
           const stored = result(await callRemote(signal => remote.actionInvocation({ sessionId: identity.sessionId, program: sharedIdentity,
             invocationId: id, name, contract: actionIdentity(contract) }, signal), options.signal ?? lifetime.signal));
+          if (stored.id !== id) throw new Error('REACTIVE_ACTION_INVOCATION_ID_MISMATCH');
           if (stored.name !== name) throw new Error('REACTIVE_ACTION_INVOCATION_SLOT_MISMATCH');
           return invocation(ctx.remote, identity.sessionId, stored, contract, lifetime, invocationQueries, callRemote);
         };

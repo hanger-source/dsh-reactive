@@ -5,7 +5,7 @@ import { firstValueFrom } from 'rxjs';
 import { abortable } from '@hanger-source/dsh-reactive';
 import { z } from "zod";
 import { type Continuation, type WaitReference, type SubmitOptions } from "@hanger-source/dsh-reactive/kernel";
-import { ActionBindingUnavailableError, ActionTargetMismatchError, assertExpectedProgram, type ActionContract, type ActionCallContext, type ActionExecutionContext, type ActionReference, type Invocation, type ProgramContract, type ProgramExpectation } from "@hanger-source/dsh-reactive/kernel";
+import { ActionAdmissionInProgressError, ActionInvocationConflictError, ActionBindingUnavailableError, ActionTargetMismatchError, assertExpectedProgram, surfaceSlotDefinition, type ActionContract, type ActionCallContext, type ActionExecutionContext, type ActionReference, type Invocation, type ProgramContract, type ProgramExpectation } from "@hanger-source/dsh-reactive/kernel";
 import { type BoundOffer } from "@hanger-source/dsh-reactive/kernel";
 import { guardActionExecution } from "@hanger-source/dsh-reactive/kernel";
 import { dispatchHumanQuestion } from "../participation/human-dispatch.ts";
@@ -19,7 +19,7 @@ import type { ConversationObservations } from '../conversations/observations.ts'
 import type { ConversationInputs } from '../conversations/inputs.ts';
 import type { Workspaces } from '../workspaces/workspaces.ts';
 import { humanParticipant, serviceParticipant, participantActor, type ParticipantIdentity } from '../participation/identity.ts';
-import { InvocationUnavailableError, type RetainedActionInvocation } from './invocation.ts';
+import { InvocationUnavailableError, type ActionInvocationOptions, type RetainedActionInvocation } from './invocation.ts';
 type ToolExecution = ActionExecutionContext & {
     readonly source: Extract<ActionExecutionContext['source'], {
         readonly kind: 'tool';
@@ -34,7 +34,14 @@ type RetainedEntry = {
     readonly program: ProgramContract;
     readonly participant: ParticipantIdentity['participant'];
     readonly actorId: string;
-    readonly value: RetainedActionInvocation;
+    readonly name: string;
+    readonly definition: ActionContract;
+    readonly bindingId: string;
+    /** 自动身份允许非 JSON 本地输入，只读查回，不接受显式重提。 */
+    readonly inputIdentity: string | null;
+    outcome: { readonly state: 'admitting' }
+        | { readonly state: 'accepted'; readonly value: RetainedActionInvocation }
+        | { readonly state: 'rejected'; readonly error: unknown };
     completed?: ReturnType<typeof setTimeout>;
 };
 /** 三种真实入口共用的签发者；绑定身份和来源证明不由调用参数声明。 */
@@ -73,26 +80,20 @@ export class ActionAuthority {
         if (expected === undefined) throw new Error('REACTIVE_PROGRAM_EXPECTATION_REQUIRED');
         const actorId = participantActor(identity, options, this.options.actorId);
         const entry = this.#invocations.get(id);
-        if (!entry || entry.sessionId !== sessionId || entry.actorId !== actorId || entry.participant !== identity.participant) throw new InvocationUnavailableError();
+        if (!entry || entry.sessionId !== sessionId || entry.actorId !== actorId || entry.participant !== identity.participant
+            || entry.outcome.state !== 'accepted') throw new InvocationUnavailableError();
         assertExpectedProgram(entry.program, expected);
-        return entry.value;
+        return entry.outcome.value;
     }
-    private retainInvocation(session: ConversationSession, name: string, definition: ActionContract, invocation: RetainedActionInvocation['invocation'], identity: ParticipantIdentity, actorId: string): void {
-        if (this.signal.aborted) return;
-        const entry: RetainedEntry = { sessionId: session.header.id, program: session.implementation.definition,
-            participant: identity.participant, actorId, value: Object.freeze({ name, definition, invocation }) };
-        this.#invocations.set(invocation.id, entry);
-        const settle = () => {
-            if (this.signal.aborted || this.#invocations.get(invocation.id) !== entry) return;
-            this.#completed.add(invocation.id);
-            entry.completed = setTimeout(() => this.evictInvocation(invocation.id), this.#retention);
-            entry.completed.unref();
-            while (this.#completed.size > this.#maxCompleted) {
-                const oldest = this.#completed.values().next().value;
-                if (oldest !== undefined) this.evictInvocation(oldest);
-            }
-        };
-        invocation.result.then(settle, settle);
+    private completeInvocation(id: string, entry: RetainedEntry): void {
+        if (this.signal.aborted || this.#invocations.get(id) !== entry || entry.completed) return;
+        this.#completed.add(id);
+        entry.completed = setTimeout(() => this.evictInvocation(id), this.#retention);
+        entry.completed.unref();
+        while (this.#completed.size > this.#maxCompleted) {
+            const oldest = this.#completed.values().next().value;
+            if (oldest !== undefined) this.evictInvocation(oldest);
+        }
     }
     private assertActive() { if (this.signal.aborted)
         throw new Error('REACTIVE_HOST_DISPOSED'); }
@@ -206,13 +207,13 @@ export class ActionAuthority {
         };
         return this.signExecution(entry.session, execution, entry, occurrence.callSequence);
     }
-    participantExecution(session: ConversationSession, options: SubmitOptions, identity: ParticipantIdentity, entrypoint: string, beforeExecute?: () => void): ParticipantExecution {
+    participantExecution(session: ConversationSession, options: SubmitOptions, identity: ParticipantIdentity, entrypoint: string, beforeExecute?: () => void, invocationId: string = randomUUID()): ParticipantExecution {
         this.assertActive();
         const actorId = participantActor(identity, options, this.options.actorId), participant = identity.participant;
         const signal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
         signal.throwIfAborted();
         // 独立参与调用没有继承当前模型输入或 Goal 续接权限。
-        const execution: ParticipantExecution = { invocationId: randomUUID(), sessionId: session.header.id,
+        const execution: ParticipantExecution = { invocationId, sessionId: session.header.id,
             source: { kind: 'participant', actorId, participant, entrypoint }, inputs: [], continuation: null, signal };
         return this.signExecution(session, execution, null, null, beforeExecute);
     }
@@ -238,24 +239,58 @@ export class ActionAuthority {
             throw new ActionTargetMismatchError(name);
         return action;
     }
-    invokeSession(session: ConversationSession, name: string, bindingId: string, input: unknown, options: SubmitOptions = {}, identity: ParticipantIdentity = humanParticipant): Invocation<unknown, Json> {
+    invokeSession(session: ConversationSession, name: string, bindingId: string, input: unknown, options: ActionInvocationOptions = {}, identity: ParticipantIdentity = humanParticipant): Invocation<unknown, Json> {
         this.assertActive();
-        const program = session.program;
-        program.flush();
-        const action = this.currentAction(session, name);
-        const check = () => {
-            const current = this.currentAction(session, name);
-            if (current !== action || current.bindingId !== bindingId)
-                throw new ActionBindingUnavailableError(name, 'binding-changed');
-            return true;
-        };
-        check();
-        // SDK调用者只撤销本次准入；真正执行权限仍归Host，Operation查询继续保原读侧signal。
-        const { signal: admissionSignal, ...executionOptions } = options;
-        const execution = this.participantExecution(session, executionOptions, identity, identity.participant === 'service' ? 'service-sdk' : 'sdk', () => { program.flush(); check(); });
-        admissionSignal?.throwIfAborted();
-        const invocation = program.invoke(action, input, execution, check, admissionSignal);
-        this.retainInvocation(session, name, action.definition, invocation, identity, execution.source.actorId);
-        return invocation;
+        options.signal?.throwIfAborted();
+        const actorId = participantActor(identity, options, this.options.actorId);
+        const definition = surfaceSlotDefinition(session.implementation.definition.surface, 'actions', name);
+        if (!definition) throw new Error('REACTIVE_ACTION_SLOT_UNKNOWN');
+        const explicit = options.invocationId !== undefined;
+        const id = explicit ? z.uuid().parse(options.invocationId) : randomUUID();
+        // 显式身份保存进入业务解析前的 JSON 原值；普通本地调用不收窄输入合同。
+        const selectedInput = explicit ? z.json().parse(input) : input;
+        const inputIdentity = explicit ? canonical(selectedInput) : null;
+        const previous = this.#invocations.get(id);
+        if (previous) {
+            if (!explicit || previous.inputIdentity === null || previous.inputIdentity !== inputIdentity
+                || previous.actorId !== actorId || previous.participant !== identity.participant
+                || previous.sessionId !== session.header.id || previous.program !== session.implementation.definition
+                || previous.name !== name || previous.definition !== definition || previous.bindingId !== bindingId)
+                throw new ActionInvocationConflictError(id);
+            if (previous.outcome.state === 'accepted') return previous.outcome.value.invocation;
+            if (previous.outcome.state === 'rejected') throw previous.outcome.error;
+            throw new ActionAdmissionInProgressError(id);
+        }
+        const entry: RetainedEntry = { sessionId: session.header.id, program: session.implementation.definition,
+            actorId, participant: identity.participant, name, definition, bindingId, inputIdentity,
+            outcome: { state: 'admitting' } };
+        // flush、输入解析或准入回调均可能同步重入，先在唯一受理表占位。
+        this.#invocations.set(id, entry);
+        try {
+            const program = session.program;
+            program.flush();
+            const action = this.currentAction(session, name);
+            const check = () => {
+                const current = this.currentAction(session, name);
+                if (current !== action || current.bindingId !== bindingId)
+                    throw new ActionBindingUnavailableError(name, 'binding-changed');
+                return true;
+            };
+            check();
+            // SDK调用者只撤销本次准入；真正执行权限仍归Host，Operation查询继续保原读侧signal。
+            const { signal: admissionSignal, invocationId: _invocationId, ...executionOptions } = options;
+            const execution = this.participantExecution(session, executionOptions, identity, identity.participant === 'service' ? 'service-sdk' : 'sdk',
+                () => { program.flush(); check(); }, id);
+            admissionSignal?.throwIfAborted();
+            const invocation = program.invoke(action, selectedInput, execution, check, admissionSignal);
+            entry.outcome = { state: 'accepted', value: Object.freeze({ name, definition, invocation }) };
+            const settle = () => this.completeInvocation(id, entry);
+            invocation.result.then(settle, settle);
+            return invocation;
+        } catch (error) {
+            entry.outcome = { state: 'rejected', error };
+            this.completeInvocation(id, entry);
+            throw error;
+        }
     }
 }

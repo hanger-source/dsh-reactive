@@ -2,14 +2,18 @@ import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-proto
 import type { TypertGatewayWireStream } from '@deepseek-ai/dsh-api-gateway';
 import { ChildCreationIncompleteError, CreationIncompleteError, InputFileNotStagedError, InvocationUnavailableError } from '@hanger-source/dsh-reactive-dsh';
 import { isAttachmentError } from '@deepseek-ai/dsh-attachment';
-import { z, EligibilityError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFileOutsideWorkspaceError, SessionFilesUnavailableError, SessionJournalUnavailableError, ActionBindingUnavailableError, ActionTargetMismatchError, ActionContractMismatchError, InputEditRejectedError, ProgramContractMismatchError, SharedProgramRequiredError } from '@hanger-source/dsh-reactive';
+import { z, EligibilityError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFileOutsideWorkspaceError, SessionFilesUnavailableError, SessionJournalUnavailableError, ActionBindingUnavailableError, ActionTargetMismatchError, ActionContractMismatchError, ActionInvocationConflictError, ActionAdmissionInProgressError, InputEditRejectedError, ProgramContractMismatchError, SharedProgramRequiredError } from '@hanger-source/dsh-reactive';
 import '@hanger-source/dsh-reactive-client/errors';
 import type { ProgramFailure } from '@hanger-source/dsh-reactive-client/types';
 
 /** 只有框架明确拥有的可恢复事实做业务映射；其他错误继续由官方 Gateway 归类。 */
 export function createProgramFailureMapper(wireStream: Pick<TypertGatewayWireStream, 'failure'>): (error: unknown) => ProgramFailure {
   return error => {
-    const known = error instanceof EligibilityError
+    const known = error instanceof ActionInvocationConflictError
+      ? new RemoteError('reactive/action-invocation-conflict', error.message, { invocationId: error.invocationId })
+      : error instanceof ActionAdmissionInProgressError
+        ? new RemoteError('reactive/action-admission-in-progress', error.message, { invocationId: error.invocationId })
+        : error instanceof EligibilityError
       ? new RemoteError("reactive/eligibility", error.message, { capabilityName: error.capabilityName, reason: error.reason,
         observation: error.observation.status === "error"
           ? { ...error.observation, error: createProgramFailureMapper(wireStream)(error.observation.error) }

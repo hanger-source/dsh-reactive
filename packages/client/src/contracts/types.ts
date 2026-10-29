@@ -96,7 +96,11 @@ export interface ProgramViewRequest extends ProgramSessionAddress { readonly nam
 export interface ProgramActionBindingRequest extends ProgramSessionAddress { readonly name: string; readonly contract: ActionIdentity; readonly scope: JsonValue; }
 /** 进程内真实绑定的身份；它不是权限凭据，也不承诺跨重启仍然有效。 */
 export interface ProgramActionBinding { readonly bindingId: string; readonly contract: ActionIdentity; readonly scope: JsonValue; readonly eligibility?: WireObservation; }
-export interface ProgramActionRequest extends ProgramSessionAddress { readonly name: string; readonly contract: ActionIdentity; readonly bindingId: string; readonly input: JsonValue; }
+export interface ProgramActionRequest extends ProgramSessionAddress {
+  /** SDK在首次分派前固定的UUID受理身份；不授予权限，不自动重投。 */
+  readonly invocationId: string;
+  readonly name: string; readonly contract: ActionIdentity; readonly bindingId: string; readonly input: JsonValue;
+}
 export interface ProgramInvocationAddress extends ProgramAddress { readonly invocationId: string; }
 /** 按局部Surface投射后的精确原槽与公开合同查回；不解析当前Expose。 */
 export interface ProgramInvocationLookupRequest extends ProgramInvocationAddress { readonly name: string; readonly contract: ActionIdentity; }

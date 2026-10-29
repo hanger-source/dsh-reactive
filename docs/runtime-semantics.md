@@ -93,6 +93,8 @@ dsh 的实际顺序是：inbox 提取并报告本步输入，执行 `system-prom
 
 每次显式调用立即创建 Invocation。读取其 `result` 或订阅 `activity$` 都观察同一次执行，订阅不会重做。输入解析、准入、Operation 接合、执行和输出解析的失败保留各自阶段；输出在成功解析后交付。观察投影错误记录在 Invocation 的返回活动中，不回滚已经执行的业务。原生工具的最终成功或失败仍以原生工具管线结算为准。
 
+Host 的 `invokeAction` 第二阶段接受可选 `ActionInvocationOptions.invocationId`，显式身份须为 UUID，与原生工具发生身份保持独立；普通本地 ResolvedAction 参数不变，自动生成 id 的本地调用也不收窄非 JSON 输入。显式 id 固定 JSON 原输入快照，并与真实 actor、participant、session、Program、Action 槽及合同、bindingId 共同构成请求身份。Host 唯一原 Invocation 表先占位：相同请求已受理则返回原对象，不重新 parse 或 admit；同 id 不同请求抛 `ActionInvocationConflictError`。同步受理回调重入且原对象尚未构造时抛 `ActionAdmissionInProgressError`，原受理继续完成；同步拒绝保留原错误及保留期。只读查询仅返回已受理对象，不无限等待占位。这两个错误由 core 公开，client 解码为同一错误类。表属于当前内存 owner，保留期有界，不是业务幂等或跨进程 exactly once；永久业务 Operation 应由其 owner 定位。
+
 `Invocation.wait({ signal })` 只等待原 result，取消只结束这一次等待；其他等待者、activity、result 和可选 operation 保留原身份与真实结算。本地 Action 不将首次 SDK 调用者信号捕获为永久等待条件，绑定、组件或查回句柄退出也不重新绑定原 call 的读取 owner。远程 Invocation 的等待仍受所属 SDK 的读取寿命约束；原生写入及上传继续使用原签发者的默认等待寿命。`call.wait(reference)` 是业务执行上下文中的原生续接登记，与 Invocation 的结果等待分别使用。
 
 本地 SDK Action 的 options.signal 只限制受理前准入和持久准备结束后进入 execute 的边界。业务开始后，其 result 和 Operation 关联由 Host 的真实执行信号及业务 owner 决定，取消消费者等待不会把已经成功的写入改成 failed。显式 ActionExecutionContext.signal、原生工具 signal 的真实执行权限与后置复核继续适用；Operation 的业务终态另用 handle.settled({ signal }) 读取。

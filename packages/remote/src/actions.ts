@@ -72,6 +72,7 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
     async start(request: ProgramActionRequest, principal: Principal, querySignal: AbortSignal): Promise<ProgramActionStart> {
       const identity = participant(principal);
       querySignal.throwIfAborted();
+      const invocationId = z.uuid().parse(request.invocationId);
       const handle = await (identity.participant === 'service'
         ? application.service(identity.actorId).open(request.sessionId, { contract: request.program }, request.accessId)
         : application.open(request.sessionId, { contract: request.program }, request.accessId)).catch(rethrow);
@@ -86,7 +87,7 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
         // 不向 execute 传 transport signal。Host 在同一公开入口核验当前 Expose/准入。
         // 动态句柄不声称拥有某个静态 Program；唯一的合同 parse 由这个真实 Host 入口执行。
         const invocation = handle.invokeAction(request.name, request.bindingId, request.input,
-          identity.participant === 'human' ? { actorId: identity.actorId } : {});
+          identity.participant === 'human' ? { actorId: identity.actorId, invocationId } : { invocationId });
         accepted = true;
         // 回执由真实ActionAuthority保留；transport仅在真实执行结束后归还本次句柄。
         invocation.result.then(() => handle.release(), () => handle.release());

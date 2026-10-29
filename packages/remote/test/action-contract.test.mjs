@@ -22,7 +22,8 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-action-contract-'));
   const file = join(root, 'accepted.txt'), errors = [], clients = [], contexts = [];
   let scopes = 0, inputs = 0, defaults = 0, bodies = 0, wrongDecodes = 0, models = 0;
-  let corruptNextAck = false, acceptedAck;
+  let corruptNextAck, corruptNextLookupId, loseNextAck = false, startRequests = 0;
+  const lostResponse = new Error('HTTP_ACK_DELIVERY_LOST');
   const save = defineAction({ name: 'save_record', description: '写入正式文件',
     scope: z.string().transform(directory => { scopes++; return { directory }; }),
     input: z.object({ value: z.string().default(() => { defaults++; return '0'; }).transform(value => { inputs++; return Number(value); }) }),
@@ -73,13 +74,30 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
   const headers = { authorization: 'Bearer contract-test' };
   const transport = createAuthenticatedTransport({ baseUrl: gateway.url,
     async fetch(url, init) {
+      const starting = new URL(url).pathname.endsWith('/reactivePrograms/startAction');
+      if (starting) startRequests++;
       const response = await fetch(url, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), ...headers } });
-      if (corruptNextAck && new URL(url).pathname.endsWith('/reactivePrograms/startAction')) {
-        corruptNextAck = false;
+      if (starting && loseNextAck) {
+        loseNextAck = false;
+        assert.equal(response.status, 200);
+        // HTTP 已真实返回；消费并丢弃响应后才模拟交付失败，不读取或私藏 Invocation 身份。
+        await response.arrayBuffer();
+        throw lostResponse;
+      }
+      if (starting && corruptNextAck) {
+        const corruption = corruptNextAck;
+        corruptNextAck = undefined;
         // 只损坏已经真实受理后的回执交付，不替换Host、业务执行或Gateway协议实现。
         const payload = await response.json(); assert.equal(payload.result.ok, true);
-        acceptedAck = structuredClone(payload.result.value);
-        payload.result.value.contract.version = 2;
+        if (corruption === 'contract') payload.result.value.contract.version = 2;
+        if (corruption === 'id') payload.result.value.id = globalThis.crypto.randomUUID();
+        return new Response(JSON.stringify(payload), { status: response.status, headers: response.headers });
+      }
+      if (corruptNextLookupId && new URL(url).pathname.endsWith('/reactivePrograms/actionInvocation')) {
+        const payload = await response.json(); assert.equal(payload.result.ok, true);
+        // 用另一项已存在的真实 Invocation 制造错位，避免随机不存在身份掩盖串读结果。
+        payload.result.value.id = corruptNextLookupId;
+        corruptNextLookupId = undefined;
         return new Response(JSON.stringify(payload), { status: response.status, headers: response.headers });
       }
       return response;
@@ -111,7 +129,8 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
   const invoke = await correct.resolveAction('save', root);
   const beforeStart = { inputs, defaults, bodies };
   for (const contract of [actionIdentity(wrongName), actionIdentity(wrongVersion), undefined]) {
-    const reply = await ctx.remote.reactivePrograms.startAction({ sessionId: local.id, program: { name: program.name, version: program.version }, accessId: correct.identity.accessId, name: 'save',
+    const reply = await ctx.remote.reactivePrograms.startAction({ sessionId: local.id, program: { name: program.name, version: program.version }, accessId: correct.identity.accessId,
+      invocationId: globalThis.crypto.randomUUID(), name: 'save',
       bindingId: invoke.bindingId, contract, input: { value: '9' } }, t.signal);
     assert.equal(reply.ok, false, '服务器独立拒绝错误或缺失合同，不能只信SDK检查');
     if (contract) assert.equal(reply.error.code, 'reactive/action-contract-mismatch');
@@ -141,11 +160,80 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
   const reader = await open(independent);
   assert.deepEqual(await (await reader.invocation('save', invocation.id)).result, { stored: 7 });
   assert.equal(bodies, 1); assert.equal(inputs, 1); assert.equal(defaults, 0); assert.equal(wrongDecodes, 0);
-  corruptNextAck = true;
-  await assert.rejects(invoke({ value: '8' }), error => error instanceof ActionAdmissionUnknownError
-    && error.cause instanceof ActionContractMismatchError);
-  assert.ok(acceptedAck);
-  assert.deepEqual(await (await correct.invocation('save', acceptedAck.id)).result, { stored: 8 });
-  assert.equal(await readFile(file, 'utf8'), '8'); assert.equal(bodies, 2, '矛盾ACK不能触发自动重发');
+  for (const [corruption, value] of [['contract', '8'], ['id', '9']]) {
+    const prior = { inputs, bodies, startRequests };
+    corruptNextAck = corruption;
+    let unknown;
+    await assert.rejects(invoke({ value }), error => {
+      assert.ok(error instanceof ActionAdmissionUnknownError);
+      if (corruption === 'contract') assert.ok(error.cause instanceof ActionContractMismatchError);
+      else assert.equal(error.cause.message, 'REACTIVE_ACTION_INVOCATION_ID_MISMATCH');
+      unknown = error; return true;
+    });
+    assert.deepEqual(await (await correct.invocation('save', unknown.invocationId)).result, { stored: Number(value) });
+    assert.equal(await readFile(file, 'utf8'), value);
+    assert.equal(startRequests, prior.startRequests + 1, '矛盾ACK不能触发自动重发');
+    assert.equal(inputs, prior.inputs + 1); assert.equal(bodies, prior.bodies + 1);
+  }
+  const beforeLost = { inputs, bodies, startRequests };
+  loseNextAck = true;
+  let unknown;
+  await assert.rejects(invoke({ value: '11' }), error => {
+    assert.ok(error instanceof ActionAdmissionUnknownError);
+    // 官方 Gateway 把 fetch 异常归为 RemoteError；SDK 保留此正式失败原因。
+    assert.equal(error.cause.code, 'gateway/internal');
+    assert.match(error.cause.message, /HTTP_ACK_DELIVERY_LOST/);
+    unknown = error; return true;
+  });
+  const recovered = await correct.invocation('save', unknown.invocationId);
+  assert.equal(recovered.id, unknown.invocationId);
+  assert.deepEqual(await recovered.result, { stored: 11 });
+  assert.equal(await readFile(file, 'utf8'), '11');
+  assert.equal(startRequests, beforeLost.startRequests + 1, '丢失HTTP响应后SDK只分派一次');
+  assert.equal(inputs, beforeLost.inputs + 1); assert.equal(bodies, beforeLost.bodies + 1, '查回结果不重复写文件');
+
+  const beforeLookup = { inputs, bodies, startRequests };
+  corruptNextLookupId = recovered.id;
+  await assert.rejects(correct.invocation('save', invocation.id), error => {
+    assert.ok(!(error instanceof ActionAdmissionUnknownError), '只读查询的错位不代表未知受理');
+    assert.equal(error.message, 'REACTIVE_ACTION_INVOCATION_ID_MISMATCH'); return true;
+  });
+  assert.deepEqual(await (await correct.invocation('save', invocation.id)).result, { stored: 7 });
+  assert.deepEqual(await recovered.result, { stored: 11 });
+  assert.deepEqual({ inputs, bodies, startRequests }, beforeLookup, '拒绝错位及正常恢复都不能再分派或执行业务');
+  assert.equal(await readFile(file, 'utf8'), '11');
+
+  const request = { sessionId: local.id, program: { name: program.name, version: program.version },
+    accessId: correct.identity.accessId, invocationId: globalThis.crypto.randomUUID(), name: 'save',
+    bindingId: invoke.bindingId, contract: actionIdentity(save), input: { value: '12' } };
+  const beforeReplay = { inputs, defaults, bodies };
+  const replies = await Promise.all([request, structuredClone(request)].map(raw => ctx.remote.reactivePrograms.startAction(raw, t.signal)));
+  for (const reply of replies) {
+    assert.equal(reply.ok, true);
+    assert.equal(reply.value.id, request.invocationId);
+  }
+  assert.deepEqual(await (await correct.invocation('save', request.invocationId)).result, { stored: 12 });
+  assert.equal(inputs, beforeReplay.inputs + 1); assert.equal(defaults, beforeReplay.defaults);
+  assert.equal(bodies, beforeReplay.bodies + 1, '并发重复原始请求只执行一次真实文件写入');
+  const conflict = await ctx.remote.reactivePrograms.startAction({ ...request, input: { value: '13' } }, t.signal);
+  assert.equal(conflict.ok, false); assert.equal(conflict.error.code, 'reactive/action-invocation-conflict');
+  assert.equal(inputs, beforeReplay.inputs + 1); assert.equal(bodies, beforeReplay.bodies + 1);
+  assert.equal(await readFile(file, 'utf8'), '12');
+  assert.deepEqual(await (await correct.invocation('save', request.invocationId)).result, { stored: 12 });
+
+  const beforeInvalid = { scopes, inputs, defaults, bodies };
+  const { invocationId: omitted, ...missingId } = request;
+  for (const raw of [missingId, { ...request, invocationId: JSON.stringify([local.id, 1]) }]) {
+    const reply = await ctx.remote.reactivePrograms.startAction(raw, t.signal);
+    assert.equal(reply.ok, false, 'wire 缺少或传入工具调用身份字符串必须在业务前拒绝');
+  }
+  assert.deepEqual({ scopes, inputs, defaults, bodies }, beforeInvalid);
+  assert.equal(await readFile(file, 'utf8'), '12');
+
+  const cancelled = new AbortController(), cancelledReason = new Error('CANCEL_BEFORE_DISPATCH');
+  cancelled.abort(cancelledReason);
+  const beforeCancelled = startRequests;
+  await assert.rejects(invoke({ value: '14' }, { signal: cancelled.signal }), error => error === cancelledReason);
+  assert.equal(startRequests, beforeCancelled, '预取消不分派HTTP请求');
   assert.equal(models, 0); assert.deepEqual(errors, []);
 });

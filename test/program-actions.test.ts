@@ -1,13 +1,15 @@
 import { implementProgram } from '@hanger-source/dsh-reactive/program';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { appendFile, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { Fragment, createElement as h } from 'react';
 import { BehaviorSubject, defer, filter, firstValueFrom, of } from 'rxjs';
-import { ActionBindingUnavailableError, ActionTargetMismatchError, defineApplication, defineEnvironment, z } from '@hanger-source/dsh-reactive';
+import { ActionAdmissionInProgressError, ActionInvocationConflictError, ActionBindingUnavailableError, ActionTargetMismatchError, defineApplication, defineEnvironment, z } from '@hanger-source/dsh-reactive';
+import { InvocationUnavailableError } from '@hanger-source/dsh-reactive-dsh';
 import { defineAction, implementAction, type ActionCallContext } from '@hanger-source/dsh-reactive';
 import { Context, Expose, Offer } from '@hanger-source/dsh-reactive/program';
 import { defineProgram } from '@hanger-source/dsh-reactive';
@@ -293,4 +295,100 @@ test('完整帧先撤下 Action 与 Offer，再启动冷查询，同步 producer
     assert.deepEqual(app.errors, []);
     session.release();
   } finally { await app.dispose(); }
+});
+
+test('公开宿主按原始请求身份只受理一次，同步重入、撤声明及冲突不重执或覆盖原调用', { timeout: 15_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-action-admission-'));
+  const file = join(root, 'writes.jsonl');
+  const visible = new BehaviorSubject(true);
+  const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  let parses = 0, executions = 0, dateExecutions = 0, models = 0;
+  let onParse: (() => void) | undefined;
+  const save = defineAction({ name: 'save_once', description: '按原始请求受理文件写入', scope: z.null(),
+    input: z.object({ amount: z.string(), labels: z.object({ first: z.string(), second: z.string() }) }).transform(input => {
+      parses++;
+      onParse?.();
+      return { ...input, amount: Number(input.amount) };
+    }), output: z.number() });
+  const date = defineAction({ name: 'local_date', description: '本地直接消费日期对象', scope: z.null(), input: z.date(), output: z.number() });
+  const saveImplementation = implementAction(save, { async execute(input) {
+    executions++; entered.resolve(); await finish.promise;
+    await appendFile(file, JSON.stringify(input) + '\n');
+    return input.amount;
+  } });
+  const dateImplementation = implementAction(date, { execute(input) { dateExecutions++; return input.getTime(); } });
+  const surface = defineSurface({ views: { visible: view(z.boolean()) }, actions: { save, date } });
+  const program = defineProgram({ input: z.null(), surface });
+  const definition = defineApplication({ name: 'action-admission', admit: async () => {}, environments: [defineEnvironment({
+    id: 'work', instructions: '仅通过显式宿主调用写入文件', program: implementProgram(program, { Component() {
+      const observation = useObservable(() => visible, []);
+      const save = useAction(saveImplementation, () => null, []);
+      const date = useAction(dateImplementation, () => null, []);
+      if (observation.status !== 'ready') return null;
+      return Expose({ surface, value: { views: { visible: of(observation.value) },
+        actions: observation.value ? { save, date } : {} } });
+    } }),
+  })] });
+  const app = await boot(join(root, 'home'), definition, async function* () { models++; yield* text('不应启动模型'); });
+  try {
+    const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+    const peer = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+    const bindingId = session.resolveAction('save', null).bindingId;
+    const input = { amount: '7', labels: { first: 'a', second: 'b' } };
+    const reordered = { labels: { second: 'b', first: 'a' }, amount: '7' };
+    const invocationId = randomUUID();
+    let reentries = 0;
+    onParse = () => {
+      onParse = undefined;
+      reentries++;
+      assert.throws(() => session.invokeAction('save', bindingId, reordered, { invocationId }),
+        error => error instanceof ActionAdmissionInProgressError && error.invocationId === invocationId);
+      assert.throws(() => app.host.readInvocation(session.id, invocationId, program), InvocationUnavailableError);
+    };
+    const original = session.invokeAction('save', bindingId, input, { invocationId });
+    await entered.promise;
+    assert.equal(session.invokeAction('save', bindingId, reordered, { invocationId }), original);
+    assert.equal(app.host.readInvocation(session.id, invocationId, program).invocation, original);
+    // 两个 raw 输入解析后同为 7，仍不能把另一份请求认作原调用。
+    assert.throws(() => session.invokeAction('save', bindingId, { ...input, amount: '07' }, { invocationId }), ActionInvocationConflictError);
+    assert.throws(() => session.invokeAction('save', randomUUID(), input, { invocationId }), ActionInvocationConflictError);
+    assert.throws(() => session.invokeAction('save', bindingId, input, { invocationId, actorId: 'other-human' }), ActionInvocationConflictError);
+    assert.throws(() => peer.invokeAction('save', peer.resolveAction('save', null).bindingId, input, { invocationId }), ActionInvocationConflictError);
+    assert.equal(app.host.readInvocation(session.id, invocationId, program).invocation, original);
+    assert.equal(parses, 1); assert.equal(executions, 1); assert.equal(reentries, 1);
+
+    const withdrawn = firstValueFrom(session.views.visible.pipe(filter(value => value === false)));
+    visible.next(false);
+    await withdrawn;
+    assert.equal(await session.readView('visible'), false);
+    assert.throws(() => session.resolveAction('save', null), ActionBindingUnavailableError);
+    assert.equal(session.invokeAction('save', bindingId, reordered, { invocationId }), original,
+      '同一已受理请求不能依赖当前 Expose 重建执行');
+    finish.resolve();
+    assert.equal(await original.result, 7);
+    assert.equal(await readFile(file, 'utf8'), JSON.stringify({ amount: 7, labels: { first: 'a', second: 'b' } }) + '\n');
+
+    const rejectedId = randomUUID();
+    let refusal: unknown;
+    assert.throws(() => session.invokeAction('save', bindingId, input, { invocationId: rejectedId }), error => {
+      refusal = error;
+      return error instanceof ActionBindingUnavailableError && error.reason === 'not-exposed';
+    });
+    assert.throws(() => app.host.readInvocation(session.id, rejectedId, program), InvocationUnavailableError);
+    const restored = firstValueFrom(session.views.visible.pipe(filter(value => value === true)));
+    visible.next(true);
+    await restored;
+    assert.equal(await session.readView('visible'), true);
+    assert.throws(() => session.invokeAction('save', bindingId, reordered, { invocationId: rejectedId }), error => error === refusal,
+      '声明恢复不能让原同步拒绝占位重新进入业务');
+    assert.equal(parses, 1); assert.equal(executions, 1);
+    assert.throws(() => session.invokeAction('save', bindingId, input,
+      { invocationId: JSON.stringify([session.id, 1]) }), z.ZodError, '工具调用的数组编码身份不能进入显式参与者身份域');
+    const localDate = new Date('2026-10-29T01:02:03.000Z');
+    const local = session.resolveAction('date', null)(localDate);
+    assert.equal(await local.result, localDate.getTime());
+    assert.equal(app.host.readInvocation(session.id, local.id, program).invocation, local);
+    assert.equal(dateExecutions, 1); assert.equal(models, 0); assert.deepEqual(app.errors, []);
+    session.release(); peer.release();
+  } finally { finish.resolve(); visible.complete(); await app.dispose(); }
 });

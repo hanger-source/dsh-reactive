@@ -2,13 +2,15 @@ import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-proto
 import { z } from 'zod';
 import { ActionContractMismatchError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFilesUnavailableError, SessionJournalUnavailableError, programIdentity, type ActionIdentity, type NativeChildCommand, type NativeChildReference, type ProgramContractIdentity } from '@hanger-source/dsh-reactive';
 import type { ProgramCreationReference, ProgramFailure, ProgramIdentity } from './types.ts';
-import { EligibilityError } from '@hanger-source/dsh-reactive';
+import { EligibilityError, ActionInvocationConflictError, ActionAdmissionInProgressError } from '@hanger-source/dsh-reactive';
 export { ConversationAccessRevokedError, SessionProgramMismatchError } from '@hanger-source/dsh-reactive';
 export { SessionFilesUnavailableError, SessionJournalUnavailableError } from '@hanger-source/dsh-reactive';
 
 /** 接受状态未被确认；此错误从不触发自动重发 Action。 */
 export class ActionAdmissionUnknownError extends Error {
-  constructor(readonly sessionId: string, readonly name: string, cause: unknown) { super('REACTIVE_ACTION_ADMISSION_UNKNOWN', { cause }); }
+  constructor(readonly sessionId: string, readonly name: string, readonly invocationId: string, cause: unknown) {
+    super('REACTIVE_ACTION_ADMISSION_UNKNOWN', { cause });
+  }
 }
 /** 创建结果未知时保留准确引用，调用者可显式恢复，不悄悄创建另一会话。 */
 export class CreationUnknownError extends Error {
@@ -42,6 +44,8 @@ export class FileUploadReceiptUnknownError extends Error {
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface RemoteErrorDetailsMap {
+    'reactive/action-invocation-conflict': { readonly invocationId: string };
+    'reactive/action-admission-in-progress': { readonly invocationId: string };
     'reactive/eligibility': { readonly capabilityName: string; readonly reason: 'pending' | 'error' | 'denied'; readonly observation: import('./types.ts').WireObservation };
     'reactive/creation-incomplete': { readonly reference: ProgramCreationReference };
     'reactive/child-creation-incomplete': { readonly command: NativeChildCommand; readonly reference: NativeChildReference };
@@ -61,7 +65,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
 const actionIdentitySchema = z.object({ name: z.string(), version: z.number().int().positive().safe() }).strict();
 
 /** 正式 failure 已由 Gateway/贡献合同核验，客户端保留完整公开 details。 */
-export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError | ConversationAccessRevokedError | SessionProgramMismatchError | ActionContractMismatchError | SessionFilesUnavailableError | SessionJournalUnavailableError | EligibilityError {
+export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError | ConversationAccessRevokedError | SessionProgramMismatchError | ActionContractMismatchError | ActionInvocationConflictError | ActionAdmissionInProgressError | SessionFilesUnavailableError | SessionJournalUnavailableError | EligibilityError {
   if (value.code === 'reactive/eligibility') {
     const failure = z.object({ code: z.string(), message: z.string(), details: z.union([z.array(z.json()), z.record(z.string(), z.json())]) }).strict();
     const details = z.object({ capabilityName: z.string(), reason: z.enum(['pending', 'error', 'denied']), observation: z.discriminatedUnion('status', [
@@ -75,6 +79,10 @@ export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { 
       ? { ...observation, error: decodeProgramFailure(observation.error) } : observation);
     if (error.reason !== details.reason) throw new Error('REACTIVE_ELIGIBILITY_FAILURE_INVALID');
     return error;
+  }
+  if (value.code === 'reactive/action-invocation-conflict' || value.code === 'reactive/action-admission-in-progress') {
+    const { invocationId } = z.object({ invocationId: z.string().min(1) }).strict().parse(value.details);
+    return value.code === 'reactive/action-invocation-conflict' ? new ActionInvocationConflictError(invocationId) : new ActionAdmissionInProgressError(invocationId);
   }
   if (value.code === 'reactive/journal-unavailable') {
     const details = z.object({ sessionId: z.string() }).strict().parse(value.details);

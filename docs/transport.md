@@ -248,7 +248,7 @@ const created = await client.create('order', { workspaceId: authorizedWorkspaceI
 
 回执丢失时，`SubmissionAdmissionUnknownError` 保存准确 `sessionId`、`requestId`；调用者用 `requestStatus(requestId)` 查询原生事实，再决定是否用原身份和原内容显式重投。客户端不自动重发，inject 重试也不能获得唤醒资格。网络试验覆盖了 Host 已受理后丢弃 HTTP 回执，再按原 ID 查询与显式重投，模型没有重复处理。
 
-Action 开始回执未知时抛 `ActionAdmissionUnknownError`，保留会话和槽名。Invocation ID 来自 Host，不是跨重启 command 幂等键。没有拿到 Invocation ID 的未知受理不能自动重试；需要业务合同中的 Operation command/locate 核对实际受理。
+远程 Action 在业务 JSON 校验和预取消检查之后生成 UUID invocationId，并在必填的 `ProgramActionRequest.invocationId` 中发送；每次调用只分派一次，不自动重发。传输抛错、Gateway 内部或取消结果，以及 ACK 的 id、名称或 Action 合同矛盾，由客户端保留为 `ActionAdmissionUnknownError(sessionId, name, invocationId, cause)`。未知不代表业务未执行：使用原会话端口 `session.invocation(actionName, error.invocationId)` 只读查回，不找最近调用或直接重发。请求仍在路上、身份未知或过期、Host 重启时查不到，也不能证明未执行。自行构造 TypedRPC 的调用方必须提供 UUID invocationId 并保持协议版本一致。
 
 ApplicationHost 的实际 Action owner 持有唯一 Invocation 回执索引，Gateway 只编码和观察原调用。`session.invocation(slot, id)`、Module 和嵌套 Collection 的局部 invocation、result 和 activity 查询不再次 execute，也不依赖当前 Expose。查回核原参与者、Session、Program、Action 合同和完整地址；同合同的另一个地址不能取得回执。本地同步返回原 Invocation，远程异步返回同一回执的读取对象。默认保留已完成调用 5 分钟，最多 1000 个；`completedRetentionMs`、`maxCompleted` 配置属于 RuntimeOptions/HostOptions。执行中的调用不因这项保留策略淘汰，断线也不取消 body。过期、未知或服务重启后的进程内记录缺失返回 `reactive/invocation-unavailable`，不会重放 Action；长期业务恢复使用自己的 Operation identity。
 

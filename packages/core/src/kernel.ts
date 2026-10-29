@@ -1,4 +1,5 @@
 /** 宿主扩展合同：实现运行边界，允许加载组件运行时；纯合同与客户端不导入此入口。 */
+export { ActionInvocationConflictError, ActionAdmissionInProgressError } from './actions/identity.ts';
 export { ActionBindingUnavailableError, ActionTargetMismatchError, actionInvocationArguments, actionOperationOwner, captureActionArguments, guardActionExecution, implementAction, observeBoundAction, type ActionCallContext, type ActionContract, type ActionExecutionContext, type ActionImplementation, type ActionInput, type ActionInvocation, type ActionObserved, type ActionOperationEvent, type ActionOutput, type ActionParsedInput, type ActionReference, type ActionScope, type ActionSource, type Invocation } from './actions/contract.ts';
 export { type ApplicationDefinition } from './applications/definition.ts';
 export { NativeChildWork, nativeChildCommandSchema, nativeChildReceiptSchema, type NativeChildCommand, type NativeChildFeedback, type NativeChildReceipt, type NativeChildReference, type NativeChildState } from './collaboration/child.ts';
