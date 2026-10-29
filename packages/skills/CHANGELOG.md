@@ -2,6 +2,18 @@
 
 此文件保留源码版本准备记录；条目和版本号本身不表示 npm 已发布或公共 API 已稳定。
 
+## 0.34.1
+
+### Patch Changes
+
+- c844248: 资源观察边界明确拒绝错误接入的裸值和缺字段帧，避免组合器产出缺少必需依赖的 ready。合法 Observation 保留原事实与订阅语义，显式 undefined 仍有效，后续合法帧能够恢复；该校验不解析业务值，也不支持将普通值流隐式转换为资源流。
+- Updated dependencies [c844248]
+  - @hanger-source/dsh-reactive@0.34.1
+  - @hanger-source/dsh-reactive-client@0.34.1
+  - @hanger-source/dsh-reactive-dsh@0.34.1
+  - @hanger-source/dsh-reactive-native-ui@0.34.1
+  - @hanger-source/dsh-reactive-remote@0.34.1
+
 ## 0.34.0
 
 ### Patch Changes
