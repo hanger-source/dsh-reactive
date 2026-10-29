@@ -118,11 +118,12 @@ test('晚订阅取得真实活动前缀，排队的新请求不会改写原 atte
       && event.frame.outcome.kind === 'committed' && event.frame.outcome.seq === boundarySequence));
     boundarySubscription.unsubscribe(); stopBoundary();
     const selector = createWorkSelector({ identify(origin) {
+      if (origin.kind === 'invocation') return undefined;
       const scope = origin.scope;
       return scope !== null && typeof scope === 'object' && !Array.isArray(scope) && 'ticket' in scope && typeof scope.ticket === 'string'
         ? scope.ticket : undefined;
     } });
-    const work = selector.observe('one', [session]);
+    const work = selector.observe('one', { sessions: [session] });
     const unrelated = createAssistantMessage({ content: [{ type: 'text', text: '外部发布者追加的独立说明' }],
       source: { provider: 'external-publisher', model: 'published-message' } });
     const externalObserved = Promise.withResolvers<void>();

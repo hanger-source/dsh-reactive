@@ -133,6 +133,8 @@ SDK 的解析与调用是两个明确阶段。解析只对调用者提交的原�
 
 `BoundAction.invocations$` 是具体绑定的新调用热流，不回放历史调用，订阅不会执行 Action。AI、程序与 SDK 经同一绑定创建 Invocation，流交付调用方取得的同一个句柄。句柄已经成立但输入或准入失败的调用仍可观察；无法取得可信执行来源、未建立句柄的调用不产生事实。
 
+Action Invocation 的不可变 `origin` 在输入解析和准入之前捕获，包含 `sessionId`、Action 的 `name` 和 `version`、`bindingId`、`scope`、`source` 与 `inputs`；输入或准入失败仍保留来源。它不包含原始 ActionInput，也不限制本地非 JSON 输入。原生及文件上传 Invocation 不带这些 Action 字段。详见[工作调用观察迁移说明](migration-work-invocations.md)。
+
 完整 Invocation 构造后，同步调用宿主的可信创建接点，再进入原有输入、准入和业务链。真实工具签发者用私有 callSequence 追加 action-invocation 事实；普通参与调用不伪造工具关联。登记失败属于 registration 阶段，同一 result/activity 失败，不进入 Operation 准备或 handler，也不留下 active 项。原生 checkpoint 继续拥有耐久边界。
 
 reactiveInputs 直接在 calls 中记录 invocationId，并保存 Follow 到 callSequence 的来源关系，不复制 Invocation 的业务状态。新事实产生 tool.invocation 或 operation.follow.changed/call-associated；后续工具结果保留关联并独立结算原生终态。冷重放没有新事实时保留缺证，原 Source、业务命令、已登记参与和权限继续按各自原合同核验。
@@ -239,7 +241,9 @@ continued 答复按原问题的 callId 恢复工具调用保存的输入集合�
 
 ## 当前状态、新事件与输入
 
-`createWorkSelector({ identify })` 用应用定义的 JSON 键选择原始输入或持久请求声明；返回 undefined 表示不属于该工作。`select` 同步投影显式快照，`observe` 组合显式会话来源的 progress 与 human，并共享一个 ResourceReader。`state$` 是该 reader 的观察，`events$` 和 `progressFrames$` 只交付订阅后的匹配事实，不重放历史。冷观察不复活 assistant attempt 草稿，也不发现会话、启动 Agent 或取得权限。
+`createWorkSelector({ identify })` 用应用定义的 JSON 键选择原始输入、持久请求声明或 Invocation 来源；返回 undefined 表示不属于该工作。`select` 同步投影显式快照，`observe` 组合显式会话来源的 progress、human 与已持有调用的 activity，并共享一个 ResourceReader。`state$` 是该 reader 的观察，`events$` 和 `progressFrames$` 只交付订阅后的匹配事实，不重放历史。冷观察不复活 assistant attempt 草稿，也不发现会话、启动 Agent 或取得权限。
+
+调用来源按 sessionId、bindingId 和 id 去重，origin 冲突硬失败。每个观察连接固定首个命中的 activity Reader；重排、重发或增加标签不切换，失效不回退，仅显式移除已选来源可重新选择。activity 的资源 error 表示该行观察不可用，ready 中的 failed 才是调用失败。动态成员来源 pending 或 error 使整体失效，不作为空列表。Work 不读取 result、wait 或 operation，也不取消业务或自动查询 Operation。
 
 Activity.operationFollows 包含原 link、receipt|null、preparedDelivery|null、notStarted|null 和 unregistered|null；preparedDelivery 保留 requestId、actorId、notifierId 及可选 reference、node。这些是同一原生投影的持久事实，读取不触发 locate、register 或 notifier。intent 不证明 register ACK，缺少 receipt 不证明未执行，prepared 不代表结果已受理、消费或结算。直播追加产生 operation.follow.changed，change 为 intent、receipt、delivery-prepared、not-started 或 unregistered，携带完整 inputs；冷恢复读取投影，不重放这些事件。
 

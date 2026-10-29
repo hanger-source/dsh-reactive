@@ -1,20 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createElement as h } from 'react';
+import { BehaviorSubject, Observable, combineLatest, map } from 'rxjs';
 import { SessionId } from '@deepseek-ai/dsh-session';
-import { createWorkSelector, defineAction, defineApplication, defineEnvironment, defineProgram, defineSurface,
-  implementAction, z, type ConversationEvent, type WorkEvent, type WorkProgressFrame, type WorkOrigin } from '@hanger-source/dsh-reactive';
-import { implementProgram, Offer, useAction } from '@hanger-source/dsh-reactive/program';
+import { bindAction, createWorkSelector, defineAction, defineApplication, defineEnvironment, defineProgram, defineSurface, ResourceReader,
+  implementAction, z, type ConversationEvent, type WorkEvent, type WorkProgressFrame, type WorkOrigin,
+  type WorkInvocationInput, type InvocationActivity, type Observation, type WorkSnapshot } from '@hanger-source/dsh-reactive';
+import { implementProgram, Expose, Offer, useAction } from '@hanger-source/dsh-reactive/program';
 import { boot, text, tool } from './native-support.ts';
 
 type WorkKey = { merchantId: string; workId: string };
 const firstWork = { merchantId: 'merchant-a', workId: 'first' };
 const secondWork = { merchantId: 'merchant-a', workId: 'second' };
 function identify(origin: WorkOrigin): WorkKey | undefined {
-  const scope = origin.scope;
+  const scope = origin.kind === 'invocation' ? origin.origin.scope : origin.scope;
   if (scope !== null && typeof scope === 'object' && !Array.isArray(scope)
     && 'merchantId' in scope && 'workId' in scope
     && typeof scope.merchantId === 'string' && typeof scope.workId === 'string') {
@@ -57,12 +59,12 @@ test('两个work保留同会话复用callId的历史，跨会话同请求身份�
     await peer.whenIdle();
     assert.equal(executions, 3);
     const transformsBeforeRead = inputTransforms;
-    const first = await selector.observe(firstWork, [session, peer]).state.read();
-    const second = await selector.observe(secondWork, [session, peer]).state.read();
-    const projected = selector.select(firstWork, [
+    const first = await selector.observe(firstWork, { sessions: [session, peer] }).state.read();
+    const second = await selector.observe(secondWork, { sessions: [session, peer] }).state.read();
+    const projected = selector.select(firstWork, { sessions: [
       { identity: session.identity, progress: await session.progress.read(), human: await session.human.read() },
       { identity: peer.identity, progress: await peer.progress.read(), human: await peer.human.read() },
-    ]);
+    ] });
     assert.deepEqual(projected, first);
     assert.equal(inputTransforms, transformsBeforeRead, 'raw work读取不再次执行Program领域transform');
     assert.deepEqual(first.sessions.map(value => [value.sessionId, value.requests.map(item => item.value.requestId)]),
@@ -96,7 +98,7 @@ test('两个work保留同会话复用callId的历史，跨会话同请求身份�
     const cold = await app.host.open(id, definition.environments[0].program.definition);
     const coldPeer = await app.host.open(peerId, definition.environments[0].program.definition);
     const replayed: WorkEvent<WorkKey>[] = [], frames: WorkProgressFrame<WorkKey>[] = [];
-    const coldWork = selector.observe(firstWork, [cold, coldPeer]);
+    const coldWork = selector.observe(firstWork, { sessions: [cold, coldPeer] });
     const eventSubscription = coldWork.events$.subscribe(event => replayed.push(event));
     const frameSubscription = coldWork.progressFrames$.subscribe(frame => frames.push(frame));
     const restored = await coldWork.state.read();
@@ -110,6 +112,193 @@ test('两个work保留同会话复用callId的历史，跨会话同请求身份�
     assert.deepEqual(app.errors, []);
     eventSubscription.unsubscribe(); frameSubscription.unsubscribe(); cold.release(); coldPeer.release();
   } finally { await app.dispose(); }
+});
+
+test('CLI显式组合已开始的SDK调用，两个work跨会话归组，退出观察后真实文件工作仍各自结算', { timeout: 30_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-work-sdk-'));
+  const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  let executions = 0, modelCalls = 0;
+  const record = defineAction({ name: 'write_work_file', description: '写入本次业务文件',
+    scope: z.object({ merchantId: z.string(), workId: z.string() }),
+    input: z.object({ file: z.string(), fail: z.boolean() }), output: z.string() });
+  const failed = new Error('WORK_FILE_REJECTED');
+  const implementation = implementAction(record, { async execute(input, call) {
+    executions++;
+    if (executions === 3) entered.resolve();
+    await finish.promise;
+    call.signal.throwIfAborted();
+    if (input.fail) throw failed;
+    await writeFile(join(root, input.file), call.scope.workId);
+    return input.file;
+  } });
+  const surface = defineSurface({ views: {}, actions: { first: record, second: record } });
+  const definition = defineApplication({ name: 'work-sdk', admit: async () => {}, environments: [defineEnvironment({
+    id: 'work', instructions: '仅由外部SDK显式调用',
+    program: implementProgram(defineProgram({ input: z.null(), surface }), { Component() {
+      const first = useAction(implementation, () => firstWork, []);
+      const second = useAction(implementation, () => secondWork, []);
+      return Expose({ surface, value: { actions: { first, second } } });
+    } }),
+  })] });
+  const app = await boot(join(root, 'home'), definition, async function* () { modelCalls++; yield* text('不应启动模型'); });
+  const lifetime = new AbortController();
+  try {
+    const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+    const peer = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+    const actor = { actorId: 'cli-operator' };
+    const first = session.resolveAction('first', firstWork)({ file: 'first.txt', fail: false }, actor);
+    const second = session.resolveAction('second', secondWork)({ file: 'second.txt', fail: true }, actor);
+    const peerFirst = peer.resolveAction('first', firstWork)({ file: 'peer.txt', fail: false }, actor);
+    const rejected = assert.rejects(second.result, /WORK_FILE_REJECTED/u);
+    await entered.promise;
+    const selector = createWorkSelector({ identify });
+    const sources = { invocations: [first, second, peerFirst] };
+    const cli = selector.observe(firstWork, sources, { signal: lifetime.signal });
+    const surviving = selector.observe(firstWork, { sessions: [session, peer], ...sources });
+    const other = selector.observe(secondWork, sources);
+    const seen: Observation<WorkSnapshot<WorkKey>>[] = [];
+    const subscription = surviving.state$.subscribe(value => seen.push(value));
+    const cliSubscription = cli.state$.subscribe();
+    const running = await cli.state.read();
+    assert.equal(running.sessions.length, 0, 'CLI无需会话观察来源即可读取SDK调用');
+    assert.deepEqual(running.invocations.map(value => value.origin.sessionId), [session.id, peer.id]);
+    assert.ok(running.invocations.every(value => value.activity.status === 'ready' && value.activity.value.state === 'running'));
+    assert.deepEqual(running.invocations.flatMap(value => value.matchedInputs), [], 'SDK不伪造会话输入');
+    const otherRunning = await other.state.read();
+    assert.deepEqual(otherRunning.invocations.map(value => value.id), [second.id]);
+    assert.deepEqual((await surviving.state.read()).sessions.map(value => value.calls), [[], []]);
+    const projected = selector.select(firstWork, { invocations: [first, second, peerFirst].map(invocation => ({
+      id: invocation.id, origin: invocation.origin, activity: invocation.activity.peek(),
+    })) });
+    assert.deepEqual(projected, running, '一次性投影与持续观察表达同一组调用');
+    lifetime.abort(new Error('CLI_OBSERVER_EXITED'));
+    assert.equal(cliSubscription.closed, true);
+    finish.resolve();
+    assert.deepEqual(await Promise.all([first.result, peerFirst.result]), ['first.txt', 'peer.txt']);
+    await rejected;
+    assert.equal(await readFile(join(root, 'first.txt'), 'utf8'), firstWork.workId);
+    assert.equal(await readFile(join(root, 'peer.txt'), 'utf8'), firstWork.workId);
+    assert.ok((await surviving.state.read()).invocations.every(value => value.activity.status === 'ready' && value.activity.value.state === 'returned'));
+    const failure = (await other.state.read()).invocations[0]!.activity;
+    assert.equal(failure.status, 'ready');
+    if (failure.status === 'ready') {
+      assert.equal(failure.value.state, 'failed');
+      if (failure.value.state === 'failed') assert.equal(failure.value.phase, 'execute');
+    }
+    assert.ok(seen.some(value => value.status === 'ready' && value.value.invocations.some(invocation => invocation.activity.status === 'ready'
+      && invocation.activity.value.state === 'returned')));
+    assert.equal(executions, 3); assert.equal(modelCalls, 0);
+    assert.deepEqual(app.errors, []);
+    subscription.unsubscribe(); session.release(); peer.release();
+  } finally { lifetime.abort(); finish.resolve(); await app.dispose(); }
+});
+
+test('动态调用成员固定首个观察来源，读取故障不冒充业务失败，移除和列表失效释放旧订阅', async () => {
+  const finish = Promise.withResolvers<void>();
+  const action = bindAction(implementAction(defineAction({ name: 'held_work', description: '已开始的独立工作',
+    scope: z.object({ merchantId: z.string(), workId: z.string() }), input: z.null(), output: z.boolean() }), {
+    async execute() { await finish.promise; return true; },
+  }), firstWork, { admit() {} });
+  const execution = { invocationId: 'held-work', sessionId: 'sdk-only',
+    source: { kind: 'participant' as const, actorId: 'cli', participant: 'human' as const, entrypoint: 'cli' },
+    inputs: [], signal: new AbortController().signal, continuation: null };
+  const invocation = action(null, execution);
+  const otherInvocation = action(null, { ...execution, invocationId: 'other-held-work' });
+  const availability = new BehaviorSubject<Error | null>(null);
+  let firstConnections = 0, secondConnections = 0;
+  let firstSubscriptions = 0, firstReleases = 0;
+  let secondSubscriptions = 0, secondReleases = 0;
+  let onSecondRelease: (() => void) | undefined;
+  const first = { id: invocation.id, origin: invocation.origin, activity: new ResourceReader({
+    peek: () => invocation.activity.peek(),
+    observations$: new Observable<Observation<InvocationActivity>>(subscriber => {
+      firstConnections++;
+      firstSubscriptions++;
+      const connection = combineLatest([invocation.activity.observations$, availability]).pipe(map(([activity, error]) => error
+        ? { status: 'error' as const, generation: activity.generation, error } : activity)).subscribe(subscriber);
+      return () => { connection.unsubscribe(); firstConnections--; firstReleases++; };
+    }),
+  }) };
+  const second = { id: invocation.id, origin: invocation.origin, activity: new ResourceReader({
+    peek: () => invocation.activity.peek(),
+    observations$: new Observable<Observation<InvocationActivity>>(subscriber => {
+      secondConnections++;
+      secondSubscriptions++;
+      const connection = invocation.activity.observations$.pipe(map(value => ({ ...value, generation: value.generation + 1000 }))).subscribe(subscriber);
+      return () => {
+        connection.unsubscribe(); secondConnections--; secondReleases++;
+        const reenter = onSecondRelease;
+        onSecondRelease = undefined;
+        reenter?.();
+      };
+    }),
+  }) };
+  const members = new BehaviorSubject<Observation<readonly WorkInvocationInput<WorkKey>[]>>({ status: 'ready', generation: 1,
+    observedAt: 0, value: [first, second, { invocation: first, key: secondWork }] });
+  const selector = createWorkSelector({ identify });
+  const work = selector.observe(firstWork, { invocations: members });
+  assert.equal(firstConnections, 0); assert.equal(secondConnections, 0, '构造Work不连接调用活动');
+  const subscription = work.state$.subscribe();
+  try {
+    assert.equal((await work.state.read()).invocations.length, 1);
+    assert.equal(firstConnections, 1); assert.equal(secondConnections, 0);
+    const reordered: Observation<readonly WorkInvocationInput<WorkKey>[]> = { status: 'ready', generation: 2,
+      observedAt: 0, value: [second, first] };
+    members.next(reordered);
+    await work.state.read();
+    members.next(reordered);
+    await work.state.read();
+    members.next({ status: 'ready', generation: 3, observedAt: 0, value: [second, first, invocation] });
+    await work.state.read();
+    members.next({ status: 'ready', generation: 4, observedAt: 0, value: [second, first, invocation, otherInvocation] });
+    assert.equal((await work.state.read()).invocations.length, 2);
+    members.next({ status: 'ready', generation: 5, observedAt: 0, value: [second, first, invocation] });
+    assert.equal((await work.state.read()).invocations.length, 1);
+    assert.equal(firstSubscriptions, 1, '重排、重复ready、添加别名与增删其他调用都保留已选Reader连接');
+    assert.equal(firstReleases, 0);
+    assert.equal(firstConnections, 1); assert.equal(secondConnections, 0);
+    const tagged = await selector.observe(secondWork, { invocations: [{ invocation, key: secondWork }] }).state.read();
+    assert.deepEqual(tagged.invocations[0]!.matchedInputs, []);
+    assert.deepEqual(tagged.invocations[0]!.keys, [secondWork]);
+    assert.deepEqual(tagged.invocations[0]!.origin.inputs, [], '显式Work标签不会伪造调用原输入');
+    const unavailable = new Error('INVOCATION_OBSERVER_UNAVAILABLE');
+    availability.next(unavailable);
+    members.next({ status: 'ready', generation: 6, observedAt: 0, value: [second, first, invocation] });
+    const unreadable = (await work.state.read()).invocations[0]!.activity;
+    assert.equal(unreadable.status, 'error');
+    if (unreadable.status === 'error') assert.equal(unreadable.error, unavailable);
+    assert.equal(secondConnections, 0, '首来源读取错误不会偷偷切换另一个别名');
+    assert.equal(firstSubscriptions, 1); assert.equal(firstReleases, 0);
+    members.next({ status: 'ready', generation: 7, observedAt: 0, value: [second, invocation] });
+    const replacement = (await work.state.read()).invocations[0]!.activity;
+    assert.ok(replacement.status === 'ready' && replacement.value.state === 'running');
+    assert.equal(firstConnections, 0); assert.equal(secondConnections, 1);
+    assert.equal(firstReleases, 1, '仅显式移除已选Reader才释放并切换同身份别名');
+    onSecondRelease = () => members.next({ status: 'ready', generation: 9, observedAt: 0, value: [second, otherInvocation] });
+    members.next({ status: 'pending', generation: 8 });
+    assert.equal(work.state.peek().status, 'ready', '旧pending触发的真实teardown同步送入新列表后，旧pending不得覆盖新ready');
+    assert.equal((await work.state.read()).invocations.length, 2);
+    assert.equal(secondSubscriptions, 2);
+    assert.equal(secondReleases, 1);
+    assert.equal(secondConnections, 1, '旧列表清理不得关闭重入时创建的新连接，也不得循环重建');
+    members.next({ status: 'ready', generation: 10, observedAt: 0, value: [second] });
+    await work.state.read();
+    assert.equal(secondSubscriptions, 2); assert.equal(secondReleases, 1);
+    members.next({ status: 'pending', generation: 11 });
+    assert.equal(work.state.peek().status, 'pending');
+    assert.equal(secondConnections, 0, '列表pending释放旧成员，不能借用旧ready');
+    const listingFailure = new Error('INVOCATION_LIST_UNAVAILABLE');
+    members.next({ status: 'error', generation: 11, error: listingFailure });
+    await assert.rejects(work.state.read(), error => error === listingFailure);
+    members.next({ status: 'ready', generation: 12, observedAt: 0, value: [second] });
+    await work.state.read();
+    const conflict = { ...second, origin: { ...second.origin, source: { ...second.origin.source, actorId: 'different-actor' } } };
+    members.next({ status: 'ready', generation: 13, observedAt: 0, value: [second, conflict] });
+    await assert.rejects(work.state.read(), /REACTIVE_WORK_INVOCATION_ORIGIN_CONFLICT/u);
+    assert.equal(secondConnections, 0);
+    finish.resolve();
+    assert.equal(await invocation.result, true, '来源失效不会取消已经开始的实际调用');
+  } finally { subscription.unsubscribe(); finish.resolve(); await Promise.all([invocation.result, otherInvocation.result]); action.release(); }
 });
 
 test('steer使正式step共同消费两个work，完整发生保留同行输入，观察与来源退出不撤销已执行的业务', async () => {
@@ -141,9 +330,9 @@ test('steer使正式step共同消费两个work，完整发生保留同行输入�
     const peer = await app.host.open(session.id, definition.environments[0].program.definition);
     const otherSession = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
     const selector = createWorkSelector({ identify });
-    const first = selector.observe(firstWork, [source], { signal: observerLifetime.signal });
-    const second = selector.observe(secondWork, [source, otherSession]);
-    const peerFirst = selector.observe(firstWork, [peer]), peerSecond = selector.observe(secondWork, [peer]);
+    const first = selector.observe(firstWork, { sessions: [source] }, { signal: observerLifetime.signal });
+    const second = selector.observe(secondWork, { sessions: [source, otherSession] });
+    const peerFirst = selector.observe(firstWork, { sessions: [peer] }), peerSecond = selector.observe(secondWork, { sessions: [peer] });
     const firstEvents: WorkEvent<WorkKey>[] = [], peerEvents: WorkEvent<WorkKey>[] = [];
     first.events$.subscribe(event => firstEvents.push(event));
     const peerEventsSubscription = peerFirst.events$.subscribe(event => peerEvents.push(event));

@@ -6,7 +6,9 @@
 
 独立模块从 core 导入 `ProgramSessionClient<P>`，直接借用本地 `ConversationHandle<P>` 或远程 `RemoteProgramSession<P>`，共用原来的 View、progress、human 和 request 资源。只消费模块出口时使用 `SurfaceClient<S>`；根会话和集合成员使用同一合同。普通业务函数可以 `await` 两端的 Action 解析和调用，具体 SDK 类型仍保留各自同步/异步时序。不为复用创建 SDK 代理或第二套状态，不把组件内部的 `ProgramSession` 当成外部消费者权限。
 
-本地或远程的人工、服务会话可直接作为 `WorkSource` 交给 `createWorkSelector` 的 `observe(key, sources, options?)`；`select(key, snapshots)` 同步投影已有快照。工作读侧的 `state` 与 `state$` 共用一个 reader，events$ 和 progressFrames$ 只交付新事实。所有来源 ready 才交付完整快照；pending/error 撤下旧 ready，来源退出保留原错误，各会话 generation 不组成事务。最后观察退出只释放观察。identity 的 parentSessionId 来自真实 Session；观察不会打开会话、启动 Agent 或补充权限。
+本地或远程的人工、服务会话可直接作为 `WorkSource` 交给 `createWorkSelector` 的 `observe(key, { sessions, invocations }, options?)`；`select(key, { sessions, invocations })` 同步投影已有快照。工作读侧的 `state` 与 `state$` 共用一个 reader，events$ 和 progressFrames$ 只交付新事实。所有来源 ready 才交付完整快照；pending/error 撤下旧 ready，来源退出保留原错误，各会话 generation 不组成事务。最后观察退出只释放观察。identity 的 parentSessionId 来自真实 Session；观察不会打开会话、启动 Agent 或补充权限。
+
+Action Invocation 的不可变 `origin` 在输入解析和准入之前捕获，包含 `sessionId`、Action 的 `name` 和 `version`、`bindingId`、`scope`、`source` 与 `inputs`；输入或准入失败仍保留来源。它不包含原始 ActionInput，也不限制本地非 JSON 输入。原生及文件上传 Invocation 不带这些 Action 字段。详见[工作调用观察迁移说明](../../../../../docs/migration-work-invocations.md)。
 
 WorkHandle.sessions 为每个显式来源提供 WorkSessionHandle，含 identity、state、state$、events$ 和 progressFrames$；通过 `sessions[i].state.read()` 读取局部 ResourceReader，整体资源要求全部来源 ready；一个来源退出时其他局部资源可继续，不兜底或授予权限。WorkSessionSnapshot.operationFollows 包含 resultRequest，条件包含 operation.not-started、operation.follow-unregistered、operation.delivery-prepared、continuation.unconsumed、goal.round-limit。
 

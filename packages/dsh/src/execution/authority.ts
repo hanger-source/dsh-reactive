@@ -6,7 +6,7 @@ import { firstValueFrom } from 'rxjs';
 import { abortable } from '@hanger-source/dsh-reactive';
 import { z } from "zod";
 import { type Continuation, type WaitReference, type SubmitOptions } from "@hanger-source/dsh-reactive/kernel";
-import { ActionAdmissionInProgressError, ActionInvocationConflictError, ActionBindingUnavailableError, ActionTargetMismatchError, assertExpectedProgram, surfaceSlotDefinition, type ActionContract, type ActionCallContext, type ActionExecutionContext, type ActionReference, type Invocation, type ProgramContract, type ProgramExpectation } from "@hanger-source/dsh-reactive/kernel";
+import { ActionAdmissionInProgressError, ActionInvocationConflictError, ActionBindingUnavailableError, ActionTargetMismatchError, assertExpectedProgram, surfaceSlotDefinition, type ActionContract, type ActionCallContext, type ActionExecutionContext, type ActionReference, type ActionInvocationHandle, type ProgramContract, type ProgramExpectation } from "@hanger-source/dsh-reactive/kernel";
 import { type BoundOffer } from "@hanger-source/dsh-reactive/kernel";
 import { guardActionExecution } from "@hanger-source/dsh-reactive/kernel";
 import { dispatchHumanQuestion } from "../participation/human-dispatch.ts";
@@ -254,7 +254,7 @@ export class ActionAuthority {
             throw new ActionTargetMismatchError(name);
         return action;
     }
-    invokeSession(session: ConversationSession, name: string, bindingId: string, input: unknown, options: ActionInvocationOptions = {}, identity: ParticipantIdentity = humanParticipant): Invocation<unknown, Json> {
+    invokeSession(session: ConversationSession, name: string, bindingId: string, input: unknown, options: ActionInvocationOptions = {}, identity: ParticipantIdentity = humanParticipant): ActionInvocationHandle {
         this.assertActive();
         options.signal?.throwIfAborted();
         const actorId = participantActor(identity, options, this.options.actorId);

@@ -4,7 +4,7 @@
 
 ## 合同、实现与目标分别固定
 
-业务以原始输入 scope 定义工作键；同一商户可有多个工作，不以会话或商户身份代替工作身份。`createWorkSelector({ identify })` 接受输入和真实持久声明，返回 JSON 键或 undefined。它不执行 Program input transform，也不发现会话或取得控制权限。
+业务以原始输入 scope 定义工作键；同一商户可有多个工作，不以会话或商户身份代替工作身份。`createWorkSelector({ identify })` 接受输入、真实持久声明和 Invocation 来源，返回 JSON 键或 undefined。它不执行 Program input transform，也不发现会话或取得控制权限。
 
 ```ts
 import { defineAction, defineProgram, defineSurface, resourceView, z } from '@hanger-source/dsh-reactive';
@@ -35,6 +35,8 @@ export const ItemProgram = defineProgram({ input: Target, surface: ItemSurface }
 Operation 代表业务 owner 持有的跨调用事实。局部 Action 若声明 operation，必须同时提供同一合同的 operationOwner；共享 Operation 的 kind、version 和恢复规则不能因使用局部语法而省略。共享 SDK 或原生 UI 需要独立导入的 Action 合同时，继续分开纯合同和业务实现。
 
 显式调用返回唯一 Invocation：`const invocation = save({ note }); await invocation.result`。activity、result 与可选 operation 指向同次调用；`invocation.activity.read()` 读取当前事实，`useResource(invocation.activity)` 让业务 hook 借入它，activity$ 是同一资源的 values$。read 不等待业务完成，业务 pending/running/failed 是可有效读取的事实；资源 error 表达观察失败。返回活动达到 returned/failed 后，远程底层流释放，资源继续随 SDK owner 观察有效性；晚读取保留终态，多订阅不重执行。纯本地事实由 Invocation 持有，不随组件或绑定退出撤销；远程读取随所属 SDK 退出。invocations$ 是该绑定新调用的热流，不 replay；activeInvocations$ 是当前在途集合，适合晚挂载关系。结束观察或卸载不解释为取消已执行的业务。
+
+Action Invocation 的不可变 `origin` 在输入解析和准入之前捕获，包含 `sessionId`、Action 的 `name` 和 `version`、`bindingId`、`scope`、`source` 与 `inputs`；输入或准入失败仍保留来源。它不包含原始 ActionInput，也不限制本地非 JSON 输入。原生及文件上传 Invocation 不带这些 Action 字段。详见[工作调用观察迁移说明](../../../../../docs/migration-work-invocations.md)。
 
 共同 Invocation.wait({ signal }) 借原 result 等待一次回执；signal 只撤该次等待，另一个 waiter 与原 result、activity、operation 不变。Action、NativeInvocation 和 FileUploadInvocation 可交给同一个泛型函数消费，无需按来源拆分。纯本地 Action 不捕获首次 SDK caller signal 作为永久等待条件，查回仍是原对象；原生、上传及远程读取继续受各自 SDK owner 约束。Action 执行上下文中的 call.wait(reference) 另用于原生业务续接，不用它实现 UI、CLI 或自动化的结果退等。
 

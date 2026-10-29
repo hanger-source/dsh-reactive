@@ -1,7 +1,7 @@
 import { createElement, type ReactElement } from 'react';
 import { catchError, defer, finalize, firstValueFrom, forkJoin, of, throwError } from 'rxjs';
 import type { PreparationObserver } from '../conversations/preparation.ts';
-import { invokeBoundAction, type ActionCallContext, type ActionExecutionContext, type ActionReference, type ActionOperationEvent, type Invocation } from '../actions/contract.ts';
+import { invokeBoundAction, type ActionCallContext, type ActionExecutionContext, type ActionReference, type ActionOperationEvent, type ActionInvocationHandle } from '../actions/contract.ts';
 import type { Json } from '../conversations/protocol.ts';
 import type { OperationAccessContext, OperationBindingReference, OperationContract, OperationFeedbackRead, OperationFeedbackPayload, OperationReference, OperationFollowMode } from '../operations/contract.ts';
 import { Scope, batch, type Cell } from '../reactivity/scope.ts';
@@ -321,7 +321,7 @@ export class ProgramInstance<P extends ProgramContract> implements ProgramHookOw
   }
   /** 工具与认证参与入口复用同一绑定；订阅 Invocation 不会重新调用业务。 */
   invoke(action: ActionReference, input: unknown, execution: ActionExecutionContext, allowed: () => boolean,
-    admissionSignal?: AbortSignal): Invocation<unknown, Json> {
+    admissionSignal?: AbortSignal): ActionInvocationHandle {
     this.flush();
     this.#trusted.set(execution, { action, allowed });
     return invokeBoundAction(action, input, execution, admissionSignal);

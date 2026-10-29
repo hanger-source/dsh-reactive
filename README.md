@@ -20,7 +20,7 @@ Action、原生写入与上传共用 Invocation.wait({ signal })；调用者准�
 
 Invocation、原生工具终态与 Operation 参与通过正式发生关联连接；公共字段、登记失败及固定 rc.3 的 PTC 读取边界见[业务调用与原生发生的关联](docs/migration-invocation-observation.md)。
 
-调整公共合同时，按实际安装版本查看[共享 Program 合同迁移](docs/migration-shared-program-contracts.md)、[模块 SDK 迁移](docs/migration-sdk-modules.md)与[参与端口迁移](docs/migration-participant-ports.md)，对齐合同身份、局部模块、人工控制与服务来源。异步装配及资源寿命的变化见 [SDK 作用域迁移](docs/migration-sdk-scopes.md)、[资源有效性迁移](docs/migration-resource-ownership.md)及[来源完成与有效性迁移](docs/migration-resource-completion.md)。
+调整公共合同时，按实际安装版本查看[共享 Program 合同迁移](docs/migration-shared-program-contracts.md)、[模块 SDK 迁移](docs/migration-sdk-modules.md)、[参与端口迁移](docs/migration-participant-ports.md)与[工作调用观察迁移](docs/migration-work-invocations.md)，对齐合同身份、局部模块、人工控制、服务来源及调用归属。异步装配及资源寿命的变化见 [SDK 作用域迁移](docs/migration-sdk-scopes.md)、[资源有效性迁移](docs/migration-resource-ownership.md)及[来源完成与有效性迁移](docs/migration-resource-completion.md)。
 
 借用对象的生命周期权限、内核工作区装配及原生任务的同步构造见[借用能力迁移](docs/migration-borrowed-capabilities.md)。
 
@@ -84,6 +84,8 @@ Workspace、Conversation、值、资源与反应绑定是借给消费者的编�
 - SDK 通过 `resolveAction(name, expectedScope)` 捕获具体业务绑定；切换目标、撤下或重挂后，旧句柄不会悄悄调用新对象。调用前与异步准入后均重新核验，已执行的业务沿原 owner 结算。
 - 输入以 `content` 保留文字、图片和上传文件的顺序，业务 `intent` 与 `delivery: 'followup' | 'steer' | 'inject'` 分开；投递复用原生 inbox，inject 不唤醒模型。文件使用同会话上传签发的 receipt，受理回执、模型消费和业务完成分别观察。
 - `action.invocations$` 观察这个具体绑定新产生的类型化调用，同一个 Invocation 同时提供结果、活动和 Operation。`invocation.activity` 是可 read、peek、组合和交给 useResource 的同源资源，`activity$` 是其值流；当前事实与等待业务完成的 result 分开。业务关系可以直接组合调用流，无需按工具字符串名筛选会话事件。
+
+Action Invocation 的不可变 `origin` 在输入解析和准入之前捕获，包含 `sessionId`、Action 的 `name` 和 `version`、`bindingId`、`scope`、`source` 与 `inputs`；输入或准入失败仍保留来源。它不包含原始 ActionInput，也不限制本地非 JSON 输入。原生及文件上传 Invocation 不带这些 Action 字段。详见[工作调用观察迁移说明](docs/migration-work-invocations.md)。
 - `action.activeInvocations$` 提供本绑定当前在途调用集合；晚挂载的自定义业务 hook 也能继续组合多次调用，各次结果和长期 Operation 保持独立。结束观察或撤下模块不取消已执行业务。
 - `NativeTools` 声明宿主已安装的原生能力与可选异步业务政策，保留官方工具身份、执行及 guard。可用性同时落实到原生工具与 PTC SDK，等待政策后再次核验声明，不必为文件、待办等工具重写 Action。
 - `actionManifest$` 提供真实工具名、Action、绑定、完整模块路径与公开地址；原生结果及 PTC 结果的 metadata 携带同源结构。业务卡片用 `readActionPresentation` 读取合同结果，无需反解工具 namespace 或模型文本。

@@ -69,8 +69,8 @@ for (const { mode, reuse, reopen } of [
       assert.ok(started >= 0 && started < linked && linked < settled);
     }
     if (mode === 'ptc') assert.ok(session.snapshot().calls.filter(call => call.name === 'run_code').every(call => call.invocationId === null));
-    const selector = createWorkSelector({ identify: origin => z.object({ workId: z.string() }).parse(origin.scope).workId });
-    const work = await selector.observe('inspection', [session]).state.read();
+    const selector = createWorkSelector({ identify: origin => origin.kind === 'invocation' ? undefined : z.object({ workId: z.string() }).parse(origin.scope).workId });
+    const work = await selector.observe('inspection', { sessions: [session] }).state.read();
     assert.deepEqual(work.sessions[0]!.calls.filter(call => call.value.name === 'record_fact').map(call => call.value.invocationId), invocations.map(value => value.id));
     if (!reopen) {
       // rc.3 bridge 对重复 root 标签生成相同 child ID，正式日志读取器拒绝其持久恢复。
@@ -85,7 +85,7 @@ for (const { mode, reuse, reopen } of [
     const replayed: ConversationEvent[] = [];
     const coldEvents = cold.rawEvents$.subscribe(event => replayed.push(event));
     assert.deepEqual(cold.snapshot().calls, saved);
-    assert.deepEqual((await selector.observe('inspection', [cold]).state.read()).sessions[0]!.calls
+    assert.deepEqual((await selector.observe('inspection', { sessions: [cold] }).state.read()).sessions[0]!.calls
       .filter(call => call.value.name === 'record_fact').map(call => call.value.invocationId), invocations.map(value => value.id));
     assert.equal(models, 3); assert.equal(executions, 2); assert.deepEqual(replayed, []);
     assert.deepEqual(app.errors, []); coldEvents.unsubscribe(); cold.release();

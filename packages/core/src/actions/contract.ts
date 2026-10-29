@@ -1,5 +1,6 @@
 import { BehaviorSubject, ReplaySubject, Subject, firstValueFrom, map, takeWhile, type Observable } from 'rxjs';
 import { z } from 'zod';
+import { inputReferenceSchema } from '../conversations/causality.ts';
 import { ResourceReader } from '../resources/reader.ts';
 import { shareResource } from '../resources/sharing.ts';
 import type { ResourceSource } from '../resources/source.ts';
@@ -62,6 +63,32 @@ export interface ActionIdentity {
   readonly name: string;
   readonly version: number;
 }
+/** 本次调用从原始执行与绑定捕获的不可变归属。 */
+export interface ActionInvocationOrigin {
+  readonly sessionId: string;
+  readonly action: ActionIdentity;
+  readonly bindingId: string;
+  readonly scope: ReadonlyActionJson;
+  readonly source: ActionSource;
+  readonly inputs: readonly InputReference<ReadonlyActionJson>[];
+}
+
+export const actionInvocationOriginSchema = z.object({
+  sessionId: z.string().min(1),
+  action: z.object({ name: z.string().min(1), version: z.number().int().min(1) }).strict(),
+  bindingId: z.string().min(1),
+  scope: z.json(),
+  source: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('tool'), callId: z.string().min(1), rootCallId: z.string().min(1), parentCallId: z.string().min(1).nullable() }).strict(),
+    z.object({ kind: z.literal('participant'), actorId: z.string().min(1), participant: z.enum(['human', 'service']), entrypoint: z.string().min(1) }).strict(),
+  ]),
+  inputs: inputReferenceSchema.array(),
+}).strict().transform((value): ActionInvocationOrigin => Object.freeze({ ...value,
+  action: Object.freeze(value.action), source: Object.freeze(value.source),
+  scope: copyJson(value.scope, 'REACTIVE_ACTION_ORIGIN_NOT_JSON'),
+  inputs: Object.freeze(value.inputs.map(input => Object.freeze({ ...input,
+    scope: copyJson(input.scope, 'REACTIVE_ACTION_ORIGIN_NOT_JSON') }))),
+}));
 /** 可跨消费者共享的纯合同；不携带宿主业务实现。 */
 export interface ActionContract extends ActionIdentity {
   readonly description: string;
@@ -184,7 +211,13 @@ export interface Invocation<Output, Observed extends Json = Json, Source = Actio
 }
 
 export type ActionInvocation<D extends ActionContract> = Invocation<ActionOutput<D>, ActionObserved<D>>
+  & { readonly origin: ActionInvocationOrigin }
   & ([ActionOperation<D>] extends [never] ? {} : { readonly operation: Promise<OperationHandle<ActionOperation<D>>> });
+
+/** 异构执行入口持有的真实 Action 调用；操作映射由具体合同边界掌握。 */
+export type ActionInvocationHandle = Invocation<unknown, Json> & {
+  readonly origin: ActionInvocationOrigin;
+};
 
 /** 异构声明只持有合同与目标；调用须通过实际绑定的内部身份分派。 */
 export interface ActionReference {
@@ -263,9 +296,9 @@ const implementationArgumentCaptures = new WeakMap<object, ArgumentCapture>();
 const invocationArguments = new WeakMap<ActionCallContext<unknown>, { readonly input: Json; readonly scope: Json }>();
 const executionGuards = new WeakMap<ActionExecutionContext, {
   readonly check: () => void;
-  readonly created?: (invocation: Invocation<unknown, Json>) => void;
+  readonly created?: (invocation: ActionInvocationHandle) => void;
 }>();
-type RawActionDispatcher = (raw: unknown, execution: ActionExecutionContext, admissionSignal?: AbortSignal) => Invocation<unknown, Json>;
+type RawActionDispatcher = (raw: unknown, execution: ActionExecutionContext, admissionSignal?: AbortSignal) => ActionInvocationHandle;
 const boundDispatchers = new WeakMap<object, {
   readonly invoke: RawActionDispatcher;
   readonly operationOwner?: OperationOwnerReference;
@@ -280,7 +313,7 @@ export function isBoundAction(reference: unknown): reference is ActionReference 
 
 /** @internal 供异构 Surface / 原生工具边界进入原绑定的唯一解析与执行入口。 */
 export function invokeBoundAction(reference: ActionReference, raw: unknown, execution: ActionExecutionContext,
-  admissionSignal?: AbortSignal): Invocation<unknown, Json> {
+  admissionSignal?: AbortSignal): ActionInvocationHandle {
   const dispatch = boundDispatchers.get(reference);
   if (!dispatch) throw new Error('REACTIVE_ACTION_BINDING_INVALID');
   return dispatch.invoke(raw, execution, admissionSignal);
@@ -316,7 +349,7 @@ export function actionInvocationArguments(call: ActionCallContext<unknown>): { r
 
 /** @internal 宿主为原始执行对象登记同步权威检查，以及完整调用对象创建后、执行和公开前的关联。 */
 export function guardActionExecution(execution: ActionExecutionContext, check: () => void,
-  created?: (invocation: Invocation<unknown, Json>) => void): void {
+  created?: (invocation: ActionInvocationHandle) => void): void {
   if (executionGuards.has(execution)) throw new Error('REACTIVE_ACTION_EXECUTION_GUARD_DUPLICATE');
   executionGuards.set(execution, { check, created });
 }
@@ -386,6 +419,8 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
       const source = ownJson(execution.source, 'REACTIVE_ACTION_CONTEXT_NOT_JSON');
       const inputs = ownJson(execution.inputs, 'REACTIVE_ACTION_CONTEXT_NOT_JSON');
       const continuation = ownJson(execution.continuation, 'REACTIVE_ACTION_CONTEXT_NOT_JSON');
+      const invocationOrigin: ActionInvocationOrigin = Object.freeze({ sessionId: execution.sessionId,
+        action: Object.freeze({ name: definition.name, version: definition.version }), bindingId, scope, source, inputs });
       const signal = execution.signal;
       const wait = execution.wait;
       const completeGoal = execution.completeGoal;
@@ -586,7 +621,7 @@ function createBinding<I extends z.ZodType, O extends z.ZodType, S extends z.Zod
         return attached;
       }) : undefined;
       void operation?.catch(() => {});
-      invocation = Object.freeze({ id: invocationId, source, result, activity, activity$: activity.values$,
+      invocation = Object.freeze({ id: invocationId, origin: invocationOrigin, source, result, activity, activity$: activity.values$,
         wait(options: CancellationOptions = {}) { return firstValueFrom(abortable(() => result, options.signal)); },
         ...(operation ? { operation } : {}) }) as ActionInvocation<Definition>;
       // Host 先关联这个完整句柄；同步失败仍在公开前形成终态，业务体不会先于关联开始。

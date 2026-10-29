@@ -1,5 +1,5 @@
 import type { AttachmentIdType, ExecutionFailure, ModelPreparation, SessionImageAttachment as CoreSessionImageAttachment } from '@hanger-source/dsh-reactive';
-import type { ActionIdentity, ActionSource, InvocationPhase, Continuation, GoalActivity, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanReplyDelivery, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
+import type { ActionIdentity, ActionInvocationOrigin, InvocationPhase, Continuation, GoalActivity, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanReplyDelivery, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
   ProgramGoalControl as CoreProgramGoalControl, ProgramCancelResult as CoreProgramCancelResult, ProgramRequestStatus as CoreProgramRequestStatus,
   ProgramJournalEvent as CoreProgramJournalEvent, ProgramJournalEntry as CoreProgramJournalEntry,
   ProgramJournalPage as CoreProgramJournalPage, ProgramJournalWindow as CoreProgramJournalWindow,
@@ -160,8 +160,12 @@ export type ProgramQuestionsFrame = { readonly type: 'baseline'; readonly value:
 export interface ProgramQuestionRequest extends ProgramSessionAddress { readonly callId: string; }
 export interface ProgramAnswerRequest extends ProgramQuestionRequest { readonly answer: HumanAnswer; }
 export type ProgramWaitFrame = HumanWaitFrame;
-/** id/source 由宿主真实受理入口签发，不是客户端生成的任务或幂等键。 */
-export interface ProgramActionStart { readonly id: string; readonly name: string; readonly contract: ActionIdentity; readonly source: ActionSource; }
+/** id/origin 由宿主真实受理入口签发，不是客户端生成的任务或幂等键。 */
+export type ProgramActionInvocationOrigin = Omit<ActionInvocationOrigin, 'scope' | 'inputs'> & {
+  readonly scope: JsonValue;
+  readonly inputs: readonly InputReference<JsonValue>[];
+};
+export interface ProgramActionStart { readonly id: string; readonly name: string; readonly origin: ProgramActionInvocationOrigin; }
 export type ProgramInvocationFrame =
   | { readonly state: 'pending' | 'running' }
   | { readonly state: 'returned'; readonly observation?: JsonValue; readonly observationError?: ProgramFailure }

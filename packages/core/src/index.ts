@@ -30,7 +30,7 @@ export type { LocalActionOptions } from './actions/contract.ts';
 export { InputEditRejectedError } from './conversations/input-edit.ts';
 export { ConversationAccessRevokedError } from './conversations/access.ts';
 export { SessionProgramMismatchError } from './conversations/program-identity.ts';
-export type { ActionContract, ActionDefinition, ActionOptions, ActionImplementation, ActionImplementationOptions, ActionInput, ActionParsedInput, ActionOutput, ActionScope, ActionObserved, ActionTarget, ActionSource, ActionExecutionContext, ActionCallContext, ActionBindingOptions, ActionReference, ActionCommandOrigin, ActionOperationContract, ActionOperation, ActionInvocation, BoundAction, Invocation, InvocationActivity, InvocationPhase } from './actions/contract.ts';
+export type { ActionContract, ActionDefinition, ActionOptions, ActionImplementation, ActionImplementationOptions, ActionInput, ActionParsedInput, ActionOutput, ActionScope, ActionObserved, ActionTarget, ActionSource, ActionExecutionContext, ActionCallContext, ActionBindingOptions, ActionReference, ActionCommandOrigin, ActionOperationContract, ActionOperation, ActionInvocationOrigin, ActionInvocationHandle, ActionInvocation, BoundAction, Invocation, InvocationActivity, InvocationPhase } from './actions/contract.ts';
 export { defineOperation, implementOperation, bindOperation, attachOperation, locateOperation, operationFollowLinkSchema, encodeOperationFeedback, decodeOperationFeedback } from './operations/contract.ts';
 export type { OperationNotificationAcknowledgement, OperationNotificationDelivery, OperationNotificationConnection, OperationNotificationCleanup, OperationNotificationSource } from './operations/contract.ts';
 export type { OperationContract, OperationDefinition, OperationOptions, OperationCommand, OperationReference, OperationParsedCommand, OperationParsedReference, OperationState, OperationSettled, OperationAccessContext, OperationLocation, OperationNotificationResult, OperationFollowLink, OperationFollowMode, OperationOwnerReference, OperationOwner, OperationOwnerOptions, OperationHandle, OperationFeedbackNode, OperationFeedbackRead, OperationFeedbackPayload, OperationBindingReference, OperationBindingOptions, OperationParticipation, BoundOperation } from './operations/contract.ts';
@@ -66,6 +66,7 @@ export type { ConversationProgressSnapshot, RequestSnapshot, RequestHandle, Assi
 export { createWorkSelector } from './conversations/work.ts';
 export type { WorkOrigin, WorkSourceIdentity, WorkSource, WorkSourceSnapshot, WorkOccurrence, WorkRequestOccurrence, WorkWait, WorkCondition, WorkSessionSnapshot, WorkSnapshot, WorkEvent, WorkProgressFrame, WorkHandle, WorkSelector } from './conversations/work.ts';
 export type { WorkOperationFollow, WorkSessionHandle } from './conversations/work.ts';
+export type { WorkInvocationSource, WorkInvocationObservation, WorkInvocationInput, WorkInvocationSnapshot, WorkSources, WorkSelectionSources } from './conversations/work.ts';
 export { AssistantStreamAccumulator, expandAssistantStream, assembleAssistantStream, joinAssistantStreamText, isTokenDelta, isVisibleChunk, chunkHasVisibleText, runFirstTokenTime, runFirstVisibleTime, assistantStreamFirstTokenTime, assistantStreamHasVisibleContent, assistantStreamHasVisibleText, lastAssistantStreamChunk, assistantStreamChunks } from '@deepseek-ai/dsh-llm/assistant-stream';
 export type { AssistantStreamRecord, AssistantStreamRun, TimedStreamChunk, RawStreamChunkType } from '@deepseek-ai/dsh-llm/assistant-stream';
 export type { StreamChunk } from '@deepseek-ai/dsh-llm/types';
@@ -76,3 +77,5 @@ export { createHumanQuestionResolver } from './participation/questions.ts';
 export type { HumanQuestionHandle, HumanQuestionControls, HumanQuestionResolver } from './participation/questions.ts';
 export { operationFollowSnapshotSchema, type OperationFollowSnapshot } from './operations/follows.ts';
 export { modelPreparationSchema, ownModelPreparation, type ModelPreparation, type ModelPreparationWait } from './conversations/preparation.ts';
+
+export { actionInvocationOriginSchema } from './actions/contract.ts';

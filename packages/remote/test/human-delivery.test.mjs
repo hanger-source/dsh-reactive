@@ -99,8 +99,8 @@ for (const failPreparation of [false, true]) test(failPreparation
     assert.deepEqual(reply.origin, question.origin);
     assert.equal(snapshot.questions.active[0].state, 'continued'); assert.deepEqual(snapshot.questions.settled, []);
     assert.deepEqual((await bound.state.read()).replies, snapshot.replies);
-    const selector = createWorkSelector({ identify: origin => z.object({ workId: z.string() }).parse(origin.scope).workId });
-    const work = selector.select('knowledge', [{ identity: local.identity, progress: await local.progress.read(), human: snapshot }]).sessions[0];
+    const selector = createWorkSelector({ identify: origin => origin.kind === 'invocation' ? undefined : z.object({ workId: z.string() }).parse(origin.scope).workId });
+    const work = selector.select('knowledge', { sessions: [{ identity: local.identity, progress: await local.progress.read(), human: snapshot }] }).sessions[0];
     assert.ok(work.conditions.some(condition => condition.kind === 'question.reply-pending' && condition.value.messageId === reply.messageId));
     const agent = runtime.native.agents.get(SessionId(local.id));
     assert.equal(agent.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.id === reply.messageId), false);
@@ -125,7 +125,7 @@ for (const failPreparation of [false, true]) test(failPreparation
       const request = (await remote.request('original').state.read()).activity;
       assert.deepEqual(request.failures, [failure]);
       assert.deepEqual([request.state, request.outcome, request.reply], [original.state, original.outcome, original.reply]);
-      const failedWork = selector.select('knowledge', [{ identity: local.identity, progress: failed, human: retained }]).sessions[0];
+      const failedWork = selector.select('knowledge', { sessions: [{ identity: local.identity, progress: failed, human: retained }] }).sessions[0];
       assert.ok(failedWork.conditions.some(condition => condition.kind === 'execution.failed' && condition.value.sequence === failure.sequence));
       assert.equal(modelCalls, 2, '失败保留答复没有自动重试或重新调用模型');
       assert.equal(agent.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.id === reply.messageId), false);

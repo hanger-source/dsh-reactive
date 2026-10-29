@@ -253,6 +253,10 @@ test('准入和业务等待期间修改调用者对象不能改写目标与原�
   assert.deepEqual(await invocation.result, { merchantId: 'merchant', actorId: 'operator', goalRevision: 1 });
   assert.equal(invocation.id, 'original-invocation');
   assert.deepEqual(invocation.source, { kind: 'participant', actorId: 'operator', participant: 'human', entrypoint: 'authenticated-http' });
+  assert.equal(invocation.source, invocation.origin.source);
+  assert.deepEqual(invocation.origin.scope, { merchantId: 'merchant', selection: { revision: 1 }, channels: ['direct'] });
+  assert.deepEqual(invocation.origin.inputs.map(value => [value.messageId, value.scope]),
+    [['original-message', { merchantId: 'merchant', roles: ['prepare'] }]], '等待期间调用者修改不改写公开归属');
   assert.deepEqual(waits, ['original-wait']);
   assert.equal(completed, 1);
   assert.equal(replacements, 0);
@@ -332,6 +336,12 @@ test('绑定的热调用流交付同一个 Invocation，单次失败和观察退
   const invalid = action(-1, participant('invalid'));
   assert.equal(secondObserved[0], invalid);
   await assert.rejects(invalid.result);
+  assert.equal(invalid.origin.action.name, definition.name, '输入解析失败的已创建调用仍可归到真实动作');
+  assert.equal(invalid.origin.bindingId, action.bindingId);
+  assert.equal(invalid.origin.sessionId, 'delivery');
+  const invalidActivity = await invalid.activity.read();
+  assert.equal(invalidActivity.state, 'failed');
+  if (invalidActivity.state === 'failed') assert.equal(invalidActivity.phase, 'input');
   const failed = action(2, participant('failed'));
   await assert.rejects(failed.result, error => error === failure);
   const successful = invokeBoundAction(action, 3, participant('successful'));
@@ -389,6 +399,8 @@ test('持久委托的原输入在异步准入前自有捕获，普通 Action 仍
   } }), new Date('2026-10-27T00:00:00.000Z'), { admit(_input, call) {
     assert.throws(() => actionInvocationArguments(call), /REACTIVE_ACTION_ARGUMENTS_NOT_CAPTURED/u);
   } });
-  assert.equal(await local(() => 19, participant('callback')).result, 19);
+  const callbackInvocation = local(() => 19, participant('callback'));
+  assert.equal(await callbackInvocation.result, 19);
+  assert.deepEqual(callbackInvocation.origin.scope, { at: '2026-10-27T00:00:00.000Z' });
   action.release(); local.release();
 });

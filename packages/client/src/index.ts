@@ -7,7 +7,8 @@ import { type RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { bytesToBase64 } from '@deepseek-ai/dsh-util-crypto';
 import { BehaviorSubject, firstValueFrom, map, takeWhile, type Observable } from 'rxjs';
-import { z, assertSharedProgramDefinition, programIdentity, assertProgramIdentity, surfaceSlotDefinition, createSurfaceCollectionClient, actionManifestSlot, createFileUploadInvocation, type ToolActionBinding, type ActionInput, type ActionInvocation, type ActionContract, type ActionScope, type InvocationActivity, type Observation, type Surface, type SurfaceViews, type ViewValue, type OperationContract, type OperationReference, type OperationCommand, type OperationHandle, type BoundOperation, type ProgramContract, type SharedProgramContract, type ProgramSurface, type WorkspaceRegistration, type ConversationCreateOptions, type FileUploadSource, type FileUploadInvocation, type CancellationOptions } from '@hanger-source/dsh-reactive';
+import type { ActionInvocationHandle, ActionInvocationOrigin } from '@hanger-source/dsh-reactive';
+import { z, actionInvocationOriginSchema, assertSharedProgramDefinition, programIdentity, assertProgramIdentity, surfaceSlotDefinition, createSurfaceCollectionClient, actionManifestSlot, createFileUploadInvocation, type ToolActionBinding, type ActionInput, type ActionInvocation, type ActionContract, type ActionScope, type InvocationActivity, type Observation, type Surface, type SurfaceViews, type ViewValue, type OperationContract, type OperationReference, type OperationCommand, type OperationHandle, type BoundOperation, type ProgramContract, type SharedProgramContract, type ProgramSurface, type WorkspaceRegistration, type ConversationCreateOptions, type FileUploadSource, type FileUploadInvocation, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import { decodeProgramFailure, ActionAdmissionUnknownError, CreationUnknownError, CreationIncompleteError,
   ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError } from './contracts/errors.ts';
 import contribution from '@hanger-source/dsh-reactive-client/remote';
@@ -91,6 +92,10 @@ type ParticipantClient<P extends ProgramContract, Participant extends ProgramIde
 
 function result<T>(value: RemoteResult<T>): T { if (!value.ok) throw decodeProgramFailure(value.error); return value.value; }
 function json(value: unknown): JsonValue { return z.json().parse(value); }
+function jsonIdentity(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) => item !== null && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item).sort(([left], [right]) => left.localeCompare(right))) : item);
+}
 function creation<T>(reply: RemoteResult<T>): T {
   if (!reply.ok && reply.error.code === 'reactive/creation-incomplete') {
     const details = z.object({ reference: z.object({ environmentId: z.string(), workspaceId: z.string(), sessionId: z.string() }) }).parse(reply.error.details);
@@ -280,12 +285,17 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
               throw revokeConversationAccess(owner, started.error);
             }
             // ACK 已可能受理业务；矛盾回执不能被描述成确定未执行，也不能自动重发。
+            let origin: ActionInvocationOrigin;
             try {
               if (started.value.id !== invocationId) throw new Error('REACTIVE_ACTION_INVOCATION_ID_MISMATCH');
               if (started.value.name !== name) throw new Error('REACTIVE_ACTION_INVOCATION_SLOT_MISMATCH');
-              assertActionIdentity(contract, started.value.contract);
+              origin = actionInvocationOriginSchema.parse(started.value.origin);
+              assertActionIdentity(contract, origin.action);
+              if (origin.sessionId !== identity.sessionId) throw new Error('REACTIVE_ACTION_INVOCATION_SESSION_MISMATCH');
+              if (origin.bindingId !== binding.bindingId) throw new Error('REACTIVE_ACTION_INVOCATION_BINDING_MISMATCH');
+              if (jsonIdentity(origin.scope) !== jsonIdentity(binding.scope)) throw new Error('REACTIVE_ACTION_INVOCATION_TARGET_MISMATCH');
             } catch (error) { throw new ActionAdmissionUnknownError(identity.sessionId, name, invocationId, error); }
-            return invocation(ctx.remote, identity.sessionId, started.value, contract, lifetime, invocationQueries, callRemote);
+            return invocation(ctx.remote, identity.sessionId, { ...started.value, origin }, contract, lifetime, invocationQueries, callRemote);
           };
           // schema 输出只在明确合同的传输边界恢复类型；不要求 scope 支持反向 encode。
           return Object.freeze(Object.assign(invoke, { definition: contract, bindingId: binding.bindingId,
@@ -299,7 +309,10 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
             invocationId: id, name, contract: actionIdentity(contract) }, signal), options.signal ?? lifetime.signal));
           if (stored.id !== id) throw new Error('REACTIVE_ACTION_INVOCATION_ID_MISMATCH');
           if (stored.name !== name) throw new Error('REACTIVE_ACTION_INVOCATION_SLOT_MISMATCH');
-          return invocation(ctx.remote, identity.sessionId, stored, contract, lifetime, invocationQueries, callRemote);
+          const origin = actionInvocationOriginSchema.parse(stored.origin);
+          assertActionIdentity(contract, origin.action);
+          if (origin.sessionId !== identity.sessionId) throw new Error('REACTIVE_ACTION_INVOCATION_SESSION_MISMATCH');
+          return invocation(ctx.remote, identity.sessionId, { ...stored, origin }, contract, lifetime, invocationQueries, callRemote);
         };
         const handle: RemoteSession<P> = {
           get definition() { assertActive(); return program; },
@@ -561,9 +574,12 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
   }
 }
 
-function invocation<D extends ActionContract>(remote: ClientRemote, sessionId: string, start: ProgramActionStart, contract: D, lifetime: ClientScope,
+function invocation<D extends ActionContract>(remote: ClientRemote, sessionId: string,
+  start: Omit<ProgramActionStart, 'origin'> & { readonly origin: ActionInvocationOrigin }, contract: D, lifetime: ClientScope,
   queries: RemoteOperationObservation, callRemote: <T>(call: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal) => Promise<T>): ActionInvocation<D> {
-  assertActionIdentity(contract, start.contract);
+  const origin = start.origin;
+  assertActionIdentity(contract, origin.action);
+  if (origin.sessionId !== sessionId) throw new Error('REACTIVE_ACTION_INVOCATION_SESSION_MISMATCH');
   const signal = lifetime.signal;
   const activityState = new BehaviorSubject<Observation<InvocationActivity>>({ status: 'pending', generation: 0 });
   const ongoing = (observation: Observation<InvocationActivity>): boolean => observation.status === 'pending'
@@ -605,13 +621,14 @@ function invocation<D extends ActionContract>(remote: ClientRemote, sessionId: s
   void settled.catch(() => {});
   const mapping = contract.operation;
   const operation = mapping ? settled.then(receipt => attachInvocationRemoteOperation(queries, address, mapping.definition,
-    z.json().parse(mapping.reference(receipt as never)), start.source, signal)) : undefined;
+    z.json().parse(mapping.reference(receipt as never)), origin.source, signal)) : undefined;
   void operation?.catch(() => {});
   // 动态 Surface 映射经对应原合同 decode；operation 也只在原合同声明时构造。
-  return Object.freeze({ id: start.id, source: start.source, result: settled, activity, activity$: activity.values$,
+  const handle: ActionInvocationHandle = Object.freeze({ id: start.id, origin, source: origin.source, result: settled, activity, activity$: activity.values$,
     wait(options: CancellationOptions = {}) {
       const waiting = options.signal ? AbortSignal.any([signal, options.signal]) : signal;
       return firstValueFrom(abortable(() => settled, waiting));
     },
-    ...(operation ? { operation } : {}) }) as ActionInvocation<D>;
+    ...(operation ? { operation } : {}) });
+  return handle as ActionInvocation<D>;
 }

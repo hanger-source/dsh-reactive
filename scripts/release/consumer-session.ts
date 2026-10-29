@@ -79,13 +79,19 @@ export function sharedSessionFacts<P extends ProgramContract>(session: ProgramSe
 
 const workKey = z.object({ merchantId: z.string(), workId: z.string() });
 const merchantWork = createWorkSelector({ identify(origin) {
-  const selected = workKey.safeParse(origin.scope);
+  const selected = workKey.safeParse(origin.kind === 'invocation' ? origin.origin.scope : origin.scope);
   return selected.success ? selected.data : undefined;
 } });
 export function sessionWork<P extends ProgramContract, Q extends ProgramContract>(
   first: ProgramSessionClient<P>, second: ProgramSessionClient<Q>, key: z.output<typeof workKey>, signal: AbortSignal,
 ) {
-  return merchantWork.observe(key, [first, second], { signal });
+  return merchantWork.observe(key, { sessions: [first, second] }, { signal });
+}
+
+export function invocationWork(
+  invocations: readonly import('@hanger-source/dsh-reactive').WorkInvocationSource[], key: z.output<typeof workKey>, signal: AbortSignal,
+) {
+  return merchantWork.observe(key, { invocations }, { signal });
 }
 
 export async function sessionWorkFollows(source: WorkSessionHandle, signal: AbortSignal): Promise<readonly OperationFollowSnapshot[]> {

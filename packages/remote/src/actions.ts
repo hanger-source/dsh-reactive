@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import { RemoteError, type Principal } from '@deepseek-ai/dsh-typert-protocol';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { ApplicationHost, RetainedActionInvocation } from '@hanger-source/dsh-reactive-dsh';
-import { z, surfaceSlotDefinition, actionIdentity, assertActionIdentity, assertSharedProgramDefinition, type AnyEnvironment, type OperationHandle, type OperationContract } from '@hanger-source/dsh-reactive';
+import { z, surfaceSlotDefinition, assertActionIdentity, assertSharedProgramDefinition, type AnyEnvironment, type OperationHandle, type OperationContract } from '@hanger-source/dsh-reactive';
 import { Inbox } from '@hanger-source/dsh-reactive-client/inbox';
 import type { ProgramActionRequest, ProgramActionStart, ProgramInvocationAddress, ProgramInvocationLookupRequest, ProgramInvocationOperationRequest, ProgramInvocationFrame } from '@hanger-source/dsh-reactive-client/types';
 import { createProgramFailureMapper, throwProgramFailure } from './host-errors.ts';
@@ -40,6 +40,12 @@ function read<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
     signal.addEventListener('abort', abort, { once: true });
     promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
   });
+}
+
+/** 已捕获的归属穿过 wire JSON 边界；不重新解析业务输入或 scope schema。 */
+function wireOrigin(origin: RetainedActionInvocation['invocation']['origin']): ProgramActionStart['origin'] {
+  return { ...origin, scope: z.json().parse(origin.scope),
+    inputs: origin.inputs.map(input => ({ ...input, scope: z.json().parse(input.scope) })) };
 }
 
 /** 通过公开 Handle.invokeAction 受理确切绑定，结果与活动始终指向同一 Invocation。 */
@@ -91,7 +97,7 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
         accepted = true;
         // 回执由真实ActionAuthority保留；transport仅在真实执行结束后归还本次句柄。
         invocation.result.then(() => handle.release(), () => handle.release());
-        return { id: invocation.id, name: request.name, contract: actionIdentity(definition), source: invocation.source };
+        return { id: invocation.id, name: request.name, origin: wireOrigin(invocation.origin) };
       } catch (error) { return rethrow(error); }
       finally { if (!accepted) handle.release(); }
     },
@@ -101,7 +107,7 @@ export function createProgramActionOwner<E extends readonly AnyEnvironment[]>(ct
       if (entry.name !== request.name) throw new RemoteError('reactive/invocation-unavailable', 'Invocation belongs to another Surface address', {});
       try { assertActionIdentity(request.contract, entry.definition); }
       catch (error) { return rethrow(error); }
-      return { id: entry.invocation.id, name: entry.name, contract: actionIdentity(entry.definition), source: entry.invocation.source };
+      return { id: entry.invocation.id, name: entry.name, origin: wireOrigin(entry.invocation.origin) };
     },
     result(request, principal, querySignal) {
       const entry = lookup(request, principal);

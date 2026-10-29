@@ -424,6 +424,8 @@ await conversation.submit({
 
 Action Invocation 的 activity 资源提供本次调用当前有效事实，read 不等待业务完成；可直接交给 useResource 或组合 observations$，activity$ 引用同一对象的 values$。本地 pending/running 是已经知道的调用状态；业务 failed 也是 ready 的调用事实，观察来源不可用才进入资源 error。纯本地不可变事实沿原来源有限结束，晚读取仍取得终态，组件和绑定退出不撤销它。远程 Action 来源在 returned/failed 后释放连接，资源的有效性观察仍由 SDK 持有；SDK 退出撤销资源，不重新调用或取消 Host 业务。
 
+调用的不可变 `origin` 在输入解析和准入之前捕获，包含 `sessionId`、Action 的 `name` 和 `version`、`bindingId`、`scope`、`source` 与 `inputs`，失败也保留；它不包含原始 ActionInput，也不限制本地非 JSON 输入。通用原生和文件上传 Invocation 不带这些 Action 字段。
+
 Invocation 的 returned 是业务函数返回；原生工具后置策略的最终结果由原生事件表达。observe 是纯投影，原生最终展示可能再次对最终结果投影，不会重新解析或执行业务。
 
 模块可以直接对同一个绑定的调用作出反应，输入和结果保持原合同类型：
@@ -459,14 +461,14 @@ import { createWorkSelector, type WorkSource } from '@hanger-source/dsh-reactive
 
 const workSelector = createWorkSelector({
   identify(origin) {
-    const scope = origin.scope;
+    const scope = origin.kind === 'invocation' ? origin.origin.scope : origin.scope;
     if (scope === null || typeof scope !== 'object' || Array.isArray(scope) || !('workId' in scope)) return undefined;
     return typeof scope.workId === 'string' ? scope.workId : undefined;
   },
 });
 
 function observeWork(workId: string, sessions: readonly WorkSource[], signal: AbortSignal) {
-  const work = workSelector.observe(workId, sessions, { signal });
+  const work = workSelector.observe(workId, { sessions }, { signal });
   const subscription = work.state$.subscribe(observation => {
     if (observation.status === 'ready') {
       for (const session of observation.value.sessions) {
@@ -479,7 +481,9 @@ function observeWork(workId: string, sessions: readonly WorkSource[], signal: Ab
 }
 ```
 
-本地和远程、人工和服务会话均可作为 `WorkSource`，来源提供 identity、progress、human、rawEvents$ 与 progressFrames$。来源列表必须非空，sessionId 不得重复。`select(key, snapshots)` 同步纯投影已取得的快照；`observe(key, sources, options?)` 提供共享的 `state`、同一观察的 `state$`、新事件 `events$` 和助手帧 `progressFrames$`。识别使用原始 JSON scope，不执行任何 Program 的输入 transform。选择器不发现或打开会话、不启动 Agent，也不授予其他会话的 Goal 或人工答复权限。
+本地和远程、人工和服务会话均可作为 `WorkSource`，来源提供 identity、progress、human、rawEvents$ 与 progressFrames$。sessions 可以为空，sessionId 不得重复。`select(key, { sessions, invocations })` 同步纯投影已取得的快照；`observe(key, { sessions, invocations }, options?)` 提供共享的 `state`、同一观察的 `state$`、新事件 `events$` 和助手帧 `progressFrames$`。对话来源的识别使用原始输入 scope，不执行 Program 的输入 transform；调用来源使用已捕获的 Action 目标 `origin.scope`，不重新解析目标。scope 相同不意味着同一工作，应以唯一工作标识分组。选择器不发现或打开会话、不启动 Agent，也不授予其他会话的 Goal 或人工答复权限。
+
+`invocations` 可提供已持有的调用，或 `{ invocation, key }` 显式标记工作；标记只用于观察，不伪造 inputs。来源可以是静态数组或动态 ResourceSource，因此 CLI 也可不提供会话直接观察。快照保留调用的 id、origin、activity Observation、matchedInputs 和 keys；真实 inputs 完整匹配，一个调用可以属于多个工作。详细边界见[工作调用观察迁移说明](migration-work-invocations.md)。
 
 `WorkHandle.sessions` 为每个显式来源提供 WorkSessionHandle，其 identity、state、state$、events$ 和 progressFrames$ 对应该来源；通过 `sessions[i].state.read()` 读取局部 ResourceReader；整体资源只有全部来源 ready 才 ready，某来源退出后其他局部资源仍可继续，不以其他来源兜底，也不授予权限。每个 WorkSessionSnapshot 的 operationFollows 保留匹配事实及 resultRequest；条件包括 operation.not-started、operation.follow-unregistered、operation.delivery-prepared、continuation.unconsumed 和 goal.round-limit。
 

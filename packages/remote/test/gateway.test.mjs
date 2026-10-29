@@ -1290,8 +1290,8 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；Wor
   const early = await connect(), a = early.session.request('request-a'), b = early.session.request('request-b');
   assert.equal(early.session.request('request-a'), a);
   const occurrences = [], raw = [], changes = [];
-  const selector = createWorkSelector({ identify: origin => origin.requestId });
-  const remoteWork = selector.observe('request-b', [early.session]), localWork = selector.observe('request-b', [local]);
+  const selector = createWorkSelector({ identify: origin => origin.kind === 'invocation' ? undefined : origin.requestId });
+  const remoteWork = selector.observe('request-b', { sessions: [early.session] }), localWork = selector.observe('request-b', { sessions: [local] });
   const workEvents = [];
   let workCompleted = false;
   const workSubscription = remoteWork.events$.subscribe({ next: value => workEvents.push(value), complete: () => { workCompleted = true; } });

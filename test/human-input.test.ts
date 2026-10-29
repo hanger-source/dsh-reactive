@@ -366,8 +366,8 @@ for (const mode of ['native', 'ptc'] as const) {
       const actual = app.native.agents.get(SessionId(id))!.session.snapshotEvents().flatMap(event => event.type === 'agent/inbox/spliced'
         ? event.data.inserted.filter(message => message.source.kind === 'user-question-reply') : []);
       assert.deepEqual(actual.map(message => message.id), [delivery.messageId], '公开交付沿实际原生消息身份');
-      const selector = createWorkSelector({ identify: selected => merchantScope.parse(selected.scope).merchantId });
-      const selected = selector.select('merchant-a', [{ identity: cold.identity, progress: await cold.progress.read(), human: proposal }]).sessions[0]!;
+      const selector = createWorkSelector({ identify: selected => selected.kind === 'invocation' ? undefined : merchantScope.parse(selected.scope).merchantId });
+      const selected = selector.select('merchant-a', { sessions: [{ identity: cold.identity, progress: await cold.progress.read(), human: proposal }] }).sessions[0]!;
       assert.deepEqual(selected.questions.replies.map(reply => reply.matchedInputs.map(input => input.requestId)), [['merchant-question']]);
       assert.ok(selected.conditions.some(condition => condition.kind === 'question.reply-pending' && condition.value.messageId === delivery.messageId));
       holdReply = false; releaseReply.resolve();

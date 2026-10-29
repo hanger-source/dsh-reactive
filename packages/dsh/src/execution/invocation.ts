@@ -1,4 +1,4 @@
-import type { ActionContract, Invocation, Json, OperationContract, OperationHandle, SubmitOptions } from '@hanger-source/dsh-reactive';
+import type { ActionContract, ActionInvocationHandle, OperationHandle, OperationContract, SubmitOptions } from '@hanger-source/dsh-reactive';
 
 /** 宿主调用关联；显式身份只用于核对同一次请求，不授予执行资格。 */
 export interface ActionInvocationOptions extends SubmitOptions {
@@ -10,7 +10,7 @@ export interface ActionInvocationOptions extends SubmitOptions {
 export interface RetainedActionInvocation {
   readonly name: string;
   readonly definition: ActionContract;
-  readonly invocation: Invocation<unknown, Json> & { readonly operation?: Promise<OperationHandle<OperationContract>> };
+  readonly invocation: ActionInvocationHandle & { readonly operation?: Promise<OperationHandle<OperationContract>> };
 }
 
 export class InvocationUnavailableError extends Error {

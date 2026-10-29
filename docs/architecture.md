@@ -56,6 +56,8 @@ Workspace 是独立的本地编程 owner。应用通过 application.workspace(id
 
 业务自定义 hook 可以直接返回资源、Action 和标准 Observable，供下一层业务 hook 继续派生。`invocations$` 表达新发生的调用，`activeInvocations$` 表达本绑定当前在途调用集合；单次 `Invocation.activity$`、`result` 和独立 `operation` 不合并为一个 loading 或完成标记。晚观察者读取当前集合不会重发命令，内存集合也不承担跨重启任务恢复。
 
+Action Invocation 的不可变 `origin` 在输入解析和准入之前捕获，包含 `sessionId`、Action 的 `name` 和 `version`、`bindingId`、`scope`、`source` 与 `inputs`；输入或准入失败仍保留来源。它不包含原始 ActionInput，也不限制本地非 JSON 输入。原生及文件上传 Invocation 不带这些 Action 字段。详见[工作调用观察迁移说明](migration-work-invocations.md)。
+
 hook 自建查询的共享连接和终止缓存受 Program 寿命约束。`useShared` 与 factory 形式的 `useResource` 复用 RxJS 的同一重放值，不另存一份业务状态；Program 失败或退出后，之前捕获的流直接完成，不重放旧事实或重新打开查询。借入的资源实例仍由原 owner 持有，hooks 不改变其身份或销毁共享事实。
 
 受管理资源的有效性由资源 owner 决定。owner 撤销时，仍在观察的 `observations$` 先交付以原取消原因构成的 error，再完成；迟到观察只取得撤销，不回放旧值或重连。借入资源的 hook、Context 和公开资源消费这份同源失效；普通有限 Observable 的完成仍保留其最后值。父 Scope 撤销同步传播到全部子 Scope，实际清理仍由所属 Scope 树汇总。

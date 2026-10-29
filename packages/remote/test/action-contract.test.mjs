@@ -10,7 +10,7 @@ import * as Registry from '@deepseek-ai/dsh-typert-registry/client';
 import * as Gateway from '@deepseek-ai/dsh-api-gateway/client';
 import { installConnection } from '@deepseek-ai/dsh-client-connection/client';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
-import { ActionContractMismatchError, actionIdentity, defineAction, implementAction, defineApplication,
+import { ActionContractMismatchError, actionIdentity, createWorkSelector, defineAction, implementAction, defineApplication,
   defineEnvironment, defineProgram, defineSurface, z } from '@hanger-source/dsh-reactive';
 import { Expose, implementProgram, useAction } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
@@ -89,8 +89,11 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
         corruptNextAck = undefined;
         // 只损坏已经真实受理后的回执交付，不替换Host、业务执行或Gateway协议实现。
         const payload = await response.json(); assert.equal(payload.result.ok, true);
-        if (corruption === 'contract') payload.result.value.contract.version = 2;
+        if (corruption === 'contract') payload.result.value.origin.action.version = 2;
         if (corruption === 'id') payload.result.value.id = globalThis.crypto.randomUUID();
+        if (corruption === 'session') payload.result.value.origin.sessionId = globalThis.crypto.randomUUID();
+        if (corruption === 'binding') payload.result.value.origin.bindingId = globalThis.crypto.randomUUID();
+        if (corruption === 'scope') payload.result.value.origin.scope = 'another-target';
         return new Response(JSON.stringify(payload), { status: response.status, headers: response.headers });
       }
       if (corruptNextLookupId && new URL(url).pathname.endsWith('/reactivePrograms/actionInvocation')) {
@@ -139,6 +142,17 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
   const invocation = await invoke({ value: '7' });
   assert.deepEqual(await invocation.result, { stored: 7 });
   assert.equal(await readFile(file, 'utf8'), '7'); assert.equal(bodies, 1); assert.equal(inputs, 1);
+  const work = createWorkSelector({ identify(origin) {
+    if (origin.kind !== 'invocation') return undefined;
+    const target = origin.origin.scope;
+    return target !== null && typeof target === 'object' && !Array.isArray(target) && typeof target.directory === 'string'
+      ? target.directory : undefined;
+  } });
+  const beforeWork = { scopes, inputs, bodies };
+  const observed = await work.observe(root, { invocations: [invocation] }, { signal: t.signal }).state.read();
+  assert.equal(observed.invocations[0]?.id, invocation.id, '远程原始目标可直接归入独立业务观察');
+  assert.deepEqual(observed.invocations[0]?.origin, invocation.origin);
+  assert.deepEqual({ scopes, inputs, bodies }, beforeWork, 'Work观察不重复解析业务目标、输入或执行文件写入');
   const wrongProgram = { sessionId: local.id, program: { name: 'another_action_program', version: 1 }, invocationId: invocation.id };
   for (const query of ['actionInvocation', 'actionResult']) {
     const request = query === 'actionInvocation' ? { ...wrongProgram, name: 'save', contract: actionIdentity(save) } : wrongProgram;
@@ -160,14 +174,17 @@ test('真实Gateway在副作用前核对Action合同，原Invocation只用受理
   const reader = await open(independent);
   assert.deepEqual(await (await reader.invocation('save', invocation.id)).result, { stored: 7 });
   assert.equal(bodies, 1); assert.equal(inputs, 1); assert.equal(defaults, 0); assert.equal(wrongDecodes, 0);
-  for (const [corruption, value] of [['contract', '8'], ['id', '9']]) {
+  for (const [corruption, value] of [['contract', '8'], ['id', '9'], ['session', '10'], ['binding', '13'], ['scope', '14']]) {
     const prior = { inputs, bodies, startRequests };
     corruptNextAck = corruption;
     let unknown;
     await assert.rejects(invoke({ value }), error => {
       assert.ok(error instanceof ActionAdmissionUnknownError);
       if (corruption === 'contract') assert.ok(error.cause instanceof ActionContractMismatchError);
-      else assert.equal(error.cause.message, 'REACTIVE_ACTION_INVOCATION_ID_MISMATCH');
+      else {
+        const field = { id: 'ID', session: 'SESSION', binding: 'BINDING', scope: 'TARGET' }[corruption];
+        assert.equal(error.cause.message, `REACTIVE_ACTION_INVOCATION_${field}_MISMATCH`);
+      }
       unknown = error; return true;
     });
     assert.deepEqual(await (await correct.invocation('save', unknown.invocationId)).result, { stored: Number(value) });

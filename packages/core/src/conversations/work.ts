@@ -1,4 +1,6 @@
-import { EMPTY, defer, fromEvent, map, merge, takeUntil, filter, type Observable } from 'rxjs';
+import { EMPTY, defer, fromEvent, map, merge, takeUntil, filter, of, combineLatest, catchError, tap, finalize, ReplaySubject, shareReplay, observeOn, queueScheduler, throwIfEmpty, type Observable } from 'rxjs';
+import { actionInvocationOriginSchema, type ActionInvocationOrigin, type InvocationActivity } from '../actions/contract.ts';
+import { resourceObservations, type ResourceSource } from '../resources/source.ts';
 import type { ConversationIdentity } from './conversation.ts';
 import type { Continuation, ConversationActivity, ExecutionFailure, GoalActivity, InputReference, Json, ReplyActivity, RequestActivity, RequestDeclaration, ToolActivity } from './protocol.ts';
 import type { AssistantAttemptSnapshot, AssistantProgressFrame, ConversationEvent } from './events.ts';
@@ -8,11 +10,12 @@ import type { HumanForegroundQuestion, HumanQuestion, HumanReplyDelivery, HumanS
 import type { Observation } from '../resources/observation.ts';
 import { matchesOperationFollowResult, type OperationFollowSnapshot } from '../operations/follows.ts';
 import type { ResourceReader, ResourceReadable, ResourceReaderOptions } from '../resources/reader.ts';
-import { combineResources, mapResource } from '../resources/operators.ts';
+import { combineResources, mapResource, switchResource } from '../resources/operators.ts';
 import { shareResource } from '../resources/sharing.ts';
 
 /** 选择依据保留原始输入；声明没有原生输入身份，不能伪造 messageId 或 source。 */
 export type WorkOrigin =
+  | { readonly kind: 'invocation'; readonly id: string; readonly origin: ActionInvocationOrigin }
   | (InputReference & { readonly kind: 'input'; readonly input: InputReference })
   | (RequestDeclaration & { readonly kind: 'declaration'; readonly sourceSessionId: string;
       readonly requestId: string; readonly messageId: null; readonly source: null; readonly declaration: RequestDeclaration });
@@ -103,6 +106,32 @@ export interface WorkSessionSnapshot {
 export interface WorkSnapshot<K extends Json = Json> {
   readonly key: K;
   readonly sessions: readonly WorkSessionSnapshot[];
+  readonly invocations: readonly WorkInvocationSnapshot<K>[];
+}
+
+/** 已持有调用的纯观察能力，不要求结果、控制权或业务 owner。 */
+export interface WorkInvocationSource {
+  readonly id: string;
+  readonly origin: ActionInvocationOrigin;
+  readonly activity: ResourceReadable<InvocationActivity>;
+}
+export interface WorkInvocationObservation {
+  readonly id: string;
+  readonly origin: ActionInvocationOrigin;
+  readonly activity: Observation<InvocationActivity>;
+}
+export type WorkInvocationInput<K extends Json, T = WorkInvocationSource> = T | { readonly invocation: T; readonly key: K };
+export interface WorkInvocationSnapshot<K extends Json = Json> extends WorkInvocationObservation {
+  readonly matchedInputs: readonly InputReference[];
+  readonly keys: readonly K[];
+}
+export interface WorkSources<K extends Json> {
+  readonly sessions?: readonly WorkSource[];
+  readonly invocations?: readonly WorkInvocationInput<K>[] | ResourceSource<readonly WorkInvocationInput<K>[]>;
+}
+export interface WorkSelectionSources<K extends Json> {
+  readonly sessions?: readonly WorkSourceSnapshot[];
+  readonly invocations?: readonly WorkInvocationInput<K, WorkInvocationObservation>[];
 }
 
 export interface WorkEvent<K extends Json = Json> {
@@ -137,8 +166,8 @@ export interface WorkSessionHandle<K extends Json = Json> {
 }
 
 export interface WorkSelector<K extends Json> {
-  select(key: K, sources: readonly WorkSourceSnapshot[]): WorkSnapshot<K>;
-  observe(key: K, sources: readonly WorkSource[], options?: ResourceReaderOptions): WorkHandle<K>;
+  select(key: K, sources: WorkSelectionSources<K>): WorkSnapshot<K>;
+  observe(key: K, sources: WorkSources<K>, options?: ResourceReaderOptions): WorkHandle<K>;
 }
 
 /** 一个业务定义自己的 JSON 身份；undefined 明确表示该原始输入或声明不属于业务。 */
@@ -265,16 +294,19 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
         requests, inputs, calls, replies, failures, preparation, attempts: activeAttempts, questions: Object.freeze({ active, settled, replies: humanReplies }),
         foreground, waits, operationFollows, goals, conditions: Object.freeze(conditions) });
     });
-    return Object.freeze({ key, sessions: Object.freeze(sessions) });
+    return Object.freeze({ key, sessions: Object.freeze(sessions), invocations: Object.freeze([]) });
   };
 
   return Object.freeze({
-    select(key: K, sources: readonly WorkSourceSnapshot[]): WorkSnapshot<K> {
-      return project(captureKey(key), [...sources]);
-    },
-    observe(key: K, sources: readonly WorkSource[], readerOptions?: ResourceReaderOptions): WorkHandle<K> {
+    select(key: K, sources: WorkSelectionSources<K>): WorkSnapshot<K> {
       const capturedKey = captureKey(key);
-      const captured = Object.freeze(sources.map(source => Object.freeze({ identity: captureIdentity(source.identity),
+      const groups = invocationGroups<K, Observation<InvocationActivity>>(capturedKey, sources.invocations ?? [], matcher(capturedKey));
+      return Object.freeze({ ...project(capturedKey, sources.sessions ?? []), invocations: Object.freeze(groups.map(({ reader, ...group }) =>
+        Object.freeze({ ...group, activity: captureObservation(reader.activity) }))) });
+    },
+    observe(key: K, sources: WorkSources<K>, readerOptions?: ResourceReaderOptions): WorkHandle<K> {
+      const capturedKey = captureKey(key);
+      const captured = Object.freeze((sources.sessions ?? []).map(source => Object.freeze({ identity: captureIdentity(source.identity),
         progress: source.progress, human: source.human, rawEvents$: source.rawEvents$, progressFrames$: source.progressFrames$ })));
       assertDistinctSources(captured);
       const match = matcher(capturedKey);
@@ -294,13 +326,147 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
         return Object.freeze({ identity: source.identity, state, state$: state.observations$,
           events$: borrowEvents(events$, readerOptions?.signal), progressFrames$: borrowEvents(progressFrames$, readerOptions?.signal) });
       }));
-      const state = shareResource(combineResources(Object.fromEntries(sessions.map((source, index) => [String(index), source.state]))).pipe(
-        mapResource(value => Object.freeze({ key: capturedKey, sessions: Object.freeze(Object.values(value)) })),
+      const sessionState = sessions.length ? combineResources(Object.fromEntries(sessions.map((source, index) => [String(index), source.state]))).pipe(
+        mapResource(value => Object.freeze(Object.values(value)))) : readyResource<readonly WorkSessionSnapshot[]>(Object.freeze([]));
+      const invocationInputs = sources.invocations;
+      const members = invocationInputs === undefined || Array.isArray(invocationInputs)
+        ? readyResource(captureInvocations<K, ResourceReadable<InvocationActivity>>((invocationInputs ?? []) as readonly WorkInvocationInput<K>[]))
+        : resourceObservations(invocationInputs as ResourceSource<readonly WorkInvocationInput<K>[]>).pipe(mapResource(value => captureInvocations<K, ResourceReadable<InvocationActivity>>(value)));
+      const invocationState = defer(() => {
+        // 仅在本次观察连接内持有选择和连接；调用事实仍来自原 activity。
+        const selections = new Map<string, unknown>();
+        const connections = new Map<string, { activity: ResourceReadable<InvocationActivity>;
+          stop: ReplaySubject<void>; observations$: Observable<Observation<InvocationActivity>> }>();
+        const release = (identity: string) => {
+          const connection = connections.get(identity);
+          connections.delete(identity);
+          connection?.stop.next();
+          connection?.stop.complete();
+        };
+        const releaseAll = () => {
+          const released = [...connections.values()];
+          connections.clear();
+          for (const connection of released) {
+            connection.stop.next();
+            connection.stop.complete();
+          }
+        };
+        return members.pipe(
+          // 成员更新和清理属于同一同步队列；teardown 重入的新事实在当前更新之后处理。
+          observeOn(queueScheduler),
+          mapResource(values => invocationGroups<K, ResourceReadable<InvocationActivity>>(capturedKey, values, match, selections)),
+          tap(observation => { if (observation.status !== 'ready') releaseAll(); }),
+          switchResource(groups => {
+            const identities = new Set(groups.map(group => invocationIdentity(group)));
+            for (const identity of [...connections.keys()]) if (!identities.has(identity)) release(identity);
+            selections.clear();
+            for (const group of groups) selections.set(invocationIdentity(group), memberIdentity(group.reader));
+            if (!groups.length) return readyResource<readonly WorkInvocationSnapshot<K>[]>(Object.freeze([]));
+            const observations = groups.map(({ reader, ...group }) => {
+              const identity = invocationIdentity(group);
+              let connection = connections.get(identity);
+              if (connection && connection.activity !== reader.activity) { release(identity); connection = undefined; }
+              if (!connection) {
+                const stop = new ReplaySubject<void>(1);
+                const observations$ = reader.activity.observations$.pipe(
+                  throwIfEmpty(),
+                  catchError((error: unknown) => of<Observation<InvocationActivity>>(Object.freeze({ status: 'error', generation: 0, error }))),
+                  takeUntil(stop), shareReplay({ bufferSize: 1, refCount: false }));
+                connection = { activity: reader.activity, stop, observations$ };
+                connections.set(identity, connection);
+              }
+              return connection.observations$.pipe(map(activity => Object.freeze({ ...group, activity: captureObservation(activity) })));
+            });
+            return combineLatest(observations).pipe(map(value => Object.freeze({ status: 'ready' as const, generation: 0,
+              observedAt: Date.now(), value: Object.freeze(value) })));
+          }),
+          finalize(() => { releaseAll(); selections.clear(); }),
+        );
+      });
+      const state = shareResource(combineResources({ sessions: sessionState, invocations: invocationState }).pipe(
+        mapResource(value => Object.freeze({ key: capturedKey, ...value })),
       ), readerOptions);
       return Object.freeze({ sessions, state, state$: state.observations$,
         events$: merge(...sessions.map(session => session.events$)), progressFrames$: merge(...sessions.map(session => session.progressFrames$)) });
     },
   });
+}
+
+function readyResource<T>(value: T): Observable<Observation<T>> {
+  return of(Object.freeze({ status: 'ready' as const, generation: 0, observedAt: Date.now(), value }));
+}
+
+function captureObservation<T>(value: Observation<T>): Observation<T> {
+  return Object.freeze({ ...value });
+}
+
+const invocationMemberIdentity = Symbol('work.invocation.member');
+
+interface CapturedInvocation<Activity> {
+  readonly [invocationMemberIdentity]: unknown;
+  readonly id: string;
+  readonly origin: ActionInvocationOrigin;
+  readonly activity: Activity;
+}
+
+function memberIdentity(source: object): unknown {
+  return (source as { readonly [invocationMemberIdentity]?: unknown })[invocationMemberIdentity] ?? source;
+}
+
+function invocationIdentity(source: { readonly id: string; readonly origin: ActionInvocationOrigin }): string {
+  return canonicalJson([source.origin.sessionId, source.origin.bindingId, source.id]);
+}
+
+function captureInvocations<K extends Json, Activity>(
+  values: readonly WorkInvocationInput<K, Pick<CapturedInvocation<Activity>, 'id' | 'origin' | 'activity'>>[],
+): readonly WorkInvocationInput<K, CapturedInvocation<Activity>>[] {
+  return Object.freeze(values.map(value => {
+    const explicit = 'invocation' in value;
+    const source = explicit ? value.invocation : value;
+    const invocation = Object.freeze({ [invocationMemberIdentity]: memberIdentity(source), id: source.id, activity: source.activity,
+      origin: actionInvocationOriginSchema.parse(source.origin) });
+    return explicit ? Object.freeze({ invocation, key: captureKey(value.key) }) : invocation;
+  }));
+}
+
+/** 先验证全部别名的事实身份，再为当前业务合并命中；状态只读取首个命中成员。 */
+function invocationGroups<K extends Json, Activity>(
+  key: K, values: readonly WorkInvocationInput<K, Pick<CapturedInvocation<Activity>, 'id' | 'origin' | 'activity'>>[],
+  match: { matches(origin: WorkOrigin): boolean; inputs(values: readonly InputReference[]): readonly InputReference[] },
+  previousSelections?: ReadonlyMap<string, unknown>,
+): readonly { readonly id: string; readonly origin: ActionInvocationOrigin; readonly reader: CapturedInvocation<Activity>;
+  readonly matchedInputs: readonly InputReference[]; readonly keys: readonly K[] }[] {
+  const captured = captureInvocations<K, Activity>(values);
+  const groups = new Map<string, { origin: ActionInvocationOrigin; members: WorkInvocationInput<K, CapturedInvocation<Activity>>[] }>();
+  for (const value of captured) {
+    const source = 'invocation' in value ? value.invocation : value;
+    if (!source.id.trim()) throw new Error('REACTIVE_WORK_INVOCATION_ID_REQUIRED');
+    const identity = canonicalJson([source.origin.sessionId, source.origin.bindingId, source.id]);
+    const previous = groups.get(identity);
+    if (previous) {
+      if (canonicalJson(previous.origin) !== canonicalJson(source.origin)) throw new Error('REACTIVE_WORK_INVOCATION_ORIGIN_CONFLICT');
+      previous.members.push(value);
+    } else groups.set(identity, { origin: source.origin, members: [value] });
+  }
+  const selected = [];
+  for (const [identity, { origin, members }] of groups) {
+    const matchedInputs = match.inputs(origin.inputs);
+    let reader: CapturedInvocation<Activity> | undefined;
+    const keys: K[] = [];
+    for (const value of members) {
+      const explicit = 'invocation' in value;
+      const source = explicit ? value.invocation : value;
+      const keyMatches = explicit && canonicalJson(value.key) === canonicalJson(key);
+      const matches = matchedInputs.length > 0 || keyMatches || (!explicit && match.matches({ kind: 'invocation', id: source.id, origin }));
+      if (!matches) continue;
+      reader ??= source;
+      if (previousSelections?.get(identity) === memberIdentity(source)) reader = source;
+      if (keyMatches && !keys.some(current => canonicalJson(current) === canonicalJson(value.key))) keys.push(value.key);
+    }
+    if (reader) selected.push(Object.freeze({ id: reader.id, origin, reader,
+      matchedInputs: uniqueInputs(matchedInputs), keys: Object.freeze(keys) }));
+  }
+  return Object.freeze(selected);
 }
 
 function eventInputs(event: ConversationEvent): readonly InputReference[] {
@@ -315,7 +481,6 @@ function borrowEvents<T>(source: Observable<T>, signal: AbortSignal | undefined)
 }
 
 function assertDistinctSources(sources: readonly { readonly identity: WorkSourceIdentity }[]): void {
-  if (!sources.length) throw new Error('REACTIVE_WORK_SOURCES_REQUIRED');
   const ids = new Set<string>();
   for (const source of sources) {
     const { sessionId } = source.identity;

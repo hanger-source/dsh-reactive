@@ -484,8 +484,7 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     assert.deepEqual(closure.follow, closed);
     assert.deepEqual(closure.inputs, initial.link.continuation.inputs);
     assert.deepEqual(closure.inputs.map(input => input.requestId), ['original-observation']);
-    const work = await createWorkSelector({ identify: origin => origin.scope })
-      .observe({ merchantId: 'merchant-a' }, [session], { signal: context.signal }).state.read(context.signal);
+    const work = await createWorkSelector({ identify: origin => origin.kind === 'invocation' ? undefined : origin.scope }).observe({ merchantId: 'merchant-a' }, { sessions: [session] }, { signal: context.signal }).state.read(context.signal);
     const condition = work.sessions[0]!.conditions.find(condition => condition.kind === 'operation.follow-unregistered');
     assert.ok(condition?.kind === 'operation.follow-unregistered');
     assert.deepEqual(condition.value, closed);
@@ -705,8 +704,8 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     await assert.rejects(app.runtime.application.notifyOperation(session.id, link.id, { actorId: 'notifier-one' }), /REACTIVE_REQUEST_ID_CONFLICT/u);
     const prepared = session.snapshot().operationFollows[0]!;
     assert.equal(prepared.preparedDelivery?.requestId, requestId);
-    const selector = createWorkSelector({ identify: origin => origin.scope });
-    const progress = await selector.observe({ merchantId: 'merchant-a' }, [session], { signal: context.signal }).state.read(context.signal);
+    const selector = createWorkSelector({ identify: origin => origin.kind === 'invocation' ? undefined : origin.scope });
+    const progress = await selector.observe({ merchantId: 'merchant-a' }, { sessions: [session] }, { signal: context.signal }).state.read(context.signal);
     const observed = progress.sessions[0]!;
     assert.equal(observed.operationFollows[0]?.resultRequest, null, '同名普通输入不能充当原Follow的结果');
     assert.ok(observed.conditions.some(condition => condition.kind === 'operation.delivery-prepared' && condition.value.link.id === link.id),
@@ -715,7 +714,7 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     assert.equal(app.store.bodies().length, 1);
     await app.runtime.application.close(session.id);
     const cold = await app.runtime.application.open(session.id, app.program);
-    const coldProgress = await selector.observe({ merchantId: 'merchant-a' }, [cold], { signal: context.signal }).state.read(context.signal);
+    const coldProgress = await selector.observe({ merchantId: 'merchant-a' }, { sessions: [cold] }, { signal: context.signal }).state.read(context.signal);
     assert.deepEqual(coldProgress.sessions[0]!.operationFollows, observed.operationFollows);
     assert.ok(coldProgress.sessions[0]!.conditions.some(condition => condition.kind === 'operation.delivery-prepared'));
     assert.equal(app.runtime.native.agents.get(SessionId(session.id)), undefined, '冷读不能激活Agent或重执Action');
@@ -791,10 +790,11 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
       assert.equal(event.follow.link.id, link.id);
     }
     const work = createWorkSelector({ identify(origin) {
+      if (origin.kind === 'invocation') return undefined;
       const scope = origin.scope;
       return scope !== null && typeof scope === 'object' && !Array.isArray(scope)
         && 'merchantId' in scope && typeof scope.merchantId === 'string' ? scope.merchantId : undefined;
-    } }).observe('merchant-a', [session], { signal: context.signal });
+    } }).observe('merchant-a', { sessions: [session] }, { signal: context.signal });
     const progress = await work.state.read(context.signal);
     const observed = progress.sessions[0]!;
     const operationProgress = observed.operationFollows.find(follow => follow.value.link.id === link.id);
@@ -1385,8 +1385,7 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
       assert.ok(preparedEvent.kind === 'operation.follow.changed');
       assert.deepEqual(preparedEvent.follow, prepared);
       assert.deepEqual(preparedEvent.inputs, originalFollow.link.continuation.inputs);
-      const preparedWork = await createWorkSelector({ identify: origin => origin.scope })
-        .observe({ merchantId: 'merchant-a' }, [resumed], { signal: context.signal }).state.read(context.signal);
+      const preparedWork = await createWorkSelector({ identify: origin => origin.kind === 'invocation' ? undefined : origin.scope }).observe({ merchantId: 'merchant-a' }, { sessions: [resumed] }, { signal: context.signal }).state.read(context.signal);
       const preparedCondition = preparedWork.sessions[0]!.conditions.find(condition => condition.kind === 'operation.delivery-prepared');
       assert.ok(preparedCondition?.kind === 'operation.delivery-prepared');
       assert.equal(preparedCondition.value.link.id, accepted.followId);
@@ -1419,8 +1418,8 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
         return record?.type === 'plugin:reactive/operation-receipt' ? [receiptSchema.parse(record.data)] : [];
       });
       assert.deepEqual(receipts, [{ id: accepted.followId, reference: accepted.reference }]);
-      const selector = createWorkSelector({ identify: origin => origin.scope });
-      const completedWork = await selector.observe({ merchantId: 'merchant-a' }, [resumed], { signal: context.signal }).state.read(context.signal);
+      const selector = createWorkSelector({ identify: origin => origin.kind === 'invocation' ? undefined : origin.scope });
+      const completedWork = await selector.observe({ merchantId: 'merchant-a' }, { sessions: [resumed] }, { signal: context.signal }).state.read(context.signal);
       const completedFollow = completedWork.sessions[0]!.operationFollows.find(follow => follow.value.link.id === accepted.followId);
       assert.ok(completedFollow);
       assert.equal(completedFollow.resultRequest?.state, 'settled');
@@ -1429,7 +1428,7 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
       assert.equal(completedWork.sessions[0]!.conditions.some(condition => condition.kind === 'operation.delivery-prepared'), false);
       await app.runtime.application.close(saved.sessionId);
       const completedCold = await app.runtime.application.open(saved.sessionId, app.program);
-      const coldWork = await selector.observe({ merchantId: 'merchant-a' }, [completedCold], { signal: context.signal }).state.read(context.signal);
+      const coldWork = await selector.observe({ merchantId: 'merchant-a' }, { sessions: [completedCold] }, { signal: context.signal }).state.read(context.signal);
       assert.deepEqual(coldWork.sessions[0]!.operationFollows, completedWork.sessions[0]!.operationFollows,
         '正式结果从受理到消费再到冷读，始终关联同一原工作');
       assert.equal(app.runtime.native.agents.get(SessionId(saved.sessionId)), undefined);

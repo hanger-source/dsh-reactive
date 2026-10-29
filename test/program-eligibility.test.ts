@@ -69,9 +69,9 @@ test('同一资格源贯通模型准备、可选现场与稳定SDK合同，必�
     assert.deepEqual(preparation.inputs.map(input => input.requestId), ['required-pending']);
     assert.equal((await required.request('required-pending').state.read()).preparation?.id, preparation.id);
     assert.equal((await required.request('another-work').state.read()).preparation, null);
-    const work = createWorkSelector({ identify: origin => origin.requestId }).select('required-pending', [{
+    const work = createWorkSelector({ identify: origin => origin.kind === 'invocation' ? undefined : origin.requestId }).select('required-pending', { sessions: [{
       identity: required.identity, progress: blocked, human: await required.human.read(),
-    }]).sessions[0]!;
+    }] }).sessions[0]!;
     assert.equal(work.preparation?.value.id, preparation.id);
     assert.ok(work.conditions.some(condition => condition.kind === 'preparation.waiting'));
     const removed = firstValueFrom(required.progress.values$.pipe(filter(value => value.preparation !== null

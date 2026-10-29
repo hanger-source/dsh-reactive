@@ -54,7 +54,7 @@ async function* ask(mode: 'native' | 'ptc') {
     questions: [{ id: 'evidence', question: '原工作的证据在哪里？' }], timeout: 1,
   });
 }
-const selector = createWorkSelector({ identify: origin => z.object({ workId: z.string() }).parse(origin.scope).workId });
+const selector = createWorkSelector({ identify: origin => origin.kind === 'invocation' ? undefined : z.object({ workId: z.string() }).parse(origin.scope).workId });
 
 type Checkpoint = { sessionId: string; human: HumanSnapshot; revision: number };
 async function crashWithPendingReply(directory: string, mode: 'native' | 'ptc', context: TestContext): Promise<Checkpoint> {
@@ -122,7 +122,7 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.deepEqual(human, saved.human);
       assert.equal(f.app.native.agents.get(SessionId(cold.id)), undefined);
       assert.equal(f.calls(), 0, '恢复观察没有发出模型请求');
-      const selected = await selector.observe(work.workId, [cold]).state.read();
+      const selected = await selector.observe(work.workId, { sessions: [cold] }).state.read();
       const blocked = selected.sessions[0]!.conditions.find(condition => condition.kind === 'question.reply-blocked');
       assert.ok(blocked && blocked.kind === 'question.reply-blocked'); assert.equal(blocked.reason, 'superseded');
       assert.equal(blocked.currentGoal!.revision, saved.revision);
@@ -203,7 +203,7 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.equal(f.calls(), 2); assert.equal(session.snapshot().goal!.revision, paused.revision);
       const snapshot = await session.human.read(); assert.equal(snapshot.replies.length, 1);
       assert.deepEqual(snapshot.replies[0]!.origin, question!.origin);
-      const selected = await selector.observe(work.workId, [session]).state.read();
+      const selected = await selector.observe(work.workId, { sessions: [session] }).state.read();
       assert.ok(selected.sessions[0]!.conditions.some(condition => condition.kind === 'question.reply-blocked'));
       assert.deepEqual(f.app.errors, []);
     } finally { f.proceed(); await f.app.dispose(); }
@@ -227,7 +227,7 @@ for (const mode of ['native', 'ptc'] as const) {
   const human = await session.human.read(), reply = human.replies[0]!;
   assert.equal(reply.state, 'queued'); assert.deepEqual(reply.origin, question!.origin);
   assert.deepEqual(reply.origin.continuation!.goal, { id: original.id, revision: original.revision });
-  const selected = await selector.observe(work.workId, [session]).state.read();
+  const selected = await selector.observe(work.workId, { sessions: [session] }).state.read();
   assert.ok(selected.sessions[0]!.conditions.some(condition => condition.kind === 'question.reply-blocked'));
   assert.deepEqual(f.app.errors, []);
   process.send!({ sessionId: session.id, human, revision: changed.revision } satisfies Checkpoint);

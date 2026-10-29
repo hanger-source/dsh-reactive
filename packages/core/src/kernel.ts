@@ -1,6 +1,6 @@
 /** 宿主扩展合同：实现运行边界，允许加载组件运行时；纯合同与客户端不导入此入口。 */
 export { ActionInvocationConflictError, ActionAdmissionInProgressError } from './actions/identity.ts';
-export { ActionBindingUnavailableError, ActionTargetMismatchError, actionInvocationArguments, actionOperationOwner, captureActionArguments, guardActionExecution, implementAction, observeBoundAction, type ActionCallContext, type ActionContract, type ActionExecutionContext, type ActionImplementation, type ActionInput, type ActionInvocation, type ActionObserved, type ActionOperationEvent, type ActionOutput, type ActionParsedInput, type ActionReference, type ActionScope, type ActionSource, type Invocation } from './actions/contract.ts';
+export { ActionBindingUnavailableError, ActionTargetMismatchError, actionInvocationArguments, actionOperationOwner, captureActionArguments, guardActionExecution, implementAction, observeBoundAction, type ActionCallContext, type ActionContract, type ActionExecutionContext, type ActionImplementation, type ActionInput, type ActionInvocationOrigin, type ActionInvocationHandle, type ActionInvocation, type ActionObserved, type ActionOperationEvent, type ActionOutput, type ActionParsedInput, type ActionReference, type ActionScope, type ActionSource, type Invocation } from './actions/contract.ts';
 export { type ApplicationDefinition } from './applications/definition.ts';
 export { NativeChildWork, nativeChildCommandSchema, nativeChildReceiptSchema, type NativeChildCommand, type NativeChildFeedback, type NativeChildReceipt, type NativeChildReference, type NativeChildState } from './collaboration/child.ts';
 export { Conversation, conversationBindings, type CancellationOptions, type Continuation, type ConversationCreateOptions, type ConversationIdentity, type GoalReference, type InputReceipt, type ObservedViews, type Submission, type SubmitOptions, type Views, type WaitReference, type WorkspaceInfo, type WorkspaceRegistration } from './conversations/conversation.ts';
@@ -49,3 +49,5 @@ export { operationFollowSnapshotSchema, matchesOperationFollowResult, type Opera
 /** @internal 持续借用资格事实连接，供宿主运行边界使用。 */
 export { retainEligibility } from './resources/eligibility.ts';
 export { modelPreparationSchema, ownModelPreparation, observePreparation, type ModelPreparation, type ModelPreparationWait, type PreparationObserver } from './conversations/preparation.ts';
+
+export { actionInvocationOriginSchema } from './actions/contract.ts';
