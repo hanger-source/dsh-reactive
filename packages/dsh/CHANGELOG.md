@@ -2,6 +2,13 @@
 
 此文件保留源码版本准备记录；条目和版本号本身不表示 npm 已发布或公共 API 已稳定。
 
+## 0.33.2
+
+### Patch Changes
+
+- f245779: 原生能力按完整安装服务组核验 Session 来源，统一公共扩展与 Files、Skills、Jobs、Approval 等内置能力的借用边界，拒绝主服务相同而其他 provider 不同的来源。日志与附件保留延迟安装和 provider 防替换语义，并统一普通对象、函数及正式 trace 代理的身份规则。
+- @hanger-source/dsh-reactive@0.33.2
+
 ## 0.33.1
 
 ### Patch Changes
