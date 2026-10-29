@@ -641,6 +641,18 @@ resolver 捕获当前公开绑定；所得句柄保持原 command。组件随后
 
 ## 人工参与
 
+`session.human` 和固定问题的 `question.state` 在同一快照中保留问题、前台等待和 `replies`。晚答的每项 `HumanReplyDelivery` 提供实际 `messageId`、`questionCallId`、原问题 `origin`、原队列 `target` 与 `state`：`queued` 表示仍在原生 inbox，`proposed` 表示已从队列提出、尚未追加到输入历史。Work 的 `questions.replies` 按原问题输入归属选择同一事实，`question.reply-pending` 条件解释当前存在交付中的答复。
+
+```ts
+const question = await session.question(callId);
+const snapshot = await question.state.read(signal);
+for (const reply of snapshot.replies) {
+  observeAnswerDelivery(reply.messageId, reply.state, reply.origin);
+}
+```
+
+原问题在晚答进入 `user/message` 前仍可能保持 `continued`；`question.pending` 表示原生问题尚未结算，不表示人一定还没回答。提议窗口结束、取消或重新入队会改变交付事实；`replies` 为空不能证明从未作答，也不能证明模型已经消费。冷读保留最后持久事实，`proposed` 不承诺 Agent 仍在运行。进入输入历史、模型实际处理和业务完成分别观察；这些读侧不恢复函数栈或签发 Goal 续接权限。
+
 程序用 HumanInput 声明真实响应者准入，问题与回答继续属于 dsh 原生问答服务。多个模块可以贡献 HumanInput，但必须传同一个必需的 `admitResponder` 函数引用；冲突拒绝，最后一项退出撤销资格，不提供默认政策：
 
 ```tsx

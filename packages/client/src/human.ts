@@ -1,17 +1,19 @@
-import type { CancellationOptions, HumanWaitFrame, ResourceReader } from '@hanger-source/dsh-reactive';
+import type { CancellationOptions, HumanSnapshot, HumanWaitFrame, ResourceReader } from '@hanger-source/dsh-reactive';
 import { remoteResource } from './resource.ts';
 import { revokeConversationAccess, type ClientScope } from './scope.ts';
-import type { ProgramSessionAddress, ProgramQuestions, ProgramQuestionsFrame } from './contracts/types.ts';
+import type { ProgramSessionAddress, ProgramQuestionsFrame } from './contracts/types.ts';
 
 /** 只投影原生问答快照；回答和前台claim仍从会话控制端口重新准入。 */
-export function remoteHuman(owner: ClientScope, address: ProgramSessionAddress): ResourceReader<ProgramQuestions> {
+export function remoteHuman(owner: ClientScope, address: ProgramSessionAddress): ResourceReader<HumanSnapshot> {
   const { sessionId } = address;
-  return remoteResource<ProgramQuestions, Extract<ProgramQuestionsFrame, { type: 'baseline' }>, Exclude<ProgramQuestionsFrame, { type: 'baseline' }>>(owner, {
+  return remoteResource<HumanSnapshot, Extract<ProgramQuestionsFrame, { type: 'baseline' }>, Exclude<ProgramQuestionsFrame, { type: 'baseline' }>>(owner, {
     name: 'program-questions:' + sessionId,
     open: signal => owner.context.remote.reactivePrograms.questions(address, signal),
     ended: () => new Error('REACTIVE_REMOTE_QUESTIONS_ENDED'),
     isSnapshot: (frame): frame is Extract<ProgramQuestionsFrame, { type: 'baseline' }> => frame.type === 'baseline',
-    observation: (frame, generation) => ({ status: 'ready', generation, observedAt: Date.now(), value: frame.value }),
+    observation: (frame, generation) => ({ status: 'ready', generation, observedAt: Date.now(), value: {
+      questions: frame.value.questions, foreground: frame.value.foreground, replies: frame.value.replies,
+    } }),
   });
 }
 

@@ -11,7 +11,7 @@ import { z, assertSharedProgramDefinition, programIdentity, assertProgramIdentit
 import { decodeProgramFailure, ActionAdmissionUnknownError, CreationUnknownError, CreationIncompleteError,
   ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError } from './contracts/errors.ts';
 import contribution from '@hanger-source/dsh-reactive-client/remote';
-import type { ProgramActionStart, ProgramCreationReference, ProgramIdentity, ProgramInputReceipt, ProgramInvocationFrame, ProgramQuestions, ProgramOperationNotificationResult, ProgramWorkspace, ProgramSubmission } from './contracts/types.ts';
+import type { ProgramActionStart, ProgramCreationReference, ProgramIdentity, ProgramInputReceipt, ProgramInvocationFrame, ProgramOperationNotificationResult, ProgramWorkspace, ProgramSubmission } from './contracts/types.ts';
 import { createAuthenticatedTransport, type AuthenticatedTransport, type AuthenticatedTransportOptions } from './transport.ts';
 import { createOperationQueries, createInvocationOperationQueries, attachRemoteOperation, attachInvocationRemoteOperation, locateRemoteOperation, bindRemoteOperation, readRemoteOperationFeedback, type RemoteOperationObservation } from './operations.ts';
 import { ProgramJournal, remoteJournal, type ProgramJournalOptions, type ProgramJournalRequest } from './journal.ts';
@@ -51,8 +51,6 @@ interface RemoteSession<P extends ProgramContract> extends ProgramSessionClient<
   /** 实际创建这个 SDK 的纯合同；UI 或模块组合不得只按相同 sessionId 猜合同。 */
   readonly definition: P;
   readonly identity: ProgramIdentity;
-  readonly human$: Observable<Observation<ProgramQuestions>>;
-  readonly human: ResourceReader<ProgramQuestions>;
   uploadFile(data: FileUploadSource, options?: RemoteUploadFileOptions): FileUploadInvocation;
   attachOperation<D extends OperationContract>(definition: D, reference: OperationReference<D>, options?: CancellationOptions): OperationHandle<D>;
   notifyOperation(followId: string, options?: CancellationOptions): Promise<ProgramOperationNotificationResult>;
@@ -64,8 +62,6 @@ interface RemoteSession<P extends ProgramContract> extends ProgramSessionClient<
 export interface RemoteProgramSession<P extends ProgramContract> extends HumanProgramSessionClient<P, CancellationOptions, true> {
   readonly definition: P;
   readonly identity: ProgramIdentity & { readonly participant: 'human' };
-  readonly human$: Observable<Observation<ProgramQuestions>>;
-  readonly human: ResourceReader<ProgramQuestions>;
   uploadFile(data: FileUploadSource, options?: RemoteUploadFileOptions): FileUploadInvocation;
   attachOperation<D extends OperationContract>(definition: D, reference: OperationReference<D>, options?: CancellationOptions): OperationHandle<D>;
   notifyOperation(followId: string, options?: CancellationOptions): Promise<ProgramOperationNotificationResult>;

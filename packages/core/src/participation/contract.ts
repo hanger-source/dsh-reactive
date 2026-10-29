@@ -58,10 +58,20 @@ export interface HumanForegroundQuestion {
   readonly origin: HumanQuestionOrigin;
 }
 
+/** 原生晚答所在的队列或当前提议窗口；提出不表示已经进入模型。 */
+export interface HumanReplyDelivery {
+  readonly messageId: string;
+  readonly questionCallId: HumanQuestion['callId'];
+  readonly origin: HumanQuestionOrigin;
+  readonly state: 'queued' | 'proposed';
+  readonly target: 'next-turn' | 'next-step';
+}
+
 /** 持久问题与瞬态前台事实的共同读侧，不把两者合成另一套问答阶段。 */
 export interface HumanSnapshot {
   readonly questions: HumanInputState;
   readonly foreground: readonly HumanForegroundQuestion[];
+  readonly replies: readonly HumanReplyDelivery[];
 }
 
 /** 固定callId当前可见的原生事实；全部缺失不等于业务已取消或已完成。 */
@@ -69,6 +79,7 @@ export interface HumanQuestionSnapshot {
   readonly active: HumanQuestion | undefined;
   readonly foreground: HumanForegroundQuestion | undefined;
   readonly settled: HumanSettledQuestion | undefined;
+  readonly replies: readonly HumanReplyDelivery[];
 }
 
 /** claim 的 answer 为 null；提交答案时业务同时核验原问题、完整答案和真实响应者。 */

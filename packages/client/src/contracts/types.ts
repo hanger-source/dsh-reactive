@@ -1,5 +1,5 @@
 import type { AttachmentIdType, SessionImageAttachment as CoreSessionImageAttachment } from '@hanger-source/dsh-reactive';
-import type { ActionIdentity, ActionSource, Continuation, GoalActivity, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
+import type { ActionIdentity, ActionSource, Continuation, GoalActivity, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanReplyDelivery, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
   ProgramGoalControl as CoreProgramGoalControl, ProgramCancelResult as CoreProgramCancelResult, ProgramRequestStatus as CoreProgramRequestStatus,
   ProgramJournalEvent as CoreProgramJournalEvent, ProgramJournalEntry as CoreProgramJournalEntry,
   ProgramJournalPage as CoreProgramJournalPage, ProgramJournalWindow as CoreProgramJournalWindow,
@@ -138,6 +138,7 @@ export interface ProgramQuestions {
     readonly settled: readonly WireHumanQuestion<HumanInputState['settled'][number]>[];
   };
   readonly foreground: readonly WireHumanQuestion<HumanForegroundQuestion>[];
+  readonly replies: readonly WireHumanQuestion<HumanReplyDelivery>[];
 }
 export type ProgramQuestionsFrame = { readonly type: 'baseline'; readonly value: ProgramQuestions }
   | { readonly type: 'questions'; readonly value: ProgramQuestions };

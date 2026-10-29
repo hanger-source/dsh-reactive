@@ -1,4 +1,4 @@
-import { Observable, Subject, asapScheduler, of, observeOn, shareReplay, mergeAll, map, distinctUntilChanged, combineLatest } from 'rxjs';
+import { Observable, Subject, asapScheduler, of, observeOn, shareReplay, mergeAll, map, distinctUntilChanged } from 'rxjs';
 import { z } from 'zod';
 import { batch, type Scope, type Cell } from '../reactivity/scope.ts';
 import type { ProgramDefinition } from '../program/definition.ts';
@@ -59,8 +59,7 @@ export class Conversation<T = Json, Raw = T> {
   #progressVersion: Cell<number>;
   #progressSnapshot?: Observation<ConversationProgressSnapshot>;
   #requests = new Map<string, RequestHandle<T>>();
-  #questions: Cell<Observation<HumanInputState>>;
-  #foregroundQuestions: Cell<readonly HumanForegroundQuestion[]>;
+  #human: Cell<Observation<HumanSnapshot>>;
   #submit?: (input: Submission<Raw>, options: CancellationOptions) => Promise<InputReceipt>;
   #files?: () => SessionFiles;
   #journal?: () => SessionJournal;
@@ -79,20 +78,12 @@ export class Conversation<T = Json, Raw = T> {
     this.#inputs = scope.state([]);
     this.#activity = scope.state(ownConversationActivity(initial));
     this.#progressVersion = scope.state(0);
-    this.#questions = scope.state<Observation<HumanInputState>>(Object.freeze({ status: 'pending', generation: 0 }));
-    this.#foregroundQuestions = scope.state<readonly HumanForegroundQuestion[]>([]);
+    this.#human = scope.state<Observation<HumanSnapshot>>(Object.freeze({ status: 'pending', generation: 0 }));
     this.inputs$ = this.#inputs.changes$;
     this.activity$ = this.#activity.changes$;
     this.goal$ = this.activity$.pipe(map(activity => activity.goal), distinctUntilChanged());
     this.waits$ = this.activity$.pipe(map(activity => activity.waits), distinctUntilChanged());
-    this.human = shareResource(combineLatest([
-      this.#questions.changes$,
-      this.#foregroundQuestions.changes$,
-    ]).pipe(map(([questions, foreground], index): Observation<HumanSnapshot> => {
-      if (questions.status !== 'ready') return Object.freeze({ ...questions, generation: index + 1 });
-      return Object.freeze({ status: 'ready', generation: index + 1, observedAt: Date.now(),
-        value: Object.freeze({ questions: questions.value, foreground }) });
-    })), { signal: scope.signal, onObserverError: error => scope.observerError(error) });
+    this.human = shareResource(this.#human.changes$, { signal: scope.signal, onObserverError: error => scope.observerError(error) });
     this.questions$ = this.human.values$.pipe(map(snapshot => snapshot.questions), distinctUntilChanged());
     this.foregroundQuestions$ = this.human.values$.pipe(map(snapshot => snapshot.foreground), distinctUntilChanged());
     this.rawEvents$ = this.observeFacts(this.#events.pipe(map(event => event.raw$), mergeAll()));
@@ -195,13 +186,16 @@ export class Conversation<T = Json, Raw = T> {
         this.#frames.next(owned);
       },
       resetProgress: () => { this.#assistant.replace([]); this.notifyProgress(); },
-      publishQuestions: (questions: HumanInputState) => this.#questions.update(previous => Object.freeze({
-        status: 'ready', generation: previous.generation + 1, observedAt: Date.now(), value: questions,
+      publishHuman: (value: HumanSnapshot) => this.#human.update(previous => Object.freeze({
+        status: 'ready', generation: previous.generation + 1, observedAt: Date.now(), value,
       })),
-      publishQuestionError: (error: unknown) => this.#questions.update(previous => Object.freeze({
+      publishHumanError: (error: unknown) => this.#human.update(previous => Object.freeze({
         status: 'error', generation: previous.generation + 1, error,
       })),
-      publishForegroundQuestions: (questions: readonly HumanForegroundQuestion[]) => this.#foregroundQuestions.set(questions),
+      clearHumanForeground: () => this.#human.update(previous => previous.status !== 'ready' ? previous : Object.freeze({
+        status: 'ready', generation: previous.generation + 1, observedAt: Date.now(),
+        value: Object.freeze({ ...previous.value, foreground: Object.freeze([]) }),
+      })),
     };
   }
 }

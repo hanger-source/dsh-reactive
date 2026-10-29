@@ -179,6 +179,10 @@ L1 交回 F1 后，明确调用 Follow 以 after=F1.id 登记 L2。owner 可沿�
 
 ## 人工问题与前台等待
 
+人工读侧使用一份完整 `HumanSnapshot`，持久问题、瞬态 foreground 和晚答 replies 一起发布；questions$ 与 foregroundQuestions$ 从同一事实派生。前台退出只撤下 foreground，不能清空仍有效的问题、答复交付或读侧错误。
+
+晚答的 queued 来自正式 inbox，proposed 从既有输入 occurrence 的实际来源、原队列和提议 turn 派生。消息重新入队、明确取消、精确 `user/message` 或该提议窗口结束会移除原 proposal；回合结束只证明窗口关闭，不把问题标为 settled。仅提出、尚未进入输入历史的晚答不会因窗口失败改写原请求结算。持久重放恢复同一关联，冷读不承诺最后一个 proposal 仍在执行。原生晚答在 `user/message` 时结算问题，这只证明进入输入历史，不证明模型请求已发送或模型已处理。
+
 HumanInput 声明当前程序的响应者策略；多个贡献必须使用同一个必需的 `admitResponder` 函数引用，冲突时拒绝，最后一项退出时撤销资格，不设默认政策。它不创建第二份问题记录或问答状态机。宿主使用实际 userQuestions waterfall、计时服务、投影与 answer：前台返回、超时 pending 和 continued 迟答仍沿原生生命周期。
 
 Action execute 中的 askHuman 使用本次真实 ToolRunContext 发起标准 ask_user_question 子调用。它保留原 parent token、rootCallId、parentCallId、Agent 和取消信号，通过原生工具管线执行；Session 日志记录实际 programmatic 子调用的开始与最终结果，而不是制造模型直接调用。pre/post policy、附加上下文和结论当前 turn 的标记仍沿原生结果传递。

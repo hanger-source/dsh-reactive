@@ -457,7 +457,7 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.equal(scene.calls.at(-1)!.signal.aborted, true);
       assert.deepEqual(scene.effects, []);
       assert.deepEqual(await firstValueFrom(session.foregroundQuestions$), []);
-      assert.deepEqual(await cancelledHandle.state.read(), { active: undefined, foreground: undefined, settled: undefined },
+      assert.deepEqual(await cancelledHandle.state.read(), { active: undefined, foreground: undefined, settled: undefined, replies: [] },
         '未留持久记录的子问退出后只有缺失事实，不伪造完成或取消阶段');
       const cancelledEvents = resumedAgent.session.snapshotEvents();
       const child = nestedEnd(cancelledEvents, cancelledQuestion.callId);

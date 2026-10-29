@@ -6,7 +6,8 @@ import { inputReferenceSchema, requestActivitySchema, toolActivitySchema, replyA
 import { canonical, childInputRecordSchema, goalBindingSchema, inputEditRecordSchema, inputRecordIdentity, operationNotStartedSchema, operationFollowUnregisteredSchema, recordSchema, referenceOf, contentDigest, unique, waitRecordSchema, callForResult, ptcParent } from './records.ts';
 
 const inputsSchema = inputReferenceSchema.array().readonly();
-const pendingOccurrenceSchema = z.object({ messageId: z.string(), inputs: inputsSchema }).strict();
+const pendingOccurrenceSchema = z.object({ messageId: z.string(), inputs: inputsSchema, questionCallId: z.string().nullable() }).strict();
+const proposedOccurrenceSchema = pendingOccurrenceSchema.extend({ target: z.enum(['next-turn', 'next-step']), turn: z.number().int().nonnegative().nullable() });
 const requestLifecycleSchema = requestActivitySchema.pick({ requestId: true, state: true, outcome: true });
 const stepSchema = z.object({ turn: z.number().int().nonnegative(), step: z.number().int().nonnegative() }).strict();
 const callOccurrenceSchema = toolActivitySchema.extend({ turn: z.number().int().nonnegative(), step: z.number().int().nonnegative() });
@@ -16,7 +17,7 @@ export const reactiveProjectionSchema = z.object({ sessionId: z.string(), delega
   inputs: inputsSchema, calls: z.record(z.string(), callOccurrenceSchema), replies: replyActivitySchema.array().readonly(), current: inputsSchema,
   openTurn: z.number().int().nonnegative().nullable(), openStep: stepSchema.nullable(),
   pending: z.object({ 'next-turn': pendingOccurrenceSchema.array(), 'next-step': pendingOccurrenceSchema.array() }).strict(),
-  proposed: z.record(z.string(), inputsSchema), requests: z.record(z.string(), requestLifecycleSchema),
+  proposed: z.record(z.string(), proposedOccurrenceSchema), requests: z.record(z.string(), requestLifecycleSchema),
   waits: waitRecordSchema.array().readonly(),
 }).strict();
 export type ReactiveProjectionState = z.infer<typeof reactiveProjectionSchema>;
@@ -26,7 +27,7 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
 
 /** 仅负责业务请求、原生输入和调用的关联；驱动、水位、冷恢复由原生注册表拥有。 */
 export const reactiveProjectionDefinition: ProjectionDefinition<'reactiveInputs'> = {
-  key: 'reactiveInputs', stateVersion: 11, stateSchema: reactiveProjectionSchema,
+  key: 'reactiveInputs', stateVersion: 12, stateSchema: reactiveProjectionSchema,
   init: (header, inheritedEventCount) => ({ sessionId: header.id, delegated: header.parentSession !== undefined, inheritedEventCount,
     records: {}, pendingEdits: {}, goals: {}, nativeInputs: {}, inputs: [], calls: {}, replies: [], current: [], openTurn: null, openStep: null,
     pending: { 'next-turn': [], 'next-step': [] },
@@ -67,7 +68,8 @@ function applyReactiveProjection(previous: ReactiveProjectionState, event: Sessi
     state.inputs = unique([...state.inputs, bound.input]);
     state.pending = Object.fromEntries(Object.entries(state.pending).map(([target, values]) => [target,
       values.map(item => item.messageId === bound.messageId ? { ...item, inputs: [bound.input] } : item)])) as ReactiveProjectionState['pending'];
-    if (own(state.proposed, bound.messageId)) state.proposed = { ...state.proposed, [bound.messageId]: [bound.input] };
+    const proposed = own(state.proposed, bound.messageId);
+    if (proposed) state.proposed = { ...state.proposed, [bound.messageId]: { ...proposed, inputs: [bound.input] } };
   }
   if (record?.type === 'plugin:reactive/input') {
     const input = recordSchema.parse(record.data);
@@ -131,7 +133,8 @@ function applyReactiveProjection(previous: ReactiveProjectionState, event: Sessi
         throw new Error('REACTIVE_INPUT_EDIT_CONFLICT');
       state.records = { ...state.records, [id]: edit.record };
     }
-    const inserted = event.data.inserted.map(message => ({ messageId: message.id, inputs: referenceOf(state, message) }));
+    const inserted = event.data.inserted.map(message => ({ messageId: message.id, inputs: referenceOf(state, message),
+      questionCallId: message.source.kind === 'user-question-reply' ? message.source.callId : null }));
     state.inputs = unique([...state.inputs, ...inserted.flatMap(item => item.inputs)]);
     state.pending = { ...state.pending, [target]: state.pending[target].toSpliced(start, removedCount, ...inserted) };
     state.proposed = { ...state.proposed };
@@ -139,9 +142,14 @@ function applyReactiveProjection(previous: ReactiveProjectionState, event: Sessi
     for (const item of removed) {
       for (const input of item.inputs) if (localRequest(input)) delete state.pendingEdits[input.requestId];
       if (inserted.some(next => next.messageId === item.messageId)) continue;
-      if (outcome !== 'canceled') state.proposed = { ...state.proposed, [item.messageId]: item.inputs };
-      else for (const input of item.inputs) if (input.messageId === item.messageId && localRequest(input)) {
-        update(input.requestId, { state: 'settled', outcome: 'cancelled' });
+      if (outcome !== 'canceled') {
+        if (item.questionCallId === null || state.openTurn !== null)
+          state.proposed[item.messageId] = { ...item, target, turn: state.openTurn };
+      } else {
+        delete state.proposed[item.messageId];
+        for (const input of item.inputs) if (input.messageId === item.messageId && localRequest(input)) {
+          update(input.requestId, { state: 'settled', outcome: 'cancelled' });
+        }
       }
     }
     // Goal 的拒绝可能放回同行输入；它仍属于原生队列，不由本 turn 结算。
@@ -156,6 +164,8 @@ function applyReactiveProjection(previous: ReactiveProjectionState, event: Sessi
     const inputs = referenceOf(state, event.data);
     state.inputs = unique([...state.inputs, ...inputs]);
     state.current = unique([...state.current, ...inputs]);
+    state.proposed = { ...state.proposed };
+    delete state.proposed[event.data.id];
     for (const input of inputs) if (localRequest(input)) update(input.requestId, { state: 'consumed', outcome: null });
   }
   const started = (call: Pick<z.output<typeof callOccurrenceSchema>, 'callId' | 'rootCallId' | 'parentCallId' | 'name' | 'inputs' | 'turn' | 'step'>) => {
@@ -187,10 +197,13 @@ function applyReactiveProjection(previous: ReactiveProjectionState, event: Sessi
     state.replies = previousReply ? state.replies.map(before => before.messageId === reply.messageId ? reply : before) : [...state.replies, reply];
   }
   if (event.type === 'turn/end') {
-    for (const input of unique([...state.current, ...Object.values(state.proposed).flat()])) if (localRequest(input)) {
+    // 未进入 user/message 的晚答只引用原问题来源，不能替原请求结算本 turn。
+    const proposedInputs = Object.values(state.proposed).flatMap(item => item.questionCallId === null ? item.inputs : []);
+    for (const input of unique([...state.current, ...proposedInputs])) if (localRequest(input)) {
       update(input.requestId, { state: 'settled', outcome: event.data.reason.kind });
     }
-    state.proposed = {}; state.openTurn = null; state.openStep = null;
+    state.proposed = Object.fromEntries(Object.entries(state.proposed).filter(([, item]) => item.questionCallId !== null && item.turn !== event.data.turn));
+    state.openTurn = null; state.openStep = null;
   }
   return state;
 }

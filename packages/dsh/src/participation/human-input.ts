@@ -5,7 +5,7 @@ import type { ProjectionSnapshot } from '@deepseek-ai/dsh-session-projection';
 import { UserQuestionError, type AskUserQuestionRequest } from '@deepseek-ai/dsh-user-questions';
 import { Observable, Subject, firstValueFrom } from 'rxjs';
 import { abortable, type HumanResponderAdmission } from '@hanger-source/dsh-reactive';
-import { humanAnswerSchema, type HumanAnswer, type HumanInputState, type HumanQuestion, type HumanQuestionOrigin, type HumanForegroundQuestion, type HumanResponderOptions, type HumanWaitFrame } from '@hanger-source/dsh-reactive/kernel';
+import { humanAnswerSchema, type HumanAnswer, type HumanSnapshot, type HumanReplyDelivery, type HumanQuestion, type HumanQuestionOrigin, type HumanForegroundQuestion, type HumanResponderOptions, type HumanWaitFrame } from '@hanger-source/dsh-reactive/kernel';
 import type { HumanInputDeclaration } from '@hanger-source/dsh-reactive/kernel';
 import { Scope, type Value } from '@hanger-source/dsh-reactive/kernel';
 import type { ReactiveProjectionState } from '../conversations/projections.ts';
@@ -40,12 +40,32 @@ function questionOrigin(source: Pick<ReactiveProjectionState, 'sessionId' | 'cal
 }
 
 /** live 与 cold 以同一原生投影切面关联真实调用；不从当前输入推测旧问题来源。 */
-export function humanInputSnapshot(snapshot: ProjectionSnapshot, source: Pick<ReactiveProjectionState, 'sessionId' | 'calls'>): HumanInputState {
+export function humanInputSnapshot(snapshot: ProjectionSnapshot, source: Pick<ReactiveProjectionState, 'sessionId' | 'calls' | 'proposed'>,
+  foreground: readonly HumanForegroundQuestion[]): HumanSnapshot {
   const questions = snapshot.values.userQuestions;
   if (!questions) throw new Error('REACTIVE_HUMAN_QUESTIONS_PROJECTION_REQUIRED');
+  const inbox = snapshot.values.inbox;
+  if (!inbox) throw new Error('REACTIVE_HUMAN_INBOX_PROJECTION_REQUIRED');
+  const replies: HumanReplyDelivery[] = [];
+  for (const target of ['next-turn', 'next-step'] as const) for (const message of inbox[target]) {
+    if (message === null || typeof message !== 'object' || Array.isArray(message) || !('source' in message)) throw new Error('REACTIVE_HUMAN_INBOX_MESSAGE_INVALID');
+    const replySource = message.source;
+    if (replySource === null || typeof replySource !== 'object' || Array.isArray(replySource) || !('kind' in replySource)) throw new Error('REACTIVE_HUMAN_INBOX_SOURCE_INVALID');
+    if (replySource.kind !== 'user-question-reply') continue;
+    if (!('id' in message) || typeof message.id !== 'string' || !('callId' in replySource) || typeof replySource.callId !== 'string') throw new Error('REACTIVE_HUMAN_REPLY_ID_REQUIRED');
+    const origin = questionOrigin(source, replySource.callId);
+    replies.push({ messageId: message.id, questionCallId: ToolCallId(replySource.callId), origin, state: 'queued', target });
+  }
+  for (const proposed of Object.values(source.proposed)) if (proposed.questionCallId !== null && proposed.turn !== null) {
+    if (replies.some(reply => reply.messageId === proposed.messageId)) throw new Error('REACTIVE_HUMAN_REPLY_LOCATION_CONFLICT');
+    const origin = questionOrigin(source, proposed.questionCallId);
+    replies.push({ messageId: proposed.messageId, questionCallId: ToolCallId(proposed.questionCallId), origin, state: 'proposed', target: proposed.target });
+  }
   return ownHumanFact({
-    active: questions.active.map(question => ({ ...question, origin: questionOrigin(source, question.callId) })),
-    settled: questions.settled.map(question => ({ ...question, origin: questionOrigin(source, question.callId) })),
+    questions: {
+      active: questions.active.map(question => ({ ...question, origin: questionOrigin(source, question.callId) })),
+      settled: questions.settled.map(question => ({ ...question, origin: questionOrigin(source, question.callId) })),
+    }, foreground, replies,
   });
 }
 
@@ -75,8 +95,7 @@ export async function admitHumanResponder(program: HumanInputProgram, scope: Sco
 
 /** 一个真实 Agent 的前台 answerer 接点；持久问题及晚答输入始终归原生服务所有。 */
 export class HumanInputs {
-  readonly questions$: Observable<HumanInputState>;
-  readonly foreground$: Observable<readonly HumanForegroundQuestion[]>;
+  readonly snapshot$: Observable<HumanSnapshot>;
   readonly scope: Scope;
   // 这里只保留原生 waterfall 的未返回 continuation，不存问题状态或待执行输入。
   #foreground = new Map<ToolCallId, ForegroundResponse>();
@@ -94,33 +113,31 @@ export class HumanInputs {
         claim.controller.abort(new Error('REACTIVE_HUMAN_INPUT_CHANGED'));
       }
     });
-    this.questions$ = new Observable(subscriber => {
+    this.snapshot$ = new Observable(subscriber => {
       if (this.scope.disposed) { subscriber.complete(); return; }
       const release = this.scope.own(() => subscriber.complete());
       const emit = () => {
+        if (this.scope.disposed) { subscriber.complete(); return; }
         try { subscriber.next(this.snapshot()); }
         catch (error) { subscriber.error(error); }
       };
-      const stop = ctx.sessionProjections.onChanged((session, key) => {
-        if (session === agent.session && key === 'userQuestions') emit();
+      // session/event 在注册表完成同一事件的全部同步投影后交付。
+      const stop = ctx.on('session/event', (session, event) => {
+        if (session === agent.session && ['agent/inbox/spliced', 'turn/start', 'turn/end', 'user/message',
+          'tool/call', 'tool/result', 'tool/ptc-dispatch-start', 'tool/ptc-dispatch'].includes(event.type)) emit();
       });
-      emit();
-      return () => { stop(); release(); };
-    });
-    this.foreground$ = new Observable(subscriber => {
-      if (this.scope.disposed) { subscriber.complete(); return; }
-      const emit = () => subscriber.next(ownHumanFact([...this.#foreground.entries()].map(([callId, response]) => ({
-        callId, questions: response.question.questions, timed: response.timed, origin: response.question.origin,
-      }))));
       const subscription = this.#foregroundChanged.subscribe({ next: emit, complete: () => subscriber.complete() });
       emit();
-      return () => subscription.unsubscribe();
+      return () => { stop(); subscription.unsubscribe(); release(); };
     });
   }
 
-  snapshot(): HumanInputState {
+  snapshot(): HumanSnapshot {
     this.scope.assertActive();
-    return humanInputSnapshot(this.ctx.sessionProjections.snapshot(this.agent.session, ['userQuestions']), this.origins());
+    const foreground = [...this.#foreground.entries()].map(([callId, response]) => ({
+      callId, questions: response.question.questions, timed: response.timed, origin: response.question.origin,
+    }));
+    return humanInputSnapshot(this.ctx.sessionProjections.snapshot(this.agent.session, ['userQuestions', 'inbox']), this.origins(), foreground);
   }
 
   private origins(): ReactiveProjectionState {
@@ -139,7 +156,7 @@ export class HumanInputs {
   private question(callId: ToolCallId): QuestionAddress {
     const response = this.#foreground.get(callId);
     if (response && !response.signal.aborted) return { channel: 'foreground', question: response.question, response };
-    const question = this.snapshot().active.find(question => question.callId === callId);
+    const question = this.snapshot().questions.active.find(question => question.callId === callId);
     if (!question) throw new Error('REACTIVE_HUMAN_QUESTION_NOT_OPEN');
     if (question.state !== 'continued') throw new Error('REACTIVE_HUMAN_FOREGROUND_UNAVAILABLE');
     return { channel: 'continued', question };

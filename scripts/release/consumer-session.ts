@@ -3,9 +3,14 @@ import { combineResources, composeSurface, createWorkSelector, defineProgram, de
 import type { SessionFiles, FileResource, WorkspaceFileText, WorkspaceFileBytes } from '@hanger-source/dsh-reactive/files';
 import type { SessionJournal, ProgramJournalFrame, ProgramJournalPage } from '@hanger-source/dsh-reactive/journal';
 import type { AttachmentIdType, SessionImageAttachment } from '@hanger-source/dsh-reactive/attachments';
+import type { HumanReplyDelivery } from '@hanger-source/dsh-reactive/participation';
 import { SessionJournalUnavailableError } from '@hanger-source/dsh-reactive/journal';
 
 export const sessionJournalFailure = (error: unknown) => error instanceof SessionJournalUnavailableError;
+
+export async function questionDeliveries<P extends ProgramContract>(session: ProgramSessionClient<P>, signal: AbortSignal): Promise<readonly HumanReplyDelivery[]> {
+  return (await session.human.read(signal)).replies;
+}
 
 export function sessionImage(session: Pick<ProgramSessionClient<ProgramContract>, 'attachments'>,
   attachmentId: AttachmentIdType, signal: AbortSignal): Promise<SessionImageAttachment> {

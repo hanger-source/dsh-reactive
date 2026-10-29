@@ -79,6 +79,12 @@ Program 的 conversation.progress 与 conversation.request(id).state、SDK 和�
 
 进展流的物理 carrier 中断沿官方恢复继续；真正的终止错误结束该句柄的 progress、request 和 events 观察。Connection reset 不会让已经结束的消费者重新变为 pending，也不清除原 error；需要新观察时显式 `client.open(sessionId)` 取得新 Session。资源 baseline 中的业务 error 仍由原来源决定后续事实。
 
+## 观察人工答复交付
+
+人工观察的运行合同是 `HumanSnapshot`，远程 `ProgramQuestions` 只用于 wire。`session.human` 与固定问题 `question.state` 均提供 replies；每项带真实 messageId、questionCallId、原 origin、原 target 和 queued/proposed 状态。queued 是仍在原生 inbox，proposed 是已提出且尚未进入输入历史；与 active/foreground/settled 并列，不另建问答状态。Work 的 questions.replies 及 question.reply-pending 保留同一事实和完整原输入。question.pending 只表示原问题未结算，不能直接显示成“尚未回答”。
+
+答复取消、重新入队或提议窗口结束都可能让 replies 消失；不能据空集合声称从未回答或模型已消费。冷读的 proposed 只是最后持久事实，不证明当前有 Agent 在执行。前台回答沿原生工具返回结算；晚答进入 user/message 才推进原生问题结算，仍不证明模型已处理或业务成功。观察不签发原 Goal 的续接权限。
+
 ## 读取原生日志
 
 用同一个 `session.journal` 消费本地或远程的人工、服务会话。`page({ throughSeq, beforeSeq?, maxMessages?, turnWindow? }, { signal })` 使用 Controller 的原生消息分页；`follow(window, { signal })` 先交 `opened` 的 cursor/page，再交水位后的原生 entry。它保留持久原始日志，不把瞬态 `events$` 或 assistant stream 拼成历史。

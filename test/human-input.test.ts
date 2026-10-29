@@ -11,11 +11,11 @@ import { BehaviorSubject, filter, firstValueFrom } from 'rxjs';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import { createUserMessage, type GenerateOptions } from '@deepseek-ai/dsh-llm';
-import { ConversationAccessRevokedError, defineApplication, defineEnvironment, z } from '@hanger-source/dsh-reactive';
+import { ConversationAccessRevokedError, createWorkSelector, defineApplication, defineEnvironment, z } from '@hanger-source/dsh-reactive';
 import { defineAction, implementAction } from '@hanger-source/dsh-reactive';
-import type { HumanAnswer, HumanQuestionOrigin, HumanResponderAdmission } from '@hanger-source/dsh-reactive';
+import type { HumanAnswer, HumanQuestionOrigin, HumanResponderAdmission, HumanSnapshot } from '@hanger-source/dsh-reactive';
 import { inputReferenceSchema } from '@hanger-source/dsh-reactive/kernel';
-import { Context, Expose, HumanInput, Offer } from '@hanger-source/dsh-reactive/program';
+import { Context, Expose, HumanInput, Offer, useBeforeStep } from '@hanger-source/dsh-reactive/program';
 import { defineProgram } from '@hanger-source/dsh-reactive';
 import { useAction, useObservable } from '@hanger-source/dsh-reactive/program';
 import { defineSurface, view } from '@hanger-source/dsh-reactive';
@@ -217,6 +217,9 @@ for (const mode of ['native', 'ptc'] as const) {
     const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-human-continued-'));
     const mounted$ = new BehaviorSubject(true), secondMounted$ = new BehaviorSubject(true), revision$ = new BehaviorSubject(0);
     const requests: GenerateOptions[] = [];
+    let holdReply = false;
+    let stopHuman: (() => void) | undefined;
+    const proposedReply = Promise.withResolvers<void>(), releaseReply = Promise.withResolvers<void>();
     const merchantScope = z.object({ merchantId: z.string() }).strict();
     const inspect = defineAction({ name: 'inspect_merchant', description: '核验当前明确商家',
       scope: merchantScope, input: z.object({}).strict(), output: z.string() });
@@ -244,6 +247,9 @@ for (const mode of ['native', 'ptc'] as const) {
         const mounted = useObservable(() => mounted$, []), secondMounted = useObservable(() => secondMounted$, []);
         const revision = useObservable(() => revision$, []);
         const inputs = useObservable(() => conversation.inputs$, [conversation]);
+        useBeforeStep(async () => {
+          if (holdReply) { proposedReply.resolve(); await releaseReply.promise; }
+        }, []);
         const selected = inputs.status === 'ready' ? inputs.value.at(-1) : undefined;
         return h(Fragment, null, Context({ name: 'revision', value: revision.status === 'ready' ? revision.value : null }),
           selected ? h(Merchant, { merchantId: selected.scope.merchantId }) : null,
@@ -335,9 +341,36 @@ for (const mode of ['native', 'ptc'] as const) {
       await assert.rejects(cold.answerQuestion(pending.callId, answer, { actorId: 'intruder' }), /MERCHANT_RESPONDER_DENIED/u);
       await assert.rejects(cold.answerQuestion(pending.callId, answer, { actorId: 'charlie' }), /MERCHANT_ORIGIN_DENIED/u);
       assert.equal(app.native.agents.get(SessionId(id)), undefined);
+      const humanFrames: HumanSnapshot[] = [];
+      const humanSubscription = cold.human.values$.subscribe(value => humanFrames.push(value));
+      stopHuman = () => humanSubscription.unsubscribe();
+      const fixedQuestion = await cold.question(pending.callId);
+      holdReply = true;
       assert.equal(await cold.answerQuestion(pending.callId, answer, { actorId: 'bob' }), true);
+      await proposedReply.promise;
+      const proposal = await cold.human.read();
+      const [delivery] = proposal.replies;
+      assert.ok(delivery);
+      assert.equal(delivery.state, 'proposed');
+      assert.equal(delivery.questionCallId, pending.callId);
+      assert.deepEqual(delivery.origin, origin);
+      assert.equal(proposal.questions.active[0]?.state, 'continued');
+      assert.deepEqual(proposal.questions.settled, []);
+      assert.ok(humanFrames.some(frame => frame.replies.some(reply => reply.messageId === delivery.messageId && reply.state === 'queued')),
+        '原生排队已公开，不能继续把 continued 当成未回答');
+      assert.deepEqual((await fixedQuestion.state.read()).replies, proposal.replies);
+      const actual = app.native.agents.get(SessionId(id))!.session.snapshotEvents().flatMap(event => event.type === 'agent/inbox/spliced'
+        ? event.data.inserted.filter(message => message.source.kind === 'user-question-reply') : []);
+      assert.deepEqual(actual.map(message => message.id), [delivery.messageId], '公开交付沿实际原生消息身份');
+      const selector = createWorkSelector({ identify: selected => merchantScope.parse(selected.scope).merchantId });
+      const selected = selector.select('merchant-a', [{ identity: cold.identity, progress: await cold.progress.read(), human: proposal }]).sessions[0]!;
+      assert.deepEqual(selected.questions.replies.map(reply => reply.matchedInputs.map(input => input.requestId)), [['merchant-question']]);
+      assert.ok(selected.conditions.some(condition => condition.kind === 'question.reply-pending' && condition.value.messageId === delivery.messageId));
+      holdReply = false; releaseReply.resolve();
       const settled = await firstValueFrom(cold.questions$.pipe(filter(state => state.settled.some(value => value.callId === pending.callId))));
       await cold.whenIdle();
+      assert.deepEqual((await cold.human.read()).replies, [], 'user/message 结算后不遗留 proposal');
+      humanSubscription.unsubscribe();
       assert.equal(requests.length, 4);
       assert.deepEqual(settled.active, []);
       assert.deepEqual(settled.settled, [{ callId: pending.callId, answers: answer.answers, origin }]);
@@ -364,7 +397,7 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.equal(cold.snapshot().goal, null);
       assert.deepEqual(app.errors, []);
       claimSignal.abort(); cold.release();
-    } finally { await app.dispose(); }
+    } finally { stopHuman?.(); releaseReply.resolve(); await app.dispose(); }
   });
 }
 
@@ -542,4 +575,85 @@ test('正式成员撤销结束不配合取消的响应准入，迟到allow不答
       release.resolve(); nativeQuestions.attachWait = attachWait; await app.dispose();
     }
   }
+});
+
+test('晚答已提出但装配失败时退出提议窗口，保留原请求结算和原生 continued 问题', { timeout: 15_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-human-reply-preparation-'));
+  const proposed = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const failure = new Error('HUMAN_REPLY_BUSINESS_PREPARATION_REJECTED');
+  let rejectReply = false, modelCalls = 0;
+  const program = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+  const definition = defineApplication({ name: 'human-reply-preparation', admit: async () => {}, environments: [defineEnvironment({
+    id: 'work', instructions: '许可超时后继续独立工作，收到晚答时重新核验业务条件',
+    program: implementProgram(program, { Component() {
+      useBeforeStep(async () => {
+        if (!rejectReply) return;
+        proposed.resolve();
+        await release.promise;
+        throw failure;
+      }, []);
+      return HumanInput({ admitResponder });
+    } }),
+  })] });
+  const app = await boot(join(root, 'home'), definition, async function* () {
+    modelCalls++;
+    if (modelCalls === 1) yield* tool('ask_user_question', 'reply-preparation-question', { questions, timeout: 1 });
+    else yield* text('许可尚未返回，本轮独立工作已经结束');
+  });
+  try {
+    const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+    const foreground = firstValueFrom(session.foregroundQuestions$.pipe(filter(value => value.length === 1)));
+    await session.submit({ requestId: 'original-question', content: '先询问许可，超时后继续独立工作',
+      intent: 'question', delivery: 'followup', scope: null });
+    const [question] = await foreground;
+    assert.ok(question);
+    await session.whenIdle();
+    const before = await session.human.read();
+    assert.equal(before.questions.active[0]?.state, 'continued');
+    assert.deepEqual(before.questions.settled, []);
+    const original = structuredClone(session.snapshot().requests['original-question']);
+    assert.ok(original);
+    assert.equal(original.state, 'settled');
+    assert.notEqual(original.outcome, 'error');
+    assert.equal(modelCalls, 2);
+
+    rejectReply = true;
+    assert.equal(await session.answerQuestion(question.callId, answer), true);
+    await proposed.promise;
+    const deliveryFrame = await session.human.read();
+    const [delivery] = deliveryFrame.replies;
+    assert.ok(delivery);
+    assert.equal(delivery.state, 'proposed');
+    assert.equal(delivery.questionCallId, question.callId);
+    assert.deepEqual(delivery.origin, question.origin);
+    const native = app.native.agents.get(SessionId(session.id));
+    assert.ok(native);
+    const beforeFailure = native.session.snapshotEvents();
+    assert.ok(!beforeFailure.some(event => event.type === 'user/message' && event.data.id === delivery.messageId));
+    const eventCount = beforeFailure.length;
+    release.resolve();
+    await native.whenIdle();
+    const failedEvents = native.session.snapshotEvents().slice(eventCount);
+    assert.ok(failedEvents.some(event => event.type === 'turn/end' && event.data.reason.kind === 'error'),
+      '真实装配错误必须结束提议所属 turn');
+    assert.ok(!native.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.id === delivery.messageId),
+      '被提出的晚答没有进入正式模型输入历史');
+    assert.ok(app.errors.some(error => String(error).includes(failure.message)));
+    assert.equal(modelCalls, 2, '装配失败没有执行下一次模型请求');
+
+    const id = session.id;
+    await app.host.close(id);
+    session.release();
+    const cold = await app.host.open(id, program);
+    try {
+      assert.equal(app.native.agents.get(SessionId(id)), undefined);
+      const recovered = await cold.human.read();
+      assert.deepEqual(recovered.replies, [], '已结束的提议窗口不作为冷恢复中的未消费晚答遗留');
+      assert.deepEqual(recovered.questions, before.questions, '提议失败不伪造问题已经回答或取消');
+      assert.deepEqual(cold.snapshot().requests['original-question'], original,
+        '没有 user/message 的晚答只引用原问题，不能把原请求的既有结算改写为本次错误');
+      assert.deepEqual((await (await cold.question(question.callId)).state.read()).replies, []);
+      assert.equal(modelCalls, 2, '读取恢复事实不唤醒模型');
+    } finally { cold.release(); }
+  } finally { release.resolve(); await app.dispose(); }
 });

@@ -119,7 +119,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             entry.session.live.next(undefined);
             if (!entry.session.scope.disposed) {
                 entry.session.conversation[conversationBindings]().resetProgress();
-                entry.session.conversation[conversationBindings]().publishForegroundQuestions([]);
+                entry.session.conversation[conversationBindings]().clearHumanForeground();
                 this.facts.publish(entry.session);
             }
             try { this.collect(entry.session); }
@@ -235,15 +235,15 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
                 throw new Error('REACTIVE_PROGRAM_IMPLEMENTATION_MISMATCH');
             if (!existing.live.value) {
                 if (agent) this.bindAgent(existing, agent, previous);
-                const { state, questions } = this.facts.stateOf(inspection);
+                const { state, human } = this.facts.stateOf(inspection);
                 existing.conversation[conversationBindings]().accept(state.current);
-                existing.conversation[conversationBindings]().publishQuestions(questions);
+                existing.conversation[conversationBindings]().publishHuman(human);
                 existing.state = state;
                 this.facts.publish(existing);
             } else if (agent) throw new Error('REACTIVE_CONVERSATION_ALREADY_RUNNING');
             return existing;
         }
-        const { state, questions } = this.facts.stateOf(inspection);
+        const { state, human } = this.facts.stateOf(inspection);
         const scope = workspace.scope.child();
         let entry!: ConversationSession;
         try {
@@ -251,7 +251,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
                 environmentId: environment.id, directory: workspace.native.path, parentSessionId: inspection.meta.parentSession ?? null }, workspace.context,
                 implementation.definition, state.activity, previous?.session.conversation[conversationBindings]().assistantProgress);
             conversation[conversationBindings]().accept(state.current);
-            conversation[conversationBindings]().publishQuestions(questions);
+            conversation[conversationBindings]().publishHuman(human);
             const program = this.programs().create(scope, conversation, implementation, workspace, () => entry);
             const views = Object.freeze(Object.fromEntries(Object.entries(program.outputs.views)
                 .map(([name, value]) => [name, value.values$])));

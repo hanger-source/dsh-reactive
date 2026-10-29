@@ -42,7 +42,7 @@ export class ConversationQuestions {
             const readQuestion = async () => {
                 const inspection = await firstValueFrom(abortable(reading => this.facts.inspect(session.header.id, reading), signal));
                 signal.throwIfAborted();
-                return this.facts.stateOf(inspection).questions.active.find(item => item.callId === id);
+                return this.facts.stateOf(inspection).human.questions.active.find(item => item.callId === id);
             };
             const question = await readQuestion();
             assertPolicy();
@@ -59,7 +59,7 @@ export class ConversationQuestions {
             // 取消结束当前阶段的等待；迟到的读取或准入没有继续激活 Agent 的续体。
             await firstValueFrom(abortable(() => this.sessions.activate(session.header.id, session.accessId), signal));
             assertPolicy();
-            const restored = this.sessions.live(session).human.snapshot().active.find(item => item.callId === id);
+            const restored = this.sessions.live(session).human.snapshot().questions.active.find(item => item.callId === id);
             if (!restored || canonical(restored) !== canonical(question))
                 throw new Error('REACTIVE_HUMAN_QUESTION_CHANGED');
         }

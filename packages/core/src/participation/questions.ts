@@ -23,6 +23,7 @@ function select(source: HumanSnapshot, callId: string): HumanQuestionSnapshot {
     active: source.questions.active.find(question => question.callId === callId),
     foreground: source.foreground.find(question => question.callId === callId),
     settled: source.questions.settled.find(question => question.callId === callId),
+    replies: Object.freeze(source.replies.filter(reply => reply.questionCallId === callId)),
   });
 }
 
@@ -38,7 +39,7 @@ export function createHumanQuestionResolver<Options extends CancellationOptions>
     const signal = readOptions?.signal ? AbortSignal.any([owner.signal, readOptions.signal]) : owner.signal;
     const current = select(await source.read(signal), callId);
     signal.throwIfAborted();
-    if (!current.active && !current.foreground && !current.settled) throw new Error('REACTIVE_HUMAN_QUESTION_NOT_FOUND');
+    if (!current.active && !current.foreground && !current.settled && !current.replies.length) throw new Error('REACTIVE_HUMAN_QUESTION_NOT_FOUND');
     let handle = handles.get(callId);
     if (!handle) {
       handle = Object.freeze({ callId,

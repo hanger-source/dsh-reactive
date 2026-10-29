@@ -70,7 +70,7 @@ export type { AssistantStreamRecord, AssistantStreamRun, TimedStreamChunk, RawSt
 export type { StreamChunk } from '@deepseek-ai/dsh-llm/types';
 
 export type { HumanQuestionOrigin, HumanQuestion, HumanSettledQuestion, HumanQuestionItem, HumanAnswer, HumanAnswerItem, HumanInputState, HumanForegroundQuestion, HumanPromptOption, HumanPrompt, HumanAskOptions, HumanPendingAnswer, HumanAskResult, HumanResponderAdmission, HumanInputPolicy, HumanResponderOptions, HumanWaitFrame } from './participation/contract.ts';
-export type { HumanSnapshot, HumanQuestionSnapshot } from './participation/contract.ts';
+export type { HumanSnapshot, HumanQuestionSnapshot, HumanReplyDelivery } from './participation/contract.ts';
 export { createHumanQuestionResolver } from './participation/questions.ts';
 export type { HumanQuestionHandle, HumanQuestionControls, HumanQuestionResolver } from './participation/questions.ts';
 export { operationFollowSnapshotSchema, type OperationFollowSnapshot } from './operations/follows.ts';

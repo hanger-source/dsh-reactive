@@ -55,7 +55,7 @@ export class ConversationObservations {
         const live = this.ctx.sessions.get(inspection.meta.id);
         if (live) {
             const state = this.liveState(live);
-            return { state, questions: humanInputSnapshot(this.ctx.sessionProjections.snapshot(live, ['userQuestions']), state.value) };
+            return { state, human: humanInputSnapshot(this.ctx.sessionProjections.snapshot(live, ['userQuestions', 'inbox']), state.value, []) };
         }
         const restored = this.ctx.sessionProjections.restore({}, inspection.events, SessionLogOffset(0), inspection.meta, inspection.inheritedEventCount);
         const state = reactiveProjectionSchema.parse(restored.checkpoint.reactiveInputs?.val);
@@ -64,7 +64,7 @@ export class ConversationObservations {
             throw new Error('REACTIVE_GOAL_PROJECTION_INVALID: ' + goal.failure);
         const operations = followsSchema.parse(restored.checkpoint.reactiveOperations?.val);
         return { state: new NativeState(state, goal.current, restored.snapshot.asOfSeq, operationFollowSnapshots(operations)),
-            questions: humanInputSnapshot(restored.snapshot, state) };
+            human: humanInputSnapshot(restored.snapshot, state, []) };
     }
     async inspect(sessionId: string, signal?: AbortSignal): Promise<SessionInspection> {
         try {
