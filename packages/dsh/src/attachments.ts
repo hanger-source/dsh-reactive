@@ -11,10 +11,7 @@ export type { AttachmentIdType, ImageAttachmentRef, ImageMediaType, SessionAttac
 export { SessionAttachmentsUnavailableError } from '@hanger-source/dsh-reactive/attachments';
 
 export interface NativeAttachmentsOptions { readonly service: 'provided'; }
-export interface NativeSessionAttachments extends SessionAttachments {
-  /** 撤销本读侧并等待已经开始的原生读取结算。 */
-  dispose(): Promise<void>;
-}
+export type NativeSessionAttachments = SessionAttachments;
 export interface NativeAttachments extends NativeCapability {
   readonly install: (ctx: Context, home?: string) => Promise<void>;
   forSession(source: NativeSessionSource): NativeSessionAttachments;
@@ -23,6 +20,7 @@ export interface NativeAttachments extends NativeCapability {
 const original = (value: object | undefined): unknown => value && Reflect.get(value, symbols.original);
 
 class SessionAttachmentsReader implements NativeSessionAttachments {
+  readonly reader: NativeSessionAttachments = Object.freeze({ readImage: this.readImage.bind(this) });
   readonly scope: Scope;
   #pending = new Set<Promise<unknown>>();
   #closing?: Promise<void>;
@@ -37,6 +35,7 @@ class SessionAttachmentsReader implements NativeSessionAttachments {
       void this.dispose().catch(error => { owner.recordCleanupFailure(error); access.context.logger.error(error); });
     }, { once: true });
     if (access.signal.aborted) stop();
+    access.ownReading(() => this.dispose());
   }
   private assertCurrent(): void {
     this.scope.assertActive(); this.access.signal.throwIfAborted(); this.access.assertCurrent();
@@ -114,10 +113,10 @@ export function createNativeAttachments(options: NativeAttachmentsOptions): Nati
       if (!controller || !ready) throw new Error('REACTIVE_NATIVE_CAPABILITY_NOT_ACTIVE');
       if (original(access.context.get('sessionController')) !== original(controller)) throw new Error('REACTIVE_NATIVE_CAPABILITY_HOST_MISMATCH');
       const cached = sessions.get(source);
-      if (cached) return cached;
+      if (cached) return cached.reader;
       const reader = new SessionAttachmentsReader(owner, access, ready, controller, () => active.delete(reader));
       sessions.set(source, reader); active.add(reader);
-      return reader;
+      return reader.reader;
     },
     dispose(): Promise<void> {
       if (closing) return closing;

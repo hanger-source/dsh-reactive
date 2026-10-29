@@ -13,20 +13,17 @@ export type NativeClockReading = SessionEvent<'user/message'>;
 
 export interface NativeSessionClock {
   readonly readings$: Observable<NativeClockReading>;
-  dispose(): void;
 }
 
 class SessionClock implements NativeSessionClock {
   /** 原生日志中的实际采样，保留 seq/time/完整 source 和正文；没有额外定时器。 */
   readonly readings$: Observable<NativeClockReading>;
   #scope: Scope;
-  get disposed(): boolean { return this.#scope.disposed; }
   constructor(owner: NativeCapabilityOwner, access: NativeSessionAccess) {
     this.#scope = nativeObservationScope(owner, access);
     this.readings$ = nativeObservation(this.#scope, nativeSessionEvents(access).pipe(filter((event): event is NativeClockReading =>
       event.type === 'user/message' && event.data.source.kind === 'time-context'), map(ownNativeValue)));
   }
-  dispose(): void { this.#scope.dispose(); }
 }
 
 export interface NativeClock extends NativeCapability {
@@ -40,7 +37,7 @@ export function createNativeClock(options: NativeClockOptions): NativeClock {
   if (!options.timeZone.trim()) throw new Error('REACTIVE_TIME_ZONE_REQUIRED');
   const selected = structuredClone(options);
   const timeZone = new Intl.DateTimeFormat('en', { timeZone: selected.timeZone }).resolvedOptions().timeZone;
-  const sessions = new WeakMap<object, SessionClock>();
+  const sessions = new WeakMap<object, NativeSessionClock>();
   const owner = new NativeCapabilityOwner('reactive-native-clock', ['sessionProjections'], function* (ctx) {
     yield ctx.plugin(TimeContext, { ...selected, timeZone });
   });
@@ -51,7 +48,11 @@ export function createNativeClock(options: NativeClockOptions): NativeClock {
     forSession(session: NativeSessionSource) {
       const access = nativeSessionAccess(session); owner.session(access, 'sessionProjections');
       let current = sessions.get(session);
-      if (!current || current.disposed) { current = new SessionClock(owner, access); sessions.set(session, current); }
+      if (!current) {
+        const reader = new SessionClock(owner, access);
+        current = Object.freeze({ readings$: reader.readings$ });
+        sessions.set(session, current);
+      }
       return current;
     },
   });

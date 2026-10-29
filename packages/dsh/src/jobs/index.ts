@@ -130,7 +130,6 @@ export interface NativeSessionJobs {
   /** 同步绑定固定目标，不读取注册表；读取与控制分别核验真实存在性和 owner。 */
   job(id: JobId): NativeJob;
   start(spec: NativeJobSpec, options?: CancellationOptions): JobId;
-  dispose(): void;
 }
 
 class SessionJobs implements NativeSessionJobs {
@@ -140,7 +139,6 @@ class SessionJobs implements NativeSessionJobs {
   readonly ownerId: NativeSessionAccess['sessionId'];
   #scope: Scope;
   #jobs = new Map<JobId, NativeJob>();
-  get disposed(): boolean { return this.#scope.disposed; }
 
   constructor(private readonly native: NativeCapabilityOwner, private readonly access: NativeSessionAccess) {
     this.#scope = nativeObservationScope(native, access);
@@ -205,8 +203,6 @@ class SessionJobs implements NativeSessionJobs {
     // registry.start 自己核 exact Agent、容量、controller 并原子签发 id；不重跑 starter。
     return this.registry().start({ ...spec, owner: this.ownerId });
   }
-  /** 只释放这个 SDK 读取对象；执行仍属于原生 Agent/JobRegistry。 */
-  dispose(): void { this.#scope.dispose(); }
 }
 
 export interface NativeJobs extends NativeCapability {
@@ -223,7 +219,7 @@ export function createNativeJobs(options: NativeJobsOptions): NativeJobs {
   if (selected.tools && selected.tools.completionDelivery !== 'quiet' && selected.tools.completionDelivery !== 'wakeup') {
     throw new Error('REACTIVE_NATIVE_JOBS_DELIVERY_REQUIRED');
   }
-  const sessions = new WeakMap<object, SessionJobs>();
+  const sessions = new WeakMap<object, NativeSessionJobs>();
   const owner = new NativeCapabilityOwner('reactive-native-jobs', ['jobs', ...(selected.tools ? ['tools'] : [])], function* (ctx) {
     if (selected.registry.kind === 'local') yield ctx.plugin(LocalJobs, selected.registry.config ?? {});
     else if (!ctx.get('jobs')) throw new Error('REACTIVE_NATIVE_JOBS_REQUIRED');
@@ -260,7 +256,12 @@ export function createNativeJobs(options: NativeJobsOptions): NativeJobs {
       const access = nativeSessionAccess(session);
       owner.session(access, 'jobs');
       let current = sessions.get(session);
-      if (!current || current.disposed) { current = new SessionJobs(owner, access); sessions.set(session, current); }
+      if (!current) {
+        const reader = new SessionJobs(owner, access);
+        current = Object.freeze({ state: reader.state, list$: reader.list$, events$: reader.events$,
+          list: reader.list.bind(reader), job: reader.job.bind(reader), start: reader.start.bind(reader) });
+        sessions.set(session, current);
+      }
       return current;
     },
   });

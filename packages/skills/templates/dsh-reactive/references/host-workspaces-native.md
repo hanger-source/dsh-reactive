@@ -54,9 +54,11 @@ createWorkspace 注册原生 existing 目录，不隐式 mkdir。Environment 不
 
 ## 嵌入与可选能力
 
+所有 `capability.forSession(source)` 返回同一 exact 来源的稳定共享业务面，不提供 dispose、Scope 或内部服务。消费者退出自己的订阅或取消本次等待，不关闭其他模块的观察。需要独立读取寿命时先显式 open 一个自己持有的 Session 句柄，再用它取得能力，最后 release 该句柄；Program conversation 是借入来源，不能由模块释放。真正的能力安装 owner 才调用 capability.dispose。Files、Journal、Attachments 的实际 I/O 与监听释放登记到原 Host，来源退出后仍由 Host 与安装 owner 等待结算；files.watch(path) 显式创建的单个 watch 保留自己的 dispose/closed。
+
 原生子 Agent 发现从 `@hanger-source/dsh-reactive-dsh/subagents` 导入 `createNativeSubagents({ service: 'provided' })`。它使用宿主已有的底座 subagents 服务，不安装另一套 provider。安装后取得 `const children = capability.forSession(source)`：children.catalog 是直接目录资源，children.descendants 是正式递归查询的资源，相应 catalog$、descendants$ 是原资源的值流，支持普通函数、Promise、RxJS 和 hooks；children.readDescendants({ signal }) 显式取得独立查询结果。保留 one-shot、continuable、external 原生身份及不可读分支诊断，不把目录模式当成业务阶段。后代 activity 沿用原生 resident 判断，不表示模型本轮是否结束。冷读不恢复 Agent 或启动模型。
 
-`children.interrupt(targetId, { signal })` 在调用前核验来源与取消，再以该来源真实 Agent 的 ancestor 权限调用原生中断；冷来源无法控制，其他分支与父 Agent 不因本次选择被中断。未驻留目标沿用原生无操作语义，权限失败保留原生 SubagentError，返回不表示执行已经完成。Subagents 的 dispose 只撤销读侧，不停止已有 Activation。普通原生发现不要求 Goal；带独立 Goal 的子程序委托继续通过 assembly.implementDelegation 和 NativeChildWork 组合 Action、Operation 与反馈。此入口不包装缺少可信 Program 执行前准入的 raw start/send，也不把这个缺口扩大为整个子 Agent 域不可用。
+`children.interrupt(targetId, { signal })` 在调用前核验来源与取消，再以该来源真实 Agent 的 ancestor 权限调用原生中断；冷来源无法控制，其他分支与父 Agent 不因本次选择被中断。未驻留目标沿用原生无操作语义，权限失败保留原生 SubagentError，返回不表示执行已经完成。观察退出只结束当前消费者；来源或安装 owner 退出撤销对应读侧，已有 Activation 继续由原生 owner 管理。普通原生发现不要求 Goal；带独立 Goal 的子程序委托继续通过 assembly.implementDelegation 和 NativeChildWork 组合 Action、Operation 与反馈。此入口不包装缺少可信 Program 执行前准入的 raw start/send，也不把这个缺口扩大为整个子 Agent 域不可用。
 
 Schedule 管理读取、冷 Team 投影及 Files 的显式读取使用所属 SDK 与调用者的取消信号；等待立即结算，不被迟到的原生查询回执拖住。Files 仍独立跟踪真实 I/O，实例退出等待这些读取与 unwatch 完成。只读等待的取消不改变原生任务、提醒投递或成员执行的 owner。
 
@@ -114,7 +116,7 @@ Team 通过官方 SessionProjectionRegistry.onChanged 监听 agentTeam 投影变
 
 Team 任务可用 `const task = team.forSession(source).task(id)` 取得。`task.state$` 供 RxJS 和 `useObservable` 使用，`task.read({ signal })` 读取同一原生投影；显式 `task.update({ expectedRevision, action, ... })` 由原生 CAS 决定是否受理，不重复传 taskId，也不能向请求中塞入 taskId 更换目标。对象身份属于原来源与任务，不按当前界面选择重定向。缺席或删除后流和 read 返回 undefined；需要原生墓碑时用活跃成员的 getTask。Schedule 的 task(id) 同样允许先取得未知目标，再显式 read 查询；Jobs 对未知或外来目标的读取和控制则由原生边界拒绝。冷 Lead 可以读取与取得对象，修改仍要求真实活跃成员，不会为此自动 resume、spawn 或 send。
 
-`session.attachments.readImage` 由 Host 惰性借入已安装的正式 sessionController；不额外配置 HostOptions，不安装存储或 UI。独立原生接入从 `@hanger-source/dsh-reactive-dsh/attachments` 导入 `createNativeAttachments({ service: 'provided' })`，安装后用 `forSession(source)` 取得 exact 来源 reader；其 dispose 等待无法取消的原生读取结算。缺少 Controller 时会话入口抛 SessionAttachmentsUnavailableError；不得用 attachments.readImage(ref) 全局存储方法替代会话引用授权。
+`session.attachments.readImage` 由 Host 惰性借入已安装的正式 sessionController；不额外配置 HostOptions，不安装存储或 UI。独立原生接入从 `@hanger-source/dsh-reactive-dsh/attachments` 导入 `createNativeAttachments({ service: 'provided' })`，安装后用 `forSession(source)` 取得 exact 来源 reader；来源退出撤销本次等待，Host 与安装 owner 等待无法取消的原生读取结算。缺少 Controller 时会话入口抛 SessionAttachmentsUnavailableError；不得用 attachments.readImage(ref) 全局存储方法替代会话引用授权。
 
 Files 复用已安装的 WorkspaceFiles、fs、sandboxPolicy 和 Typert，不自动安装文件服务或改变沙箱政策。将已安装的 `createNativeFiles({ service: 'provided' })` 实例交给 `HostOptions.files` 或 `RuntimeOptions.files`，Program 和 SDK 即可使用共同 `session.files`；Host 只取得和释放自己的会话读侧，不安装或销毁借入的全域能力。独立原生消费者仍可显式 `files.forSession(source)`，exact 来源要求相同。缺失能力时抛出 SessionFilesUnavailableError。
 

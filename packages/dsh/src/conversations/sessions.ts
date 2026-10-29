@@ -391,12 +391,12 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         if (this.#closing.has(session.header.id)) throw new Error('REACTIVE_CONVERSATION_CLOSING');
     }
     /** 资格同步退出；释放登记覆盖读侧实际I/O，Host关闭等待同一批真实结算。 */
-    private ownReader<T extends { dispose(): Promise<void> }>(access: NativeSessionAccess, reader: T): T {
+    private ownReading(access: Pick<NativeSessionAccess, 'signal' | 'scope' | 'assertCurrent'>, closeReading: () => Promise<void>): void {
         const signal = AbortSignal.any([this.signal, access.signal]);
         const release = access.scope.own(() => {
             signal.removeEventListener('abort', close);
             let completion: Promise<void>;
-            try { completion = reader.dispose(); }
+            try { completion = closeReading(); }
             catch (error) { this.#cleanupFailures.add(error); throw error; }
             this.#readerClosings.add(completion);
             void completion.then(() => this.#readerClosings.delete(completion), error => {
@@ -409,7 +409,6 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         signal.addEventListener('abort', close, { once: true });
         if (signal.aborted) { close(); signal.throwIfAborted(); }
         this.assertActive(); access.assertCurrent();
-        return reader;
     }
     filesFor(source: NativeSessionSource): SessionFiles {
         this.assertActive();
@@ -419,7 +418,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         if (!this.options.files) throw new SessionFilesUnavailableError(access.sessionId);
         const reader = this.options.files.forSession(source);
         this.#fileReaders.set(source, reader);
-        return this.ownReader(access, reader);
+        return reader;
     }
     journalFor(source: NativeSessionSource): SessionJournal {
         this.assertActive();
@@ -436,7 +435,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         }
         const reader = this.#journal.forSession(source);
         this.#journals.set(source, reader);
-        return this.ownReader(access, reader);
+        return reader;
     }
     attachmentsFor(source: NativeSessionSource): SessionAttachments {
         this.assertActive();
@@ -452,7 +451,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         }
         const reader = this.#attachments.forSession(source);
         this.#attachmentReaders.set(source, reader);
-        return this.ownReader(access, reader);
+        return reader;
     }
     registerSessionAccess(handle: object, session: ConversationSession, signal: AbortSignal, assertHandle: () => void) {
         const assertCurrent = () => {
@@ -466,6 +465,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
                 childSessionId: session.header.id, mode: 'continuable' as const })
             : Object.freeze({ kind: 'session' as const, sessionId: session.header.id });
         registerNativeSession(handle, { context: this.ctx, sessionId: session.header.id, journalAddress, signal, scope: session.scope, assertCurrent,
+            ownReading: close => this.ownReading({ scope: session.scope, signal, assertCurrent }, close),
             workspaceRoot: () => {
                 assertCurrent();
                 const directory = session.header.cwd;

@@ -23,8 +23,6 @@ export interface NativeSessionSubagents {
   readDescendants(options?: CancellationOptions): Promise<readonly SubagentDescendantListEntry[]>;
   /** exact live祖先只中断选定分支的当前执行；不清待处理inbox，返回不保证已静止。 */
   interrupt(targetSessionId: SessionId, options?: CancellationOptions): void;
-  /** 只释放这次读侧，不中断子Agent或其原生Activation。 */
-  dispose(): void;
 }
 
 class SessionSubagents implements NativeSessionSubagents {
@@ -33,7 +31,6 @@ class SessionSubagents implements NativeSessionSubagents {
   readonly descendants: ResourceReader<readonly SubagentDescendantListEntry[]>;
   readonly descendants$: Observable<readonly SubagentDescendantListEntry[]>;
   #scope: Scope;
-  get disposed(): boolean { return this.#scope.disposed; }
 
   constructor(private readonly owner: NativeCapabilityOwner, private readonly access: NativeSessionAccess) {
     this.#scope = nativeObservationScope(owner, access);
@@ -96,7 +93,6 @@ class SessionSubagents implements NativeSessionSubagents {
     service.interrupt(targetSessionId, { kind: 'ancestor', agent });
   }
 
-  dispose(): void { this.#scope.dispose(); }
 }
 
 export interface NativeSubagents extends NativeCapability {
@@ -109,12 +105,18 @@ export function createNativeSubagents(options: NativeSubagentsOptions): NativeSu
   const owner = new NativeCapabilityOwner('reactive-native-subagents', ['subagents'], function* (ctx) {
     if (!ctx.get('subagents')) throw new Error('REACTIVE_NATIVE_SUBAGENTS_REQUIRED');
   });
-  const sessions = new WeakMap<object, SessionSubagents>();
+  const sessions = new WeakMap<object, NativeSessionSubagents>();
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
     forSession(session: NativeSessionSource) {
       const access = nativeSessionAccess(session); owner.session(access, 'subagents');
       let current = sessions.get(session);
-      if (!current || current.disposed) { current = new SessionSubagents(owner, access); sessions.set(session, current); }
+      if (!current) {
+        const reader = new SessionSubagents(owner, access);
+        current = Object.freeze({ catalog: reader.catalog, catalog$: reader.catalog$,
+          descendants: reader.descendants, descendants$: reader.descendants$,
+          readDescendants: reader.readDescendants.bind(reader), interrupt: reader.interrupt.bind(reader) });
+        sessions.set(session, current);
+      }
       return current;
     },
   });

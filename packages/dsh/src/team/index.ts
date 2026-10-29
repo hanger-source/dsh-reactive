@@ -62,8 +62,6 @@ export interface NativeSessionTeam {
   updateTask(request: UpdateTeamTaskRequest, options?: CancellationOptions): NativeInvocation<TeamTaskView>;
   waitForChange(timeoutMs: number, options?: CancellationOptions): Promise<TeamWaitResult>;
   interrupt(name: string, options?: CancellationOptions): { readonly previousStatus: 'running' | 'inactive' };
-  /** 停止观察/等待，不中断成员；能力 owner 退出时仍由原生 Team drain。 */
-  dispose(): void;
 }
 
 class SessionTeam implements NativeSessionTeam {
@@ -75,7 +73,6 @@ class SessionTeam implements NativeSessionTeam {
   readonly tasks$: Observable<readonly TeamTaskView[]>;
   #scope: Scope;
   #tasks = new Map<TeamTaskId, NativeTeamTask>();
-  get disposed(): boolean { return this.#scope.disposed; }
   constructor(private readonly owner: NativeCapabilityOwner, private readonly access: NativeSessionAccess) {
     this.#scope = nativeObservationScope(owner, access);
     const changes$ = access.liveAgent$.pipe(switchMap(agent => new Observable<void>(subscriber => {
@@ -213,7 +210,6 @@ class SessionTeam implements NativeSessionTeam {
     this.signal(options);
     return ownNativeValue(this.service().interrupt(this.agent(), name));
   }
-  dispose(): void { this.#scope.dispose(); }
 }
 
 export interface NativeTeam extends NativeCapability {
@@ -228,12 +224,21 @@ export function createNativeTeam(options: NativeTeamOptions): NativeTeam {
     if (selected.service.kind === 'install') yield ctx.plugin(TeamService, selected.service.config ?? {});
     else if (!ctx.get('agentTeams')) throw new Error('REACTIVE_NATIVE_TEAM_REQUIRED');
   });
-  const sessions = new WeakMap<object, SessionTeam>();
+  const sessions = new WeakMap<object, NativeSessionTeam>();
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
     forSession(session: NativeSessionSource) {
       const access = nativeSessionAccess(session); owner.session(access, 'agentTeams');
       let current = sessions.get(session);
-      if (!current || current.disposed) { current = new SessionTeam(owner, access); sessions.set(session, current); }
+      if (!current) {
+        const reader = new SessionTeam(owner, access);
+        current = Object.freeze({ state: reader.state, projection$: reader.projection$, members$: reader.members$,
+          roster: reader.roster, roster$: reader.roster$, tasks$: reader.tasks$,
+          readProjection: reader.readProjection.bind(reader), membership: reader.membership.bind(reader),
+          listMembers: reader.listMembers.bind(reader), listTasks: reader.listTasks.bind(reader), getTask: reader.getTask.bind(reader),
+          task: reader.task.bind(reader), createTask: reader.createTask.bind(reader), updateTask: reader.updateTask.bind(reader),
+          waitForChange: reader.waitForChange.bind(reader), interrupt: reader.interrupt.bind(reader) });
+        sessions.set(session, current);
+      }
       return current;
     },
   });

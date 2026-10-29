@@ -14,7 +14,7 @@ mapResource(project) 负责同步派生。thenable 返回进入该代 error，�
 
 Job 收到终态并取得需要的输出后，显式调用 job.remove() 移除可见记录。移除不是 stop，也不消费模型输出游标。运行中、未知和外会话目标由正式注册表拒绝；列表跟随 removed 事件，旧固定目标的 state/output 交付原生缺席错误。
 
-Schedule update/delete 在原生 FIFO 中保留实际调用。SDK dispose 或来源句柄 release 只结束默认 wait 与资源观察，不会取消已经返回 NativeInvocation 的写入。显式 options.signal 仍送入原生服务，可在落盘前取消排队工作；能力 owner 退出会等待已登记调用的实际结算。
+Schedule update/delete 在原生 FIFO 中保留实际调用。来源句柄 release 或客户端 SDK dispose 只结束默认 wait 与资源观察，不会取消已经返回 NativeInvocation 的写入。显式 options.signal 仍送入原生服务，可在落盘前取消排队工作；能力 owner 退出会等待已登记调用的实际结算。
 
 Jobs、Schedule、Team 的宿主入口分别位于各能力域的 index；共享词汇从 /jobs/client、/schedule/client、/team/client 导入。这些叶只转导官方公开纯合同，不加载服务、安装工具或提供远程控制。Jobs/Team 的品牌构造值与宿主出口同源；Schedule 的官方 client 叶只有类型。ScheduleId、ScheduleInputError、ScheduleLogError 从宿主 /schedule 取得，目标存在性与成员资格仍由服务核验。JobOutputRead 仍是宿主合同，不复制为浏览器 DTO。
 

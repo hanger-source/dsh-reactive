@@ -32,10 +32,7 @@ function cancelledRead(error: unknown, signal: AbortSignal): boolean {
 
 export type NativeFileWatch = FileWatch;
 
-export interface NativeSessionFiles extends SessionFilesContract {
-  /** 取消本实例读取并等待真实 watch 退出；不停止产生文件的 Action、Job 或 Operation。 */
-  dispose(): Promise<void>;
-}
+export type NativeSessionFiles = SessionFilesContract;
 
 class NativeWatch implements FileWatch {
   readonly changes$: Observable<WorkspaceFileWatchFrame>;
@@ -118,6 +115,11 @@ class NativeWatch implements FileWatch {
 }
 
 class SessionFiles implements NativeSessionFiles {
+  readonly reader: NativeSessionFiles = Object.freeze({
+    text: this.text.bind(this), metadata: this.metadata.bind(this), directory: this.directory.bind(this),
+    readText: this.readText.bind(this), readBytes: this.readBytes.bind(this),
+    stat: this.stat.bind(this), list: this.list.bind(this), watch: this.watch.bind(this),
+  });
   readonly scope: Scope;
   #resources: ReturnType<typeof createFileResources>;
   #watches = new Set<NativeFileWatch>();
@@ -140,6 +142,7 @@ class SessionFiles implements NativeSessionFiles {
         logger.error(error);
       });
     }, { once: true });
+    access.ownReading(() => this.dispose());
   }
   assertCurrent(): void {
     this.scope.assertActive();
@@ -281,7 +284,7 @@ export function createNativeFiles(options: NativeFilesOptions): NativeFiles {
         const created = new SessionFiles(owner, access, () => active.delete(created));
         current = created; sessions.set(session, current); active.add(current);
       }
-      return current;
+      return current.reader;
     },
   });
 }

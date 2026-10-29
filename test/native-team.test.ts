@@ -47,6 +47,7 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
   let session: ConversationHandle<typeof program> | undefined, resumed: ConversationHandle<typeof program> | undefined;
   let other: ConversationHandle<typeof program> | undefined, subscription: Subscription | undefined, rosterSubscription: Subscription | undefined;
   const release = Promise.withResolvers<void>();
+  let restoreReadBoundary: (() => void) | undefined;
   try {
     const workspace = await runtime.application.createWorkspace({ directory });
     session = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
@@ -55,17 +56,20 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
     const rosterStates: Observation<readonly TeamMemberView[]>[] = [];
     rosterSubscription = team.roster.observations$.subscribe(value => rosterStates.push(value));
     assert.deepEqual(await team.roster.read(), team.listMembers());
-    const inspect = team.readProjection.bind(team);
-    const entered = Promise.withResolvers<{ signal: AbortSignal; projection: TeamProjection }>();
+    await runtime.application.close(session.id);
+    const initialPersistence = Reflect.get(runtime.native.sessionPersistence, symbols.original) as typeof runtime.native.sessionPersistence;
+    const initialOpen = initialPersistence.open;
+    restoreReadBoundary = () => { initialPersistence.open = initialOpen; };
+    const entered = Promise.withResolvers<void>();
     let first = true;
-    // 只延后公开读取取得的真实切面，不替换Agent、Team journal或持久状态。
-    team.readProjection = async options => {
-      const projection = await inspect(options);
-      if (first) {
-        first = false; assert.ok(options?.signal);
-        entered.resolve({ signal: options.signal, projection }); await release.promise;
+    // 延后真实冷读的持久句柄；恢复后的运行态不能等待或采用旧读取。
+    initialPersistence.open = async function (...args) {
+      const handle = await initialOpen.apply(this, args);
+      if (first && args[0] === session!.id && args[1] === 'read') {
+        first = false;
+        entered.resolve(); await release.promise;
       }
-      return projection;
+      return handle;
     };
     const observed = new ReplaySubject<TeamProjection>(1), delivered: TeamProjection[] = [];
     const states: Observation<TeamProjection>[] = [];
@@ -77,9 +81,7 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
       },
       error: error => { errors.push(error); observed.error(error); },
     });
-    const old = await entered.promise;
-    await runtime.application.close(session.id);
-    assert.equal(old.signal.aborted, true, '关闭原生owner须撤销SDK在途投影读取');
+    await entered.promise;
     assert.equal(team.state.peek().status, 'pending', '切换真实owner先撤下旧有效性');
     assert.equal(team.roster.peek().status, 'pending', '冷会话不能保留旧Agent运行态');
     const cancellation = new AbortController(), reason = new Error('CANCEL_ONLY_COLD_ROSTER_READ');
@@ -89,9 +91,10 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
     resumed = await runtime.application.resume(session.id, program);
     await firstValueFrom(observed.pipe(timeout(5_000)));
     assert.equal((await team.roster.read())[0]!.id, session.id);
+    const currentProjection = delivered.at(-1)!;
     release.resolve(); await immediate();
-    assert.equal(delivered.includes(old.projection), false, '旧切面迟到不能覆盖恢复后的Team现场');
-    team.readProjection = inspect;
+    restoreReadBoundary(); restoreReadBoundary = undefined;
+    assert.equal(delivered.at(-1), currentProjection, '旧冷读迟到不能覆盖恢复后的Team现场');
     const absent = team.task(TeamTaskId('999999'));
     assert.equal(team.task(absent.id), absent);
     assert.equal(await absent.read(), undefined);
@@ -168,9 +171,9 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
       updating = update.wait()
         .then(value => { updateOutcome = value; }, error => { updateOutcome = error; });
       await Promise.race([updatedAtFlush.promise, updating.then(() => { throw new Error('TEAM_UPDATE_DID_NOT_REACH_FLUSH'); })]);
-      writer.dispose(); await immediate();
+      mutationHandle.release(); await immediate();
       assert.ok(updateOutcome instanceof Error);
-      assert.match(updateOutcome.message, /REACTIVE_SCOPE_DISPOSED/u,
+      assert.equal(updateOutcome, mutationHandle.signal.reason,
         '任务对象复用同一更新入口，SDK退出不等待原生flush回执');
       assert.equal((await create.activity.read()).state, 'returned', 'SDK退出后仍可晚读先前调用的实际终态');
       releaseUpdate.resolve(); await updateFlushed.promise;
@@ -196,16 +199,22 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
       releaseCreate.resolve(); releaseUpdate.resolve();
       sessions.flush = flush;
       await Promise.allSettled([creating, updating]);
-      writer.dispose(); mutationHandle.release();
+      mutationHandle.release();
     }
 
     const failure = new Error('TEAM_PROJECTION_READ_FAILED');
-    team.readProjection = async options => { await inspect(options); throw failure; };
+    const projections = Reflect.get(runtime.native.sessionProjections, symbols.original) as typeof runtime.native.sessionProjections;
+    const snapshot = projections.snapshot;
+    restoreReadBoundary = () => { projections.snapshot = snapshot; };
+    projections.snapshot = function (...args) {
+      if (args[0] === lead.session && args[1]?.length === 1 && args[1][0] === 'agentTeam') throw failure;
+      return snapshot.apply(this, args);
+    };
     const failed = firstValueFrom(team.state.observations$.pipe(filter(value => value.status === 'error'), timeout(5_000)));
     const extra = await team.createTask({ subject: '读取恢复', description: '真实任务提交产生后续投影通知' }).result;
     assert.equal((await failed).status, 'error');
     assert.equal(team.state.peek().status, 'error');
-    team.readProjection = inspect;
+    restoreReadBoundary(); restoreReadBoundary = undefined;
     const recovered = firstValueFrom(team.state.observations$.pipe(filter(value => value.status === 'ready'), timeout(5_000)));
     await team.updateTask({ taskId: extra.id, expectedRevision: extra.revision, action: 'edit', subject: '读取已恢复' }).result;
     await recovered;
@@ -271,7 +280,6 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
       await assert.rejects(target.read(), /delivered before queueing/);
     } finally {
       for (const observer of damagedObservers) observer.unsubscribe();
-      damagedTeam.dispose();
       await runtime.application.close(damaged.id); damaged.release();
     }
 
@@ -294,7 +302,7 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
       // 原生Team listener先唤醒自己的waiter；后注册listener在同次同步分发中释放观察。
       stopStatus = runtime.native.on('agent/status', ({ agent }) => {
         if (agent !== lead) return;
-        waitingTeam.dispose(); retired = true;
+        waitingSource.release(); retired = true;
       });
       // 公开维护任务保持idle；按exact Agent作用域发出其真实当前status，不伪造turn或模型执行。
       emitAgentEvent(runtime.native, lead, 'agent/status', { status: lead.status });
@@ -310,7 +318,7 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
       assert.equal(continued, true, '原生执行仍由其owner正常结算');
     } finally {
       stopStatus?.(); releaseMaintenance.resolve(); await maintenance;
-      waitObservations.unsubscribe(); waitingTeam.dispose(); waitingSource.release();
+      waitObservations.unsubscribe(); waitingSource.release();
     }
 
     await runtime.application.close(session.id);
@@ -337,7 +345,7 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
     } finally { continueRead.resolve(); await reading; persistence.open = open; }
     const again = await runtime.application.resume(session.id, program);
     resumed.release(); resumed = again;
-    team.dispose();
+    session.release();
     assert.throws(() => team.roster.peek(), /REACTIVE_SCOPE_DISPOSED/);
     assert.equal(rosterStates.at(-1)!.status, 'error', '退出先撤销当前运行态再结束观察');
     await assert.rejects(task.read(), /REACTIVE_SCOPE_DISPOSED/);
@@ -428,6 +436,7 @@ test(`${service} Team任务板的CAS、恢复及provider撤销沿同一资源传
     }
     assert.equal(modelCalls, 0); assert.deepEqual(errors, []);
   } finally {
+    restoreReadBoundary?.();
     release.resolve(); subscription?.unsubscribe(); rosterSubscription?.unsubscribe(); other?.release(); resumed?.release(); session?.release();
     await runtime.dispose();
   }

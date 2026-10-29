@@ -35,7 +35,7 @@ test('Schedule同步目标沿真实CAS读取，退出等待保留原生结果，
       async *stream() { models++; throw new Error('SCHEDULE_READING_MUST_NOT_START_MODEL'); }
     }() }),
   });
-  let gateway, session, foreign, sdk;
+  let gateway, session, foreign, sdk, restoreCatalog;
   try {
     // 正式Controller/Gateway提供Schedule公开依赖；不构造同名空服务或调用私有安装接点。
     gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
@@ -49,12 +49,13 @@ test('Schedule同步目标沿真实CAS读取，退出等待保留原生结果，
     foreign = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
     sdk = capability.forSession(session);
     assert.equal(sdk.state.peek().status, 'pending', '构造SDK不读取');
-    const catalog = sdk.catalog.bind(sdk), failure = new Error('SCHEDULE_CATALOG_READ_FAILED');
+    const catalog = ScheduleService.prototype.catalog, failure = new Error('SCHEDULE_CATALOG_READ_FAILED');
+    restoreCatalog = () => { ScheduleService.prototype.catalog = catalog; };
     let held = false, failNext = false, calls = 0;
-    sdk.catalog = async options => {
-      const rows = await catalog(options); calls++;
-      if (held) { held = false; entered.resolve({ rows, signal: options.signal }); await release.promise; }
-      if (failNext) { failNext = false; throw failure; }
+    ScheduleService.prototype.catalog = async function (...args) {
+      const rows = await catalog.apply(this, args); calls++;
+      if (held) { entered.resolve(rows); await release.promise; }
+      if (failNext) throw failure;
       return rows;
     };
     const states = [];
@@ -84,10 +85,12 @@ test('Schedule同步目标沿真实CAS读取，退出等待保留原生结果，
     held = true;
     const changed = await task.update({ expected: original, title: '中间提醒' }).result; assert.equal(changed.updated, true);
     const old = await entered.promise;
+    held = false;
+    assert.equal(old.find(row => row.id === task.id).title, '中间提醒');
     assert.equal(sdk.state.peek().status, 'pending'); assert.equal(task.state.peek().status, 'pending');
     const newer = first(task.state.observations$, value => value.status === 'ready' && value.value?.title === '当前提醒');
     const current = await task.update({ expected: changed.record, title: '当前提醒' }).result; assert.equal(current.updated, true);
-    await newer; assert.equal(old.signal.aborted, true);
+    await newer;
     release.resolve(); await immediate();
     assert.equal(task.state.peek().value.title, '当前提醒');
     assert.equal((await session.readView('reminders')).find(row => row.id === task.id).title, '当前提醒');
@@ -96,6 +99,7 @@ test('Schedule同步目标沿真实CAS读取，退出等待保留原生结果，
     const failed = first(task.state.observations$, value => value.status === 'error');
     const updated = await task.update({ expected: current.record, title: '恢复目标' }).result; assert.equal(updated.updated, true);
     assert.equal((await failed).error, failure);
+    failNext = false;
     const domain = runtime.native.storageDomain.get(scheduleDomain.name); assert.ok(domain);
     const table = domain.table('tasks'), nativePut = table.put, nativeDelete = table.delete;
     const updateAtWrite = Promise.withResolvers(), deleteAtWrite = Promise.withResolvers();
@@ -152,8 +156,8 @@ test('Schedule同步目标沿真实CAS读取，退出等待保留原生结果，
       const deleteCall = writer.task(original.id).delete();
       deleting = deleteCall.wait().then(value => { deleteOutcome = value; }, error => { deleteOutcome = error; });
       await Promise.race([deleteAtWrite.promise, deleting.then(() => { throw new Error('SCHEDULE_DELETE_DID_NOT_REACH_WRITE'); })]);
-      writer.dispose(); await immediate();
-      assert.ok(deleteOutcome instanceof Error); assert.match(deleteOutcome.message, /REACTIVE_SCOPE_DISPOSED/u,
+      writerHandle.release(); await immediate();
+      assert.ok(deleteOutcome instanceof Error); assert.equal(deleteOutcome, writerHandle.signal.reason,
         '独立SDK退出不等待原生delete回执');
       releaseDelete.resolve(); await ended; await deleting;
       assert.deepEqual(await deleteCall.result, { id: original.id, deleted: true });
@@ -166,7 +170,7 @@ test('Schedule同步目标沿真实CAS读取，退出等待保留原生结果，
       releaseUpdate.resolve(); releaseDelete.resolve();
       await Promise.allSettled([putReceipt, deleteReceipt, updating, deleting]);
       table.put = nativePut; table.delete = nativeDelete;
-      writer?.dispose(); writerHandle?.release();
+      writerHandle?.release();
     }
     assert.equal((await sdk.active()).length, 0);
     subscriptions.forEach(subscription => subscription.unsubscribe());
@@ -186,13 +190,15 @@ test('Schedule同步目标沿真实CAS读取，退出等待保留原生结果，
         let outcome;
         waiting = sdk.active({ signal: cancellation.signal }).then(value => { outcome = value; }, error => { outcome = error; });
         await read.promise;
-        if (mode === 'caller') cancellation.abort(reason); else sdk.dispose();
+        if (mode === 'caller') cancellation.abort(reason); else session.release();
         await immediate();
         if (mode === 'caller') assert.equal(outcome, reason, '调用者取消不等原生list回执');
         else { assert.ok(outcome instanceof Error); assert.match(outcome.message, /REACTIVE_SCOPE_DISPOSED/); }
       } finally { finish.resolve(); await waiting; ScheduleService.prototype.list = nativeList; }
     }
     assert.throws(() => task.state.peek(), /REACTIVE_SCOPE_DISPOSED/);
+    session = await runtime.application.open(session.id, program);
+    sdk = capability.forSession(session);
 
     const headRecord = await runtime.native.schedule.create(SessionId(session.id), {
       title: '占住正式FIFO', prompt: '仅验证写入排队，不投递输入', after_seconds: 3600,
@@ -238,7 +244,7 @@ test('Schedule同步目标沿真实CAS读取，退出等待保留原生结果，
         current.waiting = current.call.wait().then(value => { current.outcome = value; }, error => { current.outcome = error; });
       }
       for (const current of queued) {
-        if (current.exit === 'sdk') current.sdk.dispose();
+        if (current.exit === 'sdk') current.handle.release();
         else if (current.exit === 'source') current.handle.release();
         else current.controller.abort(current.reason);
       }
@@ -275,8 +281,8 @@ test('Schedule同步目标沿真实CAS读取，退出等待保留原生结果，
       headRelease.resolve();
       await Promise.allSettled([headCall?.result, ...queued.map(current => current.call?.result), ...fifoReceipts]);
       table.put = nativePut; table.delete = nativeDelete;
-      for (const current of queued) { current.sdk.dispose(); current.handle.release(); }
-      headSdk.dispose(); headHandle.release();
+      for (const current of queued) current.handle.release();
+      headHandle.release();
       for (const record of [headRecord, ...queued.map(current => current.record)]) {
         await runtime.native.schedule.delete({ id: record.id, sessionId: SessionId(session.id) });
       }
@@ -349,11 +355,10 @@ test('Schedule同步目标沿真实CAS读取，退出等待保留原生结果，
       releaseLateUpdate.resolve(); releaseLateDelete.resolve();
       await Promise.allSettled([latePutReceipt, lateDeleteReceipt, lateUpdateCall?.result, lateDeleteCall?.result, queuedAfterDelete?.result, disposing]);
       table.put = nativePut; table.delete = nativeDelete;
-      lateSdk.dispose();
     }
     assert.equal(models, 0); assert.deepEqual(errors, []);
   } finally {
-    release.resolve(); subscriptions.forEach(subscription => subscription.unsubscribe());
-    sdk?.dispose(); foreign?.release(); session?.release(); await capability.dispose(); await gateway?.close(); await runtime.dispose();
+    restoreCatalog?.(); release.resolve(); subscriptions.forEach(subscription => subscription.unsubscribe());
+    foreign?.release(); session?.release(); await capability.dispose(); await gateway?.close(); await runtime.dispose();
   }
 });

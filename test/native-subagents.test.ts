@@ -104,10 +104,11 @@ test('原生子目录三种模式沿真实Session持久事实组合，缺失分�
     cancellation.abort(reason); await rejected;
     assert.equal(signal.aborted, true);
     release.resolve(); service.listDescendants = original;
-    children.dispose();
+    const sessionId = session.id;
+    session.release();
     assert.throws(() => children.catalog.peek(), /REACTIVE_SCOPE_DISPOSED/);
     assert.throws(() => children.descendants.peek(), /REACTIVE_SCOPE_DISPOSED/);
-    const resumed = await app.host.resume(session.id, program);
+    const resumed = await app.host.resume(sessionId, program);
     try {
       assert.deepEqual(await resumed.readView('modes'), ['one-shot', 'continuable', 'external', 'continuable']);
       await capability.dispose();

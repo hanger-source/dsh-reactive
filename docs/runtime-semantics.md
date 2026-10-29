@@ -28,6 +28,8 @@
 
 最后一个冷会话借用释放时，程序图同步退出；应用关闭仍等待已经收集的图所持有的真实工作和清理。`host.close(sessionId)` 结束原生 Agent 挂载，仍有借用的 Program 冷图保持原身份；工作区关系则直到实际 Workspace owner 退出才停止并结算。
 
+原生能力的 `forSession(source)` 返回同一来源的共享业务面，只提供领域资源和控制，不公开共享 Scope 或 dispose。每个消费者拥有自己的订阅与单次等待；需要独立来源寿命时持有独立 Session 句柄。Files、Journal、Attachments 的内部关闭在构造时登记到 Host 签发的来源，复用原读取关闭集合；原来源退出先撤资格，Host 退出仍加入已收集 Session 的实际 I/O 和监听释放。
+
 Scope 子树共享父撤销的原原因，父退出后即使尚在执行其他同步清理，子资源也已经不可使用。实际释放仍走原有 Scope 树，父汇总子清理错误；逻辑撤销不代替原生异步释放的完成回执。
 
 `useObservable(factory, deps)` 用 React `useMemo` 保持来源身份，并以 `useSyncExternalStore` 观察当前快照。factory 只构造 Observable；订阅在提交后的观察阶段建立。首次未发出为 pending，成功发出为 ready，来源错误为 error；空完成产生错误，已经发出后完成保留最后值。观察退出后断开所属查询连接，再次观察时按该来源及订阅语义重新准备。

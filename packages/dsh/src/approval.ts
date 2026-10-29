@@ -30,7 +30,6 @@ export interface NativeSessionApproval {
   readonly policy$: Observable<ApprovalPolicy>;
   readAudit(options?: CancellationOptions): Promise<readonly NativeApprovalEvent[]>;
   setPolicy(policy: ApprovalPolicy, options?: CancellationOptions): void;
-  dispose(): void;
 }
 
 class SessionApproval implements NativeSessionApproval {
@@ -38,7 +37,6 @@ class SessionApproval implements NativeSessionApproval {
   readonly policy: ResourceReader<ApprovalPolicy>;
   readonly policy$: Observable<ApprovalPolicy>;
   #scope: Scope;
-  get disposed(): boolean { return this.#scope.disposed; }
   constructor(private readonly owner: NativeCapabilityOwner, private readonly access: NativeSessionAccess, defaultPolicy: ApprovalPolicy) {
     this.#scope = nativeObservationScope(owner, access);
     this.audit$ = nativeObservation(this.#scope, nativeSessionEvents(access).pipe(filter((event): event is NativeApprovalEvent =>
@@ -73,7 +71,6 @@ class SessionApproval implements NativeSessionApproval {
     if (!service) throw new Error('REACTIVE_NATIVE_APPROVAL_REQUIRED');
     service.setPolicy(agent, policy);
   }
-  dispose(): void { this.#scope.dispose(); }
 }
 
 export interface NativeApproval extends NativeCapability {
@@ -86,7 +83,7 @@ export function createNativeApproval(options: NativeApprovalOptions): NativeAppr
   if (typeof options.require !== 'function' || (options.answer !== 'provided' && typeof options.answer !== 'function')) {
     throw new Error('REACTIVE_NATIVE_APPROVAL_HANDLER_REQUIRED');
   }
-  const sessions = new WeakMap<object, SessionApproval>();
+  const sessions = new WeakMap<object, NativeSessionApproval>();
   const policy = options.policy, require = options.require, answer = options.answer;
   class CapabilityApproval extends Approval {
     override request(request: ApprovalRequest): Promise<ApprovalOutcome> {
@@ -127,7 +124,12 @@ export function createNativeApproval(options: NativeApprovalOptions): NativeAppr
     forSession(session: NativeSessionSource) {
       const access = nativeSessionAccess(session); owner.session(access, 'approval');
       let current = sessions.get(session);
-      if (!current || current.disposed) { current = new SessionApproval(owner, access, policy); sessions.set(session, current); }
+      if (!current) {
+        const reader = new SessionApproval(owner, access, policy);
+        current = Object.freeze({ audit$: reader.audit$, policy: reader.policy, policy$: reader.policy$,
+          readAudit: reader.readAudit.bind(reader), setPolicy: reader.setPolicy.bind(reader) });
+        sessions.set(session, current);
+      }
       return current;
     },
   });

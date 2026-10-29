@@ -80,7 +80,7 @@ function fileConsumer(files: NativeSessionFiles) {
   const shared: SessionFiles = files;
   const page: FileResource<WorkspaceFileText> = shared.text('report.txt', { offset: 2, limit: 5 });
   const watch: FileWatch = shared.watch('report.txt');
-  const closing: Promise<void> = files.dispose();
+  const closing: Promise<void> = watch.dispose();
   return { page, watch, closing, directory: shared.directory('.'), metadata: shared.metadata('report.txt') };
 }
 void fileConsumer;

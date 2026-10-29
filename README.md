@@ -121,7 +121,7 @@ React 负责组件身份和声明提交，RxJS 负责业务流组合，dsh 负�
 
 `nativeCapabilities(...selected)` 将显式选择的配置实例交给独立或嵌入宿主。Jobs、MCP、Approval 与时区 SDK 使用真实会话句柄和各自的原生 owner；释放观察与停止执行分别表达。[原生能力组合](examples/capabilities/native.tsx)、[资源与失效](examples/capabilities/resources.ts)、[持续反应](examples/capabilities/reactions.ts) 和[原生 UI 扩展](packages/native-ui/examples/actions.ts) 展示这些对象怎样共同使用。UI 与后台示例分别编译，避免把原生客户端和宿主的服务声明合并到一个 TypeScript 程序。
 
-会话能力的 `forSession` 也接受 Program 收到的原 `conversation`，沿同一 Host 身份链核验。首次观察才建立原生读侧连接；Program 失败只释放该来源的观察，已受理的原生工作保留各自 owner。
+会话能力的 `forSession` 也接受 Program 收到的原 `conversation`，沿同一 Host 身份链核验。相同来源返回稳定的共享业务面，不公开共享读侧的销毁权；消费者退出自己的订阅或等待，独立读取寿命由自己取得的 Session 句柄持有。首次观察才建立原生读侧连接；Program 失败只释放该来源的观察，已受理的原生工作保留各自 owner。释放边界见[原生会话能力的借用与释放](docs/migration-native-borrowed-readers.md)。
 
 `/schedule` 提供现有原生提醒的绑定、变更与历史观察、CAS 更新和删除；`/team` 提供真实成员和任务板的观察、任务创建与 CAS、等待及 interrupt；`/files` 在明确提供 WorkspaceFiles 的宿主按原会话目录读取并异步释放文件监听。它们位于 `@hanger-source/dsh-reactive-dsh` 的独立可选入口，未安装的能力不会进入宿主根入口的类型依赖。Schedule 创建与 Team spawn/send 的 Program 来源准入仍受上述原生接点限制。
 

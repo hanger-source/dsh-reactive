@@ -142,6 +142,9 @@ test('Session Files直接经过真实HTTP与watch：范围、权限、重连、�
     local = await runtime.application.create('work', { workspaceId: workspace.workspaceId }); visible.add(local.id);
     files = capability.forSession(local);
     assert.equal(local.files, files, '本地SDK沿同一已安装能力取得借用接口');
+    assert.equal(capability.forSession(local), files, '同一来源共享稳定借用面');
+    assert.equal('dispose' in files, false, '共享借用者不能销毁其他消费者的文件读侧');
+    assert.equal('scope' in files, false, '借用面不暴露内部owner');
     assert.equal((await programFiles.readBytes('artifact.txt')).data[0], 't'.charCodeAt(0), 'Program直接读取同一真实文件，无需Expose中转');
     client = await createProgramClient(program, transport());
     remote = await client.open(local.id);
@@ -318,7 +321,7 @@ test('Session Files直接经过真实HTTP与watch：范围、权限、重连、�
     remoteClosing.release.resolve();
     remote = await client.open(qualified.sessionId);
 
-    t.diagnostic('files.phase 本地owner实际清理');
+    t.diagnostic('files.phase 原句柄退出与Host实际清理');
     const finalPage = files.text('artifact.txt');
     subscriptions.push(finalPage.observations$.subscribe()); await finalPage.read();
     const finalRead = gate(); bytesGate = finalRead;
@@ -327,14 +330,18 @@ test('Session Files直接经过真实HTTP与watch：范围、权限、重连、�
     const localRejected = assert.rejects(localPending, error => error === localReason);
     await finalRead.entered.promise; localCancellation.abort(localReason); await localRejected;
     const localClosing = gate(); closeGate = localClosing;
-    let disposed = false;
-    const disposing = files.dispose().then(() => { disposed = true; });
+    local.release();
     assert.throws(() => finalPage.peek(), 'SDK退出立即撤ready，不等不合作I/O');
-    await localClosing.entered.promise; await immediate(); assert.equal(disposed, false);
+    await localClosing.entered.promise;
+    assert.equal((await remote.files.stat('artifact.txt')).absolutePath, path, '本地借用退出不销毁全域能力');
+    await remote.release(); remote = undefined;
+    assert.equal(runtime.native.agents.get(SessionId(local.id)), undefined, '最后冷句柄退出，Host已收集原会话图');
+    let disposed = false;
+    const disposing = runtime.application.dispose().then(() => { disposed = true; });
+    await immediate(); assert.equal(disposed, false, 'Host等待已经收集的冷会话所持有的实际清理');
     localClosing.release.resolve(); await immediate();
     assert.equal(disposed, false, 'unwatch结束后仍等真实I/O');
     finalRead.release.resolve(); await disposing;
-    assert.equal((await remote.files.stat('artifact.txt')).absolutePath, path, '本地借用退出不销毁全域能力');
     assert.equal(models, 0); assert.deepEqual(errors, []);
   } finally {
     for (const current of gates) current.release.resolve();

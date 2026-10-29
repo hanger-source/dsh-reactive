@@ -47,8 +47,6 @@ export interface NativeSessionSchedule {
   catalog(options?: CancellationOptions): Promise<readonly ScheduleCatalogEntry[]>;
   /** 同步绑定固定目标，不读取 catalog；取得对象不表示提醒存在或已经获得修改资格。 */
   task(id: ScheduleId): NativeScheduleTask;
-  /** 释放管理观察，不删除提醒或撤回已经投递的输入。 */
-  dispose(): void;
 }
 
 class SessionSchedule implements NativeSessionSchedule {
@@ -57,7 +55,6 @@ class SessionSchedule implements NativeSessionSchedule {
   readonly catalog$: Observable<readonly ScheduleCatalogEntry[]>;
   readonly scope: Scope;
   #tasks = new Map<ScheduleId, NativeScheduleTask>();
-  get disposed(): boolean { return this.scope.disposed; }
 
   constructor(private readonly owner: NativeCapabilityOwner, private readonly access: NativeSessionAccess) {
     this.scope = nativeObservationScope(owner, access);
@@ -138,7 +135,6 @@ class SessionSchedule implements NativeSessionSchedule {
     }
     return task;
   }
-  dispose(): void { this.scope.dispose(); }
 }
 
 export interface NativeSchedule extends NativeCapability {
@@ -156,12 +152,17 @@ export function createNativeSchedule(options: NativeScheduleOptions): NativeSche
     if (selected.service.kind === 'install') yield ctx.plugin(ScheduleService, selected.service.config ?? {});
     else if (!ctx.get('schedule')) throw new Error('REACTIVE_NATIVE_SCHEDULE_REQUIRED');
   });
-  const sessions = new WeakMap<object, SessionSchedule>();
+  const sessions = new WeakMap<object, NativeSessionSchedule>();
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
     forSession(session: NativeSessionSource) {
       const access = nativeSessionAccess(session); owner.session(access, 'schedule');
       let current = sessions.get(session);
-      if (!current || current.disposed) { current = new SessionSchedule(owner, access); sessions.set(session, current); }
+      if (!current) {
+        const reader = new SessionSchedule(owner, access);
+        current = Object.freeze({ state: reader.state, active$: reader.active$, catalog$: reader.catalog$,
+          active: reader.active.bind(reader), catalog: reader.catalog.bind(reader), task: reader.task.bind(reader) });
+        sessions.set(session, current);
+      }
       return current;
     },
   });

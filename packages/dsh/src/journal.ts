@@ -15,10 +15,7 @@ export type { SessionJournal, ProgramJournalEvent, ProgramJournalEntry, ProgramJ
   ProgramJournalWindow, ProgramJournalPageQuery, ProgramJournalFrame } from '@hanger-source/dsh-reactive/journal';
 
 export interface NativeJournalOptions { readonly service: 'provided'; }
-export interface NativeSessionJournal extends SessionJournal {
-  /** 撤销本读侧并加入已开始的原生 page、observation 及监听清理。 */
-  dispose(): Promise<void>;
-}
+export type NativeSessionJournal = SessionJournal;
 export interface NativeJournal extends NativeCapability {
   /** 日志读侧不使用home；仍可作为普通NativeCapability参与原装配。 */
   readonly install: (ctx: Context, home?: string) => Promise<void>;
@@ -30,6 +27,7 @@ const original = (value: object | undefined): unknown => value && Reflect.get(va
 const tailLimit = 1024 * 1024;
 
 class SessionJournalReader implements NativeSessionJournal {
+  readonly reader: NativeSessionJournal = Object.freeze({ page: this.page.bind(this), follow: this.follow.bind(this) });
   readonly scope: Scope;
   #pending = new Set<Promise<unknown>>();
   #followers = new Set<() => void>();
@@ -46,6 +44,7 @@ class SessionJournalReader implements NativeSessionJournal {
       void this.dispose().catch(error => { owner.recordCleanupFailure(error); logger.error(error); });
     }, { once: true });
     if (access.signal.aborted) stop();
+    access.ownReading(() => this.dispose());
   }
   get disposed(): boolean { return this.scope.disposed || this.#closing !== undefined; }
   private assertCurrent(): void {
@@ -250,7 +249,7 @@ export function createNativeJournal(options: NativeJournalOptions): NativeJourna
         const created = new SessionJournalReader(owner, access, ready, providers, () => active.delete(created));
         current = created; sessions.set(source, current); active.add(current);
       }
-      return current;
+      return current.reader;
     },
     dispose(): Promise<void> {
       if (closing) return closing;

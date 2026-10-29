@@ -75,13 +75,15 @@ for (const mode of ['native', 'ptc'] as const) {
       // PTC只折叠模型直调入口；目录仍表达原生作用域完整可见schema。
       if (mode === 'ptc') assert.ok((await first.catalog.read()).length > 1);
       const retainMask = agent.ctx.get('tools')!.restrict({ deny: ['masked_tool'] });
-      first.dispose();
+      const sessionId = one.id;
+      one.release();
       assert.throws(() => first.catalog.peek());
       assert.equal(agent.ctx.get('tools')!.schemas(agent).some(tool => tool.name === 'masked_tool'), false,
         'SDK释放不能解除其他owner的restriction');
       assert.equal(registry.get('shared_tool')?.description, 'host-shared');
       retainMask(); subscription.unsubscribe();
       const previous = first;
+      one = await app.host.open(sessionId, program);
       first = tools.forSession(one);
       assert.notEqual(first, previous);
       subscription = first.catalog.values$.subscribe(snapshots);

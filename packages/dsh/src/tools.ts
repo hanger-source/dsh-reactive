@@ -24,14 +24,11 @@ export interface NativeToolCatalog extends ResourceReadable<readonly ToolSchema[
 export interface NativeSessionTools {
   /** 注册、撤销、restriction 与 Agent 代际变化都撤下旧快照。PTC 模式仍保留完整可见目录。 */
   readonly catalog: NativeToolCatalog;
-  /** 仅释放读取与观察，不撤销工具、restriction、政策或已经受理的执行。 */
-  dispose(): void;
 }
 
 class SessionTools implements NativeSessionTools {
   readonly catalog: NativeToolCatalog;
   readonly scope: Scope;
-  get disposed(): boolean { return this.scope.disposed; }
 
   constructor(owner: NativeCapabilityOwner, access: NativeSessionAccess) {
     this.scope = nativeObservationScope(owner, access);
@@ -44,7 +41,6 @@ class SessionTools implements NativeSessionTools {
       },
     });
   }
-  dispose(): void { this.scope.dispose(); }
 }
 
 export interface NativeTools extends NativeCapability {
@@ -57,12 +53,16 @@ export function createNativeTools(options: NativeToolsOptions): NativeTools {
   const owner = new NativeCapabilityOwner('reactive-native-tools', ['tools'], function* (ctx) {
     if (!ctx.get('tools')) throw new Error('REACTIVE_NATIVE_TOOLS_REQUIRED');
   });
-  const sessions = new WeakMap<object, SessionTools>();
+  const sessions = new WeakMap<object, NativeSessionTools>();
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
     forSession(session: NativeSessionSource) {
       const access = nativeSessionAccess(session); owner.session(access, 'tools');
       let current = sessions.get(session);
-      if (!current || current.disposed) { current = new SessionTools(owner, access); sessions.set(session, current); }
+      if (!current) {
+        const reader = new SessionTools(owner, access);
+        current = Object.freeze({ catalog: reader.catalog });
+        sessions.set(session, current);
+      }
       return current;
     },
   });

@@ -85,7 +85,7 @@ for (const mode of ['spawn', 'fork'] as const) test(`${mode} 后代资源沿真�
     assert.equal(runtime.native.agents.get(parentAgent.id), parentAgent);
     assert.equal(calls.get('branch-a'), 1, '中断不自动重传或重启委托');
 
-    children.dispose(); await capability.dispose();
+    await capability.dispose();
     assert.equal(signalB.aborted, false, 'SDK读侧退出不冒充原生执行取消');
     assert.equal(runtime.native.agents.get(agentB.id), agentB);
     gates.get('branch-b')!.release.resolve();

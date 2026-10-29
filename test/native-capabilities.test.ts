@@ -611,7 +611,9 @@ test('本地Files惰性借入精确会话，真实文件变化与取消不越过
     assert.equal(disposed, false, 'unwatch完成后仍须等不合作的实际读取回执');
     releaseRead.resolve(); await closing;
     assert.equal(watchClosed, true);
-    assert.equal(nativeFiles.dispose(), nativeFiles.dispose(), '重复释放加入同一真实清理回执');
+    const releasedCapability = capability.dispose();
+    assert.equal(capability.dispose(), releasedCapability, '实际安装owner重复释放加入同一真实清理回执');
+    await releasedCapability;
     assert.equal((await service.stat({ sessionId: SessionId(session.id), workspaceRoot: directory }, 'artifact.txt', new AbortController().signal)).absolutePath,
       artifact, 'Host只退出借入读侧，正式外部WorkspaceFiles仍由原宿主持有');
     assert.throws(() => session.files);
@@ -724,7 +726,8 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     const ready = (job: ReturnType<typeof launch>) => firstValueFrom(observedSession.job(job).output$
       .pipe(filter(value => value.chunks.some(chunk => chunk.text.includes('native-job-ready')))));
     const first = launch(), reader = observedSession.job(first);
-    observations.push(reader.state$.subscribe());
+    const initialObserver = reader.state$.subscribe();
+    observations.push(initialObserver);
     const firstObserver = firstValueFrom(reader.output$.pipe(filter(value => value.chunks.some(chunk => chunk.text.includes('native-job-ready')))));
     const secondObserver = firstValueFrom(reader.output$.pipe(filter(value => value.chunks.some(chunk => chunk.text.includes('native-job-ready')))));
     const [observed, secondObserved] = await Promise.all([firstObserver, secondObserver]);
@@ -756,12 +759,15 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     const appended = await advanced;
     assert.deepEqual(appended, jobs.get(first, owner));
     assert.ok(appended.output.earliest > 0, '真实进程输出越过正式live retention，已连接state也更新earliest');
-    const sdkWait = assert.rejects(reader.wait(5_000), /REACTIVE_SCOPE_DISPOSED/u);
-    observedSession.dispose();
+    const readingSource = await runtime.application.open(session.id);
+    const independentReader = capability.forSession(readingSource).job(first);
+    const sdkWait = assert.rejects(independentReader.wait(5_000), /REACTIVE_SCOPE_DISPOSED/u);
+    readingSource.release();
     await sdkWait;
+    initialObserver.unsubscribe();
     assert.equal(jobs.get(first, owner).status, 'running', '释放SDK观察不调用原生kill');
     assert.doesNotThrow(() => process.kill(children[0]!.child.pid!, 0), '真实Node进程仍存活');
-    observedSession = capability.forSession(session);
+    assert.equal(capability.forSession(session), observedSession, '独立借用退出不撤销其他来源持有的共享读侧');
     const controlling = observedSession.job(first);
     const sharedSession = sharedCapability.forSession(session);
     const connectedSessions = [observedSession, programSession.jobs, sharedSession];
@@ -797,8 +803,8 @@ test('opt-in原生安装拒绝并释放PENDING与失败插件；官方Jobs围绕
     assert.equal(jobs.read(first, owner).result, undefined, '原生cursor不会重放SDK已收取的终态result');
     assert.equal(controlling.collect().result, undefined, '再次collect仍沿正式单次交付');
     assert.throws(() => process.kill(children[0]!.child.pid!, 0), { code: 'ESRCH' });
-    assert.throws(() => reader.remove(), /REACTIVE_SCOPE_DISPOSED/u, '旧SDK退出后不能借原目标移除记录');
-    assert.throws(() => reader.invalidate(), /REACTIVE_SCOPE_DISPOSED/u, '旧SDK退出后不能向共享注册表发布失效');
+    assert.throws(() => independentReader.remove(), /REACTIVE_SCOPE_DISPOSED/u, '旧来源退出后不能借原目标移除记录');
+    assert.throws(() => independentReader.invalidate(), /REACTIVE_SCOPE_DISPOSED/u, '旧来源退出后不能向共享注册表发布失效');
     const preCancelled = new AbortController(), removalCancelled = new Error('JOB_REMOVAL_CANCELLED_BEFORE_CONTROL');
     preCancelled.abort(removalCancelled);
     assert.throws(() => controlling.collect({ signal: preCancelled.signal }), error => error === removalCancelled);

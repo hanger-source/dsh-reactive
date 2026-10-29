@@ -15,6 +15,8 @@ export interface NativeSessionAccess {
   readonly journalAddress: SessionAddress;
   readonly signal: AbortSignal;
   readonly scope: Scope;
+  /** 内部读侧向原 Host 登记真实清理；借用对象不持有该关闭入口。 */
+  ownReading(close: () => Promise<void>): void;
   assertCurrent(): void;
   /** 原会话header的工作目录；读取文件范围不需要冲刷或重读会话日志。 */
   workspaceRoot(): string;

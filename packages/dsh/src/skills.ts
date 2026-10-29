@@ -28,15 +28,12 @@ export interface NativeSessionSkills {
   readonly catalog: NativeSkillResource<SkillCatalogSnapshot>;
   /** 固定名称的正文资源；不存在为 ready(undefined)，冷会话保持 pending。 */
   definition(name: string): NativeSkillResource<SkillDefinition | undefined>;
-  /** 只取消本实例读取和监听，不撤销 provider、Skill 声明或会话执行。 */
-  dispose(): void;
 }
 
 class SessionSkills implements NativeSessionSkills {
   readonly catalog: NativeSkillResource<SkillCatalogSnapshot>;
   readonly scope: Scope;
   #definitions = new Map<string, NativeSkillResource<SkillDefinition | undefined>>();
-  get disposed(): boolean { return this.scope.disposed; }
 
   constructor(private readonly owner: NativeCapabilityOwner, private readonly access: NativeSessionAccess) {
     this.scope = nativeObservationScope(owner, access);
@@ -77,7 +74,6 @@ class SessionSkills implements NativeSessionSkills {
     }
     return resource;
   }
-  dispose(): void { this.scope.dispose(); }
 }
 
 export interface NativeSkills extends NativeCapability {
@@ -91,12 +87,16 @@ export function createNativeSkills(options: NativeSkillsOptions): NativeSkills {
     if (!ctx.get('skills')) throw new Error('REACTIVE_NATIVE_SKILLS_REQUIRED');
     if (!ctx.get('workingDirectory')) throw new Error('REACTIVE_NATIVE_WORKING_DIRECTORY_REQUIRED');
   });
-  const sessions = new WeakMap<object, SessionSkills>();
+  const sessions = new WeakMap<object, NativeSessionSkills>();
   return Object.freeze({ install: owner.install, dispose: () => owner.dispose(),
     forSession(session: NativeSessionSource) {
       const access = nativeSessionAccess(session); owner.session(access, 'skills');
       let current = sessions.get(session);
-      if (!current || current.disposed) { current = new SessionSkills(owner, access); sessions.set(session, current); }
+      if (!current) {
+        const reader = new SessionSkills(owner, access);
+        current = Object.freeze({ catalog: reader.catalog, definition: reader.definition.bind(reader) });
+        sessions.set(session, current);
+      }
       return current;
     },
   });

@@ -112,7 +112,7 @@ test('Skill资源读取真实工作区和Agent层级，原生文件变化失效�
     body.invalidate();
     assert.equal(observations.at(-1)?.status, 'pending');
     await body.read();
-    first.dispose();
+    one.release();
     assert.throws(() => body.peek());
     assert.equal((await second.definition('workspace-method').read())?.content.trim(), 'workspace-1');
     assert.equal(models, 0);

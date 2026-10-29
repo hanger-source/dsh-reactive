@@ -7,7 +7,7 @@ import { useLayoutEffect } from 'react';
 import { BehaviorSubject, filter, firstValueFrom, from, timeout, type Subscription } from 'rxjs';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
-import { combineResources, defineApplication, defineEnvironment, defineProgram, defineSurface, ScopeDisposedError, z, type Eligibility, type NativeToolCall, type Observation } from '@hanger-source/dsh-reactive';
+import { combineResources, defineApplication, defineEnvironment, defineProgram, defineSurface, z, type Eligibility, type NativeToolCall, type Observation } from '@hanger-source/dsh-reactive';
 import { implementProgram, NativeTools, useResource } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeCapabilities, nativeModel, type ConversationHandle } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeApproval, type ApprovalOutcome, type ApprovalPolicy, type ApprovalRequestEvent, type NativeApprovalEvent, type NativeSessionApproval } from '@hanger-source/dsh-reactive-dsh/approval';
@@ -94,9 +94,10 @@ test('Approval政策资源与原生日志、hooks和Tool组合同源，冷读恢
       if (args[0] === one!.id && args[1] === 'read') reads++;
       return Reflect.apply(target, receiver, args);
     } });
+    const sessionId = one.id;
     try {
       for (const exit of ['caller', 'source', 'sdk'] as const) {
-        const sdk: ConversationHandle<typeof program> | undefined = exit === 'sdk' ? await runtime.application.open(one.id, program) : undefined;
+        const sdk: ConversationHandle<typeof program> | undefined = exit === 'sdk' ? await runtime.application.open(sessionId, program) : undefined;
         const source: NativeSessionApproval = sdk ? approval.forSession(sdk) : exit === 'caller' ? captured.get(one.id)! : first;
         const current = { entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>(), returned: Promise.withResolvers<void>() };
         const controller = new AbortController(), reason = new Error('APPROVAL_AUDIT_CALLER_LEFT');
@@ -109,7 +110,7 @@ test('Approval政策资源与原生日志、hooks和Tool组合同源，冷读恢
           })]));
           const beforeReads = reads;
           if (exit === 'caller') controller.abort(reason);
-          else if (exit === 'source') source.dispose();
+          else if (exit === 'source') one.release();
           else sdk!.release();
           const completed: AuditOutcome = await wait(outcome);
           assert.equal(completed.ok, false, '真实flush回执未放行时，审计消费者已经退出');
@@ -117,7 +118,7 @@ test('Approval政策资源与原生日志、hooks和Tool组合同源，冷读恢
           if (exit === 'caller') assert.equal(completed.error, reason);
           else if (exit === 'sdk') assert.equal(completed.error, sdk!.signal.reason);
           else {
-            assert.ok(completed.error instanceof ScopeDisposedError);
+            assert.equal(completed.error, one.signal.reason);
             assert.throws(() => source.policy.peek(), error => error === completed.error, '保留同一读侧owner的原退出reason');
           }
           assert.deepEqual(await second.readAudit(), [], '一个来源退等不阻塞其他Session的正式审计读取');
@@ -129,8 +130,9 @@ test('Approval政策资源与原生日志、hooks和Tool组合同源，冷读恢
       }
     } finally { gate?.release.resolve(); store.flush = flush; persistence.open = open; }
 
-    first.dispose();
+    one.release();
     assert.throws(() => first.policy.peek(), /REACTIVE_SCOPE_DISPOSED/);
+    one = await runtime.application.open(sessionId, program);
     const replacement = approval.forSession(one);
     assert.notEqual(replacement, first); assert.equal(await replacement.policy.read(), 'ask');
     assert.equal(await second.policy.read(), 'ask');
