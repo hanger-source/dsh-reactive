@@ -1,5 +1,5 @@
 import { Observable, Subscriber, EMPTY, EmptyError, of, throwError, mergeMap } from 'rxjs';
-import type { Observation } from './observation.ts';
+import { assertObservation, type Observation } from './observation.ts';
 
 /** hooks、服务和公开 View 共用此读侧，不要求 React 或宿主会话。 */
 export interface ResourceReadable<T> {
@@ -60,8 +60,18 @@ export class ResourceReader<T> implements ResourceReadable<T> {
       connection = new Subscriber<Observation<T>>({
         next: observation => {
           if (signal?.aborted) { close(); return; }
-          generation = observation.generation;
-          status = observation.status;
+          try {
+            assertObservation<T>(observation);
+            const nextGeneration = observation.generation, nextStatus = observation.status;
+            generation = nextGeneration;
+            status = nextStatus;
+          } catch (error) {
+            if (signal?.aborted) { close(); return; }
+            status = 'error';
+            subscriber.next({ status, generation: ++generation, error });
+            return;
+          }
+          if (signal?.aborted) { close(); return; }
           subscriber.next(observation);
         },
         error: (error: unknown) => signal?.aborted ? close() : subscriber.error(error),
@@ -80,7 +90,18 @@ export class ResourceReader<T> implements ResourceReadable<T> {
     this.values$ = this.observations$.pipe(mergeMap(observation => signal?.aborted || observation.status === 'pending' ? EMPTY
       : observation.status === 'error' ? throwError(() => observation.error) : of(observation.value)));
   }
-  peek(): Observation<T> { this.signal?.throwIfAborted(); return this.source.peek(); }
+  peek(): Observation<T> {
+    this.signal?.throwIfAborted();
+    try {
+      const observation = this.source.peek();
+      assertObservation<T>(observation);
+      this.signal?.throwIfAborted();
+      return observation;
+    } catch (error) {
+      this.signal?.throwIfAborted();
+      throw error;
+    }
+  }
   subscribe(accept: (observation: Observation<T>) => void): () => void {
     this.signal?.throwIfAborted();
     const report = (error: unknown) => {

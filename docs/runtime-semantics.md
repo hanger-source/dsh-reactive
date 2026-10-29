@@ -70,6 +70,8 @@ generation 表示该订阅的读取顺序，业务修订由业务合同提供。
 
 `useObservable` 观察普通来源自身的发射状态；`useResource(factory, deps)` 则明确消费已有的 Observation 流，返回直接可供 Context 使用的 state，以及同一条标准 observations$。它复用共享查询和 useSyncExternalStore，不另建业务数据图。资源的终止错误、空完成或停在 pending 后完成都进入 error；正常 Observation 对象原样传播，不按业务值里的 status 字段自动猜测资源。
 
+资源观察入口要求合法的 pending、ready 或 error 帧及有限数值 generation；ready 必须有 value 字段，error 必须有 error 字段，两者均可显式为 undefined。错误接入的裸值或缺字段帧交付明确的 error，不产生缺少依赖的 ready；来源后续提供合法帧时可以恢复。该检查不解析业务值，也不把普通值流转换为资源流。
+
 同名 Context 在后续完整帧中复用同一个资源接点。当前值进入 pending 时，原生 prepare 等待该接点；名称撤下时，旧接点释放，正在等待它的 prepare 改读当前集合。源失败与业务空值保持不同含义。
 
 ## 原生步骤的准备边界

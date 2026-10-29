@@ -6,9 +6,53 @@ import { join } from 'node:path';
 import { BehaviorSubject, Observable, Subject, lastValueFrom, of } from 'rxjs';
 import type { Observation } from '@hanger-source/dsh-reactive';
 import { observeResource } from '@hanger-source/dsh-reactive';
-import { combineResources, mapResource, shareResource, switchResource } from '@hanger-source/dsh-reactive';
+import { combineResources, mapResource, ResourceReader, shareResource, switchResource } from '@hanger-source/dsh-reactive';
 
 const ready = <T>(value: T, generation: number): Observation<T> => ({ status: 'ready', generation, value, observedAt: Date.now() });
+
+test('错误裸流在公共观察、读取和派生边界明确失败，下一合法帧仍完整恢复', async () => {
+  const source = new BehaviorSubject<Observation<undefined>>([] as unknown as Observation<undefined>);
+  const reader = new ResourceReader({ observations$: source, peek: () => source.value });
+  const observed: Observation<undefined>[] = [];
+  const combined: Observation<{ readonly sessions: string[]; readonly invocations: undefined }>[] = [];
+  const values: undefined[] = [];
+  let valueError: unknown;
+  const observationSubscription = reader.observations$.subscribe(value => observed.push(value));
+  const combinationSubscription = combineResources({ sessions: of(ready(['session'], 1)), invocations: source })
+    .subscribe(value => combined.push(value));
+  const valueSubscription = reader.values$.subscribe({ next: value => values.push(value), error: error => { valueError = error; } });
+  try {
+    assert.equal(observed.at(-1)!.status, 'error');
+    assert.equal(combined.at(-1)!.status, 'error', '不能把缺失 invocations 的对象宣称为完整 ready');
+    assert.equal(combined.some(value => value.status === 'ready'), false);
+    assert.deepEqual(values, [], '错误裸帧不能当成 undefined 业务值交付');
+    assert.ok(valueError instanceof TypeError);
+    await assert.rejects(reader.read(), TypeError);
+    assert.throws(() => reader.peek(), TypeError);
+
+    const inaccessible = new Error('UNREADABLE_FRAME');
+    source.next({ get status(): never { throw inaccessible; }, generation: 1 } as Observation<undefined>);
+    const unreadable = observed.at(-1)!;
+    assert.equal(unreadable.status, 'error');
+    if (unreadable.status === 'error') assert.equal(unreadable.error, inaccessible);
+    assert.equal(combined.at(-1)!.status, 'error', '属性读取失败不终止后续观察');
+
+    const recovered = ready(undefined, -0.5);
+    source.next(recovered);
+    assert.equal(observed.at(-1), recovered, '合法帧保留来源身份');
+    assert.equal(reader.peek(), recovered);
+    assert.equal(await reader.read(), undefined);
+    const result = combined.at(-1)!;
+    assert.equal(result.status, 'ready');
+    if (result.status === 'ready') assert.deepEqual(result.value, { sessions: ['session'], invocations: undefined });
+    const recoveredValues: undefined[] = [];
+    const recoveredSubscription = reader.values$.subscribe(value => recoveredValues.push(value));
+    recoveredSubscription.unsubscribe();
+    assert.deepEqual(recoveredValues, [undefined]);
+  } finally {
+    observationSubscription.unsubscribe(); combinationSubscription.unsubscribe(); valueSubscription.unsubscribe(); source.complete();
+  }
+});
 
 test('同步资源投影拒绝真实异步读取，迟到I/O拒绝有观察出口且下一代同步事实仍可恢复', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-resource-map-'));

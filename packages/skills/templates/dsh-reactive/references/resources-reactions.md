@@ -4,6 +4,8 @@
 
 ## 选择对象与共享范围
 
+`ResourceSource<T>` 接收资源的 observations$ 或 `Observable<Observation<T>>`，动态成员等来源也遵守这份合同。普通 `Observable<T>` 必须由业务明确构造 Observation，不能直接当资源流传入。非法状态、非有限 generation 或缺少 value/error 字段会形成读取错误；后续合法帧仍可恢复，显式的 value:undefined 和 error:undefined 有效。
+
 显式 owner 的 ResourceReader 不以来源正常完成结束有效性观察。有限来源按时释放，既有观察继续接受 owner 撤销，避免外部 hook 或 Context 永久保留旧 ready；values$ 同样不承诺在业务返回时结束。空完成或 pending 后完成交付 EmptyError，不挂起读取。未指定 owner 的 ResourceReader 和普通 Observable 保留来源自己的有限语义；业务完成使用明确的 result/settled 或按业务状态筛选，不用流 EOF 猜测。
 
 工作区共享使用已有 implementation：workspace.resource(implementation, params) 与 workspace.reaction(implementation, params) 直接返回正式 ResourceInstance、ReactionInstance。相同工作区、实现和已解析参数复用身份，跨 Environment 和 Session 共享，不同工作区隔离；构造不读，反应显式 start。组件从 props.workspace 取得对象，本地宿主从 runtime.application.workspace(id) 取得相同接点，无需捕获内核 Scope 或另建注册表。局部关系继续使用 createResource/createReaction 或局部 hooks；它们各自保留明确的 owner。

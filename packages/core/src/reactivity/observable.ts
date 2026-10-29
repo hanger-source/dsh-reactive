@@ -1,5 +1,5 @@
 import { Observable, ReplaySubject, Subscription, connectable, takeUntil, defer, from, tap, distinctUntilChanged, EmptyError, filter, isObservable, map, materialize, scan, startWith, share, observeOn, queueScheduler, switchMap, EMPTY, type OperatorFunction } from 'rxjs';
-import type { Observation } from '../resources/observation.ts';
+import { assertObservation, type Observation } from '../resources/observation.ts';
 import type { Scope } from './scope.ts';
 
 const connections = new WeakMap<Scope, WeakMap<Observable<unknown>, Observable<unknown>>>();
@@ -106,7 +106,14 @@ export function normalizeResource<T>(source$: Observable<Observation<T>>): Obser
   return defer(() => {
     const initial: Observation<T> = { status: 'pending', generation: 0 };
     return source$.pipe(materialize(), scan((current: { state: Observation<T>; emit: boolean }, notification) => {
-      if (notification.kind === 'N') return { state: notification.value, emit: true };
+      if (notification.kind === 'N') {
+        try {
+          assertObservation<T>(notification.value);
+          return { state: notification.value, emit: true };
+        } catch (error) {
+          return { state: { status: 'error', generation: current.state.generation + 1, error } satisfies Observation<T>, emit: true };
+        }
+      }
       if (notification.kind === 'E') return {
         state: { status: 'error', generation: current.state.generation + 1, error: notification.error } satisfies Observation<T>, emit: true,
       };
