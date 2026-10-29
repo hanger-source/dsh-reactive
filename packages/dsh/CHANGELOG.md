@@ -2,6 +2,90 @@
 
 此文件保留源码版本准备记录；条目和版本号本身不表示 npm 已发布或公共 API 已稳定。
 
+## 0.22.0
+
+### Minor Changes
+
+- d254b19: 将工作区成员资格贯通到 Session、Program、本地与远程 SDK、原生资源和人工控制。成员撤销或工作区删除结束旧读取与准入资格，已受理调用、持久回执及独立业务 Operation 继续由原 owner 结算。
+
+  会话取得回执携带 accessId，后续会话请求在装配前核验原资格；无观察的旧 SDK 也不能跨过移除再加入继续使用。显式重新取得保留原生 Agent，并建立新的 Program 图与读取身份。提供 ConversationAccessRevokedError 和只读 signal，开发指导及迁移说明同步更新。
+- 2cadde4: 会话上传同步返回 FileUploadInvocation，普通 Promise、独立等待和有限活动资源消费同一次调用。字节准备可以取消；开始分派后退出等待不覆盖实际回执，也不重新上传。本地会话退出等待已经开始的原生存储，远程运输失败明确保留回执未知及原始原因。原生 UI、公开消费类型和版本化开发指导共同使用这份合同。原先直接 await uploadFile 的消费者需要改为读取调用的 result 或 wait()。
+- a7ad54c: Invocation 统一提供 wait({ signal })，Action、原生写入和上传可以通过同一个合同消费。每次等待只借原 result，取消不改写 activity、结果或 Operation 关联；各签发者的读取 owner 继续适用。
+
+  本地 SDK Action 的调用者 signal 与真正执行 signal 分开：前者限制进入 execute 之前的准入和持久准备，业务开始后不再把真实成功改成 failed 或丢失 Operation 回执。真正的 Host、工具与显式 execution 取消语义保持；本地按原地址查回仍返回原对象，首次调用者取消不会成为永久等待条件。
+
+  远程 Invocation 的 wait 仅限定本 SDK 的等待，不向 Host 发送执行取消。公共类型、泛型仓外消费者、开发 Skill 与调用回执等待指导同步更新。自建 Invocation 实现需补 wait 方法，现有普通消费者使用框架签发对象即可。
+- 7a56dd0: 动态集合合同只签发轻量地址，不永久缓存历史业务 key。Module 持有当前实例的动态声明名称：同地址重复渲染稳定，切换目标或撤下重挂产生新代际；已受理调用继续由原 owner 结算，SDK 仍按完整地址投射。
+
+  Job.wait 改为非消费状态等待，不再调用原生 registry.wait 或影响模型完成通知。显式 collect 消费原生输出 cursor，首个终态消费可取得 producer result；取消与清理不伪造结果确认。
+
+  公开 Disposable/AsyncDisposable 声明显式携带标准库依赖，浏览器不再依赖 Node ambient 补齐。仓外 UI 安装增加 ES2024/DOM、types:[] 的严格声明消费，日常与正式发行共用已有验证链。
+- d5dc92f: 同次 Program 步骤准备并列连接独立模块检查；pending 依赖不再遮住兄弟模块的真实错误，检查集合变化释放旧次等待并重新准备当前集合。
+
+  原生 Skills 的目录和正文使用会话真实当前工作目录，并随同会话目录变化失效。Subagents 提供可组合的后代资源与正式 ancestor 权限下的选定子分支中断；读取、控制和带 Goal 的委托保留各自原生 owner。
+
+  认证 transport 拥有物理连接及 uplink 的真实清理，退出等待实际静止并保留清理失败。独立 SDK 释放自有 transport；借用 Connection 的 SDK 不取得其装配销毁权，应用需把自建 transport 的 dispose 交给原装配 owner。远程进展流的载体断线继续使用官方恢复；终止错误保留在原观察 owner，连接重置不将已终止的入口变成无法完成的 pending，重新 open 会话取得新的观察。
+
+  开发 Skill 同步说明这些公共能力与生命周期边界。源码继续保持 0.x，版本准备统一合并待发 Changesets，不按建设批次升号。
+- 50d10a4: Team 的运行态 roster 与持久成员投影分开，通过正式原生成员和 Agent 状态通知提供同源资源，可与任务板、其他资源、RxJS 和 hooks 共同组合。读取冷会话不创建 Agent，旧来源及 provider 撤销仍沿实际 owner。
+
+  Team 与 Schedule 写入同步返回 NativeInvocation，复用核心 Invocation 合同并保留真实 native 来源、同次 result、有限活动资源及独立 wait。取消等待或退出 SDK 不丢失原生最终成功、拒绝或迟到存储失败；调用拒绝不冒充能力清理失败。直接 Promise 消费迁移为 call.result，可取消等待使用 call.wait。能力 owner 等待真实写入结算，正式安装 effect 按实际 disposer 身份释放读依赖和自有 provider，不建立第二个原生执行队列。
+
+  同步公共类型出口、仓外消费者、运行语义及同版本开发 Skill。迁移见 docs/migration-native-invocations.md。
+- 214a438: 工作区可直接共享已有 ResourceSource，并保留读取寿命与原失效原因；资源同步投影不再交付未观察的 Promise。
+
+  Jobs 提供正式终态移除控制，Schedule 排队写入与 SDK 等待分离取消信号；Jobs、Team、Schedule 分域提供公开纯合同叶。
+
+  客户端前置合同构建按目录分权，Inbox 拥有独立入口；浏览器公共入口共用拆分产物，保持运行时类与合同身份。仓外消费覆盖跨入口的实际传输与纯原生合同浏览器闭包。
+- b757de0: Session 持久归属与子委托受理意图保存实际 Program 合同身份。创建补齐、冷读取、恢复及子输入解释先核原身份；共享换约或具名/本地转换抛出公共 SessionProgramMismatchError，远程 SDK 保留同一类型及原身份事实。旧归属或委托记录缺少 program 字段时明确拒绝，不自动迁移。
+
+  Application 与 Environment 在定义时取得自己的环境及 Skill 声明快照，异步装配不受调用者后续修改影响，Program 实现对象保持原身份。原生同源审计读取在调用者或借用资格退出时及时结束等待，真实持久 flush 和句柄清理继续由原 owner 完成。
+- fb602dd: 提供 Program 的 useSharedResource、Action.activeInvocations 与 ReactionRun.state，让派生资源及运行事实通过同一对象供 Promise、Observable 与 hooks 消费，并保留真实执行的结算寿命。
+
+  统一根、局部 Surface 与嵌套集合的 Invocation 查回。回执保留由实际 Host 调用 owner 负责；completedRetentionMs/maxCompleted 配置移至 RuntimeOptions/HostOptions，Gateway 只传输同一回执，不重执行或依赖当前 Expose。
+
+  修复可选原生 Action 展示在同步注册、退出与重入时的贡献归属和释放失败结算。同步开发 Skill 与迁移说明。
+- fd163f2: 将跨作用域派生的读取资格接入同一 signals 图；读取失败通过订阅错误接点传播到普通消费者和原生 UI。
+
+  Reaction 停止立即撤销来源与排队工作，draining 和 settled 保留已开始 Promise 的实际结算与迟到失败；运行实例结算前不接受第二次 start。
+
+  Action 和 NativeTools 的准入等待随原调用、声明代际与 Program 退出及时结束。原 execution 身份保持不变，原生最终 guard 拒绝已撤销的旧准入；已经进入业务的工作保留原 owner。
+- 6f9b816: Program、本地与远程 SDK、可选原生 UI 共用 session.files、SessionFiles、FileResource 和 FileWatch；路径资源复用同一读侧与原 owner，原生范围和正式 WorkspaceFiles 类型贯穿 Gateway 字节及变化端点。
+
+  HostOptions.files 与 RuntimeOptions.files 借入已安装的 NativeFiles，应用退出等待自身实际文件读取与监听清理。Gateway 可显式借用已有 Registry，文件端点逐次复核 Program、accessId、认证主体和交付权限；重连撤旧 ready 后等新 watch 重读。
+
+  NativeSession.dispose 返回同一次 Promise，先同步撤观察资格，再等待本 UI 创建的 raw watch；需要完整清理结果的消费者改为 await dispose() 或 await using。借入 SDK 和全域文件能力仍由其原 owner 销毁。
+
+  开发 Skill/reference 同步公共入口与权限、范围和清理边界。本次只记录待发变化，源码保持 0.x，不按批次升号或执行发布。
+
+  文件资源持续更新遵循正式 FS 通知边界；固定 rc.3 本地 provider 可能抑制同路径 50ms 内的 change 且不补尾通知。已知写入完成后显式 invalidate，立即核验使用单次权威查询，不承诺自动追上每次连续写入。
+- b2db37f: 共享 Program 使用发布者声明的 name/version，远程 SDK 只接受明确共享的程序定义。创建、补齐、恢复及所有会话请求与流重连共同核验真实 Program；同名且 wire 兼容的视图不能使另一程序被误认。局部无名 Program 继续用于本地组合，本地传入真实定义仍核对象身份；共享身份不替代认证、Workspace 或 Session 权限。原生 UI、真实包消费者与版本化开发指导同步使用这份合同。
+- 6f120f7: 本地、远程及 Program 会话共用 journal 的原生消息分页、冷安全开场和持久追加观察。Host 借用确切 Context 中已安装的 Controller/Query 并拥有读侧的取消与实际清理；子会话使用已核验的原生父子地址，冷会话恢复沿原生日志接合追加顺序。Gateway 转发同一入口，独立 Runtime 不隐装 Controller。远程 openEvents 继续由官方 RemoteJournalStream 管理重连和缺口，新增单次开场取消，并保留读取与清理同时失败的完整原因；同一会话资格撤销只向高级流交付一次原原因。
+
+### Patch Changes
+
+- 6f120f7: Subagent Operation 的每次观察连接在最后退订时撤销本次读取资格，及时退出不合作的授权等待，迟到授权或日志回执不再启动后续持久读取。已受理的 Action、子工作执行及 Operation 业务终态继续由原 owner 负责。
+- 1cff47e: 人工响应在冷读取和异步准入期间及时响应调用者、来源及 Program 取消，迟到准入不能继续激活或提交答案。冷晚答先验证完整题目批次，准入、恢复和受理消费同一份自有答案快照。
+
+  批准安装通过官方 Approval.request 传递所属取消信号，自有和 provided 回答者的尚未决策请求在安装退出时沿原生取消路径结算，迟到批准不授予新 grant。保留原生审计与已决策执行的责任，同版本开发 Skill 说明这些边界。
+- 11cd2b9: Program 的最后一项 Skill 贡献退出时立即撤销对应原生目录 provider 与 named prompt，无需等待下一次模型准备。相同目录或名称仍有贡献时保留原注册；退出继续加入原 Fiber 的异步清理，named prompt 释放失败由准备与 owner 关闭如实报告。
+- Updated dependencies [d254b19]
+- Updated dependencies [2cadde4]
+- Updated dependencies [546f161]
+- Updated dependencies [a7ad54c]
+- Updated dependencies [7a56dd0]
+- Updated dependencies [d5dc92f]
+- Updated dependencies [50d10a4]
+- Updated dependencies [214a438]
+- Updated dependencies [b757de0]
+- Updated dependencies [fb602dd]
+- Updated dependencies [6f120f7]
+- Updated dependencies [fd163f2]
+- Updated dependencies [6f9b816]
+- Updated dependencies [b2db37f]
+- Updated dependencies [6f120f7]
+  - @hanger-source/dsh-reactive@0.22.0
+
 ## 0.21.0
 
 ### Minor Changes

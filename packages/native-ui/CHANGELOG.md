@@ -2,6 +2,61 @@
 
 此文件保留源码版本准备记录；条目和版本号本身不表示 npm 已发布或公共 API 已稳定。
 
+## 0.22.0
+
+### Minor Changes
+
+- 2cadde4: 会话上传同步返回 FileUploadInvocation，普通 Promise、独立等待和有限活动资源消费同一次调用。字节准备可以取消；开始分派后退出等待不覆盖实际回执，也不重新上传。本地会话退出等待已经开始的原生存储，远程运输失败明确保留回执未知及原始原因。原生 UI、公开消费类型和版本化开发指导共同使用这份合同。原先直接 await uploadFile 的消费者需要改为读取调用的 result 或 wait()。
+- fd163f2: 将跨作用域派生的读取资格接入同一 signals 图；读取失败通过订阅错误接点传播到普通消费者和原生 UI。
+
+  Reaction 停止立即撤销来源与排队工作，draining 和 settled 保留已开始 Promise 的实际结算与迟到失败；运行实例结算前不接受第二次 start。
+
+  Action 和 NativeTools 的准入等待随原调用、声明代际与 Program 退出及时结束。原 execution 身份保持不变，原生最终 guard 拒绝已撤销的旧准入；已经进入业务的工作保留原 owner。
+- 6f9b816: Program、本地与远程 SDK、可选原生 UI 共用 session.files、SessionFiles、FileResource 和 FileWatch；路径资源复用同一读侧与原 owner，原生范围和正式 WorkspaceFiles 类型贯穿 Gateway 字节及变化端点。
+
+  HostOptions.files 与 RuntimeOptions.files 借入已安装的 NativeFiles，应用退出等待自身实际文件读取与监听清理。Gateway 可显式借用已有 Registry，文件端点逐次复核 Program、accessId、认证主体和交付权限；重连撤旧 ready 后等新 watch 重读。
+
+  NativeSession.dispose 返回同一次 Promise，先同步撤观察资格，再等待本 UI 创建的 raw watch；需要完整清理结果的消费者改为 await dispose() 或 await using。借入 SDK 和全域文件能力仍由其原 owner 销毁。
+
+  开发 Skill/reference 同步公共入口与权限、范围和清理边界。本次只记录待发变化，源码保持 0.x，不按批次升号或执行发布。
+
+  文件资源持续更新遵循正式 FS 通知边界；固定 rc.3 本地 provider 可能抑制同路径 50ms 内的 change 且不补尾通知。已知写入完成后显式 invalidate，立即核验使用单次权威查询，不承诺自动追上每次连续写入。
+- b2db37f: 共享 Program 使用发布者声明的 name/version，远程 SDK 只接受明确共享的程序定义。创建、补齐、恢复及所有会话请求与流重连共同核验真实 Program；同名且 wire 兼容的视图不能使另一程序被误认。局部无名 Program 继续用于本地组合，本地传入真实定义仍核对象身份；共享身份不替代认证、Workspace 或 Session 权限。原生 UI、真实包消费者与版本化开发指导同步使用这份合同。
+
+### Patch Changes
+
+- 546f161: 框架代码构建与打包资产准备分开，普通 core prepack、工作区打包和正式发行共享完整准备依赖。默认框架类型与行为检查独立于示例验证，保留现有发行资产。
+
+  Native UI 独立构建包含 client 浏览器产物前置任务。日常 tgz 与正式发行消费同一份安装包 Skill/CLI 检查，打包校验同时拒绝缺少 manifest 字面资产的产物。
+- 7a56dd0: 动态集合合同只签发轻量地址，不永久缓存历史业务 key。Module 持有当前实例的动态声明名称：同地址重复渲染稳定，切换目标或撤下重挂产生新代际；已受理调用继续由原 owner 结算，SDK 仍按完整地址投射。
+
+  Job.wait 改为非消费状态等待，不再调用原生 registry.wait 或影响模型完成通知。显式 collect 消费原生输出 cursor，首个终态消费可取得 producer result；取消与清理不伪造结果确认。
+
+  公开 Disposable/AsyncDisposable 声明显式携带标准库依赖，浏览器不再依赖 Node ambient 补齐。仓外 UI 安装增加 ES2024/DOM、types:[] 的严格声明消费，日常与正式发行共用已有验证链。
+- 1e15519: 日常实包消费与正式发行验收使用同一 Playwright 浏览器流程，实际执行 SDK、原生 Slot 与请求进展页面。认证 Host 从独立后台实包安装启动，原生 UI 继续使用独立 React 18 安装与构建产物。成功回执在异步退出完成后生成，发行证据包含真实页面结果；仅有 bundle 构建不再满足浏览器验收。
+- fb602dd: 提供 Program 的 useSharedResource、Action.activeInvocations 与 ReactionRun.state，让派生资源及运行事实通过同一对象供 Promise、Observable 与 hooks 消费，并保留真实执行的结算寿命。
+
+  统一根、局部 Surface 与嵌套集合的 Invocation 查回。回执保留由实际 Host 调用 owner 负责；completedRetentionMs/maxCompleted 配置移至 RuntimeOptions/HostOptions，Gateway 只传输同一回执，不重执行或依赖当前 Expose。
+
+  修复可选原生 Action 展示在同步注册、退出与重入时的贡献归属和释放失败结算。同步开发 Skill 与迁移说明。
+- Updated dependencies [d254b19]
+- Updated dependencies [2cadde4]
+- Updated dependencies [546f161]
+- Updated dependencies [a7ad54c]
+- Updated dependencies [7a56dd0]
+- Updated dependencies [d5dc92f]
+- Updated dependencies [50d10a4]
+- Updated dependencies [214a438]
+- Updated dependencies [b757de0]
+- Updated dependencies [fb602dd]
+- Updated dependencies [6f120f7]
+- Updated dependencies [fd163f2]
+- Updated dependencies [6f9b816]
+- Updated dependencies [b2db37f]
+- Updated dependencies [6f120f7]
+  - @hanger-source/dsh-reactive@0.22.0
+  - @hanger-source/dsh-reactive-client@0.22.0
+
 ## 0.21.0
 
 ### Patch Changes
