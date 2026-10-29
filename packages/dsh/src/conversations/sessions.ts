@@ -21,12 +21,14 @@ import type { ConversationSession, LiveConversation } from './session.ts';
 import type { ConversationObservations } from './observations.ts';
 import type { ConversationInputs } from './inputs.ts';
 import type { ConversationPrograms } from '../programs/preparation.ts';
-import { nativeSessionAccess, registerNativeSession } from './session-access.ts';
+import { nativeSessionAccess, registerNativeSession, type NativeSessionAccess } from './session-access.ts';
 import { SessionFilesUnavailableError, type SessionFiles } from '@hanger-source/dsh-reactive/files';
 import type { NativeSessionFiles } from '../files.ts';
 import type { NativeSessionSource } from '../native-capability.ts';
 import { SessionJournalUnavailableError, type SessionJournal } from '@hanger-source/dsh-reactive/journal';
 import { createNativeJournal, type NativeJournal, type NativeSessionJournal } from '../journal.ts';
+import { SessionAttachmentsUnavailableError, type SessionAttachments } from '@hanger-source/dsh-reactive/attachments';
+import { createNativeAttachments, type NativeAttachments, type NativeSessionAttachments } from '../attachments.ts';
 export class CreationIncompleteError extends Error {
     constructor(readonly reference: CreationReference, cause: unknown) {
         super('REACTIVE_WORKSPACE_CREATION_INCOMPLETE', { cause });
@@ -41,11 +43,13 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
     #owned = new Map<string, AgentHandle>();
     #cleanupFailures = new Set<unknown>();
     #fileReaders = new WeakMap<object, NativeSessionFiles>();
-    #fileClosings = new Set<Promise<void>>();
+    #readerClosings = new Set<Promise<void>>();
     #journals = new WeakMap<object, NativeSessionJournal>();
-    #journalClosings = new Set<Promise<void>>();
     #journal?: NativeJournal;
     #journalInstallation?: Promise<void>;
+    #attachmentReaders = new WeakMap<object, NativeSessionAttachments>();
+    #attachments?: NativeAttachments;
+    #attachmentsInstallation?: Promise<void>;
     #rootAdmissions = new WeakMap<Agent, {
         workspace: ManagedWorkspace;
         environment: AnyEnvironment;
@@ -183,11 +187,14 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         const closed = await Promise.allSettled(sessions.map(entry => entry.scope.closed));
         failures.push(...closed.flatMap(result => result.status === 'rejected' ? [result.reason] : []));
         // 资格退出同步发生；应用关闭仍加入自己取得读侧的实际I/O与unwatch回执。
-        while (this.#fileClosings.size) await Promise.allSettled([...this.#fileClosings]);
-        while (this.#journalClosings.size) await Promise.allSettled([...this.#journalClosings]);
+        while (this.#readerClosings.size) await Promise.allSettled([...this.#readerClosings]);
         if (this.#journal) {
             try { await this.#journal.dispose(); } catch (error) { failures.push(error); }
             await Promise.allSettled([this.#journalInstallation]);
+        }
+        if (this.#attachments) {
+            try { await this.#attachments.dispose(); } catch (error) { failures.push(error); }
+            await Promise.allSettled([this.#attachmentsInstallation]);
         }
         failures.push(...this.#cleanupFailures);
         this.#cleanupFailures.clear();
@@ -256,6 +263,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
             this.registerSessionAccess(conversation, entry, program.signal, () => program.signal.throwIfAborted());
             conversation[conversationBindings]().setFiles(() => this.filesFor(conversation));
             conversation[conversationBindings]().setJournal(() => this.journalFor(conversation));
+            conversation[conversationBindings]().setAttachments(() => this.attachmentsFor(conversation));
             if (agent) this.bindAgent(entry, agent, previous);
             program.mount();
             this.#sessions.set(inspection.meta.id, entry);
@@ -378,6 +386,27 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         this.assertSessionWorkspace(session);
         if (this.#closing.has(session.header.id)) throw new Error('REACTIVE_CONVERSATION_CLOSING');
     }
+    /** 资格同步退出；释放登记覆盖读侧实际I/O，Host关闭等待同一批真实结算。 */
+    private ownReader<T extends { dispose(): Promise<void> }>(access: NativeSessionAccess, reader: T): T {
+        const signal = AbortSignal.any([this.signal, access.signal]);
+        const release = access.scope.own(() => {
+            signal.removeEventListener('abort', close);
+            let completion: Promise<void>;
+            try { completion = reader.dispose(); }
+            catch (error) { this.#cleanupFailures.add(error); throw error; }
+            this.#readerClosings.add(completion);
+            void completion.then(() => this.#readerClosings.delete(completion), error => {
+                this.#cleanupFailures.add(error);
+                this.#readerClosings.delete(completion);
+            });
+            return completion;
+        });
+        const close = () => { try { release(); } catch (error) { this.#cleanupFailures.add(error); } };
+        signal.addEventListener('abort', close, { once: true });
+        if (signal.aborted) { close(); signal.throwIfAborted(); }
+        this.assertActive(); access.assertCurrent();
+        return reader;
+    }
     filesFor(source: NativeSessionSource): SessionFiles {
         this.assertActive();
         const access = nativeSessionAccess(source);
@@ -386,24 +415,7 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         if (!this.options.files) throw new SessionFilesUnavailableError(access.sessionId);
         const reader = this.options.files.forSession(source);
         this.#fileReaders.set(source, reader);
-        const release = access.scope.own(() => {
-            let completion: Promise<void>;
-            try { completion = reader.dispose(); }
-            catch (error) { this.#cleanupFailures.add(error); throw error; }
-            this.#fileClosings.add(completion);
-            void completion.then(() => this.#fileClosings.delete(completion), error => {
-                this.#cleanupFailures.add(error);
-                this.#fileClosings.delete(completion);
-            });
-            return completion;
-        });
-        const close = () => { try { release(); } catch (error) { this.#cleanupFailures.add(error); } };
-        const signal = AbortSignal.any([this.signal, access.signal]);
-        signal.addEventListener('abort', close, { once: true });
-        if (signal.aborted) { close(); signal.throwIfAborted(); }
-        this.assertActive();
-        access.assertCurrent();
-        return reader;
+        return this.ownReader(access, reader);
     }
     journalFor(source: NativeSessionSource): SessionJournal {
         this.assertActive();
@@ -420,23 +432,23 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         }
         const reader = this.#journal.forSession(source);
         this.#journals.set(source, reader);
-        const release = access.scope.own(() => {
-            let completion: Promise<void>;
-            try { completion = reader.dispose(); }
-            catch (error) { this.#cleanupFailures.add(error); throw error; }
-            this.#journalClosings.add(completion);
-            void completion.then(() => this.#journalClosings.delete(completion), error => {
-                this.#cleanupFailures.add(error);
-                this.#journalClosings.delete(completion);
-            });
-            return completion;
-        });
-        const close = () => { try { release(); } catch (error) { this.#cleanupFailures.add(error); } };
-        const signal = AbortSignal.any([this.signal, access.signal]);
-        signal.addEventListener('abort', close, { once: true });
-        if (signal.aborted) { close(); signal.throwIfAborted(); }
-        this.assertActive(); access.assertCurrent();
-        return reader;
+        return this.ownReader(access, reader);
+    }
+    attachmentsFor(source: NativeSessionSource): SessionAttachments {
+        this.assertActive();
+        const access = nativeSessionAccess(source);
+        const cached = this.#attachmentReaders.get(source);
+        if (cached) return cached;
+        if (!this.#attachments) {
+            if (!this.ctx.get('sessionController')) throw new SessionAttachmentsUnavailableError(access.sessionId);
+            const attachments = createNativeAttachments({ service: 'provided' });
+            this.#attachments = attachments;
+            this.#attachmentsInstallation = attachments.install(this.ctx);
+            void this.#attachmentsInstallation.catch(() => {});
+        }
+        const reader = this.#attachments.forSession(source);
+        this.#attachmentReaders.set(source, reader);
+        return this.ownReader(access, reader);
     }
     registerSessionAccess(handle: object, session: ConversationSession, signal: AbortSignal, assertHandle: () => void) {
         const assertCurrent = () => {

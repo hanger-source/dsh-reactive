@@ -12,6 +12,7 @@ export { SessionFilesUnavailableError, SessionFileOutsideWorkspaceError } from '
 export { createFileResources } from './files/resources.ts';
 export type { FileResourceOptions } from './files/resources.ts';
 export * from './journal/index.ts';
+export * from './attachments/index.ts';
 export type { Workspace } from './workspaces/context.ts';
 export type { SnapshotSource } from './reactivity/observable.ts';
 export type { ProgramSessionClient, HumanProgramSessionClient, ProgramGoalControl, ProgramCancelResult, ProgramRequestStatus } from './conversations/client.ts';

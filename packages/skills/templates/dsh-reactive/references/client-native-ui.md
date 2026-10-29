@@ -87,6 +87,12 @@ Program 的 conversation.progress 与 conversation.request(id).state、SDK 和�
 
 远程 `openEvents(options, request, { signal })` 在同一 journal 上使用官方 RemoteJournalStream 管理重连、prepend 和缺口修补。第三参数只取消这次 opening，取得连接后不延长该信号的寿命，也不关闭兄弟资源；退出仍归原 Session/SDK。不要再在业务层维护游标修补状态或直接调用原生 Controller.follow。
 
+## 读取会话图片附件
+
+Program、本地与远程 Session 以及可选原生 UI 共用 `session.attachments.readImage(attachmentId, { signal })`，返回 `{ attachment: ImageAttachmentRef, data: Uint8Array }`。从已登记图片引用取 attachmentId；正式 Controller 仍核验原会话引用，不能用别的会话引用或全局内容哈希取得权限。字节按需读取、每次独占，不放进共享 Resource。远程使用 `reactivePrograms/readImage` 的独立 Session grant 与正式 binary codec。
+
+Host 借用已安装的 sessionController，缺失报 SessionAttachmentsUnavailableError。冷读取不激活 Agent，子会话范围由原生 sessionId 入口裁决。取消只结束当前等待，原生读取无法取消，原生 reader/Host 退出等待其真实结算。UI 只借原 SDK，不创建附件存储或关闭 SDK。rc.3 未公开历史 FileAttachmentRef 的会话授权读取；不要自行扫日志、用上传 receipt 或全局 readFileStream 拼装下载授权。
+
 ## 输入保 intent 与 delivery 独立
 
 ```ts

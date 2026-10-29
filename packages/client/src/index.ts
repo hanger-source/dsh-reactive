@@ -18,6 +18,8 @@ import { ProgramJournal, remoteJournal, type ProgramJournalOptions, type Program
 import { connectProgress, type RemoteProgress } from './progress.ts';
 import { createActionBindings } from './action-bindings.ts';
 import { remoteView } from './views.ts';
+import { remoteAttachments } from './attachments.ts';
+import type { SessionAttachments } from '@hanger-source/dsh-reactive';
 import { remoteFiles } from './files.ts';
 import { createHumanWaits, remoteHuman } from './human.ts';
 import { createClientScope, revokeConversationAccess, type ClientScope } from './scope.ts';
@@ -32,7 +34,8 @@ export { createAuthenticatedTransport } from './transport.ts';
 export type { AuthenticatedTransport, AuthenticatedTransportOptions } from './transport.ts';
 export { Inbox } from './contracts/inbox.ts';
 export { decodeProgramFailure, ActionAdmissionUnknownError, CreationUnknownError, CreationIncompleteError,
-  ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFilesUnavailableError, SessionJournalUnavailableError } from './contracts/errors.ts';
+  ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFilesUnavailableError, SessionJournalUnavailableError, SessionAttachmentsUnavailableError } from './contracts/errors.ts';
+export type { AttachmentIdType, ImageAttachmentRef, SessionAttachments, SessionImageAttachment } from '@hanger-source/dsh-reactive';
 export { ProgramJournal } from './journal.ts';
 export type { ProgramJournalOptions, ProgramJournalRequest } from './journal.ts';
 
@@ -221,6 +224,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
         const accessSource = { kind: 'participant', participant: identity.participant, actorId: identity.actorId, entrypoint: 'operation-query' } as const;
         let progress: RemoteProgress<P> | undefined;
         let files: ReturnType<typeof remoteFiles> | undefined;
+        let attachments: SessionAttachments | undefined;
         const progressOwner = (): RemoteProgress<P> => {
           assertActive(); return progress ??= connectProgress(owner, address, program);
         };
@@ -332,6 +336,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
             return resolveActionAt(name, contract, expectedScope, options);
           },
           get progress() { return progressOwner().progress; },
+          get attachments() { assertActive(); return attachments ??= remoteAttachments(owner, address); },
           get files() { assertActive(); return files ??= remoteFiles(owner, address); },
           get journal() { assertActive(); return journal; },
           get progress$() { return progressOwner().progress$; },

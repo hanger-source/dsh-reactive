@@ -55,6 +55,10 @@
       "types": "./lib/journal/index.d.ts",
       "import": "./lib/journal/index.js"
     },
+    "./attachments": {
+      "types": "./lib/attachments/index.d.ts",
+      "import": "./lib/attachments/index.js"
+    },
     "./operations": {
       "types": "./lib/operations/index.d.ts",
       "import": "./lib/operations/index.js"

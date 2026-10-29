@@ -7,6 +7,7 @@ import { assertProgramDefinition, type HumanQuestion,
   type ViewValue, type Observation, type HumanInputState, type HumanSnapshot, type HumanQuestionSnapshot, type HumanWaitFrame,
   type ConversationProgressSnapshot, type RequestHandle, type RequestSnapshot, type ProgramParsedInput,
   shareResource, mapResource, ResourceReader, type SessionFiles, type FileResource, type FileWatch,
+  type SessionAttachments, type SessionImageAttachment,
   type ToolActionBinding } from '@hanger-source/dsh-reactive';
 import { Scope } from '@hanger-source/dsh-reactive/reactivity';
 import type { RemoteProgramSession } from '@hanger-source/dsh-reactive-client';
@@ -52,6 +53,8 @@ export class NativeSession<P extends ProgramContract> implements Disposable, Asy
   #requests = new Map<string, NativeRequestHandle<ProgramParsedInput<P>>>();
   #progress?: HostObservable<Observation<ConversationProgressSnapshot>>;
   #files?: SessionFiles;
+  #attachments?: SessionAttachments;
+  #attachmentReads = new Set<Promise<void>>();
   #fileWatches = new Set<NativeFileWatchLease>();
   #cleanupFailures = new Set<unknown>();
   #closing?: Promise<void>;
@@ -119,6 +122,28 @@ export class NativeSession<P extends ProgramContract> implements Disposable, Asy
   get progress(): HostObservable<Observation<ConversationProgressSnapshot>> {
     this.assertActive();
     return this.#progress ??= this.resource(this.sdk.progress);
+  }
+
+  /** 图片读取借用同一 SDK；UI 只撤销并等待从本入口发起的读取。 */
+  get attachments(): SessionAttachments {
+    this.assertActive();
+    return this.#attachments ??= Object.freeze({
+      readImage: (attachmentId, options) => {
+        const cancellation = this.options(options);
+        const completion = Promise.withResolvers<void>();
+        this.#attachmentReads.add(completion.promise);
+        const finish = () => {
+          this.#attachmentReads.delete(completion.promise);
+          completion.resolve();
+        };
+        let pending: Promise<SessionImageAttachment>;
+        try { pending = this.sdk.attachments.readImage(attachmentId, cancellation); }
+        catch (error) { finish(); throw error; }
+        return pending.then(value => {
+          cancellation.signal?.throwIfAborted(); this.assertActive(); return value;
+        }).finally(finish);
+      },
+    } satisfies SessionAttachments);
   }
 
   /** 借用原SDK的文件事实；UI只拥有本读侧以及从本入口创建的watch。 */
@@ -272,15 +297,17 @@ export class NativeSession<P extends ProgramContract> implements Disposable, Asy
     if (question.origin.sessionId !== this.id) throw new Error('REACTIVE_NATIVE_QUESTION_SESSION_MISMATCH');
   }
 
-  /** 立即撤UI资格，等待本UI创建的watch实际关闭；不释放借入SDK或取消已受理业务。 */
+  /** 立即撤 UI 资格，等待本 UI 的图片读取与 watch 退出。 */
   dispose(): Promise<void> {
     if (this.#closing) return this.#closing;
     const completion = Promise.withResolvers<void>();
     this.#closing = completion.promise;
     void this.#closing.catch(() => {});
     const watches = [...this.#fileWatches];
+    const attachmentReads = [...this.#attachmentReads];
     try { this.scope.dispose(); } catch (error) { this.#cleanupFailures.add(error); }
     void Promise.resolve().then(async () => {
+      await Promise.all(attachmentReads);
       await Promise.all(watches.map(async lease => {
         const stopped = await Promise.allSettled([Promise.resolve().then(() => lease.watch?.dispose()), lease.closed]);
         for (const result of stopped) if (result.status === 'rejected' && (!lease.failure || result.reason !== lease.failure.error))

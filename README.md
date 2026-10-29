@@ -50,6 +50,8 @@ Job 的 state/output 及 wait(timeoutMs, { signal }) 是非消费观察，等待
 
 后台 Program renderer 使用 React `19.3.1` 与 react-reconciler `0.34.0`。原生 UI 扩展把呈现函数交给 dsh 自己的 Slot renderer，不创建第二个 React root，也不安装后台 reconciler；仓外原生 UI 消费与浏览器试验使用独立的 React 与 ReactDOM `18.3.1`。两种运行环境分别安装、分别编译。
 
+`session.attachments.readImage(attachmentId, { signal })` 按原会话读取已经登记的图片，返回正式引用与本次独占的字节。它借用原生 Controller 的引用授权与冷读取，不启动模型；与工作区路径文件读取各有范围。历史文件附件尚缺 rc.3 的公开会话授权读取入口，见[图片附件读取](docs/programming-model.md#读取会话图片附件)。
+
 ## 编程模型
 
 模块通过 `/program` 的 `useWorkspace()` 和 `useProgramSession()` 直接借用所属环境，业务目标与依赖仍显式传入。需要类型化输入和提交能力时使用 `useProgramSession(Program)`，框架先核验实际 Program 合同；普通提交保持原服务参与身份。

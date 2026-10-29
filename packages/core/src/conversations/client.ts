@@ -12,6 +12,7 @@ import type { ConversationIdentity, InputReceipt } from './conversation.ts';
 import type { CancellationOptions, Submission, FileUploadSource } from './protocol.ts';
 import type { FileUploadInvocation, SessionFiles } from '../files/contract.ts';
 import type { SessionJournal } from '../journal/contract.ts';
+import type { SessionAttachments } from '../attachments/contract.ts';
 import type { AssistantProgressFrame, ConversationEvent } from './events.ts';
 import type { ConversationProgressSnapshot, RequestHandle } from './request.ts';
 
@@ -42,6 +43,7 @@ export interface ProgramSessionClient<P extends ProgramContract,
   readonly identity: Pick<ConversationIdentity, 'sessionId' | 'environmentId' | 'workspaceId' | 'parentSessionId'>;
   readonly files: SessionFiles;
   readonly journal: SessionJournal;
+  readonly attachments: SessionAttachments;
   readonly actionManifest: ResourceReader<readonly ToolActionBinding[]>;
   readonly actionManifest$: Observable<readonly ToolActionBinding[]>;
   readonly progress: ResourceReader<ConversationProgressSnapshot>;

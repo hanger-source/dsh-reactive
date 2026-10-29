@@ -1,3 +1,5 @@
+import type { AttachmentIdType } from '@hanger-source/dsh-reactive';
+export type { SessionImageAttachment } from '@hanger-source/dsh-reactive';
 import type { ActionIdentity, ActionSource, Continuation, GoalActivity, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
   ProgramGoalControl as CoreProgramGoalControl, ProgramCancelResult as CoreProgramCancelResult, ProgramRequestStatus as CoreProgramRequestStatus,
   ProgramJournalEvent as CoreProgramJournalEvent, ProgramJournalEntry as CoreProgramJournalEntry,
@@ -69,6 +71,7 @@ export type ProgramJournalEntry = CoreProgramJournalEntry;
 export type ProgramJournalPage = CoreProgramJournalPage;
 export type ProgramJournalWindow = CoreProgramJournalWindow;
 export interface ProgramJournalOpenRequest extends ProgramSessionAddress, ProgramJournalWindow {}
+export interface ProgramImageAttachmentRequest extends ProgramSessionAddress { readonly attachmentId: AttachmentIdType; }
 export interface ProgramJournalPageRequest extends ProgramSessionAddress, ProgramJournalPageQuery {}
 /** 原生水位和原生事件的只读载体；历史与连续性仍由 Controller/Gateway 拥有。 */
 export type ProgramJournalFrame = CoreProgramJournalFrame;

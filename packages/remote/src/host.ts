@@ -1,3 +1,4 @@
+import type { ProgramImageAttachmentRequest, SessionImageAttachment } from '@hanger-source/dsh-reactive-client/types';
 import type { Context } from '@deepseek-ai/cordis';
 import { Remote, RemoteError, TypertRemoteService, type Principal } from '@deepseek-ai/dsh-typert-protocol';
 import { deepFreeze, type JsonValue } from '@deepseek-ai/dsh-util-values';
@@ -96,8 +97,8 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     reading.throwIfAborted();
     return value;
   }
-  /** 每次实际文件读取和帧交付均复核原认证主体；不缓存授权或从wire接受actor。 */
-  private fileAccess(method: 'fileRead' | 'fileReadBytes' | 'fileStat' | 'fileList' | 'fileChanges', request: ProgramFileRequest, principal: Principal): void {
+  /** 每次内容读取和交付均复核原认证主体；不缓存授权或从wire接受actor。 */
+  private contentAccess(method: 'fileRead' | 'fileReadBytes' | 'fileStat' | 'fileList' | 'fileChanges' | 'readImage', request: ProgramSessionAddress, principal: Principal): void {
     const action: `reactivePrograms/${typeof method}` = `reactivePrograms/${method}`;
     const decision = this.ctx.remoteAccess.decide({ principal, action,
       resources: [{ kind: 'session', id: SessionId(request.sessionId) }], args: { request } });
@@ -113,9 +114,9 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     const handle = await this.openSession(request);
     try {
       return await this.read(handle, signal, async reading => {
-        this.fileAccess('fileRead', request, principal);
+        this.contentAccess('fileRead', request, principal);
         const value = await handle.files.readText(request.path, request.range, { signal: reading });
-        reading.throwIfAborted(); this.fileAccess('fileRead', request, principal);
+        reading.throwIfAborted(); this.contentAccess('fileRead', request, principal);
         return value;
       }).catch(this.rethrow);
     } finally { handle.release(); }
@@ -128,9 +129,9 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     const handle = await this.openSession(request);
     try {
       return await this.read(handle, signal, async reading => {
-        this.fileAccess('fileReadBytes', request, principal);
+        this.contentAccess('fileReadBytes', request, principal);
         const value = await handle.files.readBytes(request.path, request.range, { signal: reading });
-        reading.throwIfAborted(); this.fileAccess('fileReadBytes', request, principal);
+        reading.throwIfAborted(); this.contentAccess('fileReadBytes', request, principal);
         return value;
       }).catch(this.rethrow);
     } finally { handle.release(); }
@@ -143,9 +144,9 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     const handle = await this.openSession(request);
     try {
       return await this.read(handle, signal, async reading => {
-        this.fileAccess('fileStat', request, principal);
+        this.contentAccess('fileStat', request, principal);
         const value = await handle.files.stat(request.path, { signal: reading });
-        reading.throwIfAborted(); this.fileAccess('fileStat', request, principal);
+        reading.throwIfAborted(); this.contentAccess('fileStat', request, principal);
         return value;
       }).catch(this.rethrow);
     } finally { handle.release(); }
@@ -158,9 +159,9 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     const handle = await this.openSession(request);
     try {
       return await this.read(handle, signal, async reading => {
-        this.fileAccess('fileList', request, principal);
+        this.contentAccess('fileList', request, principal);
         const value = await handle.files.list(request.path, { signal: reading });
-        reading.throwIfAborted(); this.fileAccess('fileList', request, principal);
+        reading.throwIfAborted(); this.contentAccess('fileList', request, principal);
         return value;
       }).catch(this.rethrow);
     } finally { handle.release(); }
@@ -178,18 +179,18 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     signal.addEventListener('abort', abort, { once: true });
     let subscription: Subscription | undefined;
     try {
-      signal.throwIfAborted(); this.fileAccess('fileChanges', request, principal);
+      signal.throwIfAborted(); this.contentAccess('fileChanges', request, principal);
       const watch = handle.files.watch(request.path, { signal });
       subscription = watch.changes$.subscribe({
         next: frame => {
-          try { signal.throwIfAborted(); this.fileAccess('fileChanges', request, principal); inbox.push(frame); }
+          try { signal.throwIfAborted(); this.contentAccess('fileChanges', request, principal); inbox.push(frame); }
           catch (error) { inbox.fail(error); }
         },
         error: (error: unknown) => inbox.fail(signal.aborted ? signal.reason : error),
         complete: () => signal.aborted ? inbox.fail(signal.reason) : inbox.end(),
       });
       for await (const frame of inbox) {
-        signal.throwIfAborted(); this.fileAccess('fileChanges', request, principal);
+        signal.throwIfAborted(); this.contentAccess('fileChanges', request, principal);
         yield frame;
       }
       signal.throwIfAborted();
@@ -417,6 +418,22 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
       reading.throwIfAborted();
     } catch (error) { this.rethrow(error); }
     finally { handle.release(); }
+  }
+
+  /** 只读原会话内正式引用的图片，由 Controller 核验附件身份。 */
+  @Remote({ resources: { session: request => SessionId(request.sessionId) } })
+  async readImage(request: ProgramImageAttachmentRequest, signal: AbortSignal): Promise<SessionImageAttachment> {
+    request = deepFreeze(structuredClone(request));
+    const principal = this.principal();
+    const handle = await this.openSession(request);
+    try {
+      return await this.read(handle, signal, async reading => {
+        this.contentAccess('readImage', request, principal);
+        const image = await handle.attachments.readImage(request.attachmentId, { signal: reading });
+        reading.throwIfAborted(); this.contentAccess('readImage', request, principal);
+        return image;
+      }).catch(this.rethrow);
+    } finally { handle.release(); }
   }
 
   /** 同一 Program 权限边界内的原生冷安全分页，不唤醒 Agent。 */

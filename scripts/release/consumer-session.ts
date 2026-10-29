@@ -2,9 +2,15 @@ import type { Eligibility, ActionInput, CancellationOptions, FileUploadInvocatio
 import { combineResources, composeSurface, createWorkSelector, defineProgram, defineSurface, resourceView, selectSurface, shareResource, z } from '@hanger-source/dsh-reactive';
 import type { SessionFiles, FileResource, WorkspaceFileText, WorkspaceFileBytes } from '@hanger-source/dsh-reactive/files';
 import type { SessionJournal, ProgramJournalFrame, ProgramJournalPage } from '@hanger-source/dsh-reactive/journal';
+import type { AttachmentIdType, SessionImageAttachment } from '@hanger-source/dsh-reactive/attachments';
 import { SessionJournalUnavailableError } from '@hanger-source/dsh-reactive/journal';
 
 export const sessionJournalFailure = (error: unknown) => error instanceof SessionJournalUnavailableError;
+
+export function sessionImage(session: Pick<ProgramSessionClient<ProgramContract>, 'attachments'>,
+  attachmentId: AttachmentIdType, signal: AbortSignal): Promise<SessionImageAttachment> {
+  return session.attachments.readImage(attachmentId, { signal });
+}
 
 export function sessionJournal<P extends ProgramContract>(session: ProgramSessionClient<P>, signal: AbortSignal) {
   const journal: SessionJournal = session.journal;

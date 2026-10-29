@@ -14,9 +14,9 @@ export type ModuleImplementations = Readonly<Record<string, AnyModuleImplementat
 /** 组件得到对话事实与显式输入，不持有原生 Agent 或声明注册器。 */
 export type ProgramSession<P extends ProgramContract> = Pick<Conversation<ProgramParsedInput<P>, ProgramInput<P>>,
   'identity' | 'inputs$' | 'activity$' | 'goal$' | 'waits$' | 'events$' | 'rawEvents$' | 'progress' | 'progress$' | 'progressFrames$' | 'request'
-  | 'human' | 'questions$' | 'foregroundQuestions$' | 'files' | 'journal' | 'submit'>;
+  | 'human' | 'questions$' | 'foregroundQuestions$' | 'files' | 'journal' | 'attachments' | 'submit'>;
 
-/** 不声明输入合同的模块可借用现有观察与文件能力；输入保持unknown，不提供submit。 */
+/** 不声明输入合同的模块可借用现有观察与读取能力；输入保持unknown，不提供submit。 */
 export type ProgramSessionObservation = Pick<Conversation<unknown, never>, Exclude<keyof ProgramSession<ProgramContract>, 'submit'>>;
 
 export type ProgramWorkspace = Workspace;

@@ -1,10 +1,10 @@
 import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-protocol';
 import { z } from 'zod';
-import { ActionContractMismatchError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFilesUnavailableError, SessionJournalUnavailableError, programIdentity, type ActionIdentity, type NativeChildCommand, type NativeChildReference, type ProgramContractIdentity } from '@hanger-source/dsh-reactive';
+import { ActionContractMismatchError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFilesUnavailableError, SessionAttachmentsUnavailableError, SessionJournalUnavailableError, programIdentity, type ActionIdentity, type NativeChildCommand, type NativeChildReference, type ProgramContractIdentity } from '@hanger-source/dsh-reactive';
 import type { ProgramCreationReference, ProgramFailure, ProgramIdentity } from './types.ts';
 import { EligibilityError, ActionInvocationConflictError, ActionAdmissionInProgressError } from '@hanger-source/dsh-reactive';
 export { ConversationAccessRevokedError, SessionProgramMismatchError } from '@hanger-source/dsh-reactive';
-export { SessionFilesUnavailableError, SessionJournalUnavailableError } from '@hanger-source/dsh-reactive';
+export { SessionFilesUnavailableError, SessionAttachmentsUnavailableError, SessionJournalUnavailableError } from '@hanger-source/dsh-reactive';
 
 /** 接受状态未被确认；此错误从不触发自动重发 Action。 */
 export class ActionAdmissionUnknownError extends Error {
@@ -59,13 +59,14 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'reactive/conversation-access-revoked': { readonly sessionId: string; readonly workspaceId: string; readonly reason: 'membership-removed' | 'workspace-deleted' | 'access-expired' };
     'reactive/invocation-operation-unavailable': Record<string, never>;
     'reactive/files-unavailable': { readonly sessionId: string };
+    'reactive/attachments-unavailable': { readonly sessionId: string };
     'reactive/journal-unavailable': { readonly sessionId: string };
   }
 }
 const actionIdentitySchema = z.object({ name: z.string(), version: z.number().int().positive().safe() }).strict();
 
 /** 正式 failure 已由 Gateway/贡献合同核验，客户端保留完整公开 details。 */
-export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError | ConversationAccessRevokedError | SessionProgramMismatchError | ActionContractMismatchError | ActionInvocationConflictError | ActionAdmissionInProgressError | SessionFilesUnavailableError | SessionJournalUnavailableError | EligibilityError {
+export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError | ConversationAccessRevokedError | SessionProgramMismatchError | ActionContractMismatchError | ActionInvocationConflictError | ActionAdmissionInProgressError | SessionFilesUnavailableError | SessionAttachmentsUnavailableError | SessionJournalUnavailableError | EligibilityError {
   if (value.code === 'reactive/eligibility') {
     const failure = z.object({ code: z.string(), message: z.string(), details: z.union([z.array(z.json()), z.record(z.string(), z.json())]) }).strict();
     const details = z.object({ capabilityName: z.string(), reason: z.enum(['pending', 'error', 'denied']), observation: z.discriminatedUnion('status', [
@@ -83,6 +84,10 @@ export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { 
   if (value.code === 'reactive/action-invocation-conflict' || value.code === 'reactive/action-admission-in-progress') {
     const { invocationId } = z.object({ invocationId: z.string().min(1) }).strict().parse(value.details);
     return value.code === 'reactive/action-invocation-conflict' ? new ActionInvocationConflictError(invocationId) : new ActionAdmissionInProgressError(invocationId);
+  }
+  if (value.code === 'reactive/attachments-unavailable') {
+    const details = z.object({ sessionId: z.string() }).strict().parse(value.details);
+    return new SessionAttachmentsUnavailableError(details.sessionId);
   }
   if (value.code === 'reactive/journal-unavailable') {
     const details = z.object({ sessionId: z.string() }).strict().parse(value.details);

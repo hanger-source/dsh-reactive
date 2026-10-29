@@ -2,7 +2,7 @@ import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-proto
 import type { TypertGatewayWireStream } from '@deepseek-ai/dsh-api-gateway';
 import { ChildCreationIncompleteError, CreationIncompleteError, InputFileNotStagedError, InvocationUnavailableError } from '@hanger-source/dsh-reactive-dsh';
 import { isAttachmentError } from '@deepseek-ai/dsh-attachment';
-import { z, EligibilityError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFileOutsideWorkspaceError, SessionFilesUnavailableError, SessionJournalUnavailableError, ActionBindingUnavailableError, ActionTargetMismatchError, ActionContractMismatchError, ActionInvocationConflictError, ActionAdmissionInProgressError, InputEditRejectedError, ProgramContractMismatchError, SharedProgramRequiredError } from '@hanger-source/dsh-reactive';
+import { z, EligibilityError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFileOutsideWorkspaceError, SessionFilesUnavailableError, SessionJournalUnavailableError, SessionAttachmentsUnavailableError, ActionBindingUnavailableError, ActionTargetMismatchError, ActionContractMismatchError, ActionInvocationConflictError, ActionAdmissionInProgressError, InputEditRejectedError, ProgramContractMismatchError, SharedProgramRequiredError } from '@hanger-source/dsh-reactive';
 import '@hanger-source/dsh-reactive-client/errors';
 import type { ProgramFailure } from '@hanger-source/dsh-reactive-client/types';
 
@@ -18,6 +18,8 @@ export function createProgramFailureMapper(wireStream: Pick<TypertGatewayWireStr
         observation: error.observation.status === "error"
           ? { ...error.observation, error: createProgramFailureMapper(wireStream)(error.observation.error) }
           : error.observation })
+      : error instanceof SessionAttachmentsUnavailableError
+      ? new RemoteError('reactive/attachments-unavailable', error.message, { sessionId: error.sessionId })
       : error instanceof SessionJournalUnavailableError
       ? new RemoteError('reactive/journal-unavailable', error.message, { sessionId: error.sessionId })
       : error instanceof SessionFilesUnavailableError

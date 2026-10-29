@@ -114,6 +114,8 @@ Team 通过官方 SessionProjectionRegistry.onChanged 监听 agentTeam 投影变
 
 Team 任务可用 `const task = team.forSession(source).task(id)` 取得。`task.state$` 供 RxJS 和 `useObservable` 使用，`task.read({ signal })` 读取同一原生投影；显式 `task.update({ expectedRevision, action, ... })` 由原生 CAS 决定是否受理，不重复传 taskId，也不能向请求中塞入 taskId 更换目标。对象身份属于原来源与任务，不按当前界面选择重定向。缺席或删除后流和 read 返回 undefined；需要原生墓碑时用活跃成员的 getTask。Schedule 的 task(id) 同样允许先取得未知目标，再显式 read 查询；Jobs 对未知或外来目标的读取和控制则由原生边界拒绝。冷 Lead 可以读取与取得对象，修改仍要求真实活跃成员，不会为此自动 resume、spawn 或 send。
 
+`session.attachments.readImage` 由 Host 惰性借入已安装的正式 sessionController；不额外配置 HostOptions，不安装存储或 UI。独立原生接入从 `@hanger-source/dsh-reactive-dsh/attachments` 导入 `createNativeAttachments({ service: 'provided' })`，安装后用 `forSession(source)` 取得 exact 来源 reader；其 dispose 等待无法取消的原生读取结算。缺少 Controller 时会话入口抛 SessionAttachmentsUnavailableError；不得用 attachments.readImage(ref) 全局存储方法替代会话引用授权。
+
 Files 复用已安装的 WorkspaceFiles、fs、sandboxPolicy 和 Typert，不自动安装文件服务或改变沙箱政策。将已安装的 `createNativeFiles({ service: 'provided' })` 实例交给 `HostOptions.files` 或 `RuntimeOptions.files`，Program 和 SDK 即可使用共同 `session.files`；Host 只取得和释放自己的会话读侧，不安装或销毁借入的全域能力。独立原生消费者仍可显式 `files.forSession(source)`，exact 来源要求相同。缺失能力时抛出 SessionFilesUnavailableError。
 
 `text(path, { offset, limit })`、metadata(path)、directory(path) 返回共同 FileResource。同参数同对象、同路径共享 watch；read、peek、values$、observations$、invalidate 与 `useResource` 共用它。构造不做 I/O；首次观察等正式 ready，变化取消旧读并重查，目录每次变化重新列举。读取错误沿资源 error 交付，变化或显式 invalidate 可以重查；watch 初始化失败不偷偷轮询。会话 cwd 和 baseFile 范围由正式 FS 核验，越界失败保留被拒 path。取消及时退出等待，读侧 dispose 和 Host 关闭等待实际 read/unwatch；Agent close 不取消有效来源的文件观察。readBytes 每次独立缓冲区。远程消费者通过认证 Program file* 端点借用同一能力，原生 UI 按需接资源；需要选择领域产物或更窄公开权限时仍使用资源 View。

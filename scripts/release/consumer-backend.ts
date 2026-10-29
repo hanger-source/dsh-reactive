@@ -8,6 +8,7 @@ import { Context, Expose, Module, Skill, NativeTools, HumanInput, implementModul
 import { createRuntime, mountApplication, type ApplicationAssembly, type ConversationHandle, type ServiceConversation, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-reactive-dsh/tools';
+import { createNativeAttachments } from '@hanger-source/dsh-reactive-dsh/attachments';
 import { createProgramClient, createServiceProgramClient, ActionAdmissionUnknownError, type RemoteProgramSession, type RemoteServiceProgramSession } from '@hanger-source/dsh-reactive-client';
 import { mountProgramGateway } from '@hanger-source/dsh-reactive-remote';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
@@ -55,13 +56,14 @@ export const localModuleRevision = (session: ConversationHandle<typeof ConsumerM
 export const remoteModuleRevision = (session: RemoteProgramSession<typeof ConsumerModuleProgram>, signal: AbortSignal) => readSelectedRevision(session, signal);
 export const localRevision = (session: ConversationHandle<typeof contract>): Promise<number> => readSessionView(session, 'revision');
 export const remoteRevision = (session: RemoteProgramSession<typeof contract>): Promise<number> => readSessionView(session, 'revision');
-export const publicEntries = [createProgramClient, createServiceProgramClient, mountProgramGateway, getDeveloperSkill, createNativeSkills, createNativeTools] as const;
+export const publicEntries = [createProgramClient, createServiceProgramClient, mountProgramGateway, getDeveloperSkill, createNativeSkills, createNativeTools, createNativeAttachments] as const;
 export const developerSkill = getDeveloperSkill();
 export const nativeProgramSource = (conversation: ProgramSession<typeof contract>): NativeSessionSource => conversation;
 export function useCurrentProgram<P extends ProgramContract>(expected: P) {
   const workspace: Workspace = useWorkspace();
   const conversation: ProgramSession<P> = useProgramSession(expected);
-  return { workspace, conversation, identity: useProgramSession().identity };
+  const observed = useProgramSession();
+  return { workspace, conversation, identity: observed.identity, attachments: observed.attachments };
 }
 export function invokeWithIdentity<P extends ProgramContract, K extends keyof P['surface']['actions'] & string>(
   conversation: ConversationHandle<P> | ServiceConversation<P>, name: K, bindingId: string, input: ActionInput<P['surface']['actions'][K]>, invocationId: string,

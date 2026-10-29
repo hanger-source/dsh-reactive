@@ -71,6 +71,10 @@
     "./journal": {
       "types": "./lib/journal.d.ts",
       "import": "./lib/journal.js"
+    },
+    "./attachments": {
+      "types": "./lib/attachments.d.ts",
+      "import": "./lib/attachments.js"
     }
   },
   "files": [

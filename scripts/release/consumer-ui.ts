@@ -5,13 +5,15 @@ import { createNativeActionViews, defineNativeActionView, bindNativeSession, ret
 import type { SlotCore } from '@deepseek-ai/dsh-client-ui-slots';
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
-import { ConsumerModuleProgram, sessionResources, sharedSessionFacts, sessionControls, sessionFileUpload, receiveFileUpload, readSessionView, readSelectedRevision, callPublishedAction, invocationReceipt } from './consumer-session.js';
+import { ConsumerModuleProgram, sessionResources, sharedSessionFacts, sessionControls, sessionFileUpload, receiveFileUpload, readSessionView, readSelectedRevision, callPublishedAction, invocationReceipt, sessionImage } from './consumer-session.js';
 
 const action = defineAction({ name: 'release_consumer_read', description: '公开 UI 类型消费',
   scope: z.object({ subject: z.string() }).strict(), input: z.null(), output: z.object({ version: z.string() }).strict() });
 const program = defineProgram({ name: 'release_ui', input: z.null(), surface: defineSurface({ views: { version: resourceView(z.string()) }, actions: { read: action } }) });
 export type Session = RemoteProgramSession<typeof program>;
 export const portableSession = (session: Session) => sessionResources(session);
+export const nativeImage = (native: NativeSession<typeof program>, attachmentId: Parameters<typeof sessionImage>[1], signal: AbortSignal) =>
+  sessionImage(native, attachmentId, signal);
 export const portableControls = (session: Session, signal: AbortSignal) => sessionControls(session, signal);
 export const portableModuleRevision = (session: RemoteProgramSession<typeof ConsumerModuleProgram>, signal: AbortSignal) => readSelectedRevision(session, signal);
 export const portableCall = async (session: Session, signal: AbortSignal) => {

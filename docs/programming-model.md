@@ -504,6 +504,21 @@ RxJS 消费使用 `defer(() => from(journal.follow(window, { signal })))`，可�
 
 带 carrier 重连、缺口修补和 prepend 的 `openEvents` 由远程 SDK 的官方 RemoteJournalStream 承担，并消费同一个 journal。`openEvents(options, request, { signal })` 的信号只取消这次开场等待；取得的 journal 继续由其自身与原 Session owner 管理。
 
+## 读取会话图片附件
+
+Program、本地与远程 Session SDK，以及可选原生 UI 使用共同的 `attachments: SessionAttachments`。从已登记的输入或原生日志取得图片引用后，显式读取字节：
+
+```ts
+const image = await session.attachments.readImage(reference.attachmentId, { signal });
+consumeImage(image.attachment, image.data);
+```
+
+返回的 `attachment` 是原生核验过的 `ImageAttachmentRef`，`data` 是本次读取独占的 `Uint8Array`，不进入共享 Resource 快照。传入内容哈希或其他会话的引用不会取得读取授权；读取仍需原会话当前资格。Host 只借用已经安装的 `sessionController`，缺失时报告 `SessionAttachmentsUnavailableError`，不隐式安装服务。`mountProgramGateway` 提供该正式服务。
+
+读取复用 Controller 的会话检查与冷读取，不激活 Agent。rc.3 的该入口仅接受 sessionId，子会话可读范围由原生检查裁决；不能借 journal 的父子地址扩大范围。取消只结束本次等待，原生入口没有 I/O 取消参数；原生 reader 释放及 Host 退出仍等待已开始的实际读取结算，撤销后不再交付字节。
+
+图片附件与 `session.files` 的工作区路径读取各有授权范围。rc.3 尚未公开按会话解析并授权历史 `FileAttachmentRef` 的读取入口，框架不提供文件附件下载，也不把上传 receipt 或全局附件存储当成历史读取授权。
+
 ## 消费会话文件
 
 Program 的 conversation、本地与远程 Session SDK 提供共同 `files` 入口。宿主通过 `HostOptions.files` 或 `RuntimeOptions.files` 借入已安装的 NativeFiles；服务仍由宿主显式安装，不因读取文件启动模型或恢复 Agent。

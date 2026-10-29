@@ -17,6 +17,8 @@ import type { SessionFiles } from '../files/contract.ts';
 import { SessionFilesUnavailableError } from '../files/errors.ts';
 import type { SessionJournal } from '../journal/contract.ts';
 import { SessionJournalUnavailableError } from '../journal/errors.ts';
+import type { SessionAttachments } from '../attachments/contract.ts';
+import { SessionAttachmentsUnavailableError } from '../attachments/errors.ts';
 
 export { z };
 export type { Json, InputReference, GoalReference, Continuation, WaitReference, Submission, NormalizedSubmission, AdmittedSubmission, InputDelivery, PromptContentPart, AdmittedPromptContentPart, FileUploadValue, FileUploadReceiptId, EncodedFileUploadRequest, FileUploadSource, UploadFileOptions, Admission, CancellationOptions, SubmitOptions, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions } from './protocol.ts';
@@ -62,6 +64,7 @@ export class Conversation<T = Json, Raw = T> {
   #submit?: (input: Submission<Raw>, options: CancellationOptions) => Promise<InputReceipt>;
   #files?: () => SessionFiles;
   #journal?: () => SessionJournal;
+  #attachments?: () => SessionAttachments;
 
   constructor(
     scope: Scope,
@@ -148,6 +151,12 @@ export class Conversation<T = Json, Raw = T> {
     if (!this.#journal) throw new SessionJournalUnavailableError(this.identity.sessionId);
     return this.#journal();
   }
+  /** 借用当前会话的图片读取资格；取得入口不会读取历史或安装 Controller。 */
+  get attachments(): SessionAttachments {
+    this.#scope.assertActive();
+    if (!this.#attachments) throw new SessionAttachmentsUnavailableError(this.identity.sessionId);
+    return this.#attachments();
+  }
   /** 显式投递到原生输入协议；订阅和组件求值不会重新投递。 */
   submit(input: Submission<Raw>, options: CancellationOptions = {}): Promise<InputReceipt> {
     this.#scope.assertActive();
@@ -162,6 +171,7 @@ export class Conversation<T = Json, Raw = T> {
       setSubmit: (submit: (input: Submission<Raw>, options: CancellationOptions) => Promise<InputReceipt>) => { this.#submit = submit; },
       setFiles: (files: () => SessionFiles) => { this.#files = files; },
       setJournal: (journal: () => SessionJournal) => { this.#journal = journal; },
+      setAttachments: (attachments: () => SessionAttachments) => { this.#attachments = attachments; },
       accept: (inputs: readonly InputReference[]) => this.#inputs.set(decodeProgramInputs(this.program, this.identity.sessionId, inputs)),
       emit: (event: ConversationEvent) => {
         if (this.#scope.disposed) return;
