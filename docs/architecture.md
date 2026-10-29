@@ -48,6 +48,10 @@ Workspace 由原生 registry 持有目录、稳定身份与成员。`createWorks
 
 Reaction 的实例 owner 始终保留；`start({ scope })` 可在开始 observe、operator 和 execute 之前，为同一 run 登记附加 owner。任一 owner 退出即停止，双方 `closed` 等待真实 settled，同一 Scope 去重，启动和运行准入检查双方。默认 `start()` 只使用实例 owner。运行停止后若仍在 draining，同实例不能重新 start；组件代际需要独立运行时创建独立实例。execute 不得等待自己的 owner.closed，以免形成自等。运行失败通过 failed 状态和 resolve 的 settled 表达，不改变 Scope.closed 的失败语义。
 
+`useWorkspace()` 和 `useProgramSession()` 借用 Program 构造时的真实环境引用。无参会话观察保留 unknown 输入与既有文件能力；类型化输入和提交入口仅在实际 Program 对象身份核验后取得。模块不需逐层接收会话与工作区，业务目标和权限仍属于显式依赖；提交新输入保持原服务参与身份，不借用当前工具输入或 Goal continuation。
+
+`programElement` 为组件提供真实环境引用的无生命周期 context；hooks 仍先核验真实 owner 的 Scope 和 signal，既有 ProgramHookOwner 的职责不扩张。Workspace 资源归 Workspace，Program 资源归 Program；这些入口不暴露 Scope、原生 Agent 或销毁权。
+
 Workspace 是独立的本地编程 owner。应用通过 application.workspace(id)、组件通过 props.workspace 取得同一对象，以 workspace.resource(implementation, params) 和 workspace.reaction(implementation, params) 复用现有绑定身份；局部选项则每次构造独立实例，返回对象可以显式组合和共享。两种入口都由实际工作区 Scope 持有，跨 Environment 和 Session 使用，同一实现与目标在不同工作区隔离。构造不读取、不执行，反应显式 start。原生登记成功删除或宿主退出时结束该 owner，撤销资源有效性及持续关系，不取消已受理业务。core/workspaces 拥有该编程合同与内核装配，原生登记、成员和持久化继续归 dsh。
 
 业务自定义 hook 可以直接返回资源、Action 和标准 Observable，供下一层业务 hook 继续派生。`invocations$` 表达新发生的调用，`activeInvocations$` 表达本绑定当前在途调用集合；单次 `Invocation.activity$`、`result` 和独立 `operation` 不合并为一个 loading 或完成标记。晚观察者读取当前集合不会重发命令，内存集合也不承担跨重启任务恢复。

@@ -42,6 +42,6 @@ export { createSurfaceCollectionClient, createSurfaceModuleClient, type SurfaceC
 export { surfaceSlotDefinition, type SurfaceViews } from './surfaces/contract.ts';
 export { actionManifestSlot, type ToolActionBinding } from './surfaces/presentation.ts';
 export type { InputParticipant } from './conversations/protocol.ts';
-export { operationFollowSnapshotSchema, type OperationFollowSnapshot } from './operations/follows.ts';
+export { operationFollowSnapshotSchema, matchesOperationFollowResult, type OperationFollowSnapshot } from './operations/follows.ts';
 /** @internal 持续借用资格事实连接，供宿主运行边界使用。 */
 export { retainEligibility } from './resources/eligibility.ts';

@@ -52,6 +52,8 @@ Job 的 state/output 及 wait(timeoutMs, { signal }) 是非消费观察，等待
 
 ## 编程模型
 
+模块通过 `/program` 的 `useWorkspace()` 和 `useProgramSession()` 直接借用所属环境，业务目标与依赖仍显式传入。需要类型化输入和提交能力时使用 `useProgramSession(Program)`，框架先核验实际 Program 合同；普通提交保持原服务参与身份。
+
 本地应用用 `runtime.application.workspace(id)`、组件用 `props.workspace` 取得同一工作区编程对象。`workspace.resource(implementation, params)` 与 `workspace.reaction(implementation, params)` 按正式实现与参数复用实例；局部业务直接使用 `workspace.resource({ value, read })`、`workspace.reaction({ event, result, observe, operator, execute })`，每次构造独立实例，显式保留返回对象即可跨 Environment、Session 共享。构造不读取，反应显式启动。不同工作区隔离；登记删除或宿主退出结束工作区 owner，撤销观察及排队关系，已受理业务继续由原 owner 完成。
 
 Workspace、Conversation、值、资源与反应绑定是借给消费者的编程对象，不公开所属 Scope 的销毁权。消费者退出自己的订阅、读取等待或 ReactionRun；真正创建 Scope 的 owner 负责释放共享关系，不能通过一个借用对象结束其他消费者的生命周期。

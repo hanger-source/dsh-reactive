@@ -1,10 +1,10 @@
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineResource, defineReaction, createReaction, composeSurface, combineResources, mapResource, switchResource, abortable,
   resourceView, shareResource, type Scope, type ResourceSource, type Eligibility, type OperationContract, type OperationHandle,
-  type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ReactionStartOptions, type ProgramSession, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, type NativeToolAdmission, z } from '@hanger-source/dsh-reactive';
+  type ResourceReadable, type ResourceImplementation, type ReactionImplementation, type ReactionStartOptions, type ProgramContract, type ProgramSession, type Invocation, type Json, defineOperation, implementAction, type OperationOwner, type NativeToolAdmission, z } from '@hanger-source/dsh-reactive';
 import { concatMap, firstValueFrom, map, type Observable } from 'rxjs';
 import { createElement } from 'react';
 import { Context, Expose, Module, Skill, NativeTools, HumanInput, implementModule, implementProgram, useAction, useResource, useResourceInstance, useReaction, useBeforeStep,
-  useObservable, useShared, useSharedResource, useRelation, useScope, type HumanInputProps } from '@hanger-source/dsh-reactive/program';
+  useObservable, useShared, useSharedResource, useRelation, useScope, useWorkspace, useProgramSession, type HumanInputProps } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, mountApplication, type ApplicationAssembly, type ConversationHandle, type ServiceConversation, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-reactive-dsh/tools';
@@ -58,6 +58,11 @@ export const remoteRevision = (session: RemoteProgramSession<typeof contract>): 
 export const publicEntries = [createProgramClient, createServiceProgramClient, mountProgramGateway, getDeveloperSkill, createNativeSkills, createNativeTools] as const;
 export const developerSkill = getDeveloperSkill();
 export const nativeProgramSource = (conversation: ProgramSession<typeof contract>): NativeSessionSource => conversation;
+export function useCurrentProgram<P extends ProgramContract>(expected: P) {
+  const workspace: Workspace = useWorkspace();
+  const conversation: ProgramSession<P> = useProgramSession(expected);
+  return { workspace, conversation, identity: useProgramSession().identity };
+}
 export const invocationActivity = <T, O extends Json, Source>(invocation: Invocation<T, O, Source>) => invocation.activity;
 export const invocationResult = <T, O extends Json, Source>(invocation: Invocation<T, O, Source>, signal: AbortSignal) => invocationReceipt(invocation, signal);
 export const useInvocationActivity = <T, O extends Json, Source>(invocation: Invocation<T, O, Source>) => useResource(invocation.activity);

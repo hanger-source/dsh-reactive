@@ -7,5 +7,5 @@ export { Module } from './module.ts';
 export type { ModuleProps } from './module.ts';
 export { Context, Offer, Follow, Skill, Expose, HumanInput, NativeTools } from './declarations.ts';
 export type { ContextProps, OfferProps, FollowProps, SkillProps, ExposeProps, HumanInputProps, NativeToolsProps } from './declarations.ts';
-export { useAction, useOperation, useObservable, useShared, useResource, useSharedResource, useResourceInstance, useReaction, useRelation, useScope, useBeforeStep } from './hooks.ts';
+export { useAction, useOperation, useObservable, useShared, useResource, useSharedResource, useResourceInstance, useReaction, useRelation, useScope, useBeforeStep, useWorkspace, useProgramSession } from './hooks.ts';
 export type { ObservedResource, UseActionOptions, ScopeSetup } from './hooks.ts';

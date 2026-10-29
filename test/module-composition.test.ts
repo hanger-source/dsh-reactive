@@ -1,19 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
-import { createElement as h, Fragment } from 'react';
+import { createElement as h, Fragment, useLayoutEffect } from 'react';
 import { BehaviorSubject, Subject, filter, firstValueFrom, of, switchMap } from 'rxjs';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
-import { ActionBindingUnavailableError, collectionSurface, defineAction, defineOperation, implementAction, implementOperation } from '@hanger-source/dsh-reactive';
+import { ActionBindingUnavailableError, collectionSurface, defineAction, defineOperation, defineResource, implementResource, implementAction, implementOperation,
+  type ProgramContract, type ProgramSessionObservation, type Workspace, type ResourceInstance } from '@hanger-source/dsh-reactive';
 import { defineApplication } from '@hanger-source/dsh-reactive';
 import { defineEnvironment } from '@hanger-source/dsh-reactive';
 import { Context, Expose, Offer } from '@hanger-source/dsh-reactive/program';
 import { defineProgram } from '@hanger-source/dsh-reactive';
 import { implementModule, implementProgram } from '@hanger-source/dsh-reactive/program';
-import { useAction, useObservable, useOperation, useResource } from '@hanger-source/dsh-reactive/program';
+import { useAction, useObservable, useOperation, useResource, useWorkspace, useProgramSession } from '@hanger-source/dsh-reactive/program';
 import { implementNativeModule, type NativeCapability } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
 import { composeSurface, selectSurface, type SurfaceClient } from '@hanger-source/dsh-reactive';
@@ -23,6 +24,95 @@ import { observeResource } from '@hanger-source/dsh-reactive';
 import { type Observation } from '@hanger-source/dsh-reactive';
 import { z } from 'zod';
 import { boot, text, tool } from './native-support.ts';
+
+test('可提取模块直接借用所属会话与工作区，跨Program共享和跨工作区隔离保留实际owner', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-module-environment-'));
+  const fact = defineResource({ name: 'module-workspace-file', params: z.object({ path: z.string() }), value: z.string() });
+  let reads = 0, models = 0;
+  const implementation = implementResource(fact, { async read({ path }, { signal }) { reads++; return readFile(path, { encoding: 'utf8', signal }); } });
+  type Environment = { session: ProgramSessionObservation; workspace: Workspace };
+  const roots = new Map<string, Environment>();
+  const modules = new Map<string, Environment & { fact: ResourceInstance<typeof fact> }>();
+  const local = defineSurface({ views: {}, actions: {} });
+  const portable = implementModule(local, { Component() {
+    const session = useProgramSession(), workspace = useWorkspace();
+    const current = workspace.resource(implementation, { path: join(workspace.directory, 'fact.txt') });
+    useLayoutEffect(() => {
+      modules.set(session.identity.sessionId, { session, workspace, fact: current });
+      return () => { modules.delete(session.identity.sessionId); };
+    }, [session, workspace, current]);
+    return null;
+  } });
+  const nested = composeSurface({ portable: local });
+  const parent = implementModule(nested.surface, { modules: { portable }, Component: ({ modules }) =>
+    h(modules.portable.Component, { mount: nested.mounts.portable }) });
+  const layout = composeSurface({ parent: parent.surface });
+  const nullProgram = defineProgram({ input: z.null(), surface: layout.surface });
+  const dateProgram = defineProgram({ input: z.string().transform(value => new Date(value)), surface: layout.surface });
+  function program<P extends ProgramContract>(definition: P) {
+    return implementProgram(definition, { modules: { parent }, Component({ conversation, workspace, modules }) {
+      const current = useProgramSession(definition);
+      useLayoutEffect(() => {
+        assert.equal(current, conversation, '合同核验后借用根组件取得的原会话');
+        roots.set(conversation.identity.sessionId, { session: conversation, workspace });
+        return () => { roots.delete(conversation.identity.sessionId); };
+      }, [current, conversation, workspace]);
+      return h(modules.parent.Component, { mount: layout.mounts.parent });
+    } });
+  }
+  const definition = defineApplication({ name: 'portable-module-environment', admit: async () => {}, environments: [
+    defineEnvironment({ id: 'null', instructions: '模块只读取真实环境', program: program(nullProgram) }),
+    defineEnvironment({ id: 'date', instructions: '不同输入合同复用相同模块', program: program(dateProgram) }),
+  ] });
+  const app = await boot(join(root, 'home'), definition, async function* () { models++; throw new Error('ENVIRONMENT_READ_MUST_NOT_START_MODEL'); });
+  const secondDirectory = join(root, 'second');
+  await mkdir(secondDirectory);
+  await writeFile(join(app.host.workspace(app.workspace.workspaceId).directory, 'fact.txt'), 'FIRST_WORKSPACE');
+  await writeFile(join(secondDirectory, 'fact.txt'), 'SECOND_WORKSPACE');
+  try {
+    const second = await app.host.createWorkspace({ directory: secondDirectory });
+    const first = await app.host.create('null', { workspaceId: app.workspace.workspaceId });
+    const peer = await app.host.create('date', { workspaceId: app.workspace.workspaceId });
+    const other = await app.host.create('null', { workspaceId: second.workspaceId });
+    try {
+      for (const session of [first, peer, other]) {
+        assert.equal(modules.get(session.id)?.session, roots.get(session.id)?.session);
+        assert.equal(modules.get(session.id)?.workspace, roots.get(session.id)?.workspace);
+      }
+      const one = modules.get(first.id)!, shared = modules.get(peer.id)!, isolated = modules.get(other.id)!;
+      assert.notEqual(one.session, shared.session);
+      assert.equal(one.workspace, shared.workspace); assert.equal(one.fact, shared.fact);
+      assert.notEqual(one.workspace, isolated.workspace); assert.notEqual(one.fact, isolated.fact);
+      assert.equal(reads, 0, '模块环境读取和资源构造均不触发查询');
+      assert.equal(await one.fact.read(), 'FIRST_WORKSPACE');
+      assert.equal(await isolated.fact.read(), 'SECOND_WORKSPACE');
+      await app.host.close(first.id); first.release();
+      assert.equal(await one.fact.read(), 'FIRST_WORKSPACE', '模块和会话退出不结束实际Workspace拥有的资源');
+      assert.equal(await shared.fact.read(), 'FIRST_WORKSPACE');
+      assert.equal(models, 0); assert.deepEqual(app.errors, []);
+    } finally { first.release(); peer.release(); other.release(); }
+  } finally { await app.dispose(); }
+});
+
+test('模块类型化会话读取核验实际Program对象，不能借同形合同取得提交入口', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-module-program-mismatch-'));
+  const surface = defineSurface({ views: {}, actions: {} });
+  const layout = composeSurface({ module: surface });
+  const program = defineProgram({ input: z.null(), surface: layout.surface });
+  const expected = defineProgram({ input: program.input, surface: program.surface });
+  let acquired = 0, models = 0;
+  const module = implementModule(surface, { Component() { useProgramSession(expected); acquired++; return null; } });
+  const definition = defineApplication({ name: 'module-program-mismatch', admit: async () => {}, environments: [
+    defineEnvironment({ id: 'work', instructions: '合同不同必须在组件取得会话前拒绝', program: implementProgram(program, {
+      modules: { module }, Component: ({ modules }) => h(modules.module.Component, { mount: layout.mounts.module }),
+    }) }),
+  ] });
+  const app = await boot(join(root, 'home'), definition, async function* () { models++; throw new Error('MISMATCH_MUST_NOT_START_MODEL'); });
+  try {
+    await assert.rejects(app.host.create('work', { workspaceId: app.workspace.workspaceId }), /REACTIVE_PROGRAM_CONTRACT_MISMATCH/u);
+    assert.equal(acquired, 0); assert.equal(models, 0);
+  } finally { await app.dispose(); }
+});
 
 test('同合同模块自动隔离原生名称与公开槽，重排保留绑定，撤挂不取消原调用或误撤另一个模块', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-modules-'));
@@ -154,7 +244,8 @@ test('嵌套模块静态安装一次Jobs和文件owner，动态双目标与双�
   const jobs = createNativeJobs({ registry: { kind: 'local' } });
   let installations = 0;
   const native: NativeCapability = { install(ctx, home) { installations++; return jobs.install(ctx, home); }, dispose: () => jobs.dispose() };
-  function Commands({ merchantId, sessionId }: { readonly merchantId: string; readonly sessionId: string }) {
+  function Commands({ merchantId }: { readonly merchantId: string }) {
+    const sessionId = useProgramSession().identity.sessionId;
     const bound = useAction(action, () => ({ merchantId, sessionId }), [merchantId, sessionId]);
     const work = useOperation(owner, () => sessionId + ':' + merchantId, [sessionId, merchantId]);
     return h(Expose<typeof local, PartialSurfaceBindings<typeof local>>, { surface: local,
@@ -163,9 +254,9 @@ test('嵌套模块静态安装一次Jobs和文件owner，动态双目标与双�
   const commands = implementNativeModule(local, { Component: Commands, operations: [owner], native: [native] });
   const nested = composeSurface({ commands: local });
   const merchant = implementModule(nested.surface, { modules: { commands },
-    Component({ merchantId, sessionId, modules }: { readonly merchantId: string; readonly sessionId: string;
+    Component({ merchantId, modules }: { readonly merchantId: string;
       readonly modules: { readonly commands: typeof commands } }) {
-      return h(modules.commands.Component, { mount: nested.mounts.commands, merchantId, sessionId });
+      return h(modules.commands.Component, { mount: nested.mounts.commands, merchantId });
     } });
   const composed = composeSurface({ merchants: collectionSurface(nested.surface) });
   const firstLayout = new BehaviorSubject<readonly string[]>(['a', 'b']), peerLayout = new BehaviorSubject<readonly string[]>(['a', 'b']);
@@ -175,7 +266,7 @@ test('嵌套模块静态安装一次Jobs和文件owner，动态双目标与双�
       Component({ conversation, modules }) {
         const layout = useObservable(conversation.identity.sessionId === 'first' ? firstLayout : peerLayout);
         return layout.status === 'ready' ? h(Fragment, null, layout.value.map(merchantId => h(modules.merchant.Component, {
-          key: merchantId, mount: composed.mounts.merchants.instance(merchantId), merchantId, sessionId: conversation.identity.sessionId,
+          key: merchantId, mount: composed.mounts.merchants.instance(merchantId), merchantId,
         }))) : null;
       } }),
   })] });

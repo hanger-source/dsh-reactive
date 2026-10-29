@@ -278,6 +278,8 @@ const application = defineApplication({
 - `useRelation(source$)` 提交后持有已有 Observable，构造关系使用 `useRelation(factory, dependencies)`；未恢复的 RxJS error 进入程序失败边界。它保留普通流元素，不把业务值或 error Observation 猜成异常。异步组合返回 Promise 或 Observable 进入高阶操作符，不依赖 tap(async ...) 等待。
 - `useBeforeStep(check, dependencies)` 登记幂等检查，原生步骤实际等待它的返回值。每次登记有独立身份，相同函数被多个组件使用也各自拥有退出寿命。依赖替换或组件退出会中止旧检查收到的 signal 并结束等待；准备过程重新核对当前检查集合，旧 Promise 迟到完成或失败不再作为当前准备结果。原生步骤取消或 Program 失败同样结束等待，仍有效的检查失败则继续传播。检查应使用信号读取真实依赖并等待其工作完成，不在检查中执行业务命令。
 - `workspace.share(source$)` 把明确共享的连接交给工作区；应在订阅阶段连接，而非组件纯求值中启动来源。同一工作区与来源复用一个连接，会话或最后一个消费者退出不停止它；有限来源的终态只在工作区 owner 活跃时保留。owner 退出结束已有观察，之前捕获的流在迟到订阅时直接完成，不重放旧值或旧错误，也不重新连接来源。
+- `useWorkspace()` 取得当前 Program 所属的真实工作区，嵌套模块不必逐层接收 workspace；返回对象不提供其 owner 的销毁权。
+- `useProgramSession()` 取得 `ProgramSessionObservation`，输入保持 unknown，不提供 submit，仍可使用既有文件与观察能力。`useProgramSession(Program)` 严格核验 defineProgram 对象身份后提供对应输入类型和显式 submit；不接受无参泛型或同形 schema 猜测。submit 按原服务来源提交新输入，不继承工具输入或 Goal 续接。业务目标与依赖仍显式传入。
 - `workspace.resource(implementation, params)` 与 `workspace.reaction(implementation, params)` 把正式资源、反应绑定到工作区，跨该工作区的多个 Environment 和 Session 复用同一实例；参数仍按原合同解析，不另传名字或 Scope。资源首次观察才读取，反应显式 start。应用通过 application.workspace(id) 在没有 Session 时也能取得这个编程接点；组件 props.workspace 是同一对象。
 - 局部业务直接调用 `workspace.resource({ value, read, invalidations? })` 或 observe 分支，以及 `workspace.reaction({ event, result, observe, operator, execute })`。选项与 Program 局部入口相同，实例统一归实际 Workspace Scope；每次调用构造独立实例，相同 name 或同一选项引用也不合并。保留返回对象即可组合为普通函数、Promise、Observable 和 hooks 共用的业务能力；在组件纯求值中借用已构造的对象，避免每次渲染重新构造。Session 退出不结束这些实例，Workspace owner 退出撤销读取、持续感知及未受理队列，已受理业务仍由原 owner 结算。
 
@@ -569,6 +571,8 @@ const result = await runtime.application.notifyOperation(
 settled 判断整个操作的终态，feedback schema 描述需要交回协作过程的业务数据。readFeedback 按确切 link 读取该次登记产生的持久节点 `{ id, payload }`；节点 id 由 owner 签发，payload 使用这份 schema。读取、权限错误抛出，不能包装成业务拒绝。awaiting-command 可以交回反馈，同时 Operation.settled() 仍继续等待。
 
 一次观察读取失败也可以成为真实协作节点，并不说明原任务失败。owner 按 link.id 幂等登记新的观察尝试，保留待交回节点；迟到的旧注册不能替换新观察，也不重新执行业务任务。两次观察即使返回相同正文，仍可以有各自稳定的节点身份。框架不比较正文推断节点，也不要求业务建立一套全局事件游标。
+
+OperationFollow 的结果观察与恢复筛选要求 request.intent 为 result、ready 为 true，且完整 continuation 和 wait 值语义相同。固定 requestId 只定位候选；同名普通输入或其他关联结果不能冒认该 follow。JSON 对象键顺序不影响身份，数组保留完整顺序。该匹配不创建综合任务状态，也不授予权限。
 
 owner 负责业务订阅及可靠通知，不接管原生 Goal、wait 或会话恢复。如果已有不可变业务事件，可按 after 确定首个后继节点，无需再保存一套参与选点状态；可靠通知只需沿原 sessionId 和 followId 请求框架核验，原工作的继续条件由框架处理。
 

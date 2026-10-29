@@ -1,6 +1,6 @@
 import { map } from 'rxjs';
 import { defineApplication, defineEnvironment, defineProgram, defineSurface, assertSharedProgramDefinition, z, type ProgramContract, type ProgramDefinition, type SharedProgramContract, type ProgramInput, type ProgramParsedInput, type ProgramSurface, type CreationReference } from '@hanger-source/dsh-reactive';
-import { implementProgram } from '@hanger-source/dsh-reactive/program';
+import { implementProgram, useWorkspace, useProgramSession } from '@hanger-source/dsh-reactive/program';
 import type { ApplicationHost } from '@hanger-source/dsh-reactive-dsh';
 import { createProgramClient, createServiceProgramClient, bindProgramClient, bindServiceProgramClient, type ProgramClientOptions } from '@hanger-source/dsh-reactive-client';
 import type { Context as NativeContext } from '@deepseek-ai/cordis';
@@ -38,19 +38,32 @@ function remoteBoundary(options: ProgramClientOptions, context: NativeContext) {
 
 const implementation = implementProgram(program, {
   Component({ conversation, workspace }) {
+    const current = useProgramSession(program);
+    const observed = useProgramSession();
+    useWorkspace().directory.toUpperCase();
+    // @ts-expect-error 观察接点不凭任意泛型取得输入合同。
+    useProgramSession<typeof program>();
+    // @ts-expect-error 未核验Program合同的观察对象不提供提交入口。
+    observed.submit;
     workspace.directory.toUpperCase();
     // @ts-expect-error 同一工作区可运行多个环境，环境身份只属于当前会话。
     workspace.environmentId;
     conversation.identity.environmentId.toUpperCase();
-    const inspect$ = conversation.inputs$.pipe(map(inputs => inputs.map(input => {
+    const inspect$ = current.inputs$.pipe(map(inputs => inputs.map(input => {
       input.scope.getUTCFullYear();
       // @ts-expect-error 领域输入保持 schema 的 Date output。
       input.scope.trim();
       return input.sourceSessionId;
     })));
-    const submit = () => conversation.submit({ requestId: 'date', content: '读取日期', intent: 'question', delivery: 'followup' as const, scope: raw });
+    const submit = () => current.submit({ requestId: 'date', content: '读取日期', intent: 'question', delivery: 'followup' as const, scope: raw });
     // @ts-expect-error 显式提交保持 schema 的 string input，不重投领域 Date。
-    const submitParsed = () => conversation.submit({ requestId: 'date-parsed', content: '读取日期', intent: 'question', delivery: 'followup' as const, scope: parsed });
+    const submitParsed = () => current.submit({ requestId: 'date-parsed', content: '读取日期', intent: 'question', delivery: 'followup' as const, scope: parsed });
+    const untyped$ = observed.inputs$.pipe(map(inputs => inputs.map(input => {
+      // @ts-expect-error 无合同观察不推断领域输入类型。
+      input.scope.getUTCFullYear();
+      return input.sourceSessionId;
+    })));
+    void untyped$;
     void inspect$; void submit; void submitParsed;
     return null;
   },

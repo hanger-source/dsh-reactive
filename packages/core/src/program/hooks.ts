@@ -19,6 +19,7 @@ import type { ReactionContract, ReactionParameters } from '../reactions/definiti
 import type { ReactionImplementation } from '../reactions/implementation.ts';
 import { createReaction, type LocalReaction, type LocalReactionOptions } from '../reactions/local.ts';
 import { connect, normalizeResource, type SnapshotSource } from '../reactivity/observable.ts';
+import { assertExpectedProgram, type ProgramContract, type ProgramSession, type ProgramSessionObservation, type ProgramWorkspace } from './definition.ts';
 
 /** 宿主拥有程序寿命、真实执行来源与步骤准入；组件不自行授予业务权限。 */
 export interface ProgramHookOwner {
@@ -40,6 +41,17 @@ export interface ProgramHookOwner {
 }
 
 const ownerContext = createContext<ProgramHookOwner | null>(null);
+const environmentContext = createContext<{
+  readonly definition: ProgramContract;
+  readonly conversation: unknown;
+  readonly workspace: ProgramWorkspace;
+} | null>(null);
+
+/** @internal 实际Program构造点提供原环境引用；不建立额外owner或生命周期。 */
+export function programEnvironment<P extends ProgramContract>(definition: P, conversation: ProgramSession<P>, workspace: ProgramWorkspace,
+  children: ReactNode) {
+  return createElement(environmentContext.Provider, { value: { definition, conversation, workspace } }, children);
+}
 
 /** @internal 每个程序根注入实际 owner；多个会话不能共用执行身份。 */
 export function ProgramHookProvider(props: { readonly owner: ProgramHookOwner; readonly children?: ReactNode }) {
@@ -52,6 +64,26 @@ function useOwner(): ProgramHookOwner {
   owner.scope.assertActive();
   owner.signal.throwIfAborted();
   return owner;
+}
+
+function useEnvironment() {
+  useOwner();
+  const environment = useContext(environmentContext);
+  if (!environment) throw new Error('REACTIVE_PROGRAM_ENVIRONMENT_REQUIRED');
+  return environment;
+}
+
+/** 借用所属工作区；工作区资源与关系仍由实际Workspace拥有。 */
+export function useWorkspace(): ProgramWorkspace { return useEnvironment().workspace; }
+
+/** 无合同只观察；取得类型化输入与提交能力须核验当前真实Program合同。 */
+export function useProgramSession(): ProgramSessionObservation;
+export function useProgramSession<P extends ProgramContract>(expected: P): ProgramSession<P>;
+export function useProgramSession(expected?: ProgramContract): ProgramSessionObservation | ProgramSession<ProgramContract> {
+  const environment = useEnvironment();
+  if (expected === undefined) return environment.conversation as ProgramSessionObservation;
+  assertExpectedProgram(environment.definition, expected);
+  return environment.conversation as ProgramSession<ProgramContract>;
 }
 
 /**

@@ -36,7 +36,7 @@ export type { OperationContract, OperationDefinition, OperationOptions, Operatio
 export { NativeChildWork, nativeChildWorkAction, nativeChildReceiptSchema, nativeChildReferenceSchema } from './collaboration/child.ts';
 export type { NativeChildCommand, NativeChildReference, NativeChildReceipt, NativeChildState, NativeChildFeedback } from './collaboration/child.ts';
 export { defineProgram, assertProgramDefinition, assertSharedProgramDefinition } from './program/definition.ts';
-export type { ProgramContract, SharedProgramContract, ProgramExpectation, ProgramDefinition, SharedProgramDefinition, ProgramInput, ProgramParsedInput, ProgramSurface, ProgramSession, ProgramWorkspace, ProgramProps } from './program/definition.ts';
+export type { ProgramContract, SharedProgramContract, ProgramExpectation, ProgramDefinition, SharedProgramDefinition, ProgramInput, ProgramParsedInput, ProgramSurface, ProgramSession, ProgramSessionObservation, ProgramWorkspace, ProgramProps } from './program/definition.ts';
 export { programIdentity, assertProgramIdentity, ProgramContractMismatchError, SharedProgramRequiredError } from './program/identity.ts';
 export type { ProgramContractIdentity } from './program/identity.ts';
 

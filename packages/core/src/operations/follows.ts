@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ActionSource } from '../actions/contract.ts';
-import { continuationSchema, waitSchema, type Continuation, type Json, type WaitReference } from '../conversations/causality.ts';
+import { continuationSchema, waitSchema, type Continuation, type InputResult, type Json, type WaitReference } from '../conversations/causality.ts';
 
 /** wait 暂缓原工作；background 保留结果续接关系，让当前工作继续。 */
 export type OperationFollowMode = 'wait' | 'background';
@@ -21,6 +21,28 @@ export type OperationFollowLink = OperationFollowBase & (
   | { readonly when: 'settled'; readonly after: null }
   | { readonly when: 'feedback'; readonly after: string | null }
 );
+
+/** @internal 请求名称只定位候选；只有原 continuation 与完整 wait 的就绪结果才结算这次关联。 */
+export function matchesOperationFollowResult(link: Pick<OperationFollowLink, 'continuation' | 'wait'>,
+  request: { readonly intent: string; readonly result?: InputResult | null } | null | undefined): boolean {
+  return request?.intent === 'result' && request.result?.ready === true
+    && sameFollowValue(request.result.continuation, link.continuation)
+    && sameFollowValue(request.result.wait, link.wait);
+}
+
+/** 关联的协议值已由持久输入合同解析；对象键顺序不参与身份，数组顺序参与。 */
+function sameFollowValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+      && left.every((value, index) => sameFollowValue(value, right[index]));
+  }
+  const leftObject = left as Readonly<Record<string, unknown>>, rightObject = right as Readonly<Record<string, unknown>>;
+  const keys = Object.keys(leftObject);
+  return keys.length === Object.keys(rightObject).length
+    && keys.every(key => Object.hasOwn(rightObject, key) && sameFollowValue(leftObject[key], rightObject[key]));
+}
 
 const identity = z.string().min(1);
 const followBaseSchema = z.object({

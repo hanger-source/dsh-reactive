@@ -5,7 +5,7 @@ import type { AssistantAttemptSnapshot, AssistantProgressFrame, ConversationEven
 import type { ConversationProgressSnapshot } from './request.ts';
 import type { HumanForegroundQuestion, HumanQuestion, HumanSettledQuestion, HumanSnapshot } from '../participation/contract.ts';
 import type { Observation } from '../resources/observation.ts';
-import type { OperationFollowSnapshot } from '../operations/follows.ts';
+import { matchesOperationFollowResult, type OperationFollowSnapshot } from '../operations/follows.ts';
 import type { ResourceReader, ResourceReadable, ResourceReaderOptions } from '../resources/reader.ts';
 import { combineResources, mapResource } from '../resources/operators.ts';
 import { shareResource } from '../resources/sharing.ts';
@@ -187,7 +187,8 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
         const matchedInputs = match.inputs(value.link.continuation.inputs);
         if (!matchedInputs.length) return [];
         const resultRequestId = value.preparedDelivery?.requestId ?? 'operation:' + value.link.id;
-        const resultRequest = Object.hasOwn(activity.requests, resultRequestId) ? activity.requests[resultRequestId]! : null;
+        const candidate = Object.hasOwn(activity.requests, resultRequestId) ? activity.requests[resultRequestId]! : null;
+        const resultRequest = matchesOperationFollowResult(value.link, candidate?.declaration) ? candidate : null;
         return [Object.freeze({ value, matchedInputs, resultRequest })];
       }));
       const conditions: WorkCondition[] = [];

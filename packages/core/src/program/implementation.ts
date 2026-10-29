@@ -2,6 +2,7 @@ import { createElement, type ComponentType, type ReactElement } from 'react';
 import { assertProgramDefinition, type ProgramContract, type ProgramProps, type ProgramSession, type ProgramWorkspace, type ProgramImplementation, type ModuleImplementations } from './definition.ts';
 import type { OperationOwnerReference } from '../operations/contract.ts';
 import { captureModuleImplementations, captureOperationOwners, collectProgramDependencies, installedModulesContext, type ProgramDependencies } from './module-implementation.ts';
+import { programEnvironment } from './hooks.ts';
 
 type ProgramElementFactory<P extends ProgramContract> =
   (conversation: ProgramSession<P>, workspace: ProgramWorkspace) => ReactElement;
@@ -27,8 +28,9 @@ export function implementProgram<P extends ProgramContract, const Modules extend
   const modules = captureModuleImplementations(options.modules);
   const dependencies = collectProgramDependencies(modules, captureOperationOwners(options.operations));
   const element: ProgramElementFactory<P> = (conversation, workspace) =>
-    createElement(installedModulesContext.Provider, { value: dependencies.modules },
-      createElement(Component, { conversation, workspace, modules }));
+    programEnvironment(definition, conversation, workspace,
+      createElement(installedModulesContext.Provider, { value: dependencies.modules },
+        createElement(Component, { conversation, workspace, modules })));
   implementations.set(implementation, Object.freeze({ element, dependencies }));
   return implementation;
 }

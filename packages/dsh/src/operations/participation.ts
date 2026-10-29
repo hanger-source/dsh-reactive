@@ -10,7 +10,7 @@ import { type BoundOffer, type BoundFollow } from "@hanger-source/dsh-reactive/k
 import { OperationFollows, operationFollowId } from "./follows.ts";
 import type { ActionOperationEvent } from "@hanger-source/dsh-reactive/kernel";
 import { attachOperation as attachOwnedOperation, locateOperation as locateOwnedOperation, operationBindingOwner, operationBindingCommand, bindOperation, type OperationAccessContext as OperationAccess, type OperationContract, type OperationHandle, type OperationReference, type OperationCommand, type OperationLocation, type OperationState, type OperationNotificationResult, type OperationBindingReference, type BoundOperation, type OperationFeedbackRead, type OperationFeedbackPayload } from "@hanger-source/dsh-reactive/kernel";
-import { actionOperationOwner } from "@hanger-source/dsh-reactive/kernel";
+import { actionOperationOwner, matchesOperationFollowResult } from "@hanger-source/dsh-reactive/kernel";
 import { abortable } from '@hanger-source/dsh-reactive';
 import { canonical, waitSchema } from "../conversations/records.ts";
 import { type AdmittedSubmission } from "@hanger-source/dsh-reactive/kernel";
@@ -51,8 +51,7 @@ export class OperationParticipation {
             wait: (agent, continuation, wait) => this.registerWait(agent, continuation, wait),
             resolved: (agent, link) => {
                 const record = this.facts.liveState(agent.session).record('operation:' + link.id);
-                return record?.result?.ready === true && canonical(record.result.wait) === canonical(link.wait)
-                    && canonical(record.result.continuation) === canonical(link.continuation);
+                return matchesOperationFollowResult(link, record);
             },
             waiting: (agent, link) => this.facts.liveState(agent.session).activity.waits.some(item => canonical(item.wait) === canonical(link.wait)
                 && canonical(item.continuation) === canonical(link.continuation)),
@@ -345,7 +344,11 @@ export class OperationParticipation {
     }
     async reconcileOperations(entry: LiveConversation) {
         const links = this.#follows.links(entry.agent);
-        const pending = links.filter(link => !['consumed', 'settled'].includes(entry.session.state.activity.requests['operation:' + link.id]?.state ?? ''));
+        const pending = links.filter(link => {
+            const request = entry.session.state.activity.requests['operation:' + link.id];
+            return !matchesOperationFollowResult(link, request?.declaration)
+                || (request?.state !== 'consumed' && request?.state !== 'settled');
+        });
         if (!pending.length)
             return;
         await this.#follows.restore(entry.agent, pending, this.operationRecoveryAccess(entry));
