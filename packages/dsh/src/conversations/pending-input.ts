@@ -9,11 +9,15 @@ declare module '@deepseek-ai/dsh-llm' {
 export const isRecoveryControl = (message: UserMessage) => message.source.kind === 'reactive-resume-signal'
   || message.source.kind === 'reactive-child-resume' || message.source.kind === 'subagent-settled';
 
-/** 只恢复已取得真实回执、被 claim 却未进入模型历史的同一原生消息。 */
-export function restoreChildInput(agent: Agent, messageId: string): 'pending' | 'consumed' | 'restored' | 'cancelled' {
+export type ChildInputState = 'pending' | 'consumed' | 'claimed' | 'cancelled';
+type ChildInputInspection = { readonly state: Exclude<ChildInputState, 'claimed'> }
+  | { readonly state: 'claimed'; readonly message: UserMessage };
+
+/** 只读核验初始消息；授权成功前不重新放入inbox。 */
+export function inspectChildInput(agent: Agent, messageId: string): ChildInputInspection {
   const events = agent.session.snapshotEvents().slice(agent.session.inheritedEventCount);
-  if (events.some(event => event.type === 'user/message' && event.data.id === messageId)) return 'consumed';
-  if ([...agent.inbox.nextTurn, ...agent.inbox.nextStep].some(message => message.id === messageId)) return 'pending';
+  if (events.some(event => event.type === 'user/message' && event.data.id === messageId)) return { state: 'consumed' };
+  if ([...agent.inbox.nextTurn, ...agent.inbox.nextStep].some(message => message.id === messageId)) return { state: 'pending' };
   const queues: Record<'next-turn' | 'next-step', UserMessage[]> = { 'next-turn': [], 'next-step': [] };
   let original: UserMessage | undefined;
   let removed: 'claimed' | 'cancelled' | undefined;
@@ -28,8 +32,14 @@ export function restoreChildInput(agent: Agent, messageId: string): 'pending' | 
     if (taken.some(message => message.id === messageId)) removed = outcome === 'canceled' ? 'cancelled' : 'claimed';
   }
   if (!original || !removed) throw new Error('REACTIVE_CHILD_INITIAL_MESSAGE_NOT_FOUND');
-  if (removed === 'cancelled') return 'cancelled';
-  agent.inbox.prepend('next-turn', original);
+  return removed === 'cancelled' ? { state: 'cancelled' } : { state: 'claimed', message: original };
+}
+
+/** 只恢复已取得真实回执、被 claim 却未进入模型历史的同一原生消息。 */
+export function restoreChildInput(agent: Agent, messageId: string): 'pending' | 'consumed' | 'restored' | 'cancelled' {
+  const input = inspectChildInput(agent, messageId);
+  if (input.state !== 'claimed') return input.state;
+  agent.inbox.prepend('next-turn', input.message);
   console.info('reactive.child.claim-restored', { sessionId: agent.id, messageId });
   return 'restored';
 }

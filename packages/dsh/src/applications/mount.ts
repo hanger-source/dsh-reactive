@@ -23,7 +23,7 @@ export async function assembleApplication<E extends readonly AnyEnvironment[]>(c
             for (const capability of [...state.complete().capabilities].reverse()) {
                 try { await capability.dispose(); } catch (error) { failures.add(error); }
             }
-            state.native.dispose();
+            try { await state.native.dispose(); } catch (error) { failures.add(error); }
             if (failures.size === 1) throw [...failures][0];
             if (failures.size) throw new AggregateError([...failures], 'REACTIVE_APPLICATION_CAPABILITIES_DISPOSAL_FAILED');
         })().then(completion.resolve, completion.reject);

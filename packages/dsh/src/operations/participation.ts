@@ -83,11 +83,9 @@ export class OperationParticipation {
             const entry = this.sessions.get(parentSessionId)?.live.value;
             if (!entry)
                 return;
-            const recovery = this.reconcileOperations(entry).catch(error => {
-                entry.recoveryErrors.push(error);
-                console.error('reactive.child.follow-reconcile.failed', { sessionId: parentSessionId, error });
-            }).finally(() => { entry.recovery.delete(recovery); });
-            entry.recovery.add(recovery);
+            const signal = AbortSignal.any([this.signal, entry.scope.signal]);
+            void retainRecovery(entry, this.reconcileOperations(entry, signal),
+                'reactive.child.follow-reconcile.failed', {}, signal);
         });
         const stopDelegationUpdates = () => changes.unsubscribe();
         this.ctx.effect(() => stopDelegationUpdates);
@@ -342,7 +340,7 @@ export class OperationParticipation {
     async settleNotifications(): Promise<void> {
         while (this.#notifications.size) await Promise.allSettled([...this.#notifications]);
     }
-    async reconcileOperations(entry: LiveConversation) {
+    async reconcileOperations(entry: LiveConversation, signal?: AbortSignal) {
         const links = this.#follows.links(entry.agent);
         const pending = links.filter(link => {
             const request = entry.session.state.activity.requests['operation:' + link.id];
@@ -351,15 +349,15 @@ export class OperationParticipation {
         });
         if (!pending.length)
             return;
-        await this.#follows.restore(entry.agent, pending, this.operationRecoveryAccess(entry));
+        await this.#follows.restore(entry.agent, pending, this.operationRecoveryAccess(entry, signal));
     }
-    private operationRecoveryAccess(entry: LiveConversation): OperationAccess {
+    private operationRecoveryAccess(entry: LiveConversation, signal = AbortSignal.any([this.signal, entry.scope.signal])): OperationAccess {
         const actorId = this.options.serviceActorId;
         if (!actorId?.trim())
             throw new Error('REACTIVE_OPERATION_PUBLISHER_REQUIRED');
         return withOperationAccessSettlement({ sessionId: entry.agent.id, source: {
                 kind: 'participant', participant: 'service', actorId, entrypoint: 'operation-recovery',
-            }, signal: AbortSignal.any([this.signal, entry.scope.signal]) }, work => this.retainNotification(work));
+            }, signal }, work => this.retainNotification(work));
     }
     shouldWake(entry: LiveConversation, input: AdmittedSubmission): boolean {
         const result = input.result;

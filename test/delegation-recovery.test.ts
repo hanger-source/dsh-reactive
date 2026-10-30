@@ -5,14 +5,15 @@ import { once } from 'node:events';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { setImmediate } from 'node:timers/promises';
+import { setImmediate, setTimeout as delay } from 'node:timers/promises';
+import { inspect } from 'node:util';
 import { SessionId, pluginRecordOf } from '@deepseek-ai/dsh-session';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { Context } from '@deepseek-ai/cordis';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { NativeChildWork, nativeChildReceiptSchema, defineProgram, programIdentity, SessionProgramMismatchError, z, type NativeChildReceipt, type ActionInvocation } from '@hanger-source/dsh-reactive';
 import { ChildCreationIncompleteError } from '@hanger-source/dsh-reactive-dsh';
-import { bootDelegationFixture, ChildProgram, DelegateWork, inspectDelegationSession } from './delegation-support.ts';
+import { bootDelegationFixture, ChildProgram, DelegateWork, inspectDelegationSession, type DelegationFixtureOptions } from './delegation-support.ts';
 import { text, tool } from './native-support.ts';
 
 type Inspection = Awaited<ReturnType<typeof inspectDelegationSession>>;
@@ -36,10 +37,18 @@ function followFor(inspection: Inspection, invocationId: string) {
 }
 const hasCall = (request: GenerateOptions, name: string) => request.messages.some(message =>
   message.content.some(block => block.type === 'tool-call' && block.name === name));
+function hasCause(error: unknown, matches: (error: Error) => boolean): boolean {
+  const seen = new Set<unknown>();
+  while (error instanceof Error && !seen.has(error)) {
+    if (matches(error)) return true;
+    seen.add(error); error = error.cause;
+  }
+  return false;
+}
 
 /** 复用同一正式场景；注入点只在模型供应商与真实原生持久边界。 */
 async function bootRecovery(options: { root?: string; parentSessionId?: string; holdChild?: boolean; capacity?: number;
-  childProgram?: typeof ChildProgram; forbidStart?: boolean; denyFollow?: boolean; installNative?(native: Context): void | Promise<void> } = {}) {
+  childProgram?: typeof ChildProgram; forbidStart?: boolean; denyFollow?: boolean; authorize?: DelegationFixtureOptions['authorize']; installNative?(native: Context): void | Promise<void> } = {}) {
   const childEntered = Promise.withResolvers<void>(), childCompleted = Promise.withResolvers<void>();
   const releaseChild = Promise.withResolvers<void>();
   const returned = Promise.withResolvers<{ invocation: Invocation; receipt: NativeChildReceipt }>();
@@ -63,6 +72,7 @@ async function bootRecovery(options: { root?: string; parentSessionId?: string; 
       assert.ok(admission.input.at instanceof Date);
       assert.deepEqual(admission.target, { parentId: 'business-parent' });
       if (options.denyFollow && admission.phase === 'follow') throw new Error('CHILD_FOLLOW_DENIED');
+      return options.authorize?.(admission);
     },
     onInvocation(invocation) {
       void invocation.result.then(receipt => returned.resolve({ invocation, receipt }), error => failed.resolve({ invocation, error }));
@@ -125,8 +135,29 @@ async function checkpointWorker(root: string) {
   await fixture.start();
   await new Promise<void>(() => {});
 }
-async function crashAtCheckpoint(root: string, context: TestContext) {
-  const worker = fork(import.meta.filename, ['--child-receipt-checkpoint', root], {
+async function consumedCheckpointWorker(root: string, pauseChild: boolean) {
+  const fixture = await bootRecovery({ root, holdChild: true });
+  await fixture.start();
+  const { receipt } = await fixture.returned;
+  await fixture.childEntered;
+  const native = fixture.runtime.native;
+  const child = native.agents.get(SessionId(receipt.childSessionId))!;
+  const goal = native.goals.get(child)!;
+  const edited = native.goals.edit(child, goal, { objective: 'EDITED_CHILD_OBJECTIVE' });
+  if (pauseChild) native.goals.pause(child, edited);
+  const parent = native.agents.get(SessionId(fixture.parent.id))!;
+  const parentGoal = native.goals.create(parent, { objective: '暂停的父目标不撤销已受理独立子工作' });
+  native.goals.pause(parent, parentGoal);
+  assert.equal(await native.sessions.flush(child.session), true);
+  assert.equal(await native.sessions.flush(parent.session), true);
+  const saved = await inspectDelegationSession(native, child.id);
+  const initial = saved.events.find(event => event.type === 'user/message' && event.data.id === receipt.messageId);
+  assert.ok(initial?.type === 'user/message');
+  process.send!(checkpointSchema.parse({ parentId: parent.id, receipt, initial: initial.data }));
+  await new Promise<void>(() => {});
+}
+async function crashAtCheckpoint(root: string, context: TestContext, mode = '--child-receipt-checkpoint') {
+  const worker = fork(import.meta.filename, [mode, root], {
     execPath: process.execPath, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
   let output = '';
@@ -146,8 +177,158 @@ async function crashAtCheckpoint(root: string, context: TestContext) {
   } finally { context.signal.removeEventListener('abort', abort); worker.kill('SIGKILL'); }
 }
 
+/** 先join本场景已开始的真实模型，再退出宿主；断言与清理错误共同保留。 */
+async function finishRecovery(fixture: Awaited<ReturnType<typeof bootRecovery>>, childId: string, failures: unknown[]) {
+  fixture.releaseChild();
+  for (const id of [childId, fixture.parent.id]) {
+    if (id === childId && fixture.state.childCalls === 0) continue; // 未过gate的准备由宿主退出负责，不等待它凭空进入模型。
+    try { await fixture.runtime.native.agents.get(SessionId(id))?.whenIdle(); } catch (error) { failures.push(error); }
+  }
+  try { fixture.parent.release(); } catch (error) { failures.push(error); }
+  try { await fixture.dispose(); } catch (error) {
+    console.error('delegation.recovery.cleanup.failed', inspect(error, { depth: null }));
+    failures.push(error);
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, 'RECOVERY_SCENARIO_FAILED');
+}
+
 if (process.argv[2] === '--child-receipt-checkpoint') await checkpointWorker(process.argv[3]!);
+else if (process.argv[2] === '--child-consumed-checkpoint') await consumedCheckpointWorker(process.argv[3]!, false);
+else if (process.argv[2] === '--child-paused-checkpoint') await consumedCheckpointWorker(process.argv[3]!, true);
 else {
+  test('宿主退出先撤销委托观察并等待已开始flush，再关闭真实child持久handle', async () => {
+    const entered = Promise.withResolvers<void>(), released = Promise.withResolvers<void>(), closed = Promise.withResolvers<void>();
+    let armed = false, observerReleased = false, closeBeforeFlush = false, childId = '';
+    const fixture = await bootRecovery({ holdChild: true, installNative(native) {
+      const create = native.sessionPersistence.create;
+      native.sessionPersistence.create = new Proxy(create, { async apply(target, receiver, args) {
+        const handle: Awaited<ReturnType<typeof create>> = await Reflect.apply(target, receiver, args);
+        if (args[0].parentSession) {
+          const close = handle.close.bind(handle);
+          handle.close = async () => {
+            if (handle.header.id === childId) {
+              closeBeforeFlush = !observerReleased;
+              closed.resolve();
+            }
+            await close();
+          };
+        }
+        return handle;
+      } });
+      const flush = native.sessions.flush.bind(native.sessions);
+      native.sessions.flush = async session => {
+        if (armed && session.id === childId) {
+          armed = false; entered.resolve(); await released.promise;
+        }
+        return flush(session);
+      };
+    } });
+    const failures: unknown[] = [];
+    let disposing: Promise<void> | undefined;
+    try {
+      await fixture.start();
+      const { receipt } = await fixture.returned;
+      childId = receipt.childSessionId;
+      await fixture.childEntered;
+      const child = fixture.runtime.native.agents.get(SessionId(childId)); assert.ok(child);
+      const goal = fixture.runtime.native.goals.get(child); assert.ok(goal);
+      armed = true;
+      fixture.runtime.native.goals.edit(child, goal, { maxGoalRounds: goal.maxGoalRounds + 1 });
+      await entered.promise;
+      const models = fixture.state.modelCalls;
+      disposing = fixture.dispose();
+      // 观察实际writer关闭边界；旧实现会越过仍挂起的observer flush关闭handle。
+      assert.equal(await Promise.race([closed.promise.then(() => 'closed'), delay(50, 'waiting')]), 'waiting');
+      observerReleased = true; released.resolve();
+      fixture.releaseChild();
+      await disposing; await closed.promise;
+      assert.equal(closeBeforeFlush, false);
+      assert.equal(fixture.state.modelCalls, models, '退出后完成flush不能再发布更新并唤醒模型');
+    } catch (error) { failures.push(error); }
+    finally {
+      observerReleased = true; released.resolve();
+      fixture.releaseChild();
+      fixture.parent.release();
+      try { await (disposing ?? fixture.dispose()); } catch (error) { failures.push(error); }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, 'OBSERVER_CLOSE_SCENARIO_FAILED');
+    }
+  });
+
+  test('已消费子工作恢复必须向authorizer提供当前编辑目标，拒权不能借原委托继续模型', async context => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-child-consumed-'));
+    const checkpoint = await crashAtCheckpoint(root, context, '--child-consumed-checkpoint');
+    const denied = new Error('EDITED_CHILD_DENIED');
+    const fixture = await bootRecovery({ root, parentSessionId: checkpoint.parentId, forbidStart: true, holdChild: true,
+      authorize(admission) {
+        if (admission.phase === 'resume' && admission.recovery.goal?.objective === 'EDITED_CHILD_OBJECTIVE') {
+          assert.equal(admission.recovery.input, 'consumed');
+          assert.equal(admission.recovery.child.childSessionId, checkpoint.receipt.childSessionId);
+          assert.equal(admission.recovery.messageId, checkpoint.receipt.messageId);
+          assert.notEqual(admission.objective, admission.recovery.goal.objective);
+          throw denied;
+        }
+      },
+    });
+    const failures: unknown[] = [];
+    try {
+      await assert.rejects(fixture.runtime.application.resume(checkpoint.parentId, fixture.parentProgram), error => hasCause(error, cause => cause === denied));
+      assert.equal(fixture.state.childCalls, 0);
+      assert.equal(fixture.runtime.native.agents.get(SessionId(checkpoint.receipt.childSessionId)), undefined);
+    } catch (error) { failures.push(error); }
+    finally { await finishRecovery(fixture, checkpoint.receipt.childSessionId, failures); }
+  });
+
+  test('恢复授权挂起期间同id编辑Goal不能借旧授权继续，父暂停不取消独立child', async context => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-child-goal-cas-'));
+    const checkpoint = await crashAtCheckpoint(root, context, '--child-consumed-checkpoint');
+    const entered = Promise.withResolvers<void>(), released = Promise.withResolvers<void>();
+    let edited = false;
+    const fixture = await bootRecovery({ root, parentSessionId: checkpoint.parentId, forbidStart: true, holdChild: true,
+      async authorize(admission) {
+        if (admission.phase !== 'resume' || edited) return;
+        edited = true; entered.resolve(); await released.promise;
+      },
+    });
+    const failures: unknown[] = [];
+    try {
+      const restoring = fixture.runtime.application.resume(checkpoint.parentId, fixture.parentProgram).then(
+        value => ({ value, error: null }), error => ({ value: null, error }));
+      await entered.promise;
+      const child = fixture.runtime.native.agents.get(SessionId(checkpoint.receipt.childSessionId))!;
+      const before = fixture.runtime.native.goals.get(child)!;
+      fixture.runtime.native.goals.edit(child, before, { objective: 'EDITED_DURING_AUTHORIZATION' });
+      released.resolve();
+      const outcome = await restoring;
+      assert.ok(outcome.error instanceof Error);
+      assert.ok(hasCause(outcome.error, cause => cause.message === 'REACTIVE_CHILD_RECOVERY_CHANGED'));
+      assert.equal(fixture.state.childCalls, 0);
+      const parent = await fixture.runtime.application.resume(checkpoint.parentId, fixture.parentProgram);
+      await fixture.childEntered;
+      assert.equal(parent.snapshot().goal?.phase, 'paused');
+      assert.equal(fixture.state.childCalls, 1, '新的明确恢复授权允许独立child继续');
+      fixture.releaseChild();
+      await parent.whenIdle();
+      parent.release();
+    } catch (error) { failures.push(error); }
+    finally { released.resolve(); await finishRecovery(fixture, checkpoint.receipt.childSessionId, failures); }
+  });
+
+  test('子Goal持久暂停时父恢复不重启子工作', async context => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-child-paused-'));
+    const checkpoint = await crashAtCheckpoint(root, context, '--child-paused-checkpoint');
+    const fixture = await bootRecovery({ root, parentSessionId: checkpoint.parentId, forbidStart: true });
+    try {
+      const parent = await fixture.runtime.application.resume(checkpoint.parentId, fixture.parentProgram);
+      await parent.whenIdle();
+      assert.equal(fixture.state.childCalls, 0);
+      assert.equal(fixture.runtime.native.agents.get(SessionId(checkpoint.receipt.childSessionId)), undefined);
+      const child = await fixture.runtime.application.open(checkpoint.receipt.childSessionId, fixture.childProgram);
+      assert.equal(child.snapshot().goal?.phase, 'paused');
+      child.release(); parent.release();
+    } finally { fixture.parent.release(); await fixture.dispose(); }
+  });
   test('子receipt持久而父ACK尚未持久时硬崩溃，父恢复失败与并发等待完整撤回后只恢复原消息和Goal', async context => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-child-crash-'));
     const checkpoint = await crashAtCheckpoint(root, context);
@@ -296,6 +477,56 @@ else {
       assert.equal(fixture.state.starts, 1); assert.deepEqual(fixture.errors, []);
       child.release(); fixture.parent.release();
     } finally { fixture.releaseChild(); await fixture.dispose(); }
+  });
+
+  test('已受理原输入但尚未创建Goal的live恢复向authorizer提供真实absence，准入后只完成原工作', async () => {
+    let failedFlush = false, deny = true;
+    const denied = new Error('UNCREATED_GOAL_RECOVERY_DENIED');
+    const fixture = await bootRecovery({
+      installNative(native) {
+        const flush = native.sessions.flush.bind(native.sessions);
+        native.sessions.flush = async session => {
+          const catalog = session.snapshotEvents().findLast(event => event.type === 'subagent/catalog');
+          if (!failedFlush && !session.header.parentSession && catalog?.type === 'subagent/catalog') {
+            const child = native.agents.get(catalog.data.childId);
+            if (child && !native.goals.get(child) && child.session.snapshotEvents().some(event => event.type === 'agent/inbox/spliced'
+              && event.data.inserted.length > 0)) {
+              failedFlush = true; throw new Error('PRE_GOAL_PARENT_FLUSH_FAILED');
+            }
+          }
+          return flush(session);
+        };
+      },
+      authorize(admission) {
+        if (admission.phase !== 'resume') return;
+        assert.equal(admission.recovery.goal, null);
+        assert.ok(['claimed', 'pending'].includes(admission.recovery.input));
+        if (deny) throw denied;
+      },
+    });
+    let childId = '';
+    const failures: unknown[] = [];
+    try {
+      await fixture.start();
+      const failure = await fixture.failed;
+      assert.ok(failure.error instanceof ChildCreationIncompleteError);
+      childId = failure.error.reference.childSessionId;
+      assert.equal(fixture.state.childCalls, 0);
+      await assert.rejects(fixture.runtime.application.resume(childId, fixture.childProgram), error => error === denied);
+      assert.equal(fixture.state.childCalls, 0);
+      deny = false;
+      const child = await fixture.runtime.application.resume(childId, fixture.childProgram);
+      await fixture.childCompleted;
+      await fixture.parent.whenIdle();
+      assert.equal(child.snapshot().goal?.phase, 'complete');
+      const saved = await inspectDelegationSession(fixture.runtime.native, childId);
+      const receipt = ownReceipt(saved); assert.ok(receipt);
+      assert.equal(saved.events.filter(event => event.type === 'user/message' && event.data.id === receipt.messageId).length, 1);
+      assert.equal(saved.events.filter(event => event.type === 'goal/change' && event.data.operation === 'create').length, 1);
+      assert.equal(fixture.state.starts, 1);
+      child.release();
+    } catch (error) { failures.push(error); }
+    finally { await finishRecovery(fixture, childId, failures); }
   });
 
   test('首次Follow拒权不会登记原生等待或启动子Agent', async () => {

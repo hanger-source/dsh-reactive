@@ -162,8 +162,10 @@ Jobs 与 MCP 实例的 `toolNames`、MCP 的 `resourceToolNames` 是 ResourceRea
 
 ## 子程序沿原生 owner
 
-`createRuntime(assembly => ...)` 的 assembly 提供 `implementDelegation(action, { program, mode:'spawn'|'fork', childInput, objective, authorize })`。返回普通 ActionImplementation，继续 useAction/Offer/Operation/Follow；不用新增 Delegate 组件或子队列。
+共享合同用 core 的 `nativeChildWorkAction` 和局部 Surface；业务以 `implementModule` 实现模块，内部用 `useAction`、默认合同名的 `Offer` 和一次 `Expose` 声明局部绑定。应用用 `composeSurface` 签发 mount，Program 登记模块并从注入的 `modules` 渲染；普通代码或 SDK 用 `session.module(mount)` 访问局部 Action，不手传工具名或根出口。
 
-子 Program 独立输入和 Surface；父 cause 保每条 sourceSessionId/raw scope。authorize 收真实 parent、executor、requester、causes 和 childInput，不把 service actor 或子初始 user source 猜作原 human。fork 合法继承历史，不继承父动态现场/当前 Offer；spawn 使用独立原生子程序配置。完成和反馈沿 NativeChildWork Operation，不把普通 turn 结束当正式业务完成。
+`createRuntime(assembly => ...)` 的 `assembly.implementDelegation(action, { program, mode, childInput, objective, authorize })` 返回普通 ActionImplementation。真实 Delegations owner 和子 Program 由宿主装配；模块不伪造原生上下文或 owner。子 Program 拥有独立原始输入，父 causes 保留各自 sourceSessionId 和 raw scope。fork 继承原生历史，不继承父动态现场与 Offer；spawn 使用独立原生子程序配置。业务确认 Action 核验正式产物后调用 `completeGoal`，NativeChildWork 以子 Goal complete 为正式完成；普通 turn 结束不代表完成。父 Goal follow 只来自真实工具调用，普通 SDK 调用不会获得工具续接权限。
+
+`authorize` 收到真实 parent、executor、requester、causes、childInput 和原委托 objective。resume 阶段的 `recovery` 另提供真实 child、初始 messageId、只读输入状态和当前 Goal 快照；业务根据原 objective 和当前 Goal 的 revision、objective 判断是否准入。授权后 Goal 或输入状态变化时不借用新目标，精确原生 CAS 或硬失败暴露竞争。`claimed` 是已领取但未进入历史的输入，恢复同一消息；已消费输入不重发，获准的活跃子 Goal 可自主进入新 round。子 Goal 持久 paused 不自动激活，父 Goal 暂停不自动取消独立的已受理子工作。一般 `application.resume` 加载原 Agent；普通人工 Goal 续行须以精确引用调用 `resumeGoal`。完整合同和示例见项目的 `docs/native-delegation.md`。
 
 Scope.dispose、SDK release、Runtime.dispose、业务 cancel 不是同一命令。显式释放自己拥有的 Runtime/能力；借入会话句柄或观察退出不能取消原业务。正常 host close 会处理未消费输入，不能把正常关闭冒充 crash 恢复试验。

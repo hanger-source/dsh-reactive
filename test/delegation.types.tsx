@@ -18,6 +18,16 @@ function assemble(assembly: ApplicationAssembly) {
       admission.input.at.getUTCFullYear();
       admission.target.caseId.toUpperCase();
       admission.causes[0]?.sourceSessionId.toUpperCase();
+      if (admission.phase === 'resume') {
+        admission.recovery.child.childSessionId.toUpperCase();
+        admission.recovery.messageId.toUpperCase();
+        admission.recovery.goal?.objective.toUpperCase();
+        // @ts-expect-error 恢复目标是自有不可变快照。
+        admission.recovery.goal!.revision = 123;
+      } else {
+        // @ts-expect-error 非恢复准入没有伪造的恢复现场。
+        admission.recovery;
+      }
       // @ts-expect-error 授权读取领域Date，不退化成原始字符串。
       admission.input.at.trim();
       // @ts-expect-error 不把原生Agent暴露给业务授权代码。

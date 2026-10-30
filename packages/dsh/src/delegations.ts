@@ -4,7 +4,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { SessionId, appendPluginRecord, pluginRecordOf, type Session, type UserMessage } from '@deepseek-ai/dsh-session';
 import { SessionPersistenceNotFoundError, type SessionInspection } from '@deepseek-ai/dsh-session-persistence';
-import { foldGoal } from '@deepseek-ai/dsh-goal';
+import { foldGoal, type GoalView } from '@deepseek-ai/dsh-goal';
 import { steerHostSubagentPrompt } from '@deepseek-ai/dsh-subagent/internal';
 import type {} from '@deepseek-ai/dsh-subagent';
 import { firstValueFrom, Observable, Subject } from 'rxjs';
@@ -17,7 +17,7 @@ import type { ConversationIdentity } from '@hanger-source/dsh-reactive/kernel';
 import type { ProgramContract, ProgramInput } from '@hanger-source/dsh-reactive/kernel';
 import type { ProgramImplementation } from '@hanger-source/dsh-reactive/kernel';
 import { canonical, goalBindingSchema } from './conversations/records.ts';
-import { restoreChildInput } from './conversations/pending-input.ts';
+import { inspectChildInput, restoreChildInput, type ChildInputState } from './conversations/pending-input.ts';
 import { sessionProgramBindingSchema, captureProgramBinding, assertSessionProgram } from './conversations/program-binding.ts';
 
 const sourceSchema = z.discriminatedUnion('kind', [
@@ -48,8 +48,15 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 
 export type DelegationRequester = ActionSource | { readonly kind: 'parent'; readonly sessionId: string };
-export interface DelegationAdmission<D extends ActionContract = ActionContract> {
-  readonly phase: 'create' | 'read' | 'follow' | 'resume';
+export interface DelegationRecovery {
+  readonly child: NativeChildReference;
+  readonly messageId: string;
+  readonly input: ChildInputState;
+  readonly goal: Readonly<GoalView> | null;
+}
+type DelegationPhase = { readonly phase: 'create' | 'read' | 'follow' }
+  | { readonly phase: 'resume'; readonly recovery: DelegationRecovery };
+interface DelegationAdmissionContext<D extends ActionContract> {
   readonly input: ActionParsedInput<D>;
   readonly target: ActionScope<D>;
   readonly parent: ConversationIdentity;
@@ -60,6 +67,7 @@ export interface DelegationAdmission<D extends ActionContract = ActionContract> 
   readonly objective: string;
   readonly signal: AbortSignal;
 }
+export type DelegationAdmission<D extends ActionContract = ActionContract> = DelegationAdmissionContext<D> & DelegationPhase;
 export interface DelegationOptions<D extends ActionContract, P extends ProgramContract> {
   readonly program: ProgramImplementation<P>;
   readonly mode: 'spawn' | 'fork';
@@ -73,6 +81,7 @@ type Descriptor = { readonly action: ActionContract; readonly program: ProgramIm
 type Prepared = { readonly record: DelegationRecord; readonly parent: Agent; readonly input: unknown; readonly target: unknown };
 type Gate = { record: DelegationRecord; promise: Promise<void>; resolve(): void; reject(error: unknown): void;
   acceptedMessageId?: string; goal?: NativeChildReceipt['goal']; confirmed?: boolean };
+type ChildObservation = { active: boolean; pending: Set<Promise<void>>; errors: unknown[]; closing?: Promise<void> };
 
 export class ChildCreationIncompleteError extends Error {
   constructor(readonly command: NativeChildCommand, readonly reference: NativeChildReference, cause?: unknown) {
@@ -111,12 +120,17 @@ export class NativeDelegations {
   #preparingCommands = new Map<string, Prepared>();
   #gates = new WeakMap<Agent, Gate>();
   #listeners: (() => void)[] = [];
+  #observing = true;
+  #observations = new Map<Session, ChildObservation>();
+  #terminalObservations = new Set<Promise<void>>();
+  #terminalErrors: unknown[] = [];
+  #disposing?: Promise<void>;
   constructor(private readonly ctx: Context) {
     this.owner = implementOperation(NativeChildWork, {
       locate: async (command, access) => {
         const record = await this.locateRecord(command, access.signal);
         if (!record) return { status: 'unknown' };
-        await this.authorize(record, 'read', access.source, access.signal);
+        await this.authorize(record, { phase: 'read' }, access.source, access.signal);
         this.assertAccess(record, access);
         return { status: 'accepted', reference: this.reference(record), state: await this.state(record, access.signal) };
       },
@@ -134,7 +148,7 @@ export class NativeDelegations {
               changed = false;
               const record = await this.referenceRecord(reference, signal);
               signal.throwIfAborted();
-              await this.authorize(record, 'read', access.source, signal);
+              await this.authorize(record, { phase: 'read' }, access.source, signal);
               signal.throwIfAborted();
               this.assertAccess(record, access);
               const value = await this.state(record, signal);
@@ -171,13 +185,13 @@ export class NativeDelegations {
           || canonical(prepared.record.executor) !== canonical(access.source))) throw new Error('REACTIVE_CHILD_COMMAND_NOT_ISSUED');
         const record = persisted ?? prepared!.record;
         this.assertAccess(record, access);
-        await this.authorize(record, 'follow', access.source, access.signal, prepared ? { input: prepared.input, target: prepared.target } : undefined);
+        await this.authorize(record, { phase: 'follow' }, access.source, access.signal, prepared ? { input: prepared.input, target: prepared.target } : undefined);
       },
       readFeedback: async (command, link, access) => {
         const record = await this.locateRecord(command, access.signal);
         if (!record) return { status: 'unknown' };
         this.assertAccess(record, access);
-        await this.authorize(record, 'follow', access.source, access.signal);
+        await this.authorize(record, { phase: 'follow' }, access.source, access.signal);
         const nodes = await this.feedback(record, access.signal);
         const after = link.after === null ? -1 : nodes.findIndex(node => node.id === link.after);
         if (link.after !== null && after < 0) throw new Error('REACTIVE_CHILD_FEEDBACK_BOUNDARY_NOT_FOUND');
@@ -204,26 +218,75 @@ export class NativeDelegations {
   }
   install() {
     const notify = (session: Session) => {
+      const owner = this.#observations.get(session);
+      if (!this.#observing || !owner?.active) return;
       const binding = this.childBinding(snapshot(session));
       if (!binding) return;
-      void this.ctx.sessions.flush(session).then(flushed => {
+      const work = this.ctx.sessions.flush(session).then(flushed => {
         if (!flushed) throw new Error('REACTIVE_PERSISTENCE_UNAVAILABLE');
-        this.updates$.next({ parentSessionId: binding.command.parentSessionId, childSessionId: binding.childSessionId });
-      }).catch(error => console.error('reactive.child.observation.failed', { childSessionId: session.id, error }));
+        if (this.#observing && owner.active)
+          this.updates$.next({ parentSessionId: binding.command.parentSessionId, childSessionId: binding.childSessionId });
+      }).catch(error => {
+        owner.errors.push(error);
+        console.error('reactive.child.observation.failed', { childSessionId: session.id, error });
+      }).finally(() => { owner.pending.delete(work); });
+      owner.pending.add(work);
     };
     this.#listeners.push(this.ctx.on('session/event', (session, event) => {
       if (event.type === 'goal/change' || event.type === 'turn/end' || event.type === 'assistant/message') notify(session);
     }));
     this.#listeners.push(this.ctx.on('subagent/end', event => {
+      if (!this.#observing) return;
       const session = this.ctx.sessions.get(event.id);
       if (session) notify(session);
-      else void readNativeInspection(this.ctx, event.id).then(inspection => {
-        const binding = this.childBinding(inspection);
-        if (binding) this.updates$.next({ parentSessionId: binding.command.parentSessionId, childSessionId: binding.childSessionId });
-      }).catch(error => console.error('reactive.child.terminal-observation.failed', { childSessionId: event.id, error }));
+      else {
+        const work = readNativeInspection(this.ctx, event.id).then(inspection => {
+          const binding = this.childBinding(inspection);
+          if (this.#observing && binding) this.updates$.next({ parentSessionId: binding.command.parentSessionId, childSessionId: binding.childSessionId });
+        }).catch(error => {
+          this.#terminalErrors.push(error);
+          console.error('reactive.child.terminal-observation.failed', { childSessionId: event.id, error });
+        }).finally(() => { this.#terminalObservations.delete(work); });
+        this.#terminalObservations.add(work);
+      }
     }));
   }
-  dispose() { for (const release of this.#listeners.splice(0)) release(); this.updates$.complete(); }
+  private observeChild(agent: Agent) {
+    if (this.#observations.has(agent.session)) return;
+    if (!this.#observing) throw new Error('REACTIVE_HOST_DISPOSED');
+    const owner: ChildObservation = { active: true, pending: new Set(), errors: [] };
+    this.#observations.set(agent.session, owner);
+    // 原生factory先await精确Agent scope，再关闭会话write handle；回滚也走同一顺序。
+    agent.ctx.effect(() => () => this.closeObservation(agent.session, owner));
+  }
+  private closeObservation(session: Session, owner: ChildObservation): Promise<void> {
+    if (owner.closing) return owner.closing;
+    owner.active = false;
+    const completion = Promise.withResolvers<void>();
+    owner.closing = completion.promise;
+    void (async () => {
+      await Promise.all(owner.pending);
+      this.#observations.delete(session);
+      if (owner.errors.length) throw new AggregateError(owner.errors, 'REACTIVE_CHILD_OBSERVATION_FAILED');
+    })().then(completion.resolve, completion.reject);
+    return owner.closing;
+  }
+  dispose(): Promise<void> {
+    if (this.#disposing) return this.#disposing;
+    // 同步撤销新观察和发布资格；正在执行的原生flush只能等待实际结算。
+    this.#observing = false;
+    for (const release of this.#listeners.splice(0)) release();
+    this.updates$.complete();
+    const completion = Promise.withResolvers<void>();
+    this.#disposing = completion.promise;
+    const stopping = [...this.#observations].map(([session, owner]) => this.closeObservation(session, owner));
+    void (async () => {
+      const results = await Promise.allSettled([...stopping, ...this.#terminalObservations]);
+      const errors = [...this.#terminalErrors, ...results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])];
+      if (errors.length) throw new AggregateError(errors, 'REACTIVE_DELEGATION_OBSERVATION_FAILED');
+    })().then(completion.resolve, completion.reject);
+    return this.#disposing;
+  }
   owns(action: ActionReference) { return this.#definitions.has(action.definition) && actionOperationOwner(action) === this.owner; }
   programs() { return [...this.#descriptors.values()].map(descriptor => descriptor.program); }
   private descriptor(record: DelegationRecord): Descriptor {
@@ -233,10 +296,10 @@ export class NativeDelegations {
     descriptor.program.definition.input.parse(record.childInput);
     return descriptor;
   }
-  private async authorize(record: DelegationRecord, phase: DelegationAdmission['phase'], requester: DelegationRequester, signal: AbortSignal, parsed?: { input: unknown; target: unknown }) {
+  private async authorize(record: DelegationRecord, phase: DelegationPhase, requester: DelegationRequester, signal: AbortSignal, parsed?: { input: unknown; target: unknown }) {
     signal.throwIfAborted();
     const descriptor = this.descriptor(record);
-    await firstValueFrom(abortable(admissionSignal => descriptor.authorize({ phase, input: parsed ? parsed.input : descriptor.action.input.parse(record.input), target: parsed ? parsed.target as never : descriptor.action.scope.parse(record.target),
+    await firstValueFrom(abortable(admissionSignal => descriptor.authorize({ ...phase, input: parsed ? parsed.input : descriptor.action.input.parse(record.input), target: parsed ? parsed.target as never : descriptor.action.scope.parse(record.target),
       parent: record.parent, executor: record.executor, requester, causes: record.causes,
       childInput: record.childInput, objective: record.objective, signal: admissionSignal }), signal));
     signal.throwIfAborted();
@@ -257,7 +320,7 @@ export class NativeDelegations {
       childSessionId: randomUUID(), action: descriptor.action.name, actionVersion: descriptor.action.version, mode: descriptor.mode,
       program: captureProgramBinding(descriptor.program.definition), input: original.input, target: original.scope, childInput,
       objective: descriptor.objective(input, call), parent: identity, executor: execution.source, causes: execution.inputs });
-    await this.authorize(record, 'create', execution.source, signal, { input, target: call.scope });
+    await this.authorize(record, { phase: 'create' }, execution.source, signal, { input, target: call.scope });
     signal.throwIfAborted();
     if (this.ctx.agents.get(parent.id) !== parent) throw new Error('REACTIVE_DELEGATION_PARENT_NOT_LIVE');
     const prepared = { record, parent, input, target: call.scope };
@@ -293,6 +356,21 @@ export class NativeDelegations {
     return record;
   }
   childBinding(inspection: SessionInspection) { return one(records(inspection, 'plugin:reactive/child', childBindingSchema), 'REACTIVE_CHILD_BINDING'); }
+  private recovery(agent: Agent, record: DelegationRecord, messageId: string): DelegationRecovery {
+    const current = this.ctx.goals.get(agent);
+    const goal = current ? structuredClone(current) : null;
+    if (goal?.blockedReason) Object.freeze(goal.blockedReason);
+    return Object.freeze({ child: Object.freeze(this.reference(record)), messageId,
+      input: inspectChildInput(agent, messageId).state, goal: goal ? Object.freeze(goal) : null });
+  }
+  private assertRecovery(agent: Agent, parent: Agent, recovery: DelegationRecovery, goal = recovery.goal) {
+    if (this.ctx.agents.get(parent.id) !== parent || this.ctx.agents.get(agent.id) !== agent || !this.ctx.agents.isOwnedBy(agent.id, parent)
+      || recovery.child.parentSessionId !== parent.id || recovery.child.childSessionId !== agent.id)
+      throw new Error('REACTIVE_CHILD_RUNTIME_OWNER_REQUIRED');
+    if (canonical(this.ctx.goals.get(agent) ?? null) !== canonical(goal)
+      || inspectChildInput(agent, recovery.messageId).state !== recovery.input)
+      throw new Error('REACTIVE_CHILD_RECOVERY_CHANGED');
+  }
   childReceipt(inspection: SessionInspection) {
     const receipt = one(records(inspection, 'plugin:reactive/child-receipt', childReceiptRecordSchema)
       .filter(item => item.receipt.childSessionId === inspection.meta.id), 'REACTIVE_CHILD_RECEIPT');
@@ -316,6 +394,7 @@ export class NativeDelegations {
   async created(agent: Agent, validate: (record: DelegationRecord, parent: Agent) => Promise<void>, signal: AbortSignal) {
     const parentId = agent.session.header.parentSession;
     if (!parentId) return undefined;
+    this.observeChild(agent);
     const parent = this.ctx.agents.get(parentId);
     if (!parent || !this.ctx.agents.isOwnedBy(agent.id, parent)) throw new Error('REACTIVE_CHILD_RUNTIME_OWNER_REQUIRED');
     const parentInspection = await readNativeInspection(this.ctx, parentId);
@@ -326,7 +405,6 @@ export class NativeDelegations {
     const descriptor = this.descriptor(record);
     const inspection = snapshot(agent.session);
     const existing = this.childBinding(inspection);
-    if (existing) await this.authorize(record, 'resume', { kind: 'parent', sessionId: parent.id }, signal);
     const binding = { command: record.command, childSessionId: record.childSessionId, action: record.action, actionVersion: record.actionVersion };
     if (existing && canonical(existing) !== canonical(binding)) throw new Error('REACTIVE_CHILD_BINDING_MISMATCH');
     const receipt = this.childReceipt(inspection);
@@ -342,9 +420,14 @@ export class NativeDelegations {
     this.#gates.set(agent, gate);
     if (existing) {
       if (!receipt) throw new ChildCreationIncompleteError(record.command, this.reference(record));
-      await this.verifyReceipt(record, receipt.receipt, parent);
-      const goal = this.ctx.goals.get(agent);
+      const recovery = this.recovery(agent, record, receipt.receipt.messageId);
+      const goal = recovery.goal;
       if (!goal || goal.id !== receipt.receipt.goal.id) throw new Error('REACTIVE_CHILD_GOAL_MISMATCH');
+      await this.authorize(record, { phase: 'resume', recovery }, { kind: 'parent', sessionId: parent.id }, signal);
+      this.assertRecovery(agent, parent, recovery);
+      await this.verifyReceipt(record, receipt.receipt, parent, signal);
+      signal.throwIfAborted();
+      this.assertRecovery(agent, parent, recovery);
       const input = restoreChildInput(agent, receipt.receipt.messageId);
       if (input !== 'cancelled' && goal.phase === 'active' && goal.activation === 'disarmed') this.ctx.goals.resume(agent, goal);
       gate.confirmed = true;
@@ -415,11 +498,15 @@ export class NativeDelegations {
       throw new ChildCreationIncompleteError(record.command, this.reference(record), failure);
     }
   }
-  private async confirmCreation(child: Agent, parent: Agent, gate: Gate): Promise<NativeChildReceipt> {
+  private async confirmCreation(child: Agent, parent: Agent, gate: Gate, recovery?: DelegationRecovery, signal?: AbortSignal): Promise<NativeChildReceipt> {
     const { record } = gate;
+    let expectedGoal = recovery?.goal;
+    const assertCurrent = () => { signal?.throwIfAborted(); if (recovery) this.assertRecovery(child, parent, recovery, expectedGoal); };
+    assertCurrent();
     const persisted = this.childReceipt(snapshot(child.session));
     const messageId = persisted?.receipt.messageId ?? gate.acceptedMessageId;
     if (!messageId) throw new ChildCreationIncompleteError(record.command, this.reference(record));
+    if (recovery && messageId !== recovery.messageId) throw new Error('REACTIVE_CHILD_RECOVERY_CHANGED');
     const accepted = child.session.snapshotEvents().slice(child.session.inheritedEventCount).some(event => event.type === 'agent/inbox/spliced'
       && event.data.inserted.some(message => message.id === messageId));
     if (!accepted) throw new Error('REACTIVE_CHILD_INITIAL_MESSAGE_NOT_ACCEPTED');
@@ -427,12 +514,15 @@ export class NativeDelegations {
       throw new ChildCreationIncompleteError(record.command, this.reference(record));
     // 原生 manager 已登记的 catalog 必须先持久，子确认不能依赖稍后的父 ACK 顺带刷入它。
     await this.flush(parent);
+    assertCurrent();
     if (!gate.goal) {
       if (persisted) gate.goal = persisted.receipt.goal;
       else {
         if (this.ctx.goals.get(child)) throw new ChildCreationIncompleteError(record.command, this.reference(record));
         const created = this.ctx.goals.create(child, { objective: record.objective });
         gate.goal = { id: created.id, revision: created.revision };
+        // 只有本次确认自身建立的Goal可以取代已授权的真实absence。
+        if (recovery) expectedGoal = created;
       }
     }
     const receipt = nativeChildReceiptSchema.parse({ ...this.reference(record), messageId, goal: gate.goal });
@@ -446,12 +536,15 @@ export class NativeDelegations {
     if (!persisted) appendPluginRecord(child.session, 'plugin:reactive/child-receipt', confirmation);
     else if (canonical(persisted) !== canonical(confirmation)) throw new Error('REACTIVE_CHILD_RECEIPT_CONFLICT');
     await this.flush(child);
+    assertCurrent();
     const parentReceipt = one(records(snapshot(parent.session), 'plugin:reactive/child-receipt', childReceiptRecordSchema)
       .filter(item => canonical(item.command) === canonical(record.command)), 'REACTIVE_CHILD_RECEIPT');
     if (!parentReceipt) appendPluginRecord(parent.session, 'plugin:reactive/child-receipt', confirmation);
     else if (canonical(parentReceipt) !== canonical(confirmation)) throw new Error('REACTIVE_CHILD_RECEIPT_CONFLICT');
     await this.flush(parent);
+    assertCurrent();
     await this.verifyReceipt(record, receipt);
+    assertCurrent();
     gate.confirmed = true; gate.resolve();
     this.updates$.next({ parentSessionId: parent.id, childSessionId: child.id });
     return receipt;
@@ -460,8 +553,13 @@ export class NativeDelegations {
     const gate = this.#gates.get(child);
     if (!gate || gate.confirmed) return;
     if (this.ctx.agents.get(parent.id) !== parent || !this.ctx.agents.isOwnedBy(child.id, parent)) throw new Error('REACTIVE_CHILD_RUNTIME_OWNER_REQUIRED');
-    await this.authorize(gate.record, 'resume', { kind: 'parent', sessionId: parent.id }, signal);
-    await this.confirmCreation(child, parent, gate);
+    const messageId = this.childReceipt(snapshot(child.session))?.receipt.messageId ?? gate.acceptedMessageId;
+    if (!messageId) throw new ChildCreationIncompleteError(gate.record.command, this.reference(gate.record));
+    const recovery = this.recovery(child, gate.record, messageId);
+    if (gate.goal && (!recovery.goal || recovery.goal.id !== gate.goal.id)) throw new Error('REACTIVE_CHILD_GOAL_MISMATCH');
+    await this.authorize(gate.record, { phase: 'resume', recovery }, { kind: 'parent', sessionId: parent.id }, signal);
+    this.assertRecovery(child, parent, recovery);
+    await this.confirmCreation(child, parent, gate, recovery, signal);
   }
   private async flush(agent: Agent) { if (!await this.ctx.sessions.flush(agent.session)) throw new Error('REACTIVE_PERSISTENCE_UNAVAILABLE'); }
   private async verifyReceipt(record: DelegationRecord, receipt: NativeChildReceipt, repairParent?: Agent, signal?: AbortSignal) {

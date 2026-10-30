@@ -222,11 +222,13 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
         void (async () => {
             const stoppingNotifications = this.operationNotifications.close();
             this.stopDelegationUpdates();
+            const stoppingDelegations = Promise.allSettled([this.delegations.dispose()]);
             this.#lifetime.abort(new Error('REACTIVE_HOST_DISPOSED'));
             const failures: unknown[] = [];
             try { await stoppingNotifications; }
             catch (error) { failures.push(error); }
             await Promise.allSettled(this.#sessionsStarting ? [this.#sessionsStarting] : []);
+            failures.push(...(await stoppingDelegations).flatMap(result => result.status === 'rejected' ? [result.reason] : []));
             try { failures.push(...await this.sessions.shutdownNative()); }
             catch (error) { failures.push(error); }
             try {
@@ -236,8 +238,6 @@ export class ApplicationHost<E extends readonly AnyEnvironment[] = readonly AnyE
                 failures.push(error);
             }
             try { failures.push(...await this.sessions.releasePrograms()); }
-            catch (error) { failures.push(error); }
-            try { this.delegations.dispose(); }
             catch (error) { failures.push(error); }
             try {
                 await this.workspaces.dispose();

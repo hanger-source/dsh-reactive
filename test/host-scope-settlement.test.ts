@@ -3,12 +3,13 @@ import { test } from 'node:test';
 import { appendFile, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Observable, Subject, concatMap, of } from 'rxjs';
+import { Observable, Subject, concatMap, firstValueFrom, of } from 'rxjs';
 import { SessionId } from '@deepseek-ai/dsh-session';
-import { createReaction, defineApplication, defineEnvironment, defineProgram, defineSurface, view, z,
+import { abortable, createReaction, defineApplication, defineEnvironment, defineProgram, defineSurface, view, z,
   type Scope } from '@hanger-source/dsh-reactive';
 import { Expose, implementProgram, useScope } from '@hanger-source/dsh-reactive/program';
-import { boot } from './native-support.ts';
+import { boot, text, tool } from './native-support.ts';
+import { bootDelegationFixture } from './delegation-support.ts';
 
 test('冷句柄释放同步收集图且保留真实结算，宿主退出等待已收集图和独立工作区反应', { timeout: 20_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-host-scope-settlement-'));
@@ -154,5 +155,77 @@ test('冷句柄释放同步收集图且保留真实结算，宿主退出等待�
     workspaceWriter?.commands.complete();
     for (const handle of handles) handle.release();
     await app.dispose();
+  }
+});
+
+for (const mixed of [false, true]) test(mixed
+  ? '宿主取消在途子工作Follow恢复时，聚合中的真实拒权仍交付给dispose'
+  : '宿主直接dispose取消在途子工作Follow恢复，无需调用方先whenIdle', { timeout: 20_000 }, async () => {
+  const jobs = mixed ? ['denied-child', 'cancelled-child'] : ['cancelled-child'];
+  const entered = new Map(jobs.map(job => [job, Promise.withResolvers<AbortSignal>()]));
+  const childRelease = Promise.withResolvers<void>();
+  const readRelease = Promise.withResolvers<void>();
+  const businessFailure = new Error('CHILD_FOLLOW_RECOVERY_PERMISSION_REVOKED');
+  let recovering = false;
+  let fixture!: Awaited<ReturnType<typeof bootDelegationFixture>>;
+  let invocationEntered = Promise.withResolvers<(typeof fixture.invocations)[number]>();
+  fixture = await bootDelegationFixture('spawn', {
+    onInvocation(invocation) { invocationEntered.resolve(invocation); },
+    async authorize(admission) {
+      if (!recovering || admission.phase !== 'follow' || admission.requester.kind !== 'participant'
+        || admission.requester.entrypoint !== 'operation-recovery') return;
+      entered.get(admission.input.job)!.resolve(admission.signal);
+      if (admission.input.job === 'denied-child') throw businessFailure;
+      await firstValueFrom(abortable(() => readRelease.promise, admission.signal));
+    },
+    async *respond(request) {
+      if (request.tools?.some(item => item.name === 'child_complete')) {
+        assert.ok(request.signal);
+        await firstValueFrom(abortable(() => childRelease.promise, request.signal));
+        yield* text('子工作结束');
+        return;
+      }
+      const submitted = request.messages.flatMap(message => message.content)
+        .flatMap(block => block.type === 'text' && jobs.includes(block.text) ? [block.text] : []);
+      const job = submitted.at(-1);
+      assert.ok(job);
+      const called = request.messages.some(message => message.content.some(block => block.type === 'tool-call'
+        && block.name === 'delegate_work' && block.id === 'host-recovery-' + job));
+      if (!called) yield* tool('delegate_work', 'host-recovery-' + job, { ...fixture.rawInput, job });
+      else yield* text('保留已经受理的子工作');
+    },
+  });
+  let disposing: Promise<void> | undefined;
+  try {
+    const receipts = [];
+    for (const job of jobs) {
+      invocationEntered = Promise.withResolvers<(typeof fixture.invocations)[number]>();
+      await fixture.parent.submit({ requestId: 'host-recovery-' + job, content: job,
+        intent: 'question', delivery: 'followup', scope: { parentId: fixture.rawScope } });
+      const invocation = await invocationEntered.promise;
+      receipts.push(await invocation.result);
+      await fixture.runtime.native.agents.get(SessionId(fixture.parent.id))!.whenIdle();
+    }
+    recovering = true;
+    const child = fixture.runtime.native.agents.get(SessionId(receipts.at(-1)!.childSessionId))!;
+    fixture.runtime.native.goals.edit(child, fixture.runtime.native.goals.get(child)!, { objective: '触发已受理子工作的权威更新' });
+    await Promise.all([...entered.values()].map(value => value.promise));
+    const pendingSignal = await entered.get('cancelled-child')!.promise;
+    const agents = fixture.runtime.native.agents;
+    disposing = fixture.dispose();
+    if (mixed) {
+      const containsBusinessFailure = (error: unknown): boolean => error === businessFailure
+        || (error instanceof AggregateError && error.errors.some(containsBusinessFailure));
+      await assert.rejects(disposing, containsBusinessFailure);
+    } else {
+      await disposing;
+      assert.deepEqual(fixture.errors, []);
+    }
+    assert.equal(pendingSignal.aborted, true, '宿主退出取消仍在途恢复实际持有的signal');
+    for (const receipt of receipts) assert.equal(agents.get(SessionId(receipt.childSessionId)), undefined);
+  } finally {
+    readRelease.resolve(); childRelease.resolve(); fixture.parent.release();
+    if (disposing) await disposing.catch(() => {});
+    else await fixture.dispose();
   }
 });

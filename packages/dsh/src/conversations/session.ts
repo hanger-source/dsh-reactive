@@ -51,10 +51,20 @@ export interface LiveConversation {
 /** 已受理的提交与共享恢复归实际挂载结算，调用者退等后仍由 settle/close 观察失败。 */
 export function retainRecovery<T>(entry: LiveConversation, work: Promise<T>, event: string, details: Readonly<Record<string, unknown>>, ownerSignal?: AbortSignal): Promise<T> {
     const recovery = work.then(() => {}, error => {
-        if (ownerSignal?.aborted && error === ownerSignal.reason) return;
+        if (ownerSignal?.aborted && isOwnerCancellation(error, ownerSignal.reason)) return;
         entry.recoveryErrors.push(error);
         console.error(event, { sessionId: entry.agent.id, ...details, error });
     }).finally(() => { entry.recovery.delete(recovery); });
     entry.recovery.add(recovery);
     return work;
+}
+
+/** 聚合只保留同一owner的精确取消；空聚合、混合失败和cause包装都仍是失败。 */
+function isOwnerCancellation(error: unknown, reason: unknown, ancestors = new Set<AggregateError>()): boolean {
+    if (error === reason) return true;
+    if (!(error instanceof AggregateError) || 'cause' in error || !error.errors.length || ancestors.has(error)) return false;
+    ancestors.add(error);
+    const cancelled = error.errors.every(item => isOwnerCancellation(item, reason, ancestors));
+    ancestors.delete(error);
+    return cancelled;
 }
