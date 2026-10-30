@@ -7,7 +7,7 @@ import { Workspaces } from "../workspaces/workspaces.ts";
 import { collectOperationOwners, createApplicationAssembly, type ApplicationAssembly } from './assembly.ts';
 import { moduleNativeDependencies } from '../programs/modules.ts';
 import { ApplicationHost } from '../application.ts';
-import { requireActivePlugin } from '../native-installation.ts';
+import { assertNativeContextActive, requireActivePlugin } from '../native-installation.ts';
 import type { HostOptions } from './options.ts';
 export type ApplicationFactory<E extends readonly AnyEnvironment[] = readonly AnyEnvironment[]> = (assembly: ApplicationAssembly) => ApplicationDefinition<E>;
 /** @internal Runtime与嵌入宿主共用一次工厂求值和失败释放。 */
@@ -85,23 +85,31 @@ export async function mountAssembledApplication<E extends readonly AnyEnvironmen
         const required = ['agents', 'sessions', 'sessionPersistence', 'sessionQuery', 'sessionProjections', 'workspaceRegistry', 'storageDomain',
             'goals', 'tools', 'systemPrompt', 'loader', 'agentPresets', 'skills', 'fs', 'workingDirectory', 'userQuestions', 'attachments', 'fileUploads'];
         if (delegations.programs().length) required.push('subagents');
+        assertNativeContextActive(ctx);
         installation = ctx.plugin({ name: 'reactive-application:' + definition.name, async apply(application: Context) {
             let hostInstallation: (Fiber & PromiseLike<Fiber>) | undefined;
             // 同步generator保留thenable disposer的原身份；async yield会先将它解析成另一函数。
             application.effect(function* () {
                 yield () => assembled.release();
                 const nativeInstallation = application.plugin({ name: 'reactive-application-capabilities', async apply(native: Context) {
-                    for (const capability of capabilities) await capability.install(native, home!);
+                    for (const capability of capabilities) {
+                        assertNativeContextActive(native);
+                        await capability.install(native, home!);
+                    }
+                    assertNativeContextActive(native);
                 } });
                 yield nativeInstallation.dispose;
                 hostInstallation = application.plugin({ name: 'reactive-application-host', async apply(scope: Context) {
                     await requireActivePlugin(nativeInstallation);
+                    assertNativeContextActive(scope);
                     await requireActivePlugin(scope.inject(required, async native => {
                         if (host) throw new Error('REACTIVE_APPLICATION_INSTALLATION_ENDED');
+                        assertNativeContextActive(native);
                         const workspaces = new Workspaces(native, definition.name, environments);
                         try {
                             host = ApplicationHost.create(native, definition, workspaces, hostOptions, delegations, releaseInstallation);
                             await host.initialize();
+                            assertNativeContextActive(native);
                             native.effect(() => () => {
                                 // 必需服务退出同时撤销本次应用安装；不等待正在卸载自己的子Fiber。
                                 if (installation?.state === 1 || installation?.state === 2) {
@@ -122,6 +130,7 @@ export async function mountAssembledApplication<E extends readonly AnyEnvironmen
             await requireActivePlugin(hostInstallation!);
         } });
         await requireActivePlugin(installation);
+        assertNativeContextActive(installation.ctx);
         return host!;
     } catch (error) {
         try { await releaseInstallation(); }

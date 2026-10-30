@@ -3,7 +3,7 @@ import type { ToolRuntime } from '@deepseek-ai/dsh-tools';
 import { BehaviorSubject, Observable, distinctUntilChanged, firstValueFrom, map, takeWhile } from 'rxjs';
 import { abortable, createResource, fromSnapshot, ResourceReader, z, type CancellationOptions, type Invocation, type InvocationActivity, type Json, type Observation, type ConversationIdentity } from '@hanger-source/dsh-reactive';
 import { Scope, connect } from '@hanger-source/dsh-reactive/kernel';
-import { requireActivePlugin, type NativeInstallation } from './native-installation.ts';
+import { assertNativeContextActive, requireActivePlugin, type NativeInstallation } from './native-installation.ts';
 import type { NativeSessionAccess } from './conversations/session-access.ts';
 
 /** 官方 trace 代理使用原对象身份；普通对象及函数 provider 使用自身身份。 */
@@ -54,9 +54,15 @@ export type NativeSessionSource = NativeSessionHandle | { readonly identity: Con
 /** 一次安装同时用于独立 Runtime 与嵌入宿主，部分失败释放这个安装范围。 */
 export function nativeCapabilities(...selected: readonly NativeCapability[]): NativeInstallation {
   return async (parent, home) => {
+    assertNativeContextActive(parent);
     await requireActivePlugin(parent.plugin({ name: 'reactive-native-capabilities', async apply(ctx: Context) {
-      for (const capability of selected) await capability.install(ctx, home);
+      for (const capability of selected) {
+        assertNativeContextActive(ctx);
+        await capability.install(ctx, home);
+      }
+      assertNativeContextActive(ctx);
     } }));
+    assertNativeContextActive(parent);
   };
 }
 
@@ -66,7 +72,6 @@ export class NativeCapabilityOwner {
   readonly install: NativeInstallation;
   #installation?: Fiber & PromiseLike<Fiber>;
   #reader?: Fiber;
-  #parent?: Context;
   #disposing?: Promise<void>;
   #draining?: Promise<void>;
   #pending = new Set<Promise<void>>();
@@ -81,14 +86,15 @@ export class NativeCapabilityOwner {
       const stop = () => this.stopObservations();
       const stopAndDrain = () => this.stopAndDrain();
       let reader: Fiber | undefined;
-      this.#parent = parent;
       const owner = this;
+      assertNativeContextActive(parent);
       const installation = parent.plugin({ name, async apply(ctx: Context) {
         const resources = (function* (): Generator<NativeSetupResource, void> {
           yield stopAndDrain;
           yield* setup(ctx, home);
           const queries = ctx.plugin({ name: name + ':queries', inject: [...owner.#services], apply(readContext: Context) {
             owner.scope.assertActive();
+            assertNativeContextActive(readContext);
             readContext.effect(() => () => {
               try { stop(); }
               finally {
@@ -110,6 +116,8 @@ export class NativeCapabilityOwner {
             let previous: Fiber & PromiseLike<Fiber> | undefined;
             return { async next(): Promise<IteratorResult<() => unknown, void>> {
               if (previous) await requireActivePlugin(previous);
+              owner.scope.assertActive();
+              assertNativeContextActive(ctx);
               const next = resources.next();
               if (next.done) return next;
               const resource = next.value;
@@ -122,17 +130,17 @@ export class NativeCapabilityOwner {
       this.#installation = installation;
       await requireActivePlugin(installation);
       this.scope.assertActive();
+      assertNativeContextActive(installation.ctx);
       this.#reader = reader;
     };
   }
 
   context(): Context {
     this.scope.assertActive();
-    const ended = (state: number | undefined) => state === 3 || state === 4 || state === 5;
-    if (!this.#reader || this.#reader.state !== 2 || this.#installation?.state !== 2
-      || ended(this.#parent?.fiber.state) || ended(this.#parent?.root.fiber.state)) {
+    if (!this.#reader || this.#reader.state !== 2 || this.#installation?.state !== 2) {
       throw new Error('REACTIVE_NATIVE_CAPABILITY_NOT_ACTIVE');
     }
+    assertNativeContextActive(this.#reader.ctx);
     return this.#reader.ctx;
   }
 

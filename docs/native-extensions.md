@@ -37,6 +37,8 @@ const capability = createNativeSessionCapability({
 
 需要安装自有原生 provider 时提供同步 generator `setup(context, home)`，逐项 yield 正式 Cordis Fiber 或清理函数。`home` 来自安装入口，不从进程 cwd 或全局变量猜测。依赖 provider 未活跃或安装失败时沿原生安装路径回滚；不要使用 async generator 丢失 Fiber 与 disposer 的身份。
 
+每次开始后续安装或执行下一段 setup 前，框架重新核验实际 Cordis Fiber 及其祖先的运行资格。祖先已经退出时，即使当前安装仍在等待，也不会开始下一项能力、provider 或宿主初始化；已经开始的安装与清理仍等待真实结算。应用装配取得的全部能力按原退出合同释放，尚未开始安装的实例也必须支持 dispose。安装成功返回与已取得能力的 context、invoke 同样核验祖先，不能借当前子 Fiber 的暂存状态继续执行。
+
 `session(source)` 同步构造资源和方法闭包。它不读取来源、不订阅、不执行命令，也不返回 Promise。实际观察、`context()`、`liveAgent()` 和 `invoke()` 在构造成功前拒绝执行；构造失败释放本次派生关系，不缓存一个不完整对象。
 
 ## 资源与调用

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as immediate } from 'node:timers/promises';
 import { Observable, defer, from, map, type Subscription } from 'rxjs';
-import { symbols, type Context, type Fiber } from '@deepseek-ai/cordis';
+import { Context, symbols, type Fiber } from '@deepseek-ai/cordis';
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local';
 import type { FileSystem } from '@deepseek-ai/dsh-fs';
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools';
@@ -19,6 +19,54 @@ const program = defineProgram({ input: z.null(), surface: defineSurface({ views:
 const definition = defineApplication({ name: 'public-native-extension', admit: async () => {}, environments: [defineEnvironment({
   id: 'work', instructions: '原生扩展观察不启动模型', program: implementProgram(program, { Component: () => null }),
 })] });
+
+test('公共setup的同步generator在首项startup等待期间父Fiber退出，不再执行下一段body并等待真实清理', async () => {
+  const root = new Context();
+  let parent!: Context;
+  const outer = root.plugin({ name: 'extension-setup-parent', apply(ctx: Context) { parent = ctx; } });
+  await requireActivePlugin(outer);
+  const entered = Promise.withResolvers<void>(), startup = Promise.withResolvers<void>();
+  const cleanupEntered = Promise.withResolvers<void>(), cleanup = Promise.withResolvers<void>();
+  let continued = 0, released = 0;
+  const capability = createNativeSessionCapability({ name: 'extension-setup-exit', services: ['extensionSetup'],
+    *setup(ctx) {
+      yield ctx.plugin({ name: 'extension-setup-first', async apply(native: Context) {
+        native.provide('extensionSetup', {});
+        native.effect(() => async () => { cleanupEntered.resolve(); await cleanup.promise; released++; });
+        entered.resolve(); await startup.promise;
+      } });
+      continued++;
+      yield () => { continued++; };
+    }, session: () => ({}),
+  });
+  let settled = false;
+  const outcome = Promise.resolve(capability.install(parent, '/tmp')).then(
+    () => { settled = true; return { installed: true }; }, error => { settled = true; return { error }; });
+  let closing: Promise<PromiseSettledResult<unknown>[]> | undefined;
+  try {
+    await Promise.race([entered.promise, outcome.then(() => assert.fail('首个setup插件尚未启动'))]);
+    closing = Promise.allSettled([outer.dispose()]);
+    startup.resolve(); await cleanupEntered.promise;
+    assert.equal(settled, false, '安装失败回执仍等待已经开始的真实清理');
+    assert.equal(continued, 0);
+    cleanup.resolve();
+    const result = await outcome;
+    assert.ok('error' in result);
+    assert.equal((await closing)[0]!.status, 'fulfilled');
+    const disposing = capability.dispose();
+    assert.equal(capability.dispose(), disposing);
+    await assert.rejects(disposing, error => error === result.error, 'dispose保留同一次真实startup失败');
+    assert.equal(released, 1); assert.equal(continued, 0, '失效后不得再次驱动同步generator');
+  } finally {
+    startup.resolve(); cleanup.resolve();
+    const result = await outcome;
+    await closing;
+    try {
+      if ('error' in result) await assert.rejects(capability.dispose(), error => error === result.error);
+      else await capability.dispose();
+    } finally { await root.fiber.dispose(); }
+  }
+});
 
 test('公共扩展冷构造后读取真实文件和Agent；exact来源缓存与同会话独立句柄各有观察寿命', async () => {
   const home = await mkdtemp(join(tmpdir(), 'dsh-reactive-extension-source-'));

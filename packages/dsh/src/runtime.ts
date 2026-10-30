@@ -43,7 +43,7 @@ import { assembleApplication, mountAssembledApplication, type ApplicationFactory
 import type { ApplicationHost } from './application.ts';
 import InlineRuntime, { type Config as ExecutionLimits } from './execution/inline-runtime.ts';
 import type { RuntimeModel } from './models.ts';
-import type { NativeInstallation } from './native-installation.ts';
+import { assertNativeContextActive, type NativeInstallation } from './native-installation.ts';
 import type { OperationOwnerReference } from '@hanger-source/dsh-reactive/kernel';
 import { environmentPresetId } from './programs/presets.ts';
 import type { HostOptions } from './applications/options.ts';
@@ -124,8 +124,11 @@ export async function createRuntime<E extends readonly AnyEnvironment[]>(factory
       const detail = { sessionId: agent.id as string, error };
       if (options.onError) options.onError(detail); else console.error('reactive.agent.failed', detail);
     });
+    assertNativeContextActive(ctx);
     await options.model.install(ctx, home);
+    assertNativeContextActive(ctx);
     await options.installNative?.(ctx, home);
+    assertNativeContextActive(ctx);
     host = await mountAssembledApplication(ctx, assembled, { home, actorId: options.actorId, serviceActorId: options.serviceActorId, operations: options.operations, files: options.files,
       completedRetentionMs: options.completedRetentionMs, maxCompleted: options.maxCompleted,
       model: { provider: options.model.provider, model: options.model.model } });

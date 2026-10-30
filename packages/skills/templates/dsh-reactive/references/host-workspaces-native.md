@@ -92,6 +92,8 @@ Team 的 createTask、updateTask、task.update 与 Schedule 的 task.update/dele
 
 `RuntimeOptions.installNative` 在任何 Agent 创建前安装可选能力；`nativeCapabilities(...selected)` 组合正式能力安装。Jobs、MCP、Approval、Time、Files 等按包公开 subpath 和实际插件能力选择，原生 owner 继续拥有状态、权限、取消和资源寿命。使用当前安装 subpath 的 DTS，不为了统一外形给所有工具再包 Action。
 
+原生安装在每次开始下一项能力、继续 setup generator 或初始化 Host 前复核实际 Cordis owner 的完整祖先链。宿主退出阻止尚未开始的工作，仍等待已开始安装与真实清理；不能把安装队列的停止当成外部工作已经取消。自定义 NativeCapability 必须支持安装前的 dispose，应用取得但尚未安装的选择也参与原有失败释放。已取得能力的 context 与 invoke 不绕过祖先资格核验。
+
 组件用 `<NativeTools names={actualInstalledNames} enabled={condition} admit={policy} />` 选择原生已安装工具，保持原执行/guard/PTC语义。它不安装后端，enabled 不等于业务授权。
 
 `eligibility?: ResourceSource<Eligibility>` 可借用同一业务资格 reader，owner 不变。可见性要求 enabled 且资格当前 ready.allowed；pending、error、denied 不可用，不缓存上次允许值。每次 admit 仍核真实来源、参数和原始输入；框架持有资格跨越异步 admit 和原生 Approval，瞬态撤销永久拒绝本次调用，恢复只允许新调用。已受理的审批按原 owner 结算，正式 guard 复核后才进入工具。已进入 execute 的工作继续按原 owner 结算。同名贡献须使用一致的 enabled、admit 函数和 reader 身份。独立 SDK 与原生服务保持各自准入，不反向受模型声明控制。

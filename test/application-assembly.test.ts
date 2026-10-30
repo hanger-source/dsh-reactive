@@ -4,14 +4,14 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createElement as h } from 'react';
-import { symbols, type Context, type Fiber } from '@deepseek-ai/cordis';
+import { Context, symbols, type Fiber } from '@deepseek-ai/cordis';
 import LocalJobs from '@deepseek-ai/dsh-jobs-local';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { of } from 'rxjs';
 import { composeSurface, defineApplication, defineEnvironment, defineOperation, defineProgram, defineSurface, implementOperation, observeResource, z } from '@hanger-source/dsh-reactive';
 import { implementModule, implementProgram } from '@hanger-source/dsh-reactive/program';
-import { createRuntime, implementNativeModule, mountApplication, nativeModel, requireActivePlugin, type ApplicationAssembly, type ApplicationHost, type NativeCapability } from '@hanger-source/dsh-reactive-dsh';
+import { createRuntime, implementNativeModule, mountApplication, nativeCapabilities, nativeModel, requireActivePlugin, type ApplicationAssembly, type ApplicationHost, type NativeCapability } from '@hanger-source/dsh-reactive-dsh';
 import { createNativeJobs } from '@hanger-source/dsh-reactive-dsh/jobs';
 import { createNativeSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { boot } from './native-support.ts';
@@ -27,9 +27,10 @@ function definition(name: string) {
 function capability(name: string, beforeRelease?: () => void | Promise<void>, startup?: () => void | Promise<void>) {
   let installation: (Fiber & PromiseLike<Fiber>) | undefined;
   const homes: string[] = [];
-  let installed = 0, released = 0, patches = 0;
+  let installed = 0, released = 0, patches = 0, installs = 0, disposals = 0;
   const selected: NativeCapability = {
     async install(parent: Context, home: string) {
+      installs++;
       homes.push(home);
       installation = parent.plugin({ name, async apply(ctx: Context) {
         installed++;
@@ -40,11 +41,105 @@ function capability(name: string, beforeRelease?: () => void | Promise<void>, st
       await requireActivePlugin(installation);
     },
     async dispose() {
+      disposals++;
       if (installation) { await installation.dispose(); await installation; }
     },
   };
-  return { selected, homes, get installed() { return installed; }, get released() { return released; }, get patches() { return patches; } };
+  return { selected, homes, get installed() { return installed; }, get released() { return released; }, get patches() { return patches; },
+    get installs() { return installs; }, get disposals() { return disposals; } };
 }
+
+test('真实父Fiber在首项startup等待期间退出，串行安装停止且等待已经开始的原生清理', { timeout: 15_000 }, async t => {
+  for (const entry of ['application', 'native-capabilities'] as const) {
+    for (const count of [1, 2]) await t.test(entry + ':' + count, async () => {
+      const home = await mkdtemp(join(tmpdir(), 'dsh-reactive-parent-install-'));
+      const root = new Context();
+      let parent!: Context;
+      const outer = root.plugin({ name: 'installation-parent', apply(ctx: Context) { parent = ctx; } });
+      await requireActivePlugin(outer);
+      const entered = Promise.withResolvers<void>(), startup = Promise.withResolvers<void>();
+      const cleanupEntered = Promise.withResolvers<void>(), cleanup = Promise.withResolvers<void>();
+      const first = capability('installation-first', async () => { cleanupEntered.resolve(); await cleanup.promise; },
+        async () => { entered.resolve(); await startup.promise; });
+      const second = capability('installation-second');
+      const selected = count === 1 ? [first.selected] : [first.selected, second.selected];
+      const starting = entry === 'application'
+        ? mountApplication(parent, assembly => {
+          selected.forEach(value => assembly.native(value)); return definition('installation-parent-exit');
+        }, { home })
+        : Promise.resolve(nativeCapabilities(...selected)(parent, home));
+      let started = false, closed = false;
+      const outcome = starting.then(value => { started = true; return { value }; }, error => { started = true; return { error }; });
+      let closing: Promise<PromiseSettledResult<unknown>[]> | undefined;
+      try {
+        await Promise.race([entered.promise, outcome.then(() => assert.fail('首项真实startup尚未进入，安装已经结束'))]);
+        closing = Promise.allSettled([outer.dispose()]).then(results => { closed = true; return results; });
+        startup.resolve();
+        await cleanupEntered.promise;
+        assert.equal(started, false, '安装结果必须等待首项真实原生清理');
+        assert.equal(closed, false, '父Fiber退出必须等待首项真实原生清理');
+        cleanup.resolve();
+        const result = await outcome;
+        assert.ok('error' in result, '祖先退出后最后一项也不能成功交付安装');
+        assert.equal((await closing)[0]!.status, 'fulfilled');
+        assert.equal(first.installed, 1); assert.equal(first.released, 1);
+        assert.equal(second.installs, 0, '后续capability.install不能开始');
+        assert.equal(second.installed, 0, '后续真实Cordis apply不能开始');
+        if (entry === 'application') {
+          assert.equal(first.disposals, 1);
+          assert.equal(second.disposals, count === 2 ? 1 : 0, '已选择但未安装的能力仍退出一次');
+        }
+      } finally {
+        startup.resolve(); cleanup.resolve();
+        const result = await outcome;
+        if ('value' in result && result.value) await result.value.dispose();
+        await closing; await root.fiber.dispose();
+      }
+    });
+  }
+});
+
+test('Runtime在模型安装等待期间真实Context正在退出，后续installNative与应用原生挂载均不开始', { timeout: 15_000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-reactive-model-install-exit-'));
+  const entered = Promise.withResolvers<Context>(), release = Promise.withResolvers<void>();
+  const cleanupEntered = Promise.withResolvers<void>(), cleanup = Promise.withResolvers<void>();
+  const rolledBack = Promise.withResolvers<void>();
+  const selected = capability('runtime-after-model-exit');
+  const disposeSelected = selected.selected.dispose;
+  selected.selected.dispose = async () => { await disposeSelected(); rolledBack.resolve(); };
+  let nativeInstalls = 0;
+  const model = nativeModel({ provider: 'installation-exit', model: 'unused', create: () => new class extends LlmAdapter {
+    async *stream() { throw new Error('INSTALLATION_TEST_MUST_NOT_CALL_MODEL'); }
+  }() });
+  const starting = createRuntime(assembly => {
+    assembly.native(selected.selected); return definition('runtime-model-exit');
+  }, { home, model: { ...model, async install(ctx, directory) {
+    await model.install(ctx, directory);
+    ctx.effect(() => async () => { cleanupEntered.resolve(); await cleanup.promise; });
+    entered.resolve(ctx); await release.promise;
+  } }, installNative() { nativeInstalls++; } });
+  const outcome = starting.then(value => ({ value }), error => ({ error }));
+  let closing: Promise<PromiseSettledResult<unknown>[]> | undefined;
+  try {
+    const ctx = await Promise.race([entered.promise, outcome.then(() => assert.fail('真实模型安装尚未进入'))]);
+    closing = Promise.allSettled([ctx.fiber.dispose()]);
+    await cleanupEntered.promise;
+    release.resolve();
+    await rolledBack.promise;
+    assert.equal(nativeInstalls, 0);
+    assert.equal(selected.installs, 0, '应用模块挂载不能跨过正在退出的Runtime');
+    cleanup.resolve();
+    const result = await outcome;
+    assert.ok('error' in result);
+    assert.equal((await closing)[0]!.status, 'fulfilled');
+    assert.equal(selected.disposals, 1, '工厂已经选择的未安装能力仍完成退出');
+  } finally {
+    release.resolve(); cleanup.resolve();
+    const result = await outcome;
+    if ('value' in result) await result.value.dispose();
+    await closing;
+  }
+});
 
 test('应用从嵌套模块自动装配原生能力与文件owner，依赖快照隔离外部修改且跨环境只安装一次', { timeout: 15_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-assembly-runtime-'));

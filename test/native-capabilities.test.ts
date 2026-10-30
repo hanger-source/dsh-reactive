@@ -9,7 +9,7 @@ import { Fragment, createElement as h, useLayoutEffect } from 'react';
 import { BehaviorSubject, Observable, Subject, filter, firstValueFrom, from, tap, timeout } from 'rxjs';
 import { LlmAdapter, ToolCallId, type GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { assembleContextFor } from '@deepseek-ai/dsh-agent';
-import { Context, symbols } from '@deepseek-ai/cordis';
+import { Context, symbols, type Fiber } from '@deepseek-ai/cordis';
 import Registry from '@deepseek-ai/dsh-typert-registry';
 import SandboxPolicy from '@deepseek-ai/dsh-sandbox-policy';
 import WorkspaceFiles from '@deepseek-ai/dsh-api-workspace-files';
@@ -37,6 +37,35 @@ declare module '@deepseek-ai/dsh-jobs/view' {
 }
 
 const nativeArguments = z.object({ marker: z.string().regex(/^[a-z-]+$/u) }).strict();
+
+test('中间原生祖先已经退出而子能力尚待清理时，旧owner拒绝context与新invoke', async () => {
+  const root = new Context();
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const owner = new NativeCapabilityOwner('ancestor-window-capability', [], function* () {});
+  let leaf!: Fiber & PromiseLike<Fiber>;
+  const middle = root.plugin({ name: 'ancestor-window-parent', apply(ctx: Context) {
+    ctx.effect(function* () {
+      leaf = ctx.plugin({ name: 'ancestor-window-child', async apply(native: Context) { await owner.install(native, '/tmp'); } });
+      yield leaf.dispose;
+      yield async () => { entered.resolve(); await release.promise; };
+    });
+  } });
+  await requireActivePlugin(middle); await requireActivePlugin(leaf);
+  assert.ok(owner.context());
+  let executions = 0;
+  const signal = new AbortController().signal;
+  const initial = owner.invoke({ sessionId: 'ancestor-window', operation: 'before-exit' }, () => ++executions, signal);
+  assert.equal(await initial.result, 1);
+  const closing = Promise.allSettled([middle.dispose()]);
+  try {
+    await entered.promise;
+    root.fiber.assertActive(); leaf.assertActive(); owner.scope.assertActive();
+    assert.throws(() => owner.context(), '中间祖先退出后不能继续借用尚活跃的子Context');
+    assert.throws(() => owner.invoke({ sessionId: 'ancestor-window', operation: 'after-exit' }, () => ++executions, signal));
+    assert.equal(executions, 1, '拒绝发生在新原生调用进入之前');
+    release.resolve(); assert.equal((await closing)[0]!.status, 'fulfilled');
+  } finally { release.resolve(); await closing; await owner.dispose(); await root.fiber.dispose(); }
+});
 
 test('外层原生卸载与能力退出加入同一清理，观察释放失败也要等原生资源静止', async () => {
   const parent = new Context();
