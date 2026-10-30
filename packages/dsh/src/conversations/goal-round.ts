@@ -7,12 +7,7 @@ import { assertNativeContextActive } from '../native-installation.ts';
 import { nativeServiceMatches } from '../native-capability.ts';
 import { canonical } from './records.ts';
 import type { LiveConversation } from './session.ts';
-
-export class GoalRoundDriverUnavailableError extends Error {
-  constructor(readonly reason: 'unavailable' | 'ambiguous' | 'changed') {
-    super(`REACTIVE_GOAL_ROUND_DRIVER_${reason.toUpperCase()}`);
-  }
-}
+import { GoalRoundDriverUnavailableError } from './goal-errors.ts';
 
 /** 只承认实际宿主服务下唯一、仍然活跃的官方 Driver 安装。 */
 export function requireGoalRoundDriver(ctx: Context, expected?: Fiber): Fiber {
