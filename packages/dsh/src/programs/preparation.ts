@@ -181,6 +181,7 @@ export class ConversationPrograms {
                     const assembly = { ...assembled, tools: assembled.tools.filter(tool => this.tools.nativeToolEnabled(entry, tool.name)
                             || declared.has(tool.name) || entry.session.program.follows.has(tool.name)) };
                     entry.progress.prepared({ signal: context.signal, inputs: entry.session.state.inputs(entry.claimed),
+                        goalRound: inputPreparation.goalRound,
                         goal: inputPreparation.fixedGoal ? inputPreparation.goal : prepared.goal,
                         current: prepared.goalCurrent, ready: inputPreparation.ready, release: inputPreparation.release, close });
                     releaseInputs = undefined;

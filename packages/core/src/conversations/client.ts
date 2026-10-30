@@ -9,7 +9,7 @@ import type { HumanQuestionControls, HumanQuestionHandle } from '../participatio
 import type { OperationContract, OperationHandle, OperationReference, OperationCommand,
   OperationLocation, OperationState, OperationFeedbackRead, OperationFeedbackPayload, OperationNotificationResult } from '../operations/contract.ts';
 import type { ConversationIdentity, InputReceipt } from './conversation.ts';
-import type { CancellationOptions, Submission, FileUploadSource } from './protocol.ts';
+import type { CancellationOptions, Submission, FileUploadSource, GoalReference } from './protocol.ts';
 import type { FileUploadInvocation, SessionFiles } from '../files/contract.ts';
 import type { SessionJournal } from '../journal/contract.ts';
 import type { SessionAttachments } from '../attachments/contract.ts';
@@ -79,5 +79,6 @@ export interface HumanProgramSessionClient<P extends ProgramContract,
   question(callId: string, options?: Options): Promise<HumanQuestionHandle<Options>>;
   /** 取消只结束回执等待，已开始的原生控制仍继续结算。 */
   pause(options?: CancellationOptions): Promise<ProgramGoalControl>;
+  resumeGoal(expected: GoalReference, options?: CancellationOptions): Promise<ProgramGoalControl>;
   cancel(options?: CancellationOptions): Promise<ProgramCancelResult>;
 }

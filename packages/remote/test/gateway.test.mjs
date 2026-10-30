@@ -349,7 +349,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
   const workspaceRole = { name: 'workspace-participation', resource: 'workspace', actions: ['reactivePrograms/createWorkspace', 'reactivePrograms/create', 'reactivePrograms/completeCreation', 'reactivePrograms/describe'] };
   const sessionRole = { name: 'participate', resource: 'session', actions: [
     'reactivePrograms/open', 'reactivePrograms/submit', 'reactivePrograms/view', 'reactivePrograms/resolveAction', 'reactivePrograms/startAction',
-    'reactivePrograms/createWorkspace', 'reactivePrograms/describe', 'reactivePrograms/resume', 'reactivePrograms/pause', 'reactivePrograms/cancel',
+    'reactivePrograms/createWorkspace', 'reactivePrograms/describe', 'reactivePrograms/resume', 'reactivePrograms/pause', 'reactivePrograms/resumeGoal', 'reactivePrograms/cancel',
     'reactivePrograms/actionInvocation', 'reactivePrograms/actionResult', 'reactivePrograms/observeAction',
     'reactivePrograms/resolveOperation', 'reactivePrograms/locateOperation', 'reactivePrograms/observeOperation', 'reactivePrograms/observeInvocationOperation', 'reactivePrograms/questions',
     'reactivePrograms/answerQuestion', 'reactivePrograms/attachWait', 'reactivePrograms/requestStatus', 'reactivePrograms/progress',
@@ -375,12 +375,18 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
   const clients = [];
   const streamSockets = [];
   let loseSubmitAck = false;
+  let goalReceipt;
   const connect = async actor => {
     const client = await createProgramClient(program, { baseUrl: gateway.url,
       async fetch(url, init) {
         const response = await fetch(url, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), authorization: 'Bearer ' + actor } });
         if (loseSubmitAck && new URL(url).pathname === '/api/reactivePrograms/submit') {
           loseSubmitAck = false; await response.arrayBuffer(); throw new TypeError('ACK_LOST_AFTER_HOST_ACCEPTED');
+        }
+        if (goalReceipt && new URL(url).pathname === '/api/reactivePrograms/resumeGoal') {
+          const held = goalReceipt; goalReceipt = undefined;
+          held.received.resolve((await response.clone().json()).result);
+          await held.release.promise;
         }
         return response;
       },
@@ -487,6 +493,7 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     await assert.rejects(reader.resolveAction('check', null), error => error.code === 'remote-access/denied');
     await assert.rejects(bob.open('foreign-session'), error => error.code === 'remote-access/denied');
     await assert.rejects(reader.pause(), error => error.code === 'remote-access/denied');
+    await assert.rejects(reader.resumeGoal({ id: 'ungranted-goal', revision: 1 }), error => error.code === 'remote-access/denied');
     await assert.rejects(reader.cancel(), error => error.code === 'remote-access/denied');
     await assert.rejects(bob.resume(created.id), error => error.code === 'remote-access/denied');
     assert.deepEqual(await bob.describe(), []);
@@ -777,8 +784,39 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     await session.submit({ requestId: 'pause-goal', content: '持续核验直到暂停', delivery: 'followup', intent: 'goal', scope: null });
     await blocking.promise;
     const paused = await session.pause(); assert.equal(paused.phase, 'paused');
+    const beforeGoalResume = requests;
     const resumed = await reconnected.resume(sessionId);
     assert.equal(resumed.id, sessionId);
+    assert.equal(requests, beforeGoalResume, '激活既有会话不代替人工明确恢复Goal');
+    blocking = Promise.withResolvers();
+    const expectedGoal = { id: paused.id, revision: paused.revision };
+    const continuingGoal = resumed.resumeGoal(expectedGoal);
+    expectedGoal.id = 'changed-after-call'; expectedGoal.revision++;
+    const activeGoal = await continuingGoal;
+    assert.equal(activeGoal.id, paused.id); assert.equal(activeGoal.phase, 'active');
+    assert.ok(activeGoal.revision > paused.revision);
+    await blocking.promise;
+    assert.equal(requests, beforeGoalResume + 1, '明确恢复通过官方Driver继续一次正数Goal轮');
+    await assert.rejects(resumed.resumeGoal({ id: paused.id, revision: paused.revision }), error =>
+      error.code === 'reactive/native-goal' && error.details.code === 'GOAL_STALE_REVISION');
+    const pausedAgain = await resumed.pause();
+    const heldGoalReceipt = { received: Promise.withResolvers(), release: Promise.withResolvers() };
+    goalReceipt = heldGoalReceipt;
+    blocking = Promise.withResolvers();
+    const receiptWait = new AbortController(), receiptReason = new Error('GOAL_RESUME_RECEIPT_NOT_NEEDED');
+    const continuingWithoutWait = resumed.resumeGoal({ id: pausedAgain.id, revision: pausedAgain.revision }, { signal: receiptWait.signal });
+    const cancelledReceipt = assert.rejects(continuingWithoutWait, error => error === receiptReason);
+    try {
+      const acceptedGoal = await heldGoalReceipt.received.promise;
+      assert.equal(acceptedGoal.ok, true);
+      await blocking.promise;
+      receiptWait.abort(receiptReason); await cancelledReceipt;
+      const runningGoal = await runtime.application.open(sessionId);
+      try { assert.equal(runningGoal.snapshot().goal.revision, acceptedGoal.value.revision); }
+      finally { runningGoal.release(); }
+      assert.equal(requests, beforeGoalResume + 2, '退出回执等待不撤销Host已受理的原生Goal续行');
+    } finally { heldGoalReceipt.release.resolve(); }
+    await resumed.pause();
     blocking = Promise.withResolvers();
     await resumed.submit({ requestId: 'cancel-turn', content: '取消当前核验', delivery: 'followup', intent: 'question', scope: null });
     await blocking.promise;

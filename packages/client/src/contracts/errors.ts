@@ -44,6 +44,8 @@ export class FileUploadReceiptUnknownError extends Error {
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface RemoteErrorDetailsMap {
+    'reactive/native-goal': { readonly code: string };
+    'reactive/goal-round-driver-unavailable': { readonly reason: string };
     'reactive/action-invocation-conflict': { readonly invocationId: string };
     'reactive/action-admission-in-progress': { readonly invocationId: string };
     'reactive/eligibility': { readonly capabilityName: string; readonly reason: 'pending' | 'error' | 'denied'; readonly observation: import('./types.ts').WireObservation };

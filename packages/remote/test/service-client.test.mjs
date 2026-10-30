@@ -99,7 +99,7 @@ test('服务SDK贯通真实认证Gateway；身份来自宿主、人工控制隔�
   // 服务principal也明确取得人工endpoint grants；拒绝必须来自participant边界。
   const actions = ['open', 'resume', 'questions', 'progress', 'journal', 'journalPage', 'view', 'requestStatus', 'submit', 'editQueuedInput',
     'uploadFile', 'resolveAction', 'startAction', 'actionInvocation', 'actionResult', 'observeAction', 'resolveOperation', 'locateOperation',
-    'observeOperation', 'observeInvocationOperation', 'pause', 'cancel', 'answerQuestion', 'attachWait'].map(name => 'reactivePrograms/' + name);
+    'observeOperation', 'observeInvocationOperation', 'pause', 'resumeGoal', 'cancel', 'answerQuestion', 'attachWait'].map(name => 'reactivePrograms/' + name);
   gateway = await mountProgramGateway(runtime.native, { application: runtime.application, model: { provider: 'service-client', model: 'unused' },
     participant: principal => ({ participant: principal.id === 'worker' ? 'service' : 'human', actorId }),
     access: service => service.registerPolicy('service-client-test', { bindings: () => [
@@ -157,7 +157,7 @@ test('服务SDK贯通真实认证Gateway；身份来自宿主、人工控制隔�
   assert.deepEqual(await commonFacts(session), await commonFacts(human));
   assert.equal(session.viewResource('current'), session.viewResource('current'));
   assert.equal(session.request('not-submitted'), session.request('not-submitted'));
-  for (const control of ['question', 'answerQuestion', 'attachWait', 'pause', 'cancel']) {
+  for (const control of ['question', 'answerQuestion', 'attachWait', 'pause', 'resumeGoal', 'cancel']) {
     assert.equal(control in session, false, '服务实际运行对象没有人工方法：' + control);
     assert.equal(control in created, false);
   }
@@ -301,6 +301,7 @@ test('服务SDK贯通真实认证Gateway；身份来自宿主、人工控制隔�
   const raw = worker.ctx.remote.reactivePrograms;
   const qualifiedAddress = { ...sessionAddress, accessId: session.identity.accessId };
   for (const invoke of [() => raw.pause(qualifiedAddress), () => raw.cancel(qualifiedAddress),
+    () => raw.resumeGoal({ ...qualifiedAddress, expected: { id: 'service-forged-goal', revision: 1 } }),
     () => raw.answerQuestion({ ...qualifiedAddress, callId: 'absent', answer: { answers: [] } })]) {
     const result = await invoke(); assert.equal(result.ok, false); assert.equal(result.error.code, 'reactive/human-participant-required');
   }

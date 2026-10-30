@@ -45,7 +45,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
 | 读视图、问题、请求进展与 journal | 对应 Session 的 `view`、`questions`、`progress`、`journal`、`journalPage` 等读取 endpoint 分别授权 |
 | 解析、开始、查询、观察 Action | `resolveAction`、`startAction`、`actionInvocation`、`actionResult`、`observeAction` 对应 Session 的独立 grant |
 | 答复与 claim | `answerQuestion`、`attachWait` 各自 grant，加当前 HumanInput policy |
-| 恢复、暂停、取消 | `resume`、`pause`、`cancel` 各自 grant |
+| 激活会话、恢复目标、暂停、取消 | `resume`、`resumeGoal`、`pause`、`cancel` 各自 grant；后三项同时要求真实 human 身份 |
 | Operation 槽、反馈读取与通知 | `resolveOperation`、`locateOperation`、`observeOperation`、`readOperationFeedback`、`notifyOperation` 分别授权，并由 Host/业务 owner 再核验 |
 
 `describe()` 的 global 入口许可不授予工作区内容。服务从实际 Host 清单取值，只返回调用者可访问的工作区及其可访问成员。程序 journal 的读取许可不要求给消费者发放原生 Controller.follow 权限。
@@ -235,7 +235,11 @@ execution 表示会话活动，不代表某个请求独占执行。一个步骤�
 
 尚未取得终态的活动连接断开时，资源立即进入 pending，重连后从同一调用取得真实当前帧；取消某一次 activity.read 不关闭共享观察，也不重发 Action。已确认的 returned/failed 不因观察流清理失败改写，清理错误保留诊断日志；业务结果、观察可用性和连接退出分别表达。
 
-`create(environmentId, { workspaceId, sessionId? })` 在精确获准的 Workspace 中使用指定 Environment 创建会话；创建目录和注册目录由调用前的应用流程负责。`completeCreation(reference)`、`open(sessionId)`、`resume(sessionId)` 分别表达补齐登记、只读打开与显式激活。只读打开及观察不会创建 Agent 或调用模型。`pause()` 暂停当前原生 Goal，`cancel()` 停止原生推理及待处理输入，不取消外部业务任务。
+`create(environmentId, { workspaceId, sessionId? })` 在精确获准的 Workspace 中使用指定 Environment 创建会话；创建目录和注册目录由调用前的应用流程负责。`completeCreation(reference)`、`open(sessionId)`、`resume(sessionId)` 分别表达补齐登记、只读打开与显式激活。只读打开及观察不会创建 Agent 或调用模型。人工会话的 `resumeGoal({ id, revision }, { signal })` 对 live 会话执行原生 CAS，恢复指定目标的续行并返回 ProgramGoalControl；`pause()` 暂停当前原生 Goal，`cancel()` 停止原生推理及待处理输入，外部业务任务仍由业务 owner 管理。
+
+`resumeGoal` 使用独立的 `reactivePrograms/resumeGoal` Session grant，参与者身份始终来自认证映射。服务客户端没有这个方法，直接构造 RPC 请求也不能取得人工控制权。调用开始时捕获 expected 引用；旧引用不会随调用者修改对象而改指新修订。等待取消不回滚已经开始的原生控制，也不自动重试。
+
+原生 Goal 的拒绝通过 `RemoteError` 的 `reactive/native-goal` 保留原始 `details.code`，例如 `GOAL_STALE_REVISION`；驱动不可用通过 `reactive/goal-round-driver-unavailable` 保留 `details.reason`。这些错误沿原生 CAS 与实际依赖核验产生，传输层不推断 expected/actual 或重新执行控制。
 
 ```ts
 // Workspace 已由应用显式注册并授权；它不由 Environment 隐式产生。

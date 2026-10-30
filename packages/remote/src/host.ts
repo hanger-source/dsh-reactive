@@ -13,6 +13,8 @@ import type { ProgramActionRequest, ProgramActionStart, ProgramAddress, ProgramS
 import type { ProgramOperationRequest, ProgramOperationLocateRequest, ProgramInvocationOperationRequest, ProgramOperationLocation, ProgramOperationNotification, ProgramOperationNotificationResult, ProgramAnswerRequest, ProgramQuestionRequest, ProgramQuestionsFrame, ProgramWaitFrame, ProgramOperationBindingRequest, ProgramOperationBinding, ProgramOperationFeedbackRequest, ProgramOperationFeedbackRead } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramRequestAddress, ProgramRequestStatus, ProgramWorkspace, ProgramGoalControl, ProgramCancelResult, ProgramJournalOpenRequest, ProgramJournalPageRequest, ProgramJournalFrame } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramProgressFrame, ProgramConversationEvent, ProgramExecutionFailure, ProgramModelPreparation } from '@hanger-source/dsh-reactive-client/types';
+import type { ProgramResumeGoalRequest } from '@hanger-source/dsh-reactive-client/types';
+import { goalReferenceSchema } from '@hanger-source/dsh-reactive';
 import type { ConversationActivity, ExecutionFailure, ModelPreparation } from '@hanger-source/dsh-reactive';
 import { Inbox } from '@hanger-source/dsh-reactive-client/inbox';
 import { createProgramActionOwner, type ProgramActionOwner, type ProgramActionOwnerOptions } from './actions.ts';
@@ -327,6 +329,21 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
       signal.throwIfAborted();
       // 短命句柄持续持有到原生控制结算；transport 退出不能提前释放其回执 owner。
       const goal = await handle.pause().catch(this.rethrow);
+      return { id: goal.id, revision: goal.revision, phase: goal.phase };
+    }
+    finally { handle.release(); }
+  }
+
+  /** 人工明确恢复所选 Goal 修订；会话激活与原生 Goal 续行分别受理。 */
+  @Remote({ resources: { session: request => SessionId(request.sessionId) } })
+  async resumeGoal(request: ProgramResumeGoalRequest, signal: AbortSignal): Promise<ProgramGoalControl> {
+    this.human();
+    const expected = goalReferenceSchema.parse({ id: request.expected.id, revision: request.expected.revision });
+    signal.throwIfAborted();
+    const handle = await this.options.application.open(request.sessionId, { contract: request.program }, request.accessId).catch(this.rethrow);
+    try {
+      signal.throwIfAborted();
+      const goal = await handle.resumeGoal(expected).catch(this.rethrow);
       return { id: goal.id, revision: goal.revision, phase: goal.phase };
     }
     finally { handle.release(); }

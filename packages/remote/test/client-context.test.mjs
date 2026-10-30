@@ -63,7 +63,7 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
     if (held) local.push(held);
     const role = { name: 'context-user', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/resume', 'reactivePrograms/questions',
       'reactivePrograms/view', 'reactivePrograms/resolveAction', 'reactivePrograms/startAction', 'reactivePrograms/actionResult', 'reactivePrograms/observeAction',
-      'reactivePrograms/requestStatus', 'reactivePrograms/pause', 'reactivePrograms/cancel', 'reactivePrograms/submit',
+      'reactivePrograms/requestStatus', 'reactivePrograms/pause', 'reactivePrograms/resumeGoal', 'reactivePrograms/cancel', 'reactivePrograms/submit',
       'reactivePrograms/editQueuedInput', 'reactivePrograms/uploadFile'] };
     const gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
       model: { provider: 'client-context', model: 'unused' }, participant: principal => ({ participant: 'human', actorId: principal.id }),
@@ -277,8 +277,9 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
   for (const [endpoint, invoke] of [
     ['requestStatus', (session, options) => session.requestStatus('not-submitted', options)],
     ['pause', (session, options) => session.pause(options)], ['cancel', (session, options) => session.cancel(options)],
+    ['resumeGoal', (session, options) => session.resumeGoal({ id: 'absent-goal', revision: 1 }, options)],
   ]) for (const owner of ['session', 'client', 'call']) await t.test(endpoint + '回执延迟时' + owner + '取消结束等待且公共Context保活', { timeout: 2_000 }, async subject => {
-    const delayed = { endpoint, allowRemoteFailure: endpoint === 'pause',
+    const delayed = { endpoint, allowRemoteFailure: endpoint === 'pause' || endpoint === 'resumeGoal',
       received: Promise.withResolvers(), release: Promise.withResolvers(), entered: false };
     subject.signal.addEventListener('abort', () => delayed.release.resolve(), { once: true });
     const ctx = await connect(a.gateway.url, delayed), pendingClient = await bindProgramClient(program, ctx);
@@ -292,7 +293,7 @@ test('同ID真实Host按Connection绑定；借用SDK退出保留公共上下文�
     });
     try {
       await delayed.received.promise;
-      assert.equal(delayed.reply.ok, endpoint !== 'pause');
+      assert.equal(delayed.reply.ok, endpoint !== 'pause' && endpoint !== 'resumeGoal');
       if (owner === 'session') await session.release();
       else if (owner === 'client') await pendingClient.dispose();
       else abort.abort(reason);

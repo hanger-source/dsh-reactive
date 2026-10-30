@@ -1,6 +1,7 @@
 import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent';
 import type { GoalRef } from '@deepseek-ai/dsh-goal';
 import type { InputReference } from '@hanger-source/dsh-reactive/kernel';
+import type { GoalRoundCandidate } from './goal-round.ts';
 
 type StepInputs = {
   turn: number;
@@ -12,6 +13,7 @@ type StepPreparation = {
   readonly signal: AbortSignal;
   readonly inputs: readonly InputReference[];
   readonly goal: GoalRef | null | undefined;
+  readonly goalRound?: GoalRoundCandidate;
   readonly current: () => boolean;
   readonly ready: () => boolean;
   readonly release: () => void;
@@ -50,15 +52,15 @@ export class NativeProgress {
     return prepared;
   }
 
-  admitted(turn: number, step: number, inputs: readonly InputReference[], preparation: StepPreparation, messageIds: readonly string[]) {
+  admitted(turn: number, step: number, inputs: readonly InputReference[], preparation: StepPreparation, messageIds: readonly string[], goal = preparation.goal) {
     if (this.#prepared !== preparation) throw new Error('REACTIVE_STEP_PREPARATION_CHANGED');
     if (!preparation.current()) throw new Error('REACTIVE_STEP_GOAL_CHANGED');
-    if (preparation.goal === undefined) throw new Error('REACTIVE_STEP_CONTINUATION_REQUIRED');
+    if (goal === undefined) throw new Error('REACTIVE_STEP_CONTINUATION_REQUIRED');
     let goals = this.#goals.get(turn);
     if (!goals) { goals = new Map(); this.#goals.set(turn, goals); }
     if (goals.has(step)) throw new Error('REACTIVE_STEP_ALREADY_ADMITTED');
-    goals.set(step, preparation.goal);
-    this.#continuation = { turn, step, goal: preparation.goal };
+    goals.set(step, goal);
+    this.#continuation = { turn, step, goal };
     this.#prepared = undefined;
     this.#step?.handoff?.close();
     this.#step = { turn, step, inputs: Object.freeze([...inputs]),

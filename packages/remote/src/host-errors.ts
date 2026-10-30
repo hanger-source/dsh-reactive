@@ -1,15 +1,19 @@
 import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-protocol';
 import type { TypertGatewayWireStream } from '@deepseek-ai/dsh-api-gateway';
-import { ChildCreationIncompleteError, CreationIncompleteError, InputFileNotStagedError, InvocationUnavailableError } from '@hanger-source/dsh-reactive-dsh';
+import { ChildCreationIncompleteError, CreationIncompleteError, InputFileNotStagedError, InvocationUnavailableError, NativeGoalError, GoalRoundDriverUnavailableError } from '@hanger-source/dsh-reactive-dsh';
 import { isAttachmentError } from '@deepseek-ai/dsh-attachment';
 import { z, EligibilityError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFileOutsideWorkspaceError, SessionFilesUnavailableError, SessionJournalUnavailableError, SessionAttachmentsUnavailableError, ActionBindingUnavailableError, ActionTargetMismatchError, ActionContractMismatchError, ActionInvocationConflictError, ActionAdmissionInProgressError, InputEditRejectedError, ProgramContractMismatchError, SharedProgramRequiredError } from '@hanger-source/dsh-reactive';
 import '@hanger-source/dsh-reactive-client/errors';
 import type { ProgramFailure } from '@hanger-source/dsh-reactive-client/types';
 
-/** 只有框架明确拥有的可恢复事实做业务映射；其他错误继续由官方 Gateway 归类。 */
+/** 框架领域事实与正式接入的原生 Goal 分类保留公开含义；其他错误由官方 Gateway 归类。 */
 export function createProgramFailureMapper(wireStream: Pick<TypertGatewayWireStream, 'failure'>): (error: unknown) => ProgramFailure {
   return error => {
-    const known = error instanceof ActionInvocationConflictError
+    const known = error instanceof NativeGoalError
+      ? new RemoteError('reactive/native-goal', error.message, { code: error.code })
+      : error instanceof GoalRoundDriverUnavailableError
+        ? new RemoteError('reactive/goal-round-driver-unavailable', error.message, { reason: error.reason })
+      : error instanceof ActionInvocationConflictError
       ? new RemoteError('reactive/action-invocation-conflict', error.message, { invocationId: error.invocationId })
       : error instanceof ActionAdmissionInProgressError
         ? new RemoteError('reactive/action-admission-in-progress', error.message, { invocationId: error.invocationId })

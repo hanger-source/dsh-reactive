@@ -1,5 +1,5 @@
 import type { AttachmentIdType, ExecutionFailure, ModelPreparation, ModelPreparationAdmission, SessionImageAttachment as CoreSessionImageAttachment } from '@hanger-source/dsh-reactive';
-import type { ActionIdentity, ActionInvocationOrigin, InvocationPhase, Continuation, GoalActivity, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanReplyDelivery, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
+import type { ActionIdentity, ActionInvocationOrigin, InvocationPhase, Continuation, GoalReference, GoalActivity, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanReplyDelivery, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
   ProgramGoalControl as CoreProgramGoalControl, ProgramCancelResult as CoreProgramCancelResult, ProgramRequestStatus as CoreProgramRequestStatus,
   ProgramJournalEvent as CoreProgramJournalEvent, ProgramJournalEntry as CoreProgramJournalEntry,
   ProgramJournalPage as CoreProgramJournalPage, ProgramJournalWindow as CoreProgramJournalWindow,
@@ -46,6 +46,8 @@ export interface ProgramCompleteCreationRequest extends ProgramCreationReference
 export interface ProgramAddress { readonly sessionId: string; readonly program: ProgramContractIdentity; }
 /** 一次明确取得的会话读取资格；引用不授予认证、Program或业务执行权限。 */
 export interface ProgramSessionAddress extends ProgramAddress { readonly accessId: string; }
+/** 人工明确选择的原 Goal 修订；宿主交由原生 Goal owner 执行 CAS。 */
+export interface ProgramResumeGoalRequest extends ProgramSessionAddress { readonly expected: GoalReference; }
 /** 参与来源由宿主principal映射签发，客户端请求不能自报。 */
 export interface ProgramIdentity {
   readonly sessionId: string;

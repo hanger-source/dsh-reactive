@@ -30,6 +30,7 @@ import { createHumanQuestionResolver } from '@hanger-source/dsh-reactive';
 import type { CollectionResolvedAction, SurfaceClient, ProgramSessionClient, HumanProgramSessionClient } from '@hanger-source/dsh-reactive';
 import { createSurfaceModuleClient } from '@hanger-source/dsh-reactive';
 import { abortable } from '@hanger-source/dsh-reactive';
+import { goalReferenceSchema } from '@hanger-source/dsh-reactive';
 
 export { createAuthenticatedTransport } from './transport.ts';
 export type { AuthenticatedTransport, AuthenticatedTransportOptions } from './transport.ts';
@@ -490,7 +491,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
         };
         if (participant === 'human') {
           const waits = createHumanWaits(owner, address);
-          const controls: Pick<RemoteProgramSession<P>, 'question' | 'answerQuestion' | 'attachWait' | 'pause' | 'cancel'> = {
+          const controls: Pick<RemoteProgramSession<P>, 'question' | 'answerQuestion' | 'attachWait' | 'pause' | 'resumeGoal' | 'cancel'> = {
             question: createHumanQuestionResolver(human, {
               answerQuestion: (id, answer, options) => controls.answerQuestion(id, answer, options),
               attachWait: (id, options) => controls.attachWait(id, options),
@@ -499,6 +500,12 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
               assertActive();
               const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
               return sessionResult(await callRemote(current => remote.pause(address, current), signal));
+            },
+            async resumeGoal(expected, options = {}) {
+              assertActive();
+              const ref = goalReferenceSchema.parse({ id: expected.id, revision: expected.revision });
+              const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
+              return sessionResult(await callRemote(current => remote.resumeGoal({ ...address, expected: ref }, current), signal));
             },
             async cancel(options = {}) {
               assertActive();

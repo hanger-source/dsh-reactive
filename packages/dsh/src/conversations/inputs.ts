@@ -23,6 +23,7 @@ import type { ConversationSessions } from './sessions.ts';
 import type { ConversationObservations } from './observations.ts';
 import type { OperationParticipation } from '../operations/participation.ts';
 import { humanParticipant, serviceParticipant, participantActor, type ParticipantIdentity } from '../participation/identity.ts';
+import { prepareGoalRound, admitGoalRound, requireGoalRoundDriver } from './goal-round.ts';
 /** 受理正文与来源的唯一事务入口；实际队列和附件仍由原生服务持有。 */
 export class ConversationInputs {
     // 每项只拥有准备取消与真实结算；存储与 receipt 仍归原生 exact Session。
@@ -64,6 +65,7 @@ export class ConversationInputs {
             || this.operations().hasPendingGoal(agent, currentGoal)))
             this.ctx.goals.disarm(agent);
         const inputs = entry.session.state.inputs(entry.claimed);
+        const goalRound = prepareGoalRound(this.ctx, entry);
         if (entry.session.child && entry.claimed.some(message => ['user', 'agent-message'].includes(message.source.kind)
             && entry.session.state.reference(message).length === 0))
             throw new Error('REACTIVE_CHILD_INPUT_ASSOCIATION_REQUIRED');
@@ -164,7 +166,8 @@ export class ConversationInputs {
                     continuation: origin.continuation, goal: origin.continuation.goal });
             }
             onAdmissions(admissions);
-            return { ready, release, fixedGoal: !hasNewInput || feedbackOnly, goal };
+            return { ready, release, fixedGoal: Boolean(goalRound) || !hasNewInput || feedbackOnly,
+                goal: goalRound ? undefined : goal, goalRound };
         });
     }
     async revalidateCauses(causes: readonly InputReference[], signal: AbortSignal, seen = new Set<string>()) {
@@ -532,6 +535,7 @@ export class ConversationInputs {
             const prepared = entry.progress.preparedFor(signal);
             const admissionSignal = AbortSignal.any([signal, entry.scope.signal, entry.session.scope.signal]);
             try {
+                if (prepared.goalRound) requireGoalRoundDriver(this.ctx, prepared.goalRound.driver);
                 return await admitPendingRecovery(agent, messages, signal, async () => {
                     const decision = await firstValueFrom(abortable(() => next(), admissionSignal));
                     if (decision.kind !== 'enter') {
@@ -540,6 +544,11 @@ export class ConversationInputs {
                     }
                     admissionSignal.throwIfAborted();
                     this.sessions.assertSessionWorkspace(entry.session);
+                    const goal = prepared.goalRound ? admitGoalRound(this.ctx, entry, prepared.goalRound, decision.messages) : prepared.goal;
+                    if (prepared.goalRound && goal === undefined) {
+                        retainClaimedInputs(agent, messages, 'next-step');
+                        return { kind: 'reject' };
+                    }
                     if (!prepared.ready()) {
                         retainClaimedInputs(agent, messages, 'next-step');
                         return { kind: 'reject' };
@@ -550,7 +559,7 @@ export class ConversationInputs {
                     if (canonical(inputs) !== canonical(prepared.inputs)) throw new Error('REACTIVE_STEP_INPUTS_CHANGED');
                     // 只等待本轮真实业务输入关联落入消费事实；无关联的原生上下文不延长准备现场。
                     entry.progress.admitted(turn, step, inputs, prepared,
-                        entered.messages.filter(message => entry.session.state.reference(message).length > 0).map(message => message.id));
+                        entered.messages.filter(message => entry.session.state.reference(message).length > 0).map(message => message.id), goal);
                     return entered;
                 });
             } finally { entry.progress.discardPreparation(prepared); }

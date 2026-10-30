@@ -33,6 +33,7 @@ import { InvocationUnavailableError, type ActionInvocationOptions } from '../exe
 import type { OperationParticipation } from '../operations/participation.ts';
 import type { ConversationQuestions } from '../participation/questions.ts';
 import { nativeSessionAccess } from './session-access.ts';
+import { goalReferenceSchema, type GoalReference } from '@hanger-source/dsh-reactive';
 import type { SessionJournal } from '@hanger-source/dsh-reactive/journal';
 import type { SessionAttachments } from '@hanger-source/dsh-reactive/attachments';
 export type ResolvedAction<D extends ActionContract> = CollectionResolvedAction<D, SubmitOptions, false>;
@@ -365,6 +366,11 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
     async pause(options: CancellationOptions = {}) {
         this.assertHuman();
         return this.wait(() => this.sessions.pauseGoal(this.sessions.live(this.entry).agent), options);
+    }
+    async resumeGoal(expected: GoalReference, options: CancellationOptions = {}) {
+        this.assertHuman();
+        const reference = goalReferenceSchema.parse({ id: expected.id, revision: expected.revision });
+        return this.wait(() => this.sessions.resumeGoal(this.sessions.live(this.entry).agent, reference), options);
     }
     /** 停止模型处理；是否取消外部业务操作仍由业务能力决定。 */
     async cancel(options: CancellationOptions = {}): Promise<ProgramCancelResult> {

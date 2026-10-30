@@ -37,6 +37,14 @@ Action 的 `operation: { definition, command(input, scope, origin), reference(re
 
 不要由业务拼 `intent:'result'`、Continuation 或 WaitReference 声称持有 Goal 权限。普通人工/服务输入与工具来源不互换；子程序本地输入不冒充父请求，父 causes 保每条 sourceSessionId。
 
+## 人工恢复原目标
+
+`client.resume(sessionId)` 或 `runtime.application.resume(sessionId)` 激活原会话；`HumanProgramSessionClient.resumeGoal(expected, { signal })` 对 live 会话恢复指定 Goal 的续行。expected 使用既有 `GoalReference`，由 `session.progress` 中的原 Goal id/revision 取得；原生 CAS 返回新修订并持久 flush，旧引用或不可恢复的 phase 按原生合同拒绝。服务参与者不能调用此控制。
+
+重新加载后的 active Goal 可以是 disarmed。明确恢复后，官方 Goal Round Driver 产生的正数 round 仍须通过真实 reservation 准入，框架才给该模型步骤关联既有输入和精确 GoalRef。不要重交已经受理的反馈、重发业务启动 Action，或把 interrupted 原请求改写为成功。createRuntime 已安装官方 Driver；嵌入宿主必须提供同一实际服务组下唯一有效的安装。
+
+远程入口另需 `reactivePrograms/resumeGoal` 的 Session grant。原生拒绝的机器 code 位于 `RemoteError('reactive/native-goal').details.code`；Driver 依赖失败位于 `reactive/goal-round-driver-unavailable` 的 reason。调用等待取消不撤回已开始的控制，不能自动重试旧 expected。
+
 ## 原生审批参与
 
 使用纯合同 `approvalSurface` 与 dsh 宿主的 `createNativeApprovalModule({ policy, require, admitResponder })`，通过 `composeSurface`、`implementProgram` 的 modules 和挂载点组合。每 App 独立创建、每 session 挂载一次。`admitResponder` 必需，依据真实 identity、request、decision、actorId 和 signal 做业务核权；仅 human 可答，tool 和 service 来源的调用被拒，模块不向模型声明批准工具。

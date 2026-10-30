@@ -6,13 +6,82 @@ import { join } from 'node:path';
 import { setImmediate as immediate } from 'node:timers/promises';
 import { firstValueFrom, from, timeout } from 'rxjs';
 import { foldGoal } from '@deepseek-ai/dsh-goal';
+import * as goalDriver from '@deepseek-ai/dsh-goal-round-driver';
+import { GoalRoundDriverUnavailableError, NativeGoalError, requireActivePlugin } from '@hanger-source/dsh-reactive-dsh';
 import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session';
-import { defineApplication, defineEnvironment, defineProgram, defineSurface, z, type HumanProgramSessionClient } from '@hanger-source/dsh-reactive';
+import { defineApplication, defineEnvironment, defineProgram, defineSurface, z, type HumanProgramSessionClient, type GoalReference } from '@hanger-source/dsh-reactive';
 import { implementProgram } from '@hanger-source/dsh-reactive/program';
 import { boot } from './native-support.ts';
 
 const program = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
 const wait = <T>(work: Promise<T>) => firstValueFrom(from(work).pipe(timeout(3_000)));
+
+for (const reason of ['unavailable', 'ambiguous'] as const) test(`resumeGoal在官方Driver${reason}时拒绝且不修改原Goal`, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-resume-driver-'));
+  const app = await boot(join(directory, 'home'), definition(), async function* () { assert.fail('Driver拒绝不能启动模型'); });
+  try {
+    if (reason === 'unavailable') {
+      for (const fiber of [...app.native.registry.get(goalDriver)!.fibers]) await fiber.dispose();
+    } else await requireActivePlugin(app.native.plugin(goalDriver));
+    const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+    try {
+      const agent = app.native.agents.get(SessionId(session.id))!;
+      const goal = app.native.goals.create(agent, { objective: '只接受唯一正式Driver', maxGoalRounds: 2 });
+      app.native.goals.disarm(agent);
+      await assert.rejects(session.resumeGoal(goal), error => error instanceof GoalRoundDriverUnavailableError && error.reason === reason);
+      assert.equal(app.native.goals.get(agent)!.revision, goal.revision);
+      assert.equal(app.native.goals.get(agent)!.activation, 'disarmed');
+    } finally { session.release(); }
+  } finally { await app.dispose(); }
+});
+
+test('resumeGoal预取消和服务身份无控制，stale引用不改目标；已开始控制的等待取消不撤销原生恢复', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-resume-checkpoint-'));
+  const app = await boot(join(directory, 'home'), definition(), async function* () { assert.fail('显式暂停后不应启动模型'); });
+  const session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+  const service = await app.host.service().open(session.id, program);
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  let stop = () => {};
+  try {
+    const agent = app.native.agents.get(SessionId(session.id))!;
+    const goal = app.native.goals.create(agent, { objective: '由正式人工恢复', maxGoalRounds: 3 });
+    app.native.goals.disarm(agent);
+    const abort = new AbortController(), reason = new Error('RESUME_WAITER_CANCELLED');
+    abort.abort(reason);
+    await assert.rejects(session.resumeGoal(goal, { signal: abort.signal }), error => error === reason);
+    await assert.rejects((service as unknown as typeof session).resumeGoal(goal), /REACTIVE_HUMAN_PARTICIPANT_REQUIRED/u);
+    const changed = app.native.goals.edit(agent, goal, { objective: '明确的新修订' });
+    app.native.goals.disarm(agent);
+    await assert.rejects(session.resumeGoal(goal), error => error instanceof NativeGoalError && error.code === 'GOAL_STALE_REVISION');
+    assert.equal(app.native.goals.get(agent)!.revision, changed.revision);
+    let waiting = true;
+    stop = app.native.on('session/flush', async current => {
+      if (current !== agent.session || !waiting) return;
+      waiting = false; entered.resolve(); await release.promise;
+    });
+    const expected: { -readonly [K in keyof GoalReference]: GoalReference[K] } = { id: changed.id, revision: changed.revision };
+    const caller = new AbortController();
+    const resuming = session.resumeGoal(expected, { signal: caller.signal });
+    const rejected = assert.rejects(resuming, error => error === reason);
+    expected.id = 'caller-mutated'; expected.revision++;
+    await entered.promise;
+    const resumed = app.native.goals.get(agent)!;
+    assert.equal(resumed.id, changed.id);
+    assert.equal(resumed.revision, changed.revision + 1);
+    assert.equal(resumed.activation, 'armed');
+    caller.abort(reason); await rejected;
+    app.native.goals.pause(agent, resumed);
+    release.resolve();
+    await app.native.sessions.flush(agent.session);
+    const stored = await app.native.sessionPersistence.open(SessionId(session.id), 'read');
+    try {
+      const { events } = await stored.read(SessionLogOffset(0));
+      assert.equal(foldGoal(events).goal!.revision, resumed.revision + 1);
+    } finally { await stored.close(); }
+    assert.deepEqual(app.errors, []);
+  } finally { release.resolve(); stop(); service.release(); session.release(); await app.dispose(); }
+});
+
 function definition() {
   return defineApplication({ name: 'session-client-control', admit: async () => {}, environments: [defineEnvironment({
     id: 'work', instructions: '控制与只读查询均不启动模型。',

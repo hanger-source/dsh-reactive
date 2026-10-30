@@ -81,3 +81,4 @@ export { modelPreparationSchema, ownModelPreparation, type ModelPreparation, typ
 export { actionInvocationOriginSchema } from './actions/contract.ts';
 export { approvalSurface, approvalPendingRequestSchema, approvalDecisionSchema } from './participation/approval.ts';
 export type { ApprovalPendingRequest, ApprovalDecision, ApprovalResponderAdmission } from './participation/approval.ts';
+export { goalReferenceSchema } from './conversations/causality.ts';

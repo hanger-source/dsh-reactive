@@ -3,6 +3,7 @@ import { BehaviorSubject, map, distinctUntilChanged, firstValueFrom } from 'rxjs
 import { isAbsolute } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
+import { GoalId } from '@deepseek-ai/dsh-goal';
 import { SessionId, pluginRecordOf } from "@deepseek-ai/dsh-session";
 import { SessionAlreadyExistsError, type SessionInspection } from "@deepseek-ai/dsh-session-persistence";
 import { Conversation, ConversationAccessRevokedError, conversationBindings, type WorkspaceInfo, type WorkspaceRegistration, type ConversationCreateOptions } from "@hanger-source/dsh-reactive/kernel";
@@ -25,6 +26,8 @@ import { nativeSessionAccess, registerNativeSession, type NativeSessionAccess } 
 import { SessionFilesUnavailableError, type SessionFiles } from '@hanger-source/dsh-reactive/files';
 import type { NativeSessionFiles } from '../files.ts';
 import type { NativeSessionSource } from '../native-capability.ts';
+import type { GoalReference } from '@hanger-source/dsh-reactive';
+import { requireGoalRoundDriver } from './goal-round.ts';
 import { SessionJournalUnavailableError, type SessionJournal } from '@hanger-source/dsh-reactive/journal';
 import { createNativeJournal, type NativeJournal, type NativeSessionJournal } from '../journal.ts';
 import { SessionAttachmentsUnavailableError, type SessionAttachments } from '@hanger-source/dsh-reactive/attachments';
@@ -790,6 +793,12 @@ export class ConversationSessions<E extends readonly AnyEnvironment[] = readonly
         const paused = this.ctx.goals.pause(agent, goal);
         await this.facts.flush(agent);
         return paused;
+    }
+    async resumeGoal(agent: Agent, expected: GoalReference) {
+        requireGoalRoundDriver(this.ctx);
+        const resumed = this.ctx.goals.resume(agent, { id: GoalId(expected.id), revision: expected.revision });
+        await this.facts.flush(agent);
+        return resumed;
     }
     async cancelAgent(agent: Agent) {
         // 本次取消先同步截断当前 step；后续 pause 不能把它误作仍可保留的处理中输入。

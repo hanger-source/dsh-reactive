@@ -29,3 +29,5 @@ export type { NativeCapability, NativeSessionHandle, NativeSessionSource, Native
 export { createNativeSessionCapability } from './native.ts';
 export type { NativeSessionCapability, NativeSessionCapabilityOptions, NativeSessionContext, NativeSetupResource,
   NativeAgentResource, NativeAgentResourceOptions } from './native.ts';
+export { GoalError as NativeGoalError } from '@deepseek-ai/dsh-goal';
+export { GoalRoundDriverUnavailableError } from './conversations/goal-round.ts';

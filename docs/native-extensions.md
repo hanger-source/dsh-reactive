@@ -39,6 +39,8 @@ const capability = createNativeSessionCapability({
 
 每次开始后续安装或执行下一段 setup 前，框架重新核验实际 Cordis Fiber 及其祖先的运行资格。祖先已经退出时，即使当前安装仍在等待，也不会开始下一项能力、provider 或宿主初始化；已经开始的安装与清理仍等待真实结算。应用装配取得的全部能力按原退出合同释放，尚未开始安装的实例也必须支持 dispose。安装成功返回与已取得能力的 context、invoke 同样核验祖先，不能借当前子 Fiber 的暂存状态继续执行。
 
+Goal round 使用同一实际 agents、goals、sessions 服务组下唯一有效的官方 Goal Round Driver。框架在准备与步骤进入边界核验其真实安装和消息关联，Driver 负责 reservation、claimed 状态及 round 准入。扩展 `agent/pre-step` 时，应调用 `next()` 并保留原生校验决定；模型权限依赖这条完整的链式准入。
+
 `session(source)` 同步构造资源和方法闭包。它不读取来源、不订阅、不执行命令，也不返回 Promise。实际观察、`context()`、`liveAgent()` 和 `invoke()` 在构造成功前拒绝执行；构造失败释放本次派生关系，不缓存一个不完整对象。
 
 ## 资源与调用

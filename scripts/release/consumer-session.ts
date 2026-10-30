@@ -1,4 +1,4 @@
-import type { Eligibility, ActionInput, CancellationOptions, FileUploadInvocation, FileUploadSource, FileUploadValue, Invocation, Json, ProgramContract, ProgramSessionClient, HumanProgramSessionClient, ResourceReader, Surface, SurfaceClient, SurfaceMount, ViewValue, WorkSessionHandle, OperationFollowSnapshot } from '@hanger-source/dsh-reactive';
+import type { Eligibility, ActionInput, CancellationOptions, FileUploadInvocation, FileUploadSource, FileUploadValue, GoalReference, Invocation, Json, ProgramContract, ProgramSessionClient, HumanProgramSessionClient, ResourceReader, Surface, SurfaceClient, SurfaceMount, ViewValue, WorkSessionHandle, OperationFollowSnapshot } from '@hanger-source/dsh-reactive';
 import { approvalSurface, combineResources, composeSurface, createWorkSelector, defineProgram, defineSurface, resourceView, selectSurface, shareResource, z, type ApprovalDecision, type ApprovalPendingRequest } from '@hanger-source/dsh-reactive';
 import type { SessionFiles, FileResource, WorkspaceFileText, WorkspaceFileBytes } from '@hanger-source/dsh-reactive/files';
 import type { SessionJournal, ProgramJournalFrame, ProgramJournalPage } from '@hanger-source/dsh-reactive/journal';
@@ -54,7 +54,7 @@ export function sessionFiles<P extends ProgramContract>(session: ProgramSessionC
 }
 
 export function sessionControls<P extends ProgramContract>(session: HumanProgramSessionClient<P>, signal: AbortSignal) {
-  return { pause: () => session.pause({ signal }), cancel: () => session.cancel({ signal }),
+  return { pause: () => session.pause({ signal }), resumeGoal: (expected: GoalReference) => session.resumeGoal(expected, { signal }), cancel: () => session.cancel({ signal }),
     status: (requestId: string) => session.requestStatus(requestId, { signal }) };
 }
 

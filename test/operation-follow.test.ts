@@ -1017,6 +1017,7 @@ if (!['--operation-checkpoint', '--operation-multi-checkpoint', '--operation-fee
     assert.deepEqual(app.store.bodies().map(row => row.command_id), ['prepare-a', 'prepare-b']);
     assert.deepEqual(app.bodyWaits.map(value => value.waits), [0, 1]);
     assert.deepEqual(session.snapshot().waits.map(value => value.wait.id), [waiting.wait.id]);
+    assert.deepEqual(app.errors, [], '正常业务等待只撤下Goal驱动，不产生执行错误');
     const original = background.continuation.goal; assert.ok(original);
     assert.deepEqual(waiting.continuation.goal, original);
     assert.equal(session.snapshot().goal?.phase, 'active');
