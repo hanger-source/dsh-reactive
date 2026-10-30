@@ -3,7 +3,7 @@ import type { Agent } from "@deepseek-ai/dsh-agent";
 import { SessionLogOffset, type Session } from "@deepseek-ai/dsh-session";
 import { SessionPersistenceNotFoundError, type SessionInspection } from "@deepseek-ai/dsh-session-persistence";
 import { goalProjectionDefinition } from "@deepseek-ai/dsh-goal";
-import { conversationBindings } from "@hanger-source/dsh-reactive/kernel";
+import { batch, conversationBindings } from "@hanger-source/dsh-reactive/kernel";
 import { humanInputSnapshot } from "../participation/human-input.ts";
 import { NativeState, unique, type ConversationActivity } from "./records.ts";
 import type { ConversationEvent, ExecutionFailure } from "@hanger-source/dsh-reactive/kernel";
@@ -89,18 +89,23 @@ export class ConversationObservations {
                 return;
             const previous = entry.session.state;
             const stepSignal = entry.stepSignal;
-            if (event.type === 'turn/start' || event.type === 'turn/end') {
-                entry.claimed = [];
-                entry.stepSignal = undefined;
-                entry.progress.endedTurn();
-            }
-            else if (event.type === 'user/message') {
-                const messageId = event.data.id;
-                entry.claimed = entry.claimed.filter(message => message.id !== messageId);
-            }
+            batch(() => {
+                if (event.type === 'turn/start' || event.type === 'turn/end') {
+                    entry.claimed = [];
+                    entry.stepSignal = undefined;
+                    entry.progress.endedTurn();
+                }
+                else if (event.type === 'user/message') {
+                    const messageId = event.data.id;
+                    entry.claimed = entry.claimed.filter(message => message.id !== messageId);
+                }
+                if (entry.session.scope.disposed) return;
+                entry.session.state = this.liveState(session);
+                this.publish(entry.session);
+                // 消费事实和原准备的退出同帧交付，不能短暂回到尚未消费的旧续接诊断。
+                if (event.type === 'user/message') entry.progress.consume(event.data.id);
+            });
             if (entry.session.scope.disposed) return;
-            entry.session.state = this.liveState(session);
-            this.publish(entry.session);
             for (const occurrence of sessionOccurrences(session.id, event, previous, entry.session.state))
                 this.emit(entry.session, occurrence);
             if (event.type === 'turn/end' && event.data.reason.kind === 'error') {

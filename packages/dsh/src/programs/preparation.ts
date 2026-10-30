@@ -18,7 +18,7 @@ import type { OperationParticipation } from '../operations/participation.ts';
 import type { ProgramTools } from '../execution/tools.ts';
 import { firstValueFrom } from 'rxjs';
 import { abortable } from '@hanger-source/dsh-reactive';
-import { observePreparation, type PreparationObserver, type ModelPreparationWait } from '@hanger-source/dsh-reactive/kernel';
+import { observePreparation, type PreparationObserver, type ModelPreparationAdmission, type ModelPreparationWait } from '@hanger-source/dsh-reactive/kernel';
 import { randomUUID } from 'node:crypto';
 declare module '@deepseek-ai/dsh-system-prompt' {
     interface AssembleContext {
@@ -133,12 +133,16 @@ export class ConversationPrograms {
             const waiting = new Map<object, ModelPreparationWait>();
             const bindings = entry.session.conversation[conversationBindings]();
             let closed = false;
-            const snapshot = () => ({ id, inputs: entry.session.state.inputs(entry.claimed), waiting: [...waiting.values()] });
+            let handedOff = false;
+            let admissions: readonly ModelPreparationAdmission[] = [];
+            const snapshot = () => ({ id, inputs: entry.session.state.inputs(entry.claimed), admissions, waiting: [...waiting.values()] });
             const publish = () => { if (!closed) bindings.publishPreparation(snapshot(), id); };
             const close = () => {
                 if (closed) return;
                 closed = true;
+                signal.removeEventListener('abort', close);
                 waiting.clear();
+                admissions = [];
                 bindings.publishPreparation(null, id);
             };
             const observer: PreparationObserver = wait => {
@@ -158,7 +162,7 @@ export class ConversationPrograms {
                 signal.throwIfAborted();
                 this.sessions.assertSessionWorkspace(entry.session);
                 const inputPreparation = await observePreparation(observer, { kind: 'inputs' }, signal, async () => {
-                    const prepared = await this.inputs.prepare(entry, signal);
+                    const prepared = await this.inputs.prepare(entry, signal, value => { admissions = value; publish(); });
                     releaseInputs = prepared.release;
                     return prepared;
                 });
@@ -178,16 +182,18 @@ export class ConversationPrograms {
                             || declared.has(tool.name) || entry.session.program.follows.has(tool.name)) };
                     entry.progress.prepared({ signal: context.signal, inputs: entry.session.state.inputs(entry.claimed),
                         goal: inputPreparation.fixedGoal ? inputPreparation.goal : prepared.goal,
-                        current: prepared.goalCurrent, ready: inputPreparation.ready, release: inputPreparation.release });
+                        current: prepared.goalCurrent, ready: inputPreparation.ready, release: inputPreparation.release, close });
                     releaseInputs = undefined;
+                    handedOff = true;
+                    waiting.set({}, { kind: 'step-admission' });
+                    publish();
                     return assembly;
                 }
             }
             finally {
                 try { releaseInputs?.(); }
                 finally {
-                    signal.removeEventListener('abort', close);
-                    close();
+                    if (!handedOff) close();
                     entry.preparing = false;
                 }
             }

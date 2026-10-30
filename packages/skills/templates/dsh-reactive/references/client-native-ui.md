@@ -89,9 +89,11 @@ Program 的 conversation.progress 与 conversation.request(id).state、SDK 和�
 
 ## 读取当前模型准备
 
-`session.progress.read(signal)` 的 preparation 是 `ModelPreparation | null`，保留当前准备 id、已知原始 inputs 和实际仍在等待的 waiting。Context、Skill 名称与目录使用已有身份，check.id 只是不透明的登记身份。委托、输入准备、步骤检查、Skill 服务/目录/正文、工作目录、Context 和原生装配各自报告自己的等待，不维护另一份综合任务状态。
+`session.progress.read(signal)` 的 preparation 是 `ModelPreparation | null`，保留当前准备 id、已知原始 inputs、实际仍在等待的 waiting 和输入 owner 签出的 admissions。Context、Skill 名称与目录使用已有身份，check.id 只是不透明的登记身份。委托、输入准备、步骤检查、Skill 服务/目录/正文、工作目录、Context、原生装配及 step-admission 原生准入与输入交接各自报告自己的等待，不维护另一份综合任务状态。
 
-`session.request(id).state` 只展示 inputs 确切命中的 preparation；WorkSessionSnapshot.preparation 保完整事实和 matchedInputs，实际有等待时给出 preparation.waiting 条件。多输入可同时属于多个工作，观察不签发权限，也不证明输入已被模型消费。结束、失败、取消及 Agent 退出撤下当前准备；冷读为 null，不从持久失败或旧模型步骤复活等待。null 不代表业务或模型已完成。
+admissions 每项带原 continuation、本轮采用的精确 goal，以及 result 的 requestId/messageId 或 human-reply 的 messageId/questionCallId/callSequence。Work 的 continuation.* 与 question.reply-* 条件带精确匹配的 admission 或 null，合法 resume 不误报修订替换；外部再次 edit/pause 仍按当前修订和 phase 诊断。它不授予调用或续接权限，空数组不等于拒绝，不能由应用根据相邻日志或共同业务 key 拼造。
+
+`session.request(id).state` 只展示 inputs 确切命中的 preparation；WorkSessionSnapshot.preparation 保完整事实和 matchedInputs，实际有等待时给出 preparation.waiting 条件。多输入可同时属于多个工作，观察不签发权限，也不证明输入已被模型消费。装配返回后，原步骤继续持有准备事实，直到真实消息消费或准入拒绝、失败、取消及 Agent 退出；冷读为 null，不从持久失败或旧模型步骤复活等待。null 不代表业务或模型已完成。
 
 ## 读取执行失败
 

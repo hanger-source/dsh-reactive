@@ -11,7 +11,7 @@ import { firstValueFrom, filter } from 'rxjs';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
 import { createWorkSelector, defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface,
-  z, type Continuation, type HumanQuestionOrigin, type HumanSnapshot } from '@hanger-source/dsh-reactive';
+  z, type Continuation, type HumanQuestionOrigin, type HumanSnapshot, type ConversationProgressSnapshot } from '@hanger-source/dsh-reactive';
 import { HumanInput, Offer, useAction, useBeforeStep, implementProgram } from '@hanger-source/dsh-reactive/program';
 import { boot, text, tool } from './native-support.ts';
 
@@ -79,6 +79,66 @@ async function crashWithPendingReply(directory: string, mode: 'native' | 'ptc', 
 
 if (process.argv[2] !== '--human-origin-checkpoint') {
 for (const mode of ['native', 'ptc'] as const) {
+  for (const boundary of ['business-check', 'native-pre-step'] as const) {
+    test(`${mode}: 合法迟答在 ${boundary} 等待至真实消费，承接身份可查且全帧不误报阻塞`, { timeout: 15_000 }, async () => {
+      const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+      let hold = false;
+      const f = await fixture(mode, async function* (step) {
+        if (step === 1) yield* ask(mode);
+        else if (step === 3) yield* invoke(mode, 'finish_original_work', 'finish-admitted-answer', null);
+        else yield* text('已核验原工作');
+      });
+      const stop = boundary === 'native-pre-step' ? f.app.native.on('agent/pre-step', async (_event, next) => {
+        const decision = await next();
+        if (hold) { entered.resolve(); await release.promise; }
+        return decision;
+      }) : () => {};
+      try {
+        const session = await f.app.host.create('work', { workspaceId: f.app.workspace.workspaceId });
+        const foreground = firstValueFrom(session.foregroundQuestions$.pipe(filter(value => value.length === 1)));
+        await session.submit({ requestId: 'original', content: '原工作需补充证据', intent: 'goal', delivery: 'followup', scope: work });
+        const [question] = await foreground;
+        const agent = f.app.native.agents.get(SessionId(session.id))!;
+        f.app.native.goals.disarm(agent); await session.whenIdle();
+        const progressFrames: ConversationProgressSnapshot[] = [];
+        const workFrames: ReturnType<typeof selector.select>[] = [];
+        const progressSubscription = session.progress.values$.subscribe(value => progressFrames.push(value));
+        const workSubscription = selector.observe(work.workId, { sessions: [session] }).state.values$.subscribe(value => workFrames.push(value));
+        try {
+          if (boundary === 'business-check') f.hold(); else hold = true;
+          assert.equal(await session.answerQuestion(question!.callId, answer), true);
+          await (boundary === 'business-check' ? f.entered.promise : entered.promise);
+          const progress = await session.progress.read(), human = await session.human.read();
+          const reply = human.replies[0]!;
+          assert.equal(reply.state, 'proposed');
+          const admission = progress.preparation!.admissions.find(value => value.source.kind === 'human-reply');
+          assert.deepEqual(admission, { source: { kind: 'human-reply', messageId: reply.messageId,
+            questionCallId: question!.callId, callSequence: question!.origin.callSequence },
+            continuation: question!.origin.continuation, goal: question!.origin.continuation!.goal });
+          assert.ok(progress.preparation!.waiting.some(value => value.kind === (boundary === 'business-check' ? 'check' : 'step-admission')));
+          const selected = await selector.observe(work.workId, { sessions: [session] }).state.read();
+          const pending = selected.sessions[0]!.conditions.find(condition => condition.kind === 'question.reply-pending');
+          assert.ok(pending && pending.kind === 'question.reply-pending');
+          assert.deepEqual(pending.admission, admission);
+          assert.equal(f.calls(), 2, '只观察原问题后的准备，迟答尚未交给受控模型');
+          hold = false; release.resolve(); f.proceed(); await session.whenIdle();
+          assert.equal(f.attempts[0]!.completed, true);
+          assert.deepEqual(f.attempts[0]!.continuation.goal, admission!.goal);
+          assert.deepEqual((await session.human.read()).replies, []);
+          assert.equal((await session.progress.read()).preparation, null);
+          assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'user/message'
+            && event.data.id === reply.messageId).length, 1);
+          assert.ok(progressFrames.some(frame => frame.preparation?.admissions.some(value => value.source.kind === 'human-reply')));
+          assert.ok(workFrames.some(frame => frame.sessions[0]!.conditions.some(condition => condition.kind === 'question.reply-pending'
+            && condition.admission !== null)));
+          assert.equal(workFrames.some(frame => frame.sessions[0]!.conditions.some(condition => condition.kind === 'question.reply-blocked')), false,
+            '准备交接和真实消费之间不应短暂误报迟答被阻塞');
+          assert.deepEqual(f.app.errors, []);
+        } finally { progressSubscription.unsubscribe(); workSubscription.unsubscribe(); }
+      } finally { hold = false; release.resolve(); f.proceed(); stop(); await f.app.dispose(); }
+    });
+  }
+
   test(`${mode}: 原独立问题的迟答连续调用工具也不能完成后来创建的 Goal`, async () => {
     const f = await fixture(mode, async function* (step) {
       if (step === 1) yield* ask(mode);
@@ -199,12 +259,18 @@ for (const mode of ['native', 'ptc'] as const) {
       const [question] = await foreground;
       const agent = f.app.native.agents.get(SessionId(session.id))!; f.app.native.goals.disarm(agent); await session.whenIdle();
       f.hold(); await session.answerQuestion(question!.callId, answer); await f.entered.promise;
+      const preparation = (await session.progress.read()).preparation!;
+      assert.equal(preparation.admissions.length, 1);
+      assert.deepEqual(preparation.admissions[0]!.continuation, question!.origin.continuation);
+      const preparing = await selector.observe(work.workId, { sessions: [session] }).state.read();
+      assert.equal(preparing.sessions[0]!.conditions.some(condition => condition.kind === 'question.reply-blocked'), false);
       const paused = await session.pause(); f.proceed(); await session.whenIdle();
       assert.equal(f.calls(), 2); assert.equal(session.snapshot().goal!.revision, paused.revision);
       const snapshot = await session.human.read(); assert.equal(snapshot.replies.length, 1);
       assert.deepEqual(snapshot.replies[0]!.origin, question!.origin);
       const selected = await selector.observe(work.workId, { sessions: [session] }).state.read();
       assert.ok(selected.sessions[0]!.conditions.some(condition => condition.kind === 'question.reply-blocked'));
+      assert.equal((await session.progress.read()).preparation, null);
       assert.deepEqual(f.app.errors, []);
     } finally { f.proceed(); await f.app.dispose(); }
   });

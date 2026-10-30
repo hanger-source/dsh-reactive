@@ -1,10 +1,11 @@
 import { z } from 'zod';
-import { inputReferenceSchema, type InputReference } from './protocol.ts';
+import { continuationSchema, goalReferenceSchema, inputReferenceSchema, type Continuation, type GoalReference, type InputReference } from './protocol.ts';
 
 /** 当前真实模型装配的瞬态读取现场；不提供执行资格。 */
 export type ModelPreparationWait =
   | { readonly kind: 'delegation' }
   | { readonly kind: 'inputs' }
+  | { readonly kind: 'step-admission' }
   | { readonly kind: 'skill-services' }
   | { readonly kind: 'working-directory' }
   | { readonly kind: 'skill-release' }
@@ -14,19 +15,39 @@ export type ModelPreparationWait =
   | { readonly kind: 'skill-directory'; readonly directory: string }
   | { readonly kind: 'skill'; readonly name: string };
 
+/** 本轮实际承接的反馈及精确 Goal 修订；只是准备事实，不签发续接或调用权限。 */
+export interface ModelPreparationAdmission {
+  readonly source:
+    | { readonly kind: 'result'; readonly requestId: string; readonly messageId: string }
+    | { readonly kind: 'human-reply'; readonly messageId: string; readonly questionCallId: string; readonly callSequence: number };
+  readonly continuation: Continuation;
+  readonly goal: GoalReference | null;
+}
+
 export interface ModelPreparation {
   readonly id: string;
   readonly inputs: readonly InputReference[];
   readonly waiting: readonly ModelPreparationWait[];
+  readonly admissions: readonly ModelPreparationAdmission[];
 }
 
 const identity = z.string().min(1);
 export const modelPreparationSchema = z.object({
   id: identity,
   inputs: inputReferenceSchema.array().readonly(),
+  admissions: z.object({
+    source: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('result'), requestId: identity, messageId: identity }).strict(),
+      z.object({ kind: z.literal('human-reply'), messageId: identity, questionCallId: identity,
+        callSequence: z.number().int().nonnegative() }).strict(),
+    ]),
+    continuation: continuationSchema,
+    goal: goalReferenceSchema.nullable(),
+  }).strict().array().readonly(),
   waiting: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('delegation') }).strict(),
     z.object({ kind: z.literal('inputs') }).strict(),
+    z.object({ kind: z.literal('step-admission') }).strict(),
     z.object({ kind: z.literal('check'), id: identity }).strict(),
     z.object({ kind: z.literal('context'), name: identity }).strict(),
     z.object({ kind: z.literal('skill-services') }).strict(),

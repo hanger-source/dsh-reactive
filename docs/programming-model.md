@@ -499,11 +499,13 @@ function observeWork(workId: string, sessions: readonly WorkSource[], signal: Ab
 
 ## 观察当前模型准备
 
-`session.progress.read(signal)` 的 `preparation` 是当前真实模型准备的 `ModelPreparation | null`。同一对象保留本次准备 id、当时已知的原始 inputs 与尚未结束的 `waiting`。等待描述来自实际执行边界：委托核验、输入准备、步骤检查、Context、Skill 服务与目录、工作目录、Skill 正文及原生 prompt 装配。Context 使用已有声明名，Skill 使用已有名称或目录；步骤检查只提供登记身份，不从函数名猜测业务含义。
+`session.progress.read(signal)` 的 `preparation` 是当前真实模型准备的 `ModelPreparation | null`。同一对象保留本次准备 id、当时已知的原始 inputs、尚未结束的 `waiting` 和实际承接的 `admissions`。等待描述来自实际执行边界：委托核验、输入准备、步骤检查、Context、Skill 服务与目录、工作目录、Skill 正文、原生 prompt 装配和 `step-admission` 原生步骤准入及输入交接。Context 使用已有声明名，Skill 使用已有名称或目录；步骤检查只提供登记身份，不从函数名猜测业务含义。
+
+每项 admission 保留原 `continuation` 与本轮采用的精确 `goal`；结果来源使用 `source.kind: 'result'`、requestId 和 messageId，人工迟答使用 `source.kind: 'human-reply'`、messageId、questionCallId 和真实 callSequence。框架合法恢复原目标时，这份事实可以明确连接原修订与本轮恢复出的修订。Work 的 `continuation.*` 和 `question.reply-*` 条件直接带有精确命中的 `admission | null`；它们仍保留未消费事实，并在外部再次修改或暂停目标时给出 superseded 或 inactive。独立输入携带旧反馈进入模型，不因此为旧反馈签出 Goal 权限；空 admissions 也不表示反馈被拒绝。
 
 请求的 `session.request(id).state` 只在本次准备的 inputs 确实包含该请求时提供 `preparation`；Work 的 `preparation` 保留完整准备事实与 `matchedInputs`，存在实际等待时产生 `preparation.waiting` 条件。同一次准备可以同时关联多个工作。输入关联解释观察范围，不表示输入已经进入模型或取得业务授权。
 
-准备观察只描述当前等待，不参与调度，也不记录历史。正常结束、异常、取消或原 Agent 退出会撤下本次等待，迟到完成不能恢复旧准备；冷会话返回 null。null 不承诺下一模型步骤已经就绪，等待消失也不证明业务操作完成。失败历史继续读取 `activity.failures`，声明与资源本身仍沿各自 owner 和有效性合同工作。
+准备观察不参与调度，也不记录历史。装配结束后，当前事实继续由同一次原生步骤持有，直到其真实消息进入消费、准入拒绝、异常、取消或原 Agent 退出；不能把装配返回当作模型已消费。迟到完成不能恢复旧准备；冷会话返回 null。null 不承诺下一模型步骤已经就绪，等待消失也不证明业务操作完成。失败历史继续读取 `activity.failures`，声明与资源本身仍沿各自 owner 和有效性合同工作。
 
 ## 观察执行失败与保留交付
 

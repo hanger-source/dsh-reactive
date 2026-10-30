@@ -7,7 +7,7 @@ import type { ExecutionFailure } from '@hanger-source/dsh-reactive/kernel';
 import { humanQuestionCall, humanQuestionOrigin } from './records.ts';
 import { appendPluginRecord } from "@deepseek-ai/dsh-session";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
-import { conversationBindings, type ConversationIdentity, type Submission, type SubmitOptions } from "@hanger-source/dsh-reactive/kernel";
+import { batch, conversationBindings, type ConversationIdentity, type Continuation, type ModelPreparationAdmission, type Submission, type SubmitOptions } from "@hanger-source/dsh-reactive/kernel";
 import { type ApplicationDefinition } from "@hanger-source/dsh-reactive/kernel";
 import { contentDigest, submissionSourceDigest, canonical, recordSchema, submissionSchema, type SubmissionRecord } from "./records.ts";
 import { admitPendingRecovery, followAdmittedInput, isRecoveryControl, resumePendingInput, retainClaimedInputs } from "./pending-input.ts";
@@ -51,7 +51,7 @@ export class ConversationInputs {
             return this.submitSession(session, input, { ...options, signal }, serviceParticipant(this.options.serviceActorId));
         });
     }
-    async prepare(entry: LiveConversation, signal: AbortSignal) {
+    async prepare(entry: LiveConversation, signal: AbortSignal, onAdmissions: (admissions: readonly ModelPreparationAdmission[]) => void) {
         const { agent } = entry;
         signal.throwIfAborted();
         this.sessions.assertSessionWorkspace(entry.session);
@@ -97,60 +97,75 @@ export class ConversationInputs {
         const results = entry.claimed.flatMap(message => {
             const requestId = 'rpcId' in message.source && typeof message.source.rpcId === 'string' ? message.source.rpcId : undefined;
             const record = requestId === undefined ? undefined : entry.session.state.record(requestId);
-            return record?.result ? [record] : [];
+            return record?.result ? [{ record, message }] : [];
         });
         const replies = entry.claimed.flatMap(message => message.source.kind === 'user-question-reply'
-            ? [humanQuestionOrigin(entry.session.state.value, message.source.callId).continuation] : []);
+            ? [{ message, origin: humanQuestionOrigin(entry.session.state.value, message.source.callId) }] : []);
         const hasNewInput = entry.claimed.some(message => !isRecoveryControl(message)
             && message.source.kind !== 'user-question-reply'
             && (message.source.kind === 'goal' || entry.session.state.reference(message).length > 0));
-        // 结果先以原 continuation 取得准入，再由本次原生 resume 明确签出新 revision；prompt 使用同一 revision。
-        const preparingGoal = this.ctx.goals.get(agent);
-        let admittedGoal: GoalRef | null = preparingGoal ? Object.freeze({ id: preparingGoal.id, revision: preparingGoal.revision }) : null;
-        const admitted = independent ? [] : results.filter(record => this.operations().shouldWake(entry, record));
-        const goalResults = admitted.filter(record => Boolean(record.result?.continuation.goal));
-        const humanReady = (continuation: typeof replies[number]) => {
-            if (!continuation) return false;
-            const expected = continuation.goal;
-            if (!expected) return true;
-            const current = this.ctx.goals.get(agent);
-            return current?.phase === 'active' && current.id === expected.id && current.revision === expected.revision;
-        };
-        const admittedReplies = independent ? [] : replies.filter(humanReady);
-        const goalReplies = admittedReplies.filter(continuation => Boolean(continuation?.goal));
-        const hasGoal = goalResults.length > 0 || goalReplies.length > 0;
-        let resumed: GoalRef | undefined;
-        if (!independent) {
-            const result = goalResults[0]?.result;
-            const goal = this.ctx.goals.get(agent);
-            if (result?.continuation.goal && goal?.phase === 'active' && goal.activation === 'disarmed'
-                && goal.id === result.continuation.goal.id && goal.revision === result.continuation.goal.revision) {
-                const next = this.ctx.goals.resume(agent, goal);
-                resumed = admittedGoal = Object.freeze({ id: next.id, revision: next.revision });
-            }
-        }
-        const ready = () => {
-            if (!independent && hasGoal) {
+        // resume 同步发布 Goal；同批签出精确来源，观察者不读取到中间修订。
+        return batch(() => {
+            // 结果先以原 continuation 取得准入，再由本次原生 resume 明确签出新 revision；prompt 使用同一 revision。
+            const preparingGoal = this.ctx.goals.get(agent);
+            let admittedGoal: GoalRef | null = preparingGoal ? Object.freeze({ id: preparingGoal.id, revision: preparingGoal.revision }) : null;
+            const admitted = independent ? [] : results.filter(({ record }) => this.operations().shouldWake(entry, record));
+            const goalResults = admitted.filter(({ record }) => Boolean(record.result?.continuation.goal));
+            const humanReady = (continuation: Continuation | null) => {
+                if (!continuation) return false;
+                const expected = continuation.goal;
+                if (!expected) return true;
                 const current = this.ctx.goals.get(agent);
-                if (current ? admittedGoal?.id !== current.id || admittedGoal.revision !== current.revision : admittedGoal !== null) return false;
+                return current?.phase === 'active' && current.id === expected.id && current.revision === expected.revision;
+            };
+            const admittedReplies = independent ? [] : replies.filter(({ origin }) => humanReady(origin.continuation));
+            const goalReplies = admittedReplies.filter(({ origin }) => Boolean(origin.continuation?.goal));
+            const hasGoal = goalResults.length > 0 || goalReplies.length > 0;
+            let resumed: GoalRef | undefined;
+            if (!independent) {
+                const result = goalResults[0]?.record.result;
+                const goal = this.ctx.goals.get(agent);
+                if (result?.continuation.goal && goal?.phase === 'active' && goal.activation === 'disarmed'
+                    && goal.id === result.continuation.goal.id && goal.revision === result.continuation.goal.revision) {
+                    const next = this.ctx.goals.resume(agent, goal);
+                    resumed = admittedGoal = Object.freeze({ id: next.id, revision: next.revision });
+                }
             }
-            if (independent || (!results.length && !replies.length)) return true;
-            return (hasGoal ? goalResults : admitted).some(record => this.operations().resultReady(entry, record))
-                || (hasGoal ? goalReplies : admittedReplies).some(humanReady);
-        };
-        let released = false;
-        const release = () => {
-            if (released) return;
-            released = true;
-            if (!resumed || this.ctx.agents.get(agent.id) !== agent) return;
-            const current = this.ctx.goals.get(agent);
-            if (current?.id === resumed.id && current.revision === resumed.revision && current.activation === 'armed')
-                this.ctx.goals.disarm(agent);
-        };
-        const feedbackOnly = !independent && (results.length > 0 || replies.length > 0);
-        let goal: GoalRef | null | undefined = hasGoal ? admittedGoal : null;
-        if (!hasNewInput && !feedbackOnly) goal = entry.progress.continuedGoal();
-        return { ready, release, fixedGoal: !hasNewInput || feedbackOnly, goal };
+            const ready = () => {
+                if (!independent && hasGoal) {
+                    const current = this.ctx.goals.get(agent);
+                    if (current ? admittedGoal?.id !== current.id || admittedGoal.revision !== current.revision : admittedGoal !== null) return false;
+                }
+                if (independent || (!results.length && !replies.length)) return true;
+                return (hasGoal ? goalResults : admitted).some(({ record }) => this.operations().resultReady(entry, record))
+                    || (hasGoal ? goalReplies : admittedReplies).some(({ origin }) => humanReady(origin.continuation));
+            };
+            let released = false;
+            const release = () => {
+                if (released) return;
+                released = true;
+                if (!resumed || this.ctx.agents.get(agent.id) !== agent) return;
+                const current = this.ctx.goals.get(agent);
+                if (current?.id === resumed.id && current.revision === resumed.revision && current.activation === 'armed')
+                    this.ctx.goals.disarm(agent);
+            };
+            const feedbackOnly = !independent && (results.length > 0 || replies.length > 0);
+            let goal: GoalRef | null | undefined = hasGoal ? admittedGoal : null;
+            if (!hasNewInput && !feedbackOnly) goal = entry.progress.continuedGoal();
+            const admissions: ModelPreparationAdmission[] = [];
+            for (const { record, message } of hasGoal ? goalResults : admitted) {
+                if (!record.result || !this.operations().resultReady(entry, record)) continue;
+                admissions.push({ source: { kind: 'result', requestId: record.requestId, messageId: message.id },
+                    continuation: record.result.continuation, goal: record.result.continuation.goal ? admittedGoal : null });
+            }
+            for (const { message, origin } of hasGoal ? goalReplies : admittedReplies) {
+                if (!origin.continuation || !humanReady(origin.continuation)) continue;
+                admissions.push({ source: { kind: 'human-reply', messageId: message.id, questionCallId: origin.callId, callSequence: origin.callSequence },
+                    continuation: origin.continuation, goal: origin.continuation.goal });
+            }
+            onAdmissions(admissions);
+            return { ready, release, fixedGoal: !hasNewInput || feedbackOnly, goal };
+        });
     }
     async revalidateCauses(causes: readonly InputReference[], signal: AbortSignal, seen = new Set<string>()) {
         for (const cause of causes) {
@@ -533,7 +548,9 @@ export class ConversationInputs {
                     const entered = { ...decision, messages: decision.messages.filter(message => message.source.kind !== 'reactive-resume-signal') };
                     const inputs = entry.session.state.inputs(entered.messages);
                     if (canonical(inputs) !== canonical(prepared.inputs)) throw new Error('REACTIVE_STEP_INPUTS_CHANGED');
-                    entry.progress.admitted(turn, step, inputs, prepared);
+                    // 只等待本轮真实业务输入关联落入消费事实；无关联的原生上下文不延长准备现场。
+                    entry.progress.admitted(turn, step, inputs, prepared,
+                        entered.messages.filter(message => entry.session.state.reference(message).length > 0).map(message => message.id));
                     return entered;
                 });
             } finally { entry.progress.discardPreparation(prepared); }

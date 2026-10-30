@@ -5,7 +5,7 @@ import type { ConversationIdentity } from './conversation.ts';
 import type { Continuation, ConversationActivity, ExecutionFailure, GoalActivity, InputReference, Json, ReplyActivity, RequestActivity, RequestDeclaration, ToolActivity } from './protocol.ts';
 import type { AssistantAttemptSnapshot, AssistantProgressFrame, ConversationEvent } from './events.ts';
 import type { ConversationProgressSnapshot } from './request.ts';
-import type { ModelPreparation } from './preparation.ts';
+import type { ModelPreparation, ModelPreparationAdmission } from './preparation.ts';
 import type { HumanForegroundQuestion, HumanQuestion, HumanReplyDelivery, HumanSettledQuestion, HumanSnapshot } from '../participation/contract.ts';
 import type { Observation } from '../resources/observation.ts';
 import { matchesOperationFollowResult, type OperationFollowSnapshot } from '../operations/follows.ts';
@@ -63,11 +63,12 @@ export type WorkCondition =
   | ({ readonly kind: 'goal.round-limit' } & WorkOccurrence<GoalActivity>)
   | ({ readonly kind: 'wait.pending' } & WorkOccurrence<WorkWait>)
   | ({ readonly kind: 'call.failed' } & WorkOccurrence<ToolActivity>)
-  | ({ readonly kind: 'question.reply-pending' } & WorkOccurrence<HumanReplyDelivery>)
+  | ({ readonly kind: 'question.reply-pending'; readonly admission: ModelPreparationAdmission | null } & WorkOccurrence<HumanReplyDelivery>)
   | ({ readonly kind: 'question.reply-blocked'; readonly reason: 'unavailable' | 'superseded' | 'inactive';
-      readonly currentGoal: GoalActivity | null } & WorkOccurrence<HumanReplyDelivery>)
+      readonly currentGoal: GoalActivity | null; readonly admission: ModelPreparationAdmission | null } & WorkOccurrence<HumanReplyDelivery>)
   | { readonly kind: 'continuation.unconsumed' | 'continuation.superseded' | 'continuation.inactive';
       readonly request: WorkRequestOccurrence; readonly continuation: Continuation;
+      readonly admission: ModelPreparationAdmission | null;
       readonly currentGoal: GoalActivity | null; readonly matchedInputs: readonly InputReference[] }
   | ({ readonly kind: 'operation.not-started' | 'operation.follow-unregistered' | 'operation.delivery-prepared' } & WorkOperationFollow)
   | { readonly kind: 'question.pending'; readonly callId: HumanQuestion['callId'];
@@ -199,6 +200,10 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
       for (const follow of activity.operationFollows) {
         if (follow.link.continuation.sessionId !== identity.sessionId) throw new Error('REACTIVE_WORK_OPERATION_SESSION_MISMATCH');
       }
+      const admissions = progress.preparation?.admissions ?? [];
+      for (const admission of admissions) {
+        if (admission.continuation.sessionId !== identity.sessionId) throw new Error('REACTIVE_WORK_PREPARATION_SESSION_MISMATCH');
+      }
       const occurrences = <T>(values: readonly T[], inputOf: (value: T) => readonly InputReference[] | null): readonly WorkOccurrence<T>[] =>
         Object.freeze(values.flatMap(value => {
           const matchedInputs = match.inputs(inputOf(value) ?? []);
@@ -236,17 +241,22 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
       if (preparation && preparation.value.waiting.length) conditions.push(Object.freeze({ kind: 'preparation.waiting', ...preparation }));
       for (const failure of failures) conditions.push(Object.freeze({ kind: 'execution.failed', ...failure }));
       for (const reply of humanReplies) {
-        conditions.push(Object.freeze({ kind: 'question.reply-pending', ...reply }));
         const continuation = reply.value.origin.continuation;
+        const admission = continuation === null ? null : admissions.find(value => value.source.kind === 'human-reply'
+          && value.source.messageId === reply.value.messageId && value.source.questionCallId === reply.value.questionCallId
+          && value.source.callSequence === reply.value.origin.callSequence
+          && canonicalJson(value.continuation) === canonicalJson(continuation)) ?? null;
+        conditions.push(Object.freeze({ kind: 'question.reply-pending', ...reply, admission }));
         const currentGoal = activity.goal;
         if (continuation === null) {
-          conditions.push(Object.freeze({ kind: 'question.reply-blocked', ...reply, reason: 'unavailable', currentGoal }));
-        } else if (continuation.goal !== null) {
-          const expectedGoal = continuation.goal;
+          conditions.push(Object.freeze({ kind: 'question.reply-blocked', ...reply, reason: 'unavailable', currentGoal, admission }));
+        } else {
+          const expectedGoal = admission === null ? continuation.goal : admission.goal;
+          if (expectedGoal === null) continue;
           if (currentGoal === null || currentGoal.id !== expectedGoal.id || currentGoal.revision !== expectedGoal.revision) {
-            conditions.push(Object.freeze({ kind: 'question.reply-blocked', ...reply, reason: 'superseded', currentGoal }));
+            conditions.push(Object.freeze({ kind: 'question.reply-blocked', ...reply, reason: 'superseded', currentGoal, admission }));
           } else if (currentGoal.phase !== 'active') {
-            conditions.push(Object.freeze({ kind: 'question.reply-blocked', ...reply, reason: 'inactive', currentGoal }));
+            conditions.push(Object.freeze({ kind: 'question.reply-blocked', ...reply, reason: 'inactive', currentGoal, admission }));
           }
         }
       }
@@ -259,17 +269,25 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
       for (const request of requests) {
         const result = request.value.declaration?.result;
         if (request.value.state !== 'accepted' || result?.ready !== true) continue;
-        const continuation = result.continuation, expectedGoal = continuation.goal;
+        const continuation = result.continuation;
+        const admission = admissions.find(value => {
+          const source = value.source;
+          return source.kind === 'result' && source.requestId === request.value.requestId
+            && request.value.inputs.some(input => input.sourceSessionId === identity.sessionId
+              && input.requestId === source.requestId && input.messageId === source.messageId)
+            && canonicalJson(value.continuation) === canonicalJson(continuation);
+        }) ?? null;
+        const expectedGoal = admission === null ? continuation.goal : admission.goal;
         conditions.push(Object.freeze({ kind: 'continuation.unconsumed', request, continuation,
-          currentGoal: activity.goal, matchedInputs: request.matchedInputs }));
+          currentGoal: activity.goal, matchedInputs: request.matchedInputs, admission }));
         if (expectedGoal === null) continue;
         const currentGoal = activity.goal;
         if (currentGoal === null || currentGoal.id !== expectedGoal.id || currentGoal.revision !== expectedGoal.revision) {
           conditions.push(Object.freeze({ kind: 'continuation.superseded', request, continuation,
-            currentGoal, matchedInputs: request.matchedInputs }));
+            currentGoal, matchedInputs: request.matchedInputs, admission }));
         } else if (currentGoal.phase !== 'active') {
           conditions.push(Object.freeze({ kind: 'continuation.inactive', request, continuation,
-            currentGoal, matchedInputs: request.matchedInputs }));
+            currentGoal, matchedInputs: request.matchedInputs, admission }));
         }
       }
       for (const wait of waits) conditions.push(Object.freeze({ kind: 'wait.pending', ...wait }));

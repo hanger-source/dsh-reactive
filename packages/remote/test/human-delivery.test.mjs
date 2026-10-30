@@ -93,6 +93,12 @@ for (const failPreparation of [false, true]) test(failPreparation
     const snapshot = await delivering, [reply] = snapshot.replies;
     const preparing = await next(remote.progress.values$, value => value.preparation?.waiting.some(wait => wait.kind === 'check'));
     assert.deepEqual(preparing.preparation.inputs, question.origin.inputs, 'HTTP 保留准备中的原输入，未借新的回答者身份');
+    const [feedbackAdmission] = preparing.preparation.admissions;
+    assert.deepEqual(feedbackAdmission, { source: { kind: 'human-reply', messageId: reply.messageId,
+      questionCallId: question.callId, callSequence: question.origin.callSequence },
+      continuation: question.origin.continuation, goal: null }, 'HTTP 保留精确迟答承接及其原始 JSON 范围');
+    assert.equal(typeof feedbackAdmission.continuation.inputs[0].scope.submittedAt, 'string',
+      '反馈的原范围不经过 Program 的 Date 转换');
     assert.equal((await remote.request('original').state.read()).preparation.id, preparing.preparation.id);
     assert.equal((await remote.request('unrelated').state.read()).preparation, null);
     assert.equal(reply.questionCallId, question.callId); assert.equal(reply.target, 'next-step');
@@ -101,7 +107,8 @@ for (const failPreparation of [false, true]) test(failPreparation
     assert.deepEqual((await bound.state.read()).replies, snapshot.replies);
     const selector = createWorkSelector({ identify: origin => origin.kind === 'invocation' ? undefined : z.object({ workId: z.string() }).parse(origin.scope).workId });
     const work = selector.select('knowledge', { sessions: [{ identity: local.identity, progress: await local.progress.read(), human: snapshot }] }).sessions[0];
-    assert.ok(work.conditions.some(condition => condition.kind === 'question.reply-pending' && condition.value.messageId === reply.messageId));
+    const pendingReply = work.conditions.find(condition => condition.kind === 'question.reply-pending' && condition.value.messageId === reply.messageId);
+    assert.deepEqual(pendingReply.admission, feedbackAdmission);
     const agent = runtime.native.agents.get(SessionId(local.id));
     assert.equal(agent.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.id === reply.messageId), false);
     assert.equal(modelCalls, 2, '提议尚未进入模型输入或启动新模型请求');

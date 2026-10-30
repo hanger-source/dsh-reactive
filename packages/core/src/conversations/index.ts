@@ -15,4 +15,4 @@ export type { WorkOperationFollow, WorkSessionHandle } from './work.ts';
 export type { WorkInvocationSource, WorkInvocationObservation, WorkInvocationInput, WorkInvocationSnapshot, WorkSources, WorkSelectionSources } from './work.ts';
 export type { ProgramSessionClient, HumanProgramSessionClient, ProgramGoalControl, ProgramCancelResult, ProgramRequestStatus } from './client.ts';
 export * from '../journal/index.ts';
-export { modelPreparationSchema, ownModelPreparation, type ModelPreparation, type ModelPreparationWait } from './preparation.ts';
+export { modelPreparationSchema, ownModelPreparation, type ModelPreparation, type ModelPreparationWait, type ModelPreparationAdmission } from './preparation.ts';

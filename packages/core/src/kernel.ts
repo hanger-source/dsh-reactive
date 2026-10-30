@@ -48,6 +48,6 @@ export type { InputParticipant } from './conversations/protocol.ts';
 export { operationFollowSnapshotSchema, matchesOperationFollowResult, type OperationFollowSnapshot } from './operations/follows.ts';
 /** @internal 持续借用资格事实连接，供宿主运行边界使用。 */
 export { retainEligibility } from './resources/eligibility.ts';
-export { modelPreparationSchema, ownModelPreparation, observePreparation, type ModelPreparation, type ModelPreparationWait, type PreparationObserver } from './conversations/preparation.ts';
+export { modelPreparationSchema, ownModelPreparation, observePreparation, type ModelPreparation, type ModelPreparationWait, type ModelPreparationAdmission, type PreparationObserver } from './conversations/preparation.ts';
 
 export { actionInvocationOriginSchema } from './actions/contract.ts';

@@ -217,7 +217,10 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
       unentered: value.unentered.map(input => ({ ...input, inputs: this.wireInputs(input.inputs) })) };
   }
   private wirePreparation(value: ModelPreparation | null): ProgramModelPreparation | null {
-    return value === null ? null : { ...value, inputs: this.wireInputs(value.inputs) };
+    return value === null ? null : { ...value, inputs: this.wireInputs(value.inputs),
+      admissions: value.admissions.map(admission => ({ ...admission, continuation: {
+        ...admission.continuation, inputs: this.wireInputs(admission.continuation.inputs),
+      } })) };
   }
   private wireActivity(value: ConversationActivity): JsonValue {
     return z.json().parse({ ...value,

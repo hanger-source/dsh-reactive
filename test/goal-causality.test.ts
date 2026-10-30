@@ -6,14 +6,14 @@ import { join } from 'node:path';
 import { createElement, Fragment } from 'react';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
-import { defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface,
-  z, type Continuation, type InputReference } from '@hanger-source/dsh-reactive';
-import { implementProgram, Offer, useAction } from '@hanger-source/dsh-reactive/program';
+import { createWorkSelector, defineAction, implementAction, defineApplication, defineEnvironment, defineProgram, defineSurface,
+  z, type Continuation, type InputReference, type ConversationProgressSnapshot } from '@hanger-source/dsh-reactive';
+import { implementProgram, Offer, useAction, useBeforeStep } from '@hanger-source/dsh-reactive/program';
 import { boot, text, tool } from './native-support.ts';
 
 const wait = { id: 'original-owner', operation: { id: 'original-operation' } };
 type Attempt = { goal: Continuation['goal']; inputs: readonly InputReference[]; completed: boolean; error?: string };
-async function fixture(mode: 'native' | 'ptc', respond: (step: number, request: GenerateOptions) => AsyncIterable<StreamChunk>, holdAfterFinish = false, onTouch?: () => void) {
+async function fixture(mode: 'native' | 'ptc', respond: (step: number, request: GenerateOptions) => AsyncIterable<StreamChunk>, holdAfterFinish = false, onTouch?: () => void, beforeStep?: () => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-goal-causality-'));
   const attempts: Attempt[] = [];
   let continuation: Continuation | undefined, calls = 0;
@@ -38,11 +38,12 @@ async function fixture(mode: 'native' | 'ptc', respond: (step: number, request: 
     program: implementProgram(defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) }), { Component() {
       const begin = useAction(beginning, () => null, []), finish = useAction(finishing, () => null, []);
       const touch = useAction(touching, () => null, []);
+      useBeforeStep(async () => { await beforeStep?.(); }, []);
       return createElement(Fragment, null, Offer({ action: begin }), Offer({ action: finish }), Offer({ action: touch }));
     } }),
   })] });
   const app = await boot(root, definition, request => respond(++calls, request), mode);
-  return { app, attempts, continuation: () => { assert.ok(continuation); return continuation; }, calls: () => calls };
+  return { app, definition, attempts, continuation: () => { assert.ok(continuation); return continuation; }, calls: () => calls };
 }
 async function* invoke(mode: 'native' | 'ptc', name: string, id: string, args: unknown = null) {
   if (mode === 'native') yield* tool(name, id, args);
@@ -230,14 +231,21 @@ test('结果已 rearm 但原生步骤拒准入时不自动继续，原消息随�
     } else yield* text('已沿新的明确输入核验原结果');
   });
   let reject = true;
+  let mixedBatchAdmissions: ConversationProgressSnapshot['preparation'] | undefined;
+  let readProgress: (() => Promise<ConversationProgressSnapshot>) | undefined;
   const stop = f.app.native.on('agent/pre-step', async ({ messages }, next) => {
     if (reject && messages.some(message => 'rpcId' in message.source && message.source.rpcId === 'owner-result')) {
       reject = false; return { kind: 'reject' };
     }
-    return next();
+    const decision = await next();
+    if (messages.some(message => 'rpcId' in message.source && message.source.rpcId === 'new-authority')) {
+      mixedBatchAdmissions = (await readProgress!()).preparation;
+    }
+    return decision;
   });
   try {
     const session = await f.app.host.create('work', { workspaceId: f.app.workspace.workspaceId });
+    readProgress = () => session.progress.read();
     await session.submit({ requestId: 'original', content: '原始工作', intent: 'goal', delivery: 'followup', scope: null });
     await session.whenIdle();
     const original = session.snapshot().goal!;
@@ -255,6 +263,8 @@ test('结果已 rearm 但原生步骤拒准入时不自动继续，原消息随�
     await session.submit({ requestId: 'new-authority', content: '现在明确核验原结果并完成原工作', intent: 'question', delivery: 'followup', scope: null });
     await session.whenIdle();
     assert.equal(f.calls(), 3);
+    assert.ok(mixedBatchAdmissions);
+    assert.deepEqual(mixedBatchAdmissions.admissions, [], '新独立输入同行的旧feedback不签出反馈承接');
     assert.equal(f.attempts.length, 1);
     assert.equal(f.attempts[0]!.completed, true);
     assert.ok(f.attempts[0]!.inputs.some(input => input.requestId === 'new-authority'));
@@ -265,3 +275,120 @@ test('结果已 rearm 但原生步骤拒准入时不自动继续，原消息随�
     assert.deepEqual(f.app.errors, []);
   } finally { stop(); await f.app.dispose(); }
 });
+
+const originalWork = createWorkSelector({ identify: origin => origin.kind === 'invocation' ? undefined : origin.requestId });
+
+for (const boundary of ['business-check', 'native-pre-step'] as const) {
+  test(`正式结果在 ${boundary} 等待时保留本轮承接，所有观察帧均不误报旧修订`, { timeout: 15_000 }, async () => {
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    let hold = false;
+    const gate = async () => { if (hold) { entered.resolve(); await release.promise; } };
+    const f = await fixture('native', async function* (step) {
+      if (step === 1) yield* tool('begin_owner', 'original-wait', null);
+      else if (step === 2) yield* tool('finish_owner', 'finish-admitted-result', null);
+      else yield* text('已核验正式结果');
+    }, false, undefined, boundary === 'business-check' ? gate : undefined);
+    const stop = boundary === 'native-pre-step' ? f.app.native.on('agent/pre-step', async (_event, next) => {
+      const decision = await next(); await gate(); return decision;
+    }) : () => {};
+    try {
+      const session = await f.app.host.create('work', { workspaceId: f.app.workspace.workspaceId });
+      await session.submit({ requestId: 'original', content: '原工作', intent: 'goal', delivery: 'followup', scope: null });
+      await session.whenIdle();
+      const original = f.continuation(), frames: ConversationProgressSnapshot[] = [];
+      const human = await session.human.read();
+      const subscription = session.progress.values$.subscribe(frame => frames.push(frame));
+      try {
+        hold = true;
+        await session.submit({ requestId: 'owner-result', content: '本次正式结果', intent: 'result', scope: null,
+          result: { continuation: original, wait, ready: true } });
+        await entered.promise;
+        const blocked = await session.progress.read(), preparation = blocked.preparation!;
+        assert.ok(preparation);
+        assert.ok(preparation.waiting.some(value => value.kind === (boundary === 'business-check' ? 'check' : 'step-admission')));
+        const request = blocked.activity.requests['owner-result']!;
+        assert.equal(request.state, 'accepted');
+        assert.equal(f.calls(), 1, '准备等待尚未向受控模型提交第二步');
+        const admission = preparation.admissions.find(value => value.source.kind === 'result');
+        assert.deepEqual(admission, { source: { kind: 'result', requestId: 'owner-result', messageId: request.inputs[0]!.messageId },
+          continuation: original, goal: { id: original.goal!.id, revision: original.goal!.revision + 1 } });
+        assert.equal(blocked.activity.goal!.revision, admission!.goal!.revision);
+        const selected = originalWork.select('original', { sessions: [{ identity: session.identity, progress: blocked, human }] }).sessions[0]!;
+        const unconsumed = selected.conditions.find(condition => condition.kind === 'continuation.unconsumed');
+        assert.ok(unconsumed && unconsumed.kind === 'continuation.unconsumed');
+        assert.deepEqual(unconsumed.admission, admission);
+        assert.deepEqual(unconsumed.continuation, original);
+        hold = false; release.resolve(); await session.whenIdle();
+        assert.equal(f.attempts[0]!.completed, true);
+        assert.deepEqual(f.attempts[0]!.goal, admission!.goal);
+        assert.equal((await session.progress.read()).preparation, null);
+        assert.equal(session.snapshot().requests['owner-result']!.state, 'settled');
+        const agent = f.app.native.agents.get(SessionId(session.id))!;
+        assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'user/message'
+          && event.data.id === request.inputs[0]!.messageId).length, 1);
+        const selectedFrames = frames.map(progress => originalWork.select('original', {
+          sessions: [{ identity: session.identity, progress, human }],
+        }).sessions[0]!);
+        assert.ok(selectedFrames.some(frame => frame.conditions.some(condition => condition.kind === 'continuation.unconsumed'
+          && condition.admission !== null)), '全帧记录实际看到了未消费承接');
+        assert.equal(selectedFrames.some(frame => frame.conditions.some(condition => condition.kind === 'continuation.superseded')), false,
+          'resume、pre-step交接及user/message消费之间不能出现瞬时假superseded');
+        assert.deepEqual(f.app.errors, []);
+      } finally { subscription.unsubscribe(); }
+    } finally { hold = false; release.resolve(); stop(); await f.app.dispose(); }
+  });
+}
+
+for (const interruption of ['edit', 'pause', 'cancel', 'reject'] as const) {
+  test(`正式结果等待原生准入期间 ${interruption}，撤下准备且冷打开不复活承接`, { timeout: 15_000 }, async () => {
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    let hold = false;
+    const f = await fixture('native', async function* (step) {
+      if (step === 1) yield* tool('begin_owner', 'original-wait', null);
+      else yield* text('不应消费被中断的结果');
+    });
+    const stop = f.app.native.on('agent/pre-step', async (_event, next) => {
+      const decision = await next();
+      if (hold) { entered.resolve(); await release.promise; if (interruption === 'reject') return { kind: 'reject' }; }
+      return decision;
+    });
+    try {
+      const session = await f.app.host.create('work', { workspaceId: f.app.workspace.workspaceId });
+      await session.submit({ requestId: 'original', content: '原工作', intent: 'goal', delivery: 'followup', scope: null });
+      await session.whenIdle(); hold = true;
+      await session.submit({ requestId: 'owner-result', content: '本次正式结果', intent: 'result', scope: null,
+        result: { continuation: f.continuation(), wait, ready: true } });
+      await entered.promise;
+      assert.equal((await session.progress.read()).preparation!.admissions.length, 1);
+      const agent = f.app.native.agents.get(SessionId(session.id))!;
+      let cancelling: ReturnType<typeof session.cancel> | undefined;
+      if (interruption === 'edit') {
+        f.app.native.goals.edit(agent, f.app.native.goals.get(agent)!, { objective: '外部新要求' });
+        f.app.native.goals.disarm(agent);
+      } else if (interruption === 'pause') await session.pause();
+      else if (interruption === 'cancel') {
+        cancelling = session.cancel();
+        assert.equal((await session.progress.read()).preparation, null, '取消立即撤下准备，不等待阻塞的pre-step返回');
+      }
+      if (interruption === 'edit' || interruption === 'pause') {
+        const selected = await originalWork.observe('original', { sessions: [session] }).state.read();
+        assert.ok(selected.sessions[0]!.conditions.some(condition => condition.kind === 'continuation.superseded'),
+          '真实外部修订必须与合法resume区分');
+      }
+      release.resolve(); await cancelling; await session.whenIdle();
+      assert.equal((await session.progress.read()).preparation, null);
+      assert.equal(f.calls(), 1);
+      if (interruption !== 'cancel') assert.equal(session.snapshot().requests['owner-result']!.state, 'accepted');
+      const resultMessageId = session.snapshot().requests['owner-result']!.inputs[0]!.messageId;
+      assert.equal(agent.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.id === resultMessageId), false);
+      await f.app.host.close(session.id); session.release();
+      const cold = await f.app.host.open(session.id, f.definition.environments[0].program.definition);
+      try {
+        assert.equal((await cold.progress.read()).preparation, null);
+        assert.equal(f.app.native.agents.get(SessionId(cold.id)), undefined, '冷观察不启动Agent');
+        assert.equal(f.calls(), 1);
+      } finally { cold.release(); }
+      assert.deepEqual(f.app.errors, [], '反馈失去精确Goal资格时正常拒准入，不进入模型或生成步骤错误');
+    } finally { hold = false; release.resolve(); stop(); await f.app.dispose(); }
+  });
+}

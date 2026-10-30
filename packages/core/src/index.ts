@@ -76,7 +76,7 @@ export type { HumanSnapshot, HumanQuestionSnapshot, HumanReplyDelivery } from '.
 export { createHumanQuestionResolver } from './participation/questions.ts';
 export type { HumanQuestionHandle, HumanQuestionControls, HumanQuestionResolver } from './participation/questions.ts';
 export { operationFollowSnapshotSchema, type OperationFollowSnapshot } from './operations/follows.ts';
-export { modelPreparationSchema, ownModelPreparation, type ModelPreparation, type ModelPreparationWait } from './conversations/preparation.ts';
+export { modelPreparationSchema, ownModelPreparation, type ModelPreparation, type ModelPreparationWait, type ModelPreparationAdmission } from './conversations/preparation.ts';
 
 export { actionInvocationOriginSchema } from './actions/contract.ts';
 export { approvalSurface, approvalPendingRequestSchema, approvalDecisionSchema } from './participation/approval.ts';

@@ -18,7 +18,7 @@
 
 完整校验后的有效声明相同，保留原提交及 revision。Context 的实际文本与 pending/error/ready 有效性、Action/Operation 绑定、政策与资格来源、Skill、Surface 来源、Module 代际和人工响应者共同决定声明是否改变；ready 的观察时间本身不是 prompt 内容。程序可以读取自己的进展，观察更新不凭空制造下一轮装配。
 
-`progress.preparation` 只保存当前真实装配的 id、已知原输入和未结束的等待。实际 await owner 登记与撤销自己的令牌；Context 并列读取每轮独立退出，撤下一个来源会先结束旧批次的其他读取，再重新收集，业务资源本身不被销毁。取消同步撤令牌，迟到 finally 不影响新代际。冷图为 null；准备观察不写持久投影、不参与调度，执行失败仍沿原生 turn/end:error 形成历史事实。
+`progress.preparation` 保存当前准备的 id、已知原输入、未结束的等待，以及输入 owner 签出的精确反馈 admissions。每项记录真实结果或人工回复来源、原 continuation 和本轮采用的 Goal 修订；合法 resume 与该关系在同一批次发布。实际 await owner 登记与撤销自己的令牌；Context 并列读取每轮独立退出，撤下一个来源会先结束旧批次的其他读取，再重新收集，业务资源本身不被销毁。装配成功后由既有原生步骤接管公开 frame，`step-admission` 保留原生准入与输入交接等待；真实消息消费和准备退出同批发布。取消同步撤令牌，迟到 finally 不影响新代际。冷图为 null；准备观察不写持久投影、不参与调度，执行失败仍沿原生 turn/end:error 形成历史事实。
 
 ## 查询、共享与长期关系
 
@@ -258,6 +258,8 @@ Activity.operationFollows 包含原 link、receipt|null、preparedDelivery|null�
 Activity 的 inputs 是输入目录，calls 和 replies 是完整发生事实，Goal.inputs 保存关联；Request.tools 与最后回复由这些事实派生。calls 保留每次真实发生，ToolActivity 和 ToolOccurrence 的 `callSequence` 是该次正式 start 事件的序号；provider 的 callId 可以跨轮复用。RequestDeclaration 是真实持久声明，包含 `result: { continuation, wait, ready } | null`；没有 messageId 的声明不是已受理输入。回复 `inputs: null` 表示关联未知，不按工作归组。每个命中项保留完整 value、原 callSequence 或 messageId 及完整 inputs；matchedInputs 只解释分组，不裁剪事实或授予续接权限。多输入共同调用或回复可出现在多个工作。原始 scope 在本地与远程均不执行 Program transform。
 
 每个来源保留 sessionId、workspaceId、environmentId 和真实 Session 的 parentSessionId。会话中的 source、execution 是背景，不表示工作独占会话。条件表达 `goal.paused`、`goal.blocked`、`wait.pending`、`question.pending`、`call.failed` 及原续接约束。`continuation.unconsumed` 表示结果请求已 accepted、result.ready 为 true，但尚未推进到 consumed，不代表模型已处理；`continuation.superseded` 和 `continuation.inactive` 表达其所引用 Goal 已被替换或不再 active。`goal.round-limit` 只在 active Goal 已用尽轮数时出现；`operation.follow-unregistered` 表示该 Follow 未进入登记；`operation.not-started` 表示已知业务未进入，`operation.delivery-prepared` 表示投递已准备而结果请求不存在或仍为 declared。不据此判定整个工作 busy 或完成。跨会话观察不共享 Goal 或答复权限。
+
+`continuation.*` 与 `question.reply-*` 条件的 `admission` 只匹配本轮实际承接的精确反馈来源和完整原 continuation。有此关系时，Goal 诊断使用本轮采用的修订；否则使用反馈原来引用的修订。外部再次 edit 或 pause 仍使该关系失去当前适用性。独立输入及同轮其他反馈不能共享这份承接，不以相同业务范围或相邻 resume 事件推断；尚未获准的同行消息可以作为事实被其他明确输入带入模型，不能据此取得它自己的 Goal 续接权。
 
 所有必需来源 ready 才有完整工作 ready；任一来源 pending 或 error 撤下旧 ready，来源退出保留原错误，不替换为空数组。不同会话 generation 不构成事务快照。options 可省略：无显式 owner 时读侧遵循 refCount 与来源有效性；最后观察退出只释放观察，不停止会话或业务。需要业务 Operation 阶段或资源错误时使用现有 RxJS 组合。
 

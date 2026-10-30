@@ -1,4 +1,4 @@
-import type { AttachmentIdType, ExecutionFailure, ModelPreparation, SessionImageAttachment as CoreSessionImageAttachment } from '@hanger-source/dsh-reactive';
+import type { AttachmentIdType, ExecutionFailure, ModelPreparation, ModelPreparationAdmission, SessionImageAttachment as CoreSessionImageAttachment } from '@hanger-source/dsh-reactive';
 import type { ActionIdentity, ActionInvocationOrigin, InvocationPhase, Continuation, GoalActivity, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanReplyDelivery, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
   ProgramGoalControl as CoreProgramGoalControl, ProgramCancelResult as CoreProgramCancelResult, ProgramRequestStatus as CoreProgramRequestStatus,
   ProgramJournalEvent as CoreProgramJournalEvent, ProgramJournalEntry as CoreProgramJournalEntry,
@@ -19,8 +19,11 @@ export type ProgramExecutionFailure = Omit<ExecutionFailure, 'inputs' | 'unenter
   })[];
 };
 /** 当前模型准备的 wire 形态；仅原始输入 scope 穿过 JSON 边界。 */
-export type ProgramModelPreparation = Omit<ModelPreparation, 'inputs'> & {
+export type ProgramModelPreparation = Omit<ModelPreparation, 'inputs' | 'admissions'> & {
   readonly inputs: readonly InputReference<JsonValue>[];
+  readonly admissions: readonly (Omit<ModelPreparationAdmission, 'continuation'> & {
+    readonly continuation: Omit<Continuation, 'inputs'> & { readonly inputs: readonly InputReference<JsonValue>[] };
+  })[];
 };
 
 /** 官方 failure 的 wire 形态；details 按 Typert 边界限定为 JSON 对象或数组。 */
