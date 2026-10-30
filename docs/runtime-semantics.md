@@ -251,6 +251,10 @@ continued 答复按原问题的 callId 恢复工具调用保存的输入集合�
 
 `createWorkSelector({ identify })` 用应用定义的 JSON 键选择原始输入、持久请求声明或 Invocation 来源；返回 undefined 表示不属于该工作。`select` 同步投影显式快照，`observe` 组合显式会话来源的 progress、human 与已持有调用的 activity，并共享一个 ResourceReader。`state$` 是该 reader 的观察，`events$` 和 `progressFrames$` 只交付订阅后的匹配事实，不重放历史。冷观察不复活 assistant attempt 草稿，也不发现会话、启动 Agent 或取得权限。
 
+会话名单可为静态数组或 ResourceSource，`WorkHandle.sessions` 统一为 ResourceReader，构造不订阅，无消费者时退出名单来源。增删或重排保留未变来源的句柄及活跃群组连接；相同 sessionId 的新来源是新对象，旧句柄始终指向原来源。名单 pending/error 撤下整体 ready 并停止旧群组连接；pending 暂停成员事件，恢复后重新观察，名单 error 和真实事件 error 按 RxJS error 传播。事件与帧不重放。名单变化不代表业务工作或 Goal 权限变化；Work 借用已授权 Session，不打开、恢复或释放它。局部句柄只受原来源和显式 signal 约束，移除名单成员不销毁已捕获句柄。
+
+局部成员的事件与帧沿原来源完成；群组仍可等待名单接入其他来源，不把当前成员全部退出解释为整个工作完成。群组观察通过退订或显式 `options.signal` 结束，结束名单读取本身也不会销毁已取得的局部句柄。
+
 调用来源按 sessionId、bindingId 和 id 去重，origin 冲突硬失败。每个观察连接固定首个命中的 activity Reader；重排、重发或增加标签不切换，失效不回退，仅显式移除已选来源可重新选择。activity 的资源 error 表示该行观察不可用，ready 中的 failed 才是调用失败。动态成员来源 pending 或 error 使整体失效，不作为空列表。Work 不读取 result、wait 或 operation，也不取消业务或自动查询 Operation。
 
 Activity.operationFollows 包含原 link、receipt|null、preparedDelivery|null、notStarted|null 和 unregistered|null；preparedDelivery 保留 requestId、actorId、notifierId 及可选 reference、node。这些是同一原生投影的持久事实，读取不触发 locate、register 或 notifier。intent 不证明 register ACK，缺少 receipt 不证明未执行，prepared 不代表结果已受理、消费或结算。直播追加产生 operation.follow.changed，change 为 intent、receipt、delivery-prepared、not-started 或 unregistered，携带完整 inputs；冷恢复读取投影，不重放这些事件。

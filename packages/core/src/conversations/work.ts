@@ -1,4 +1,4 @@
-import { EMPTY, defer, fromEvent, map, merge, takeUntil, filter, of, combineLatest, catchError, tap, finalize, ReplaySubject, shareReplay, observeOn, queueScheduler, throwIfEmpty, type Observable } from 'rxjs';
+import { defer, map, takeUntil, of, combineLatest, catchError, tap, finalize, ReplaySubject, shareReplay, observeOn, queueScheduler, throwIfEmpty, type Observable } from 'rxjs';
 import { actionInvocationOriginSchema, type ActionInvocationOrigin, type InvocationActivity } from '../actions/contract.ts';
 import { resourceObservations, type ResourceSource } from '../resources/source.ts';
 import type { ConversationIdentity } from './conversation.ts';
@@ -12,6 +12,7 @@ import { matchesOperationFollowResult, type OperationFollowSnapshot } from '../o
 import type { ResourceReader, ResourceReadable, ResourceReaderOptions } from '../resources/reader.ts';
 import { combineResources, mapResource, switchResource } from '../resources/operators.ts';
 import { shareResource } from '../resources/sharing.ts';
+import { createWorkSessions } from './work-sessions.ts';
 
 /** 选择依据保留原始输入；声明没有原生输入身份，不能伪造 messageId 或 source。 */
 export type WorkOrigin =
@@ -127,7 +128,7 @@ export interface WorkInvocationSnapshot<K extends Json = Json> extends WorkInvoc
   readonly keys: readonly K[];
 }
 export interface WorkSources<K extends Json> {
-  readonly sessions?: readonly WorkSource[];
+  readonly sessions?: readonly WorkSource[] | ResourceSource<readonly WorkSource[]>;
   readonly invocations?: readonly WorkInvocationInput<K>[] | ResourceSource<readonly WorkInvocationInput<K>[]>;
 }
 export interface WorkSelectionSources<K extends Json> {
@@ -150,8 +151,8 @@ export interface WorkProgressFrame<K extends Json = Json> {
 }
 
 export interface WorkHandle<K extends Json = Json> {
-  /** 显式来源各有自己的有效性；完整state仍要求全部来源可读。 */
-  readonly sessions: readonly WorkSessionHandle<K>[];
+  /** 当前显式来源的成员读侧；各局部来源保留原 owner，完整 state 要求全部当前来源可读。 */
+  readonly sessions: ResourceReader<readonly WorkSessionHandle<K>[]>;
   readonly state: ResourceReader<WorkSnapshot<K>>;
   readonly state$: Observable<Observation<WorkSnapshot<K>>>;
   readonly events$: Observable<WorkEvent<K>>;
@@ -324,28 +325,19 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
     },
     observe(key: K, sources: WorkSources<K>, readerOptions?: ResourceReaderOptions): WorkHandle<K> {
       const capturedKey = captureKey(key);
-      const captured = Object.freeze((sources.sessions ?? []).map(source => Object.freeze({ identity: captureIdentity(source.identity),
-        progress: source.progress, human: source.human, rawEvents$: source.rawEvents$, progressFrames$: source.progressFrames$ })));
-      assertDistinctSources(captured);
       const match = matcher(capturedKey);
-      const sessions: readonly WorkSessionHandle<K>[] = Object.freeze(captured.map(source => {
-        const state = shareResource(combineResources({ progress: source.progress, human: source.human }).pipe(
-          mapResource(value => project(capturedKey, [{ identity: source.identity, ...value }]).sessions[0]!),
-        ), readerOptions);
-        const events$ = source.rawEvents$.pipe(map(event => {
-          if (event.sessionId !== source.identity.sessionId) throw new Error('REACTIVE_WORK_EVENT_SESSION_MISMATCH');
+      const sessions = createWorkSessions(sources.sessions, {
+        snapshot: (identity, value) => project(capturedKey, [{ identity, ...value }]).sessions[0]!,
+        event(identity, event) {
+          if (event.sessionId !== identity.sessionId) throw new Error('REACTIVE_WORK_EVENT_SESSION_MISMATCH');
           const matchedInputs = match.inputs(eventInputs(event));
-          return matchedInputs.length ? Object.freeze({ key: capturedKey, source: source.identity, event, matchedInputs }) : null;
-        }), filter((value): value is WorkEvent<K> => value !== null));
-        const progressFrames$ = source.progressFrames$.pipe(map(frame => {
+          return matchedInputs.length ? Object.freeze({ key: capturedKey, source: identity, event, matchedInputs }) : null;
+        },
+        frame(identity, frame) {
           const matchedInputs = match.inputs(frame.inputs);
-          return matchedInputs.length ? Object.freeze({ key: capturedKey, source: source.identity, frame, matchedInputs }) : null;
-        }), filter((value): value is WorkProgressFrame<K> => value !== null));
-        return Object.freeze({ identity: source.identity, state, state$: state.observations$,
-          events$: borrowEvents(events$, readerOptions?.signal), progressFrames$: borrowEvents(progressFrames$, readerOptions?.signal) });
-      }));
-      const sessionState = sessions.length ? combineResources(Object.fromEntries(sessions.map((source, index) => [String(index), source.state]))).pipe(
-        mapResource(value => Object.freeze(Object.values(value)))) : readyResource<readonly WorkSessionSnapshot[]>(Object.freeze([]));
+          return matchedInputs.length ? Object.freeze({ key: capturedKey, source: identity, frame, matchedInputs }) : null;
+        },
+      }, readerOptions);
       const invocationInputs = sources.invocations;
       const members = invocationInputs === undefined || Array.isArray(invocationInputs)
         ? readyResource(captureInvocations<K, ResourceReadable<InvocationActivity>>((invocationInputs ?? []) as readonly WorkInvocationInput<K>[]))
@@ -401,11 +393,11 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
           finalize(() => { releaseAll(); selections.clear(); }),
         );
       });
-      const state = shareResource(combineResources({ sessions: sessionState, invocations: invocationState }).pipe(
+      const state = shareResource(combineResources({ sessions: sessions.state, invocations: invocationState }).pipe(
         mapResource(value => Object.freeze({ key: capturedKey, ...value })),
       ), readerOptions);
-      return Object.freeze({ sessions, state, state$: state.observations$,
-        events$: merge(...sessions.map(session => session.events$)), progressFrames$: merge(...sessions.map(session => session.progressFrames$)) });
+      return Object.freeze({ sessions: sessions.sessions, state, state$: state.observations$,
+        events$: sessions.events$, progressFrames$: sessions.progressFrames$ });
     },
   });
 }
@@ -492,10 +484,6 @@ function eventInputs(event: ConversationEvent): readonly InputReference[] {
   if (event.kind === 'goal.changed') return event.goal?.inputs ?? [];
   if (event.kind === 'wait.opened' || event.kind === 'wait.resolved') return event.continuation.inputs;
   return 'inputs' in event ? event.inputs ?? [] : [];
-}
-
-function borrowEvents<T>(source: Observable<T>, signal: AbortSignal | undefined): Observable<T> {
-  return defer(() => signal?.aborted ? EMPTY : signal === undefined ? source : source.pipe(takeUntil(fromEvent(signal, 'abort'))));
 }
 
 function assertDistinctSources(sources: readonly { readonly identity: WorkSourceIdentity }[]): void {

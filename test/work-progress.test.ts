@@ -4,11 +4,11 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createElement as h } from 'react';
-import { BehaviorSubject, Observable, combineLatest, map } from 'rxjs';
+import { BehaviorSubject, Observable, Subject, UnsubscriptionError, combineLatest, defer, finalize, map, merge } from 'rxjs';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { bindAction, createWorkSelector, defineAction, defineApplication, defineEnvironment, defineProgram, defineSurface, ResourceReader,
   implementAction, z, type ConversationEvent, type WorkEvent, type WorkProgressFrame, type WorkOrigin,
-  type WorkInvocationInput, type InvocationActivity, type Observation, type WorkSnapshot } from '@hanger-source/dsh-reactive';
+  type WorkInvocationInput, type InvocationActivity, type Observation, type WorkSnapshot, type WorkSource } from '@hanger-source/dsh-reactive';
 import { implementProgram, Expose, Offer, useAction } from '@hanger-source/dsh-reactive/program';
 import { boot, text, tool } from './native-support.ts';
 
@@ -24,6 +24,218 @@ function identify(origin: WorkOrigin): WorkKey | undefined {
   }
   return undefined;
 }
+
+// 只计数真实SDK资源与事件的连接；不替代会话事实或业务执行。
+function countedSource(source: WorkSource, onProgressRelease?: () => void) {
+  const counts = Object.fromEntries(['progress', 'human', 'events', 'frames'].map(name =>
+    [name, { active: 0, subscriptions: 0 }])) as Record<'progress' | 'human' | 'events' | 'frames', { active: number; subscriptions: number }>;
+  const count = <T,>(stream: Observable<T>, name: keyof typeof counts) => defer(() => {
+    counts[name].active++; counts[name].subscriptions++;
+    return stream.pipe(finalize(() => { counts[name].active--; if (name === 'progress') onProgressRelease?.(); }));
+  });
+  return { counts, source: {
+    identity: source.identity,
+    progress: new ResourceReader({ observations$: count(source.progress.observations$, 'progress'), peek: () => source.progress.peek() }),
+    human: new ResourceReader({ observations$: count(source.human.observations$, 'human'), peek: () => source.human.peek() }),
+    rawEvents$: count(source.rawEvents$, 'events'), progressFrames$: count(source.progressFrames$, 'frames'),
+  } satisfies WorkSource };
+}
+
+async function dynamicSessionsFixture() {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-work-members-'));
+  const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  let modelCalls = 0;
+  const record = defineAction({ name: 'write_member_work', description: '完成已受理的文件工作', scope: z.object({ merchantId: z.string(), workId: z.string() }),
+    input: z.string(), output: z.string() });
+  const implementation = implementAction(record, { async execute(file, call) {
+    entered.resolve(); await finish.promise; call.signal.throwIfAborted();
+    await writeFile(join(root, file), call.scope.workId); return file;
+  } });
+  const surface = defineSurface({ views: {}, actions: { write: record } });
+  const definition = defineApplication({ name: 'dynamic-work-members', admit: async () => {}, environments: [defineEnvironment({
+    id: 'work', instructions: '处理当前显式输入',
+    program: implementProgram(defineProgram({ input: z.object({ merchantId: z.string(), workId: z.string() }), surface }), { Component() {
+      const write = useAction(implementation, () => firstWork, []);
+      return Expose({ surface, value: { actions: { write } } });
+    } }),
+  })] });
+  const app = await boot(join(root, 'home'), definition, async function* () { modelCalls++; yield* text('已处理本次工作'); });
+  const first = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+  const second = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+  return { app, root, definition, first, second, entered, finish, modelCalls: () => modelCalls };
+}
+
+test('动态会话名单增删重排沿真实SDK传播，捕获成员仍可读取，退出观察不取消已受理业务', { timeout: 30_000 }, async () => {
+  const f = await dynamicSessionsFixture();
+  const first = countedSource(f.first), second = countedSource(f.second);
+  const list = new BehaviorSubject<Observation<readonly WorkSource[]>>({ status: 'ready', generation: 1, observedAt: 0, value: [first.source] });
+  let listActive = 0, listSubscriptions = 0, generation = 1;
+  const sources = defer(() => { listActive++; listSubscriptions++; return list.pipe(finalize(() => { listActive--; })); });
+  const work = createWorkSelector({ identify }).observe(firstWork, { sessions: sources });
+  assert.equal(listSubscriptions, 0, '构造不读取名单或连接会话');
+  assert.ok(Object.values(first.counts).every(value => value.subscriptions === 0));
+  const [detached] = await work.sessions.read();
+  assert.equal(listActive, 0, '单次成员读取结束名单观察');
+  assert.equal((await detached!.state.read()).sessionId, f.first.id, '成员读侧不依赖已经退出的名单订阅');
+  assert.ok(Object.values(first.counts).every(value => value.active === 0));
+  const states: Observation<WorkSnapshot<WorkKey>>[] = [], events: WorkEvent<WorkKey>[] = [], frames: WorkProgressFrame<WorkKey>[] = [];
+  const stateSubscription = work.state$.subscribe(value => states.push(value));
+  const eventSubscription = work.events$.subscribe(value => events.push(value));
+  const frameSubscription = work.progressFrames$.subscribe(value => frames.push(value));
+  const publish = (value: readonly WorkSource[]) => list.next({ status: 'ready', generation: ++generation, observedAt: 0, value });
+  try {
+    const [captured] = await work.sessions.read();
+    assert.equal(captured, detached);
+    assert.equal((await captured!.state.read()).sessionId, f.first.id);
+    await f.first.submit({ requestId: 'before-add', content: '原成员工作', intent: 'question', delivery: 'followup', scope: firstWork });
+    await f.first.whenIdle();
+    const firstConnections = Object.fromEntries(Object.entries(first.counts).map(([name, value]) => [name, value.subscriptions]));
+    publish([first.source, second.source]);
+    await work.state.read();
+    const beforeReorder = [events.length, frames.length];
+    publish([second.source, first.source]); publish([second.source, first.source]);
+    assert.deepEqual((await work.state.read()).sessions.map(value => value.sessionId), [f.second.id, f.first.id]);
+    assert.equal((await work.sessions.read())[1], captured);
+    assert.deepEqual(Object.fromEntries(Object.entries(first.counts).map(([name, value]) => [name, value.subscriptions])), firstConnections,
+      '添加其他会话和重排不重连未变来源');
+    assert.deepEqual([events.length, frames.length], beforeReorder, '名单更新不重放已发生事件或流帧');
+    const invocation = f.first.resolveAction('write', firstWork)('accepted.txt');
+    await f.entered.promise;
+    publish([second.source]);
+    assert.deepEqual((await work.state.read()).sessions.map(value => value.sessionId), [f.second.id]);
+    assert.ok(Object.values(first.counts).every(value => value.active === 0), '移除释放群组连接，单次读取不留下watch');
+    const eventsAfterRemoval = events.length, framesAfterRemoval = frames.length;
+    await f.first.submit({ requestId: 'removed-work', content: '原source继续工作', intent: 'question', delivery: 'followup', scope: firstWork });
+    await f.first.whenIdle();
+    assert.equal(events.length, eventsAfterRemoval); assert.equal(frames.length, framesAfterRemoval);
+    assert.ok((await captured!.state.read()).requests.some(value => value.value.requestId === 'removed-work'),
+      '一次members.read捕获的成员借原source，名单移除后仍可读取');
+    f.finish.resolve(); assert.equal(await invocation.result, 'accepted.txt');
+    assert.equal(await readFile(join(f.root, 'accepted.txt'), 'utf8'), firstWork.workId);
+    await f.second.submit({ requestId: 'remaining-work', content: '存活成员工作', intent: 'question', delivery: 'followup', scope: firstWork });
+    await f.second.whenIdle();
+    assert.ok(events.slice(eventsAfterRemoval).some(value => value.source.sessionId === f.second.id));
+    assert.ok(frames.slice(framesAfterRemoval).some(value => value.source.sessionId === f.second.id));
+    assert.ok(states.some(value => value.status === 'ready' && value.value.sessions.length === 2));
+    stateSubscription.unsubscribe(); eventSubscription.unsubscribe(); frameSubscription.unsubscribe();
+    assert.equal(listActive, 0); assert.ok(Object.values(second.counts).every(value => value.active === 0));
+    const reconnectedEvents: WorkEvent<WorkKey>[] = [];
+    const reconnected = work.events$.subscribe(value => reconnectedEvents.push(value));
+    assert.deepEqual(reconnectedEvents, [], '重新连接事件不回放历史'); reconnected.unsubscribe();
+    assert.ok(listSubscriptions > 1, '最后订阅退出后按名单owner重新连接');
+    assert.equal(listActive, 0); assert.equal(f.modelCalls(), 3); assert.deepEqual(f.app.errors, []);
+  } finally {
+    stateSubscription.unsubscribe(); eventSubscription.unsubscribe(); frameSubscription.unsubscribe();
+    f.finish.resolve(); f.first.release(); f.second.release(); await f.app.dispose();
+  }
+});
+
+test('动态名单pending/error撤下旧ready，释放来源剔除后恢复，同会话新source不重定向捕获成员', { timeout: 30_000 }, async () => {
+  const f = await dynamicSessionsFixture();
+  const first = countedSource(f.first), second = countedSource(f.second);
+  const list = new BehaviorSubject<Observation<readonly WorkSource[]>>({ status: 'ready', generation: 1, observedAt: 0, value: [first.source, second.source] });
+  const work = createWorkSelector({ identify }).observe(firstWork, { sessions: list });
+  const seen: Observation<WorkSnapshot<WorkKey>>[] = [], eventErrors: unknown[] = [], frameErrors: unknown[] = [];
+  const stateSubscription = work.state$.subscribe(value => seen.push(value));
+  const eventSubscription = work.events$.subscribe({ error: error => eventErrors.push(error) });
+  const frameSubscription = work.progressFrames$.subscribe({ error: error => frameErrors.push(error) });
+  try {
+    const [captured, survivor] = await work.sessions.read();
+    const survivorSubscription = survivor!.state$.subscribe();
+    try {
+      list.next({ status: 'pending', generation: 2 });
+      assert.equal(work.state.peek().status, 'pending'); assert.equal(work.sessions.peek().status, 'pending');
+      assert.equal(eventSubscription.closed, false); assert.equal(frameSubscription.closed, false);
+      assert.ok(Object.values(first.counts).every(value => value.active === 0));
+      assert.equal(second.counts.events.active, 0); assert.equal(second.counts.frames.active, 0);
+      assert.equal((await survivor!.state.read()).sessionId, f.second.id, '局部成员保留自己的来源');
+      const unavailable = new Error('SESSION_MEMBERS_UNAVAILABLE');
+      list.next({ status: 'error', generation: 3, error: unavailable });
+      await assert.rejects(work.state.read(), error => error === unavailable);
+      await assert.rejects(work.sessions.read(), error => error === unavailable);
+      assert.deepEqual(eventErrors, [unavailable]); assert.deepEqual(frameErrors, [unavailable]);
+      list.next({ status: 'ready', generation: 4, observedAt: 0, value: [first.source, second.source] });
+      assert.equal((await work.state.read()).sessions.length, 2);
+      f.first.release();
+      assert.notEqual(work.state.peek().status, 'ready');
+      assert.equal((await survivor!.state.read()).sessionId, f.second.id);
+      list.next({ status: 'ready', generation: 5, observedAt: 0, value: [second.source] });
+      assert.deepEqual((await work.state.read()).sessions.map(value => value.sessionId), [f.second.id]);
+      const replacement = await f.app.host.open(f.first.id, f.definition.environments[0].program.definition);
+      try {
+        list.next({ status: 'ready', generation: 6, observedAt: 0, value: [replacement, second.source] });
+        const [newMember] = await work.sessions.read();
+        assert.notEqual(newMember, captured);
+        assert.equal((await newMember!.state.read()).sessionId, f.first.id);
+        await assert.rejects(captured!.state.read(), /REACTIVE_SCOPE_DISPOSED/u,
+          '旧成员保留已释放source的失败，不自动重定向同sessionId新来源');
+        assert.equal((await work.state.read()).sessions.length, 2);
+        assert.equal(survivorSubscription.closed, false);
+        assert.ok(seen.some(value => value.status === 'pending') && seen.some(value => value.status === 'error'));
+      } finally { replacement.release(); }
+    } finally { survivorSubscription.unsubscribe(); }
+    assert.deepEqual(f.app.errors, []);
+  } finally {
+    stateSubscription.unsubscribe(); eventSubscription.unsubscribe(); frameSubscription.unsubscribe();
+    f.finish.resolve(); f.first.release(); f.second.release(); await f.app.dispose();
+  }
+});
+
+test('动态群组teardown重入采用较新名单，真实来源事件失败按同一错误终止消费者', { timeout: 30_000 }, async () => {
+  const f = await dynamicSessionsFixture();
+  const list = new BehaviorSubject<Observation<readonly WorkSource[]>>({ status: 'ready', generation: 1, observedAt: 0, value: [] });
+  let reenter = false;
+  const first = countedSource(f.first, () => {
+    if (!reenter) return;
+    reenter = false;
+    list.next({ status: 'ready', generation: 3, observedAt: 0, value: [second.source] });
+  });
+  const second = countedSource(f.second);
+  const work = createWorkSelector({ identify }).observe(firstWork, { sessions: list });
+  list.next({ status: 'ready', generation: 1, observedAt: 0, value: [first.source] });
+  const stateSubscription = work.state$.subscribe();
+  try {
+    await work.state.read(); reenter = true;
+    list.next({ status: 'ready', generation: 2, observedAt: 0, value: [] });
+    assert.deepEqual((await work.state.read()).sessions.map(value => value.sessionId), [f.second.id],
+      '释放旧来源时同步到达的新名单不能被外层旧名单覆盖');
+    assert.equal((await work.sessions.read())[0]!.identity.sessionId, f.second.id);
+    assert.equal(first.counts.progress.active, 0); assert.equal(second.counts.progress.active, 1);
+
+    // 真实SDK事件流外的传输边界故障；查询仍取真实会话，不制造事件或状态。
+    const transport = new Subject<ConversationEvent>();
+    const disconnected = new Error('SESSION_EVENT_TRANSPORT_DISCONNECTED');
+    const failingSource: WorkSource = { identity: f.second.identity, progress: f.second.progress, human: f.second.human,
+      rawEvents$: merge(f.second.rawEvents$, transport), progressFrames$: f.second.progressFrames$ };
+    list.next({ status: 'ready', generation: 4, observedAt: 0, value: [failingSource] });
+    const errors: unknown[] = [], events: WorkEvent<WorkKey>[] = [];
+    const eventSubscription = work.events$.subscribe({ next: value => events.push(value), error: error => errors.push(error) });
+    try {
+      await f.second.submit({ requestId: 'before-disconnect', content: '先观察真实事件', intent: 'question', delivery: 'followup', scope: firstWork });
+      await f.second.whenIdle();
+      assert.ok(events.some(value => value.matchedInputs.some(input => input.requestId === 'before-disconnect')));
+      transport.error(disconnected);
+      assert.deepEqual(errors, [disconnected]); assert.equal(eventSubscription.closed, true);
+      assert.equal((await work.state.read()).sessions[0]!.requests[0]!.value.requestId, 'before-disconnect',
+        '事件传输错误不伪造查询失败，也不自动重试消费者');
+    } finally { eventSubscription.unsubscribe(); }
+
+    const cleanupFailure = new Error('SESSION_EVENT_TEARDOWN_FAILED');
+    const throwingSource: WorkSource = { ...first.source,
+      rawEvents$: first.source.rawEvents$.pipe(finalize(() => { throw cleanupFailure; })) };
+    list.next({ status: 'ready', generation: 5, observedAt: 0, value: [throwingSource, second.source] });
+    const cleanupSubscription = work.events$.subscribe();
+    assert.equal(first.counts.events.active, 1); assert.equal(second.counts.events.active, 1);
+    assert.throws(() => cleanupSubscription.unsubscribe(), error =>
+      error instanceof UnsubscriptionError && error.errors.includes(cleanupFailure),
+    '真实来源teardown失败必须交付给退出观察的调用方');
+    assert.equal(first.counts.events.active, 0);
+    assert.equal(second.counts.events.active, 0, '前一来源清理抛错，仍必须尝试释放后一来源的真实SDK订阅');
+    assert.deepEqual(f.app.errors, []);
+  } finally {
+    stateSubscription.unsubscribe(); f.finish.resolve(); f.first.release(); f.second.release(); await f.app.dispose();
+  }
+});
 
 test('两个work保留同会话复用callId的历史，跨会话同请求身份独立，重开home只冷读原事实', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-work-history-'));
@@ -338,7 +550,8 @@ test('steer使正式step共同消费两个work，完整发生保留同行输入�
     const peerEventsSubscription = peerFirst.events$.subscribe(event => peerEvents.push(event));
     const firstStates = first.state$.subscribe();
     const sourceStates = second.state$.subscribe();
-    const surviving = second.sessions[1]!;
+    const secondMembers = await second.sessions.read();
+    const surviving = secondMembers[1]!;
     assert.equal(surviving.identity.sessionId, otherSession.id);
     const survivingStates = surviving.state$.subscribe();
     const survivingEvents: WorkEvent<WorkKey>[] = [];
@@ -356,7 +569,7 @@ test('steer使正式step共同消费两个work，完整发生保留同行输入�
     assert.deepEqual(firstCall.value.inputs.map(input => input.requestId), ['first-input', 'second-input']);
     assert.deepEqual(firstCall.matchedInputs.map(input => input.requestId), ['first-input']);
     assert.deepEqual(secondCall.matchedInputs.map(input => input.requestId), ['second-input']);
-    const localSharedCall = (await peerSecond.sessions[0]!.state.read()).calls[0]!;
+    const localSharedCall = (await (await peerSecond.sessions.read())[0]!.state.read()).calls[0]!;
     assert.deepEqual(localSharedCall.value.inputs.map(input => input.requestId), ['first-input', 'second-input']);
     assert.deepEqual(localSharedCall.matchedInputs.map(input => input.requestId), ['second-input']);
     observerLifetime.abort(new Error('FIRST_WORK_OBSERVER_LEFT'));
@@ -365,7 +578,7 @@ test('steer使正式step共同消费两个work，完整发生保留同行输入�
     assert.equal((await peerFirst.state.read()).sessions[0]!.calls[0]!.value.state, 'running');
     source.release();
     assert.notEqual(second.state.peek().status, 'ready', '来源退出撤下完整ready，不能留下半份或旧现场');
-    assert.notEqual(second.sessions[0]!.state.peek().status, 'ready');
+    assert.notEqual(secondMembers[0]!.state.peek().status, 'ready');
     assert.equal((await surviving.state.read()).sessionId, otherSession.id);
     assert.equal(survivingStates.closed, false, '一个来源释放不关闭另一会话的局部观察');
     assert.equal(peerStates.closed, false); assert.equal(executions, 1);

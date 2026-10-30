@@ -1291,7 +1291,12 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；Wor
   assert.equal(early.session.request('request-a'), a);
   const occurrences = [], raw = [], changes = [];
   const selector = createWorkSelector({ identify: origin => origin.kind === 'invocation' ? undefined : origin.requestId });
-  const remoteWork = selector.observe('request-b', { sessions: [early.session] }), localWork = selector.observe('request-b', { sessions: [local] });
+  const workSources = new BehaviorSubject({ status: 'ready', generation: 0, observedAt: Date.now(), value: [early.session] });
+  const workLifetime = new AbortController();
+  context.after(() => { workLifetime.abort(new Error('WORK_OBSERVATION_DISPOSED')); workSources.complete(); });
+  const remoteWork = selector.observe('request-b', { sessions: workSources }, { signal: workLifetime.signal });
+  const localWork = selector.observe('request-b', { sessions: [local] });
+  const [earlyWorkMember] = await remoteWork.sessions.read();
   const workEvents = [];
   let workCompleted = false;
   const workSubscription = remoteWork.events$.subscribe({ next: value => workEvents.push(value), complete: () => { workCompleted = true; } });
@@ -1388,6 +1393,13 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；Wor
   assert.equal(workCompleted, false);
   assert.ok(sockets.filter(item => item.group === early.group && item.endpoint === 'reactivePrograms/progress').length >= 2);
   assert.equal(sockets.filter(item => item.group === early.group && item.endpoint === 'reactivePrograms/progress' && item.socket.readyState === WebSocket.OPEN).length, 1);
+  const beforeReplacement = workEvents.length;
+  workSources.next({ status: 'ready', generation: 1, observedAt: Date.now(), value: [late.session] });
+  const [lateWorkMember] = await remoteWork.sessions.read();
+  assert.notEqual(lateWorkMember, earlyWorkMember, '同会话的新SDK来源建立独立成员，旧成员不被重定向');
+  assert.deepEqual(lateWorkMember.identity, earlyWorkMember.identity);
+  assert.equal((await remoteWork.state.read()).sessions[0].attempts[0].value.attemptId, attempt.attemptId);
+  assert.equal(workEvents.length, beforeReplacement, '动态替换来源的prefix仍是基线，不回放历史事件');
   events.unsubscribe(); frames.unsubscribe(); lateSubscription.unsubscribe();
   assert.equal(sockets.filter(item => item.group === late.group && item.endpoint === 'reactivePrograms/progress' && item.socket.readyState === WebSocket.OPEN).length, 1,
     '消费者退出不取消 Session owner 连接');
@@ -1453,9 +1465,15 @@ test('纯 Program 将同 step 原始输入分别解为本地和远程 Date；Wor
   const pendingRequest = assert.rejects(a.state.read(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
   const pendingProgress = assert.rejects(early.session.progress.read(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
   await early.session.release(); await Promise.all([pendingRequest, pendingProgress]);
-  assert.equal(workCompleted, true, 'Work 借用来源，Session release 完成其事件观察');
+  assert.equal(workCompleted, false, '退出旧SDK来源不结束已切换的群组观察');
+  await assert.rejects(earlyWorkMember.state.read(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
+  assert.equal((await remoteWork.state.read()).sessions[0].source, 'durable');
   assert.throws(() => a.state.peek(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
   await late.session.release(); await resumed.release();
+  await assert.rejects(remoteWork.state.read(), /REACTIVE_CONVERSATION_HANDLE_RELEASED/u);
+  assert.equal(workCompleted, false, '成员退出仍可等待名单接入新来源，未签发新的读取资格');
+  workLifetime.abort(new Error('WORK_OBSERVATION_FINISHED')); workSources.complete();
+  assert.equal(workCompleted, true, '显式群组owner结束所有成员观察');
   completion.unsubscribe(); workSubscription.unsubscribe(); assert.equal(completed, true);
   await Promise.all(sockets.filter(item => item.endpoint === 'reactivePrograms/progress').map(({ socket }) => socket.readyState === WebSocket.CLOSED
     ? undefined : new Promise(resolve => socket.once('close', resolve))));

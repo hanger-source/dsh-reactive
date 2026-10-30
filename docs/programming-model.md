@@ -485,7 +485,7 @@ function observeWork(workId: string, sessions: readonly WorkSource[], signal: Ab
 
 `invocations` 可提供已持有的调用，或 `{ invocation, key }` 显式标记工作；标记只用于观察，不伪造 inputs。来源可以是静态数组或动态 ResourceSource，因此 CLI 也可不提供会话直接观察。快照保留调用的 id、origin、activity Observation、matchedInputs 和 keys；真实 inputs 完整匹配，一个调用可以属于多个工作。详细边界见[工作调用观察迁移说明](migration-work-invocations.md)。
 
-`WorkHandle.sessions` 为每个显式来源提供 WorkSessionHandle，其 identity、state、state$、events$ 和 progressFrames$ 对应该来源；通过 `sessions[i].state.read()` 读取局部 ResourceReader；整体资源只有全部来源 ready 才 ready，某来源退出后其他局部资源仍可继续，不以其他来源兜底，也不授予权限。每个 WorkSessionSnapshot 的 operationFollows 保留匹配事实及 resultRequest；条件包括 operation.not-started、operation.follow-unregistered、operation.delivery-prepared、continuation.unconsumed 和 goal.round-limit。
+`observe` 的 sessions 接受静态 `readonly WorkSource[]` 或 `ResourceSource<readonly WorkSource[]>`。调用方先取得已授权的 Session，Work 只借用它，不打开、恢复或释放会话。`WorkHandle.sessions` 始终是 `ResourceReader<readonly WorkSessionHandle<K>[]>`：使用 `const members = await work.sessions.read()` 后读取 `members[i].state.read()`，或观察 `work.sessions.observations$`；`WorkSnapshot.sessions` 仍是普通数组。局部句柄借用原来源和显式 signal，名单读取结束或成员移除后，已取得的句柄仍可读取，原来源退出则失效。整体资源要求当前所有来源 ready；移除失效成员后可恢复，其他局部资源仍可继续。每个 WorkSessionSnapshot 的 operationFollows 保留匹配事实及 resultRequest；条件包括 operation.not-started、operation.follow-unregistered、operation.delivery-prepared、continuation.unconsumed 和 goal.round-limit。旧调用方式的调整见[工作会话观察迁移说明](migration-work-sessions.md)。
 
 人工问题的 `origin.continuation` 保留原模型步骤的参与关联；continuation 为 null 表示缺少可信记录，已知的独立问题则是 continuation.goal 为 null。迟答不会借用会话后来出现的 Goal。原 Goal 暂停、被替换或修订变化时，答案已经排队仍不表示模型可以继续。`question.reply-pending` 描述未消费交付；`question.reply-blocked` 同时提供 unavailable、superseded 或 inactive 原因及当前 Goal。这些条件来自原问题和当前事实，不需要业务另存诊断状态。
 

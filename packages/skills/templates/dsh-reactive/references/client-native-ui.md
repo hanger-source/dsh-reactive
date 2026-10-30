@@ -10,7 +10,9 @@
 
 Action Invocation 的不可变 `origin` 在输入解析和准入之前捕获，包含 `sessionId`、Action 的 `name` 和 `version`、`bindingId`、`scope`、`source` 与 `inputs`；输入或准入失败仍保留来源。它不包含原始 ActionInput，也不限制本地非 JSON 输入。原生及文件上传 Invocation 不带这些 Action 字段。详见[工作调用观察迁移说明](../../../../../docs/migration-work-invocations.md)。
 
-WorkHandle.sessions 为每个显式来源提供 WorkSessionHandle，含 identity、state、state$、events$ 和 progressFrames$；通过 `sessions[i].state.read()` 读取局部 ResourceReader，整体资源要求全部来源 ready；一个来源退出时其他局部资源可继续，不兜底或授予权限。WorkSessionSnapshot.operationFollows 包含 resultRequest，条件包含 operation.not-started、operation.follow-unregistered、operation.delivery-prepared、continuation.unconsumed、goal.round-limit。
+会话名单可为静态数组或 ResourceSource；`WorkHandle.sessions` 始终是 ResourceReader，使用 `const members = await work.sessions.read()`，再以 `members[i].state.read()` 读取局部资源，或观察 `work.sessions.observations$`。局部句柄含 identity、state、state$、events$ 和 progressFrames$，借用原来源及显式 signal；名单移除不销毁已取得的句柄，原来源退出则失效。整体资源要求所有当前来源 ready，移除失效成员后可恢复。调用方取得已授权 Session，Work 不打开、恢复或释放它；名单变化不授予控制权。WorkSessionSnapshot.operationFollows 包含 resultRequest，条件包含 operation.not-started、operation.follow-unregistered、operation.delivery-prepared、continuation.unconsumed、goal.round-limit。
+
+局部成员事件按原来源完成；群组事件与帧仍等待名单接入新来源，通过退订或显式 options.signal 结束。成员退出不证明整个工作完成。
 
 输入目录、调用、回复及 Goal 的输入关联来自 Activity；请求的工具和最后回复由这些事实派生。每次调用保留正式 start 事件序号 callSequence，provider callId 可跨轮复用；回复保留 messageId。声明含 `result: { continuation, wait, ready } | null`，无 messageId 不等于已受理输入；回复 inputs 为 null 时不归组。每个匹配项保完整 value、原身份和 inputs，matchedInputs 只解释观察分组，不裁剪事实或授予续接权限；多输入调用或回复可同时出现在多个工作。原始 scope 在两端均不执行 Program transform。
 
