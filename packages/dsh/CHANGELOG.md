@@ -2,6 +2,13 @@
 
 此文件保留源码版本准备记录；条目和版本号本身不表示 npm 已发布或公共 API 已稳定。
 
+## 0.37.3
+
+### Patch Changes
+
+- c44dcdc: 修复原生依赖安装过程中宿主退出后仍启动后续安装的问题。应用装配、能力组合、扩展 setup、Runtime 启动及原生能力访问共同核验实际 Cordis owner 的完整祖先链；退出阻止新工作，已开始的安装和清理仍按原 owner 结算。
+- @hanger-source/dsh-reactive@0.37.3
+
 ## 0.37.2
 
 ### Patch Changes
