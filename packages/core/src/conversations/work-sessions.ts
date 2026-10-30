@@ -1,5 +1,5 @@
-import { Observable, ReplaySubject, Subscriber, Subscription, defer, filter, finalize, ignoreElements, map, observeOn, of,
-  queueScheduler, shareReplay, takeUntil, tap } from 'rxjs';
+import { Observable, Subscriber, Subscription, defer, filter, finalize, ignoreElements, map, observeOn, of,
+  queueScheduler, takeUntil, tap } from 'rxjs';
 import type { HumanSnapshot } from '../participation/contract.ts';
 import type { Observation } from '../resources/observation.ts';
 import { combineResources, mapResource, switchResource } from '../resources/operators.ts';
@@ -10,6 +10,7 @@ import type { AssistantProgressFrame, ConversationEvent } from './events.ts';
 import type { Json } from './protocol.ts';
 import type { ConversationProgressSnapshot } from './request.ts';
 import type { WorkEvent, WorkProgressFrame, WorkSessionHandle, WorkSessionSnapshot, WorkSource, WorkSourceIdentity } from './work.ts';
+import { borrowWorkResource, type WorkResourceConnection } from './work-resource.ts';
 
 /** 成员身份与借用连接；业务选择和原生会话寿命分别由投影者和真实来源负责。 */
 export function createWorkSessions<K extends Json>(
@@ -26,6 +27,7 @@ export function createWorkSessions<K extends Json>(
   events$: Observable<WorkEvent<K>>;
   progressFrames$: Observable<WorkProgressFrame<K>>;
 } {
+  const onCleanupError = options?.onCleanupError;
   // 缓存只有纯句柄，没有常驻订阅；同 sessionId 的新对象不能改写旧句柄的来源。
   const handles = new WeakMap<WorkSource, WorkSessionHandle<K>>();
   const aborted$ = new Observable<void>(subscriber => {
@@ -76,43 +78,37 @@ export function createWorkSessions<K extends Json>(
     observeOn<Observation<readonly WorkSessionHandle<K>[]>>(queueScheduler),
   ), options);
   const state = defer(() => {
-    const connections = new Map<WorkSessionHandle<K>, {
-      stop: ReplaySubject<void>; observations$: Observable<Observation<WorkSessionSnapshot>>;
-    }>();
-    const release = (handle: WorkSessionHandle<K>) => {
-      const connection = connections.get(handle);
-      connections.delete(handle);
-      if (connection) {
-        try { connection.stop.next(); }
-        finally { connection.stop.complete(); }
-      }
-    };
-    const releaseAll = () => {
-      const previous = [...connections.values()];
-      connections.clear();
+    const connections = new Map<WorkSessionHandle<K>, WorkResourceConnection<WorkSessionSnapshot>>();
+    const release = (handles: readonly WorkSessionHandle<K>[]) => {
       const cleanup = new Subscription();
-      for (const connection of previous) cleanup.add(() => {
-        try { connection.stop.next(); }
-        finally { connection.stop.complete(); }
-      });
+      for (const handle of handles) {
+        const connection = connections.get(handle);
+        connections.delete(handle);
+        if (connection) cleanup.add(connection);
+      }
       cleanup.unsubscribe();
     };
+    const releaseAll = () => release([...connections.keys()]);
     return sessions.observations$.pipe(
       // 名单事实和清理重入共用同步队列，旧 teardown 不能覆盖较新的名单。
       observeOn(queueScheduler),
-      tap(observation => { if (observation.status !== 'ready') releaseAll(); }),
+      map(observation => {
+        if (observation.status === 'ready') return observation;
+        try { releaseAll(); }
+        catch (error) { return Object.freeze({ ...observation, status: 'error' as const,
+          error: observation.status === 'error'
+            ? new AggregateError([observation.error, error], 'REACTIVE_WORK_MEMBERS_RELEASE_FAILED') : error }); }
+        return observation;
+      }),
       switchResource(values => {
         const current = new Set(values);
-        for (const handle of [...connections.keys()]) if (!current.has(handle)) release(handle);
+        release([...connections.keys()].filter(handle => !current.has(handle)));
         if (!values.length) return ready<readonly WorkSessionSnapshot[]>(Object.freeze([]));
         const members: Record<string, Observable<Observation<WorkSessionSnapshot>>> = {};
         values.forEach((handle, index) => {
           let connection = connections.get(handle);
           if (!connection) {
-            const stop = new ReplaySubject<void>(1);
-            const observations$ = handle.state.observations$.pipe(takeUntil(stop),
-              shareReplay({ bufferSize: 1, refCount: false }));
-            connection = { stop, observations$ };
+            connection = borrowWorkResource(handle.state.observations$, onCleanupError);
             connections.set(handle, connection);
           }
           members[index] = connection.observations$;

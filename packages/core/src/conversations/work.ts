@@ -1,4 +1,4 @@
-import { defer, map, takeUntil, of, combineLatest, catchError, tap, finalize, ReplaySubject, shareReplay, observeOn, queueScheduler, throwIfEmpty, type Observable } from 'rxjs';
+import { defer, map, of, combineLatest, catchError, finalize, Subscription, observeOn, queueScheduler, throwIfEmpty, type Observable } from 'rxjs';
 import { actionInvocationOriginSchema, type ActionInvocationOrigin, type InvocationActivity } from '../actions/contract.ts';
 import { resourceObservations, type ResourceSource } from '../resources/source.ts';
 import type { ConversationIdentity } from './conversation.ts';
@@ -13,6 +13,7 @@ import type { ResourceReader, ResourceReadable, ResourceReaderOptions } from '..
 import { combineResources, mapResource, switchResource } from '../resources/operators.ts';
 import { shareResource } from '../resources/sharing.ts';
 import { createWorkSessions } from './work-sessions.ts';
+import { borrowWorkResource, type WorkResourceConnection } from './work-resource.ts';
 
 /** 选择依据保留原始输入；声明没有原生输入身份，不能伪造 messageId 或 source。 */
 export type WorkOrigin =
@@ -324,6 +325,7 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
         Object.freeze({ ...group, activity: captureObservation(reader.activity) }))) });
     },
     observe(key: K, sources: WorkSources<K>, readerOptions?: ResourceReaderOptions): WorkHandle<K> {
+      const onCleanupError = readerOptions?.onCleanupError;
       const capturedKey = captureKey(key);
       const match = matcher(capturedKey);
       const sessions = createWorkSessions(sources.sessions, {
@@ -345,47 +347,47 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
       const invocationState = defer(() => {
         // 仅在本次观察连接内持有选择和连接；调用事实仍来自原 activity。
         const selections = new Map<string, unknown>();
-        const connections = new Map<string, { activity: ResourceReadable<InvocationActivity>;
-          stop: ReplaySubject<void>; observations$: Observable<Observation<InvocationActivity>> }>();
-        const release = (identity: string) => {
-          const connection = connections.get(identity);
-          connections.delete(identity);
-          connection?.stop.next();
-          connection?.stop.complete();
-        };
-        const releaseAll = () => {
-          const released = [...connections.values()];
-          connections.clear();
-          for (const connection of released) {
-            connection.stop.next();
-            connection.stop.complete();
+        const connections = new Map<string, WorkResourceConnection<InvocationActivity> & { activity: ResourceReadable<InvocationActivity> }>();
+        const release = (identities: readonly string[]) => {
+          const cleanup = new Subscription();
+          for (const identity of identities) {
+            const connection = connections.get(identity);
+            connections.delete(identity);
+            if (connection) cleanup.add(connection);
           }
+          cleanup.unsubscribe();
         };
+        const releaseAll = () => release([...connections.keys()]);
         return members.pipe(
           // 成员更新和清理属于同一同步队列；teardown 重入的新事实在当前更新之后处理。
           observeOn(queueScheduler),
           mapResource(values => invocationGroups<K, ResourceReadable<InvocationActivity>>(capturedKey, values, match, selections)),
-          tap(observation => { if (observation.status !== 'ready') releaseAll(); }),
+          map(observation => {
+            if (observation.status === 'ready') return observation;
+            try { releaseAll(); }
+            catch (error) { return Object.freeze({ ...observation, status: 'error' as const,
+              error: observation.status === 'error'
+                ? new AggregateError([observation.error, error], 'REACTIVE_WORK_MEMBERS_RELEASE_FAILED') : error }); }
+            return observation;
+          }),
           switchResource(groups => {
             const identities = new Set(groups.map(group => invocationIdentity(group)));
-            for (const identity of [...connections.keys()]) if (!identities.has(identity)) release(identity);
+            release([...connections.keys()].filter(identity => !identities.has(identity)));
             selections.clear();
             for (const group of groups) selections.set(invocationIdentity(group), memberIdentity(group.reader));
             if (!groups.length) return readyResource<readonly WorkInvocationSnapshot<K>[]>(Object.freeze([]));
             const observations = groups.map(({ reader, ...group }) => {
               const identity = invocationIdentity(group);
               let connection = connections.get(identity);
-              if (connection && connection.activity !== reader.activity) { release(identity); connection = undefined; }
+              if (connection && connection.activity !== reader.activity) { release([identity]); connection = undefined; }
               if (!connection) {
-                const stop = new ReplaySubject<void>(1);
-                const observations$ = reader.activity.observations$.pipe(
-                  throwIfEmpty(),
-                  catchError((error: unknown) => of<Observation<InvocationActivity>>(Object.freeze({ status: 'error', generation: 0, error }))),
-                  takeUntil(stop), shareReplay({ bufferSize: 1, refCount: false }));
-                connection = { activity: reader.activity, stop, observations$ };
+                connection = { activity: reader.activity,
+                  ...borrowWorkResource(reader.activity.observations$, onCleanupError) };
                 connections.set(identity, connection);
               }
-              return connection.observations$.pipe(map(activity => Object.freeze({ ...group, activity: captureObservation(activity) })));
+              return connection.observations$.pipe(throwIfEmpty(),
+                catchError((error: unknown) => of<Observation<InvocationActivity>>(Object.freeze({ status: 'error', generation: 0, error }))),
+                map(activity => Object.freeze({ ...group, activity: captureObservation(activity) })));
             });
             return combineLatest(observations).pipe(map(value => Object.freeze({ status: 'ready' as const, generation: 0,
               observedAt: Date.now(), value: Object.freeze(value) })));

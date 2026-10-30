@@ -14,6 +14,8 @@ Action Invocation 的不可变 `origin` 在输入解析和准入之前捕获，�
 
 局部成员事件按原来源完成；群组事件与帧仍等待名单接入新来源，通过退订或显式 options.signal 结束。成员退出不证明整个工作完成。
 
+Work 的资源借用先退订真实来源，再结束本次重放。清理失败可由 observe 的 options.onCleanupError 接收；原来源已交自身 owner 处理时不会重复交付。没有该接点时，显式退订可抛出清理失败，成员变更时通过工作资源 error 观察；这不等于 Invocation 业务失败，也不取消它。后续名单仍可恢复，批量退出不会因第一项清理失败遗留其他连接。
+
 输入目录、调用、回复及 Goal 的输入关联来自 Activity；请求的工具和最后回复由这些事实派生。每次调用保留正式 start 事件序号 callSequence，provider callId 可跨轮复用；回复保留 messageId。声明含 `result: { continuation, wait, ready } | null`，无 messageId 不等于已受理输入；回复 inputs 为 null 时不归组。每个匹配项保完整 value、原身份和 inputs，matchedInputs 只解释观察分组，不裁剪事实或授予续接权限；多输入调用或回复可同时出现在多个工作。原始 scope 在两端均不执行 Program transform。
 
 `session.module(mount)` 供业务消费者使用局部槽名；返回 SurfaceClient 的合同是 mount.selected，mount.surface 保留组件实现的原合同。资源对象、调用选项和同步/异步时序继续来自原客户端，不增加连接、owner 或 release。根会话、集合成员及局部模块均支持 module；继续选择嵌套模块时，须属于父原合同且保持父已公开的子集，不能用更宽的挂载恢复隐藏槽。
