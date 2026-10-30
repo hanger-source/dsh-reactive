@@ -16,7 +16,8 @@ export function pendingApprovals(client: SurfaceClient<typeof approvalSurface>, 
 export async function answerApproval(client: SurfaceClient<typeof approvalSurface>, sessionId: string,
   transportId: string, decision: ApprovalDecision, options?: CancellationOptions) {
   const answer = await client.resolveAction('answer', { sessionId }, options);
-  return answer({ transportId, decision }, options).result;
+  const invocation = await answer({ transportId, decision }, options);
+  return invocation.result;
 }
 
 export async function questionDeliveries<P extends ProgramContract>(session: ProgramSessionClient<P>, signal: AbortSignal): Promise<readonly HumanReplyDelivery[]> {

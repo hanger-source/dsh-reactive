@@ -702,7 +702,7 @@ function createApprovalProgram(
 }
 ```
 
-`pending` 是当前真实等待的资源视图，每项包含 `transportId`、`toolName`、可空 `callId`、`reason` 和 `displayReason`。本地和远程 SDK 都先 `await module.resolveAction('answer', { sessionId })`，再以 `{ transportId, decision: 'allowed-once' | 'rejected' }` 调用，等待 `invocation.result`。结果 `{ status: 'submitted' }` 只表示答复交给等待者，不证明原生授权生效或业务成功。只有真实 human 参与者可以回答；模块不提供批准工具 Offer；工具和 service 的答复调用会被拒绝，不能借此批准自己。读取沿现有 Session/Surface 权限，不承诺同会话逐 actor 过滤。
+`pending` 是当前真实等待的资源视图，每项包含 `transportId`、`toolName`、可空 `callId`、`reason` 和 `displayReason`。本地和远程 SDK 都先取得 `const answer = await module.resolveAction('answer', { sessionId })`，再用 `const invocation = await answer({ transportId, decision: 'allowed-once' })` 等待受理，最后 `await invocation.result` 取得答复交付结果。拒绝时 decision 为 `rejected`。结果 `{ status: 'submitted' }` 只表示答复交给等待者，不证明原生授权生效或业务成功。只有真实 human 参与者可以回答；模块不提供批准工具 Offer；工具和 service 的答复调用会被拒绝，不能借此批准自己。读取沿现有 Session/Surface 权限，不承诺同会话逐 actor 过滤。
 
 `transportId` 只标识当前传输等待，并非原生审计 requestId。不能从日志重建 pending、恢复 JavaScript 等待或自动重新批准；模块不另存已完成历史。前端断线或释放观察不会卸载服务端模块。
 

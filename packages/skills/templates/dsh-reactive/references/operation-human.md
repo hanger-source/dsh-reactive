@@ -41,7 +41,7 @@ Action 的 `operation: { definition, command(input, scope, origin), reference(re
 
 使用纯合同 `approvalSurface` 与 dsh 宿主的 `createNativeApprovalModule({ policy, require, admitResponder })`，通过 `composeSurface`、`implementProgram` 的 modules 和挂载点组合。每 App 独立创建、每 session 挂载一次。`admitResponder` 必需，依据真实 identity、request、decision、actorId 和 signal 做业务核权；仅 human 可答，tool 和 service 来源的调用被拒，模块不向模型声明批准工具。
 
-`pending` 仅含当前等待摘要：transportId、toolName、可空 callId、reason、displayReason。本地和远程 SDK 均 `await module.resolveAction('answer', { sessionId })`，用 transportId 和 `allowed-once` 或 `rejected` 调用并 await invocation.result。submitted 只表示交付等待者；原生服务决定政策、审计、一次性 grant 和执行。transportId 不是审计 requestId，不能从日志恢复等待或自动批准。读取沿 Session/Surface 权限，不承诺逐 actor 过滤。
+`pending` 仅含当前等待摘要：transportId、toolName、可空 callId、reason、displayReason。本地和远程 SDK 均先 `const answer = await module.resolveAction('answer', { sessionId })`，再 `const invocation = await answer({ transportId, decision: 'allowed-once' })` 等待受理，最后 await invocation.result；拒绝时 decision 为 `rejected`。submitted 只表示交付等待者；原生服务决定政策、审计、一次性 grant 和执行。transportId 不是审计 requestId，不能从日志恢复等待或自动批准。读取沿 Session/Surface 权限，不承诺逐 actor 过滤。
 
 ## 人工补充不是正式授权
 
