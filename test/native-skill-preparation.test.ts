@@ -195,6 +195,7 @@ test('真实Skill准备替换声明，不配合取消的共享provider不阻塞�
   ] }));
   const entered = [Promise.withResolvers<AbortSignal>(), Promise.withResolvers<AbortSignal>()];
   const bodies = [Promise.withResolvers<string>(), Promise.withResolvers<string>()];
+  const preparing = new AbortController(), assemblies: Promise<unknown>[] = [];
   let calls = 0, control!: SkillProviderControl;
   const summary = (name: string) => ({ name, description: name, source: 'custom', provider: 'shared-methods',
     invocation: { modelInvocable: true, userInvocable: false } });
@@ -219,19 +220,25 @@ test('真实Skill准备替换声明，不配合取消的共享provider不阻塞�
     const first = await app.runtime.application.create('changing', { workspaceId: workspace.workspaceId });
     const second = await app.runtime.application.create('shared', { workspaceId: workspace.workspaceId });
     const one = app.native.get('agents')!.get(SessionId(first.id))!, two = app.native.get('agents')!.get(SessionId(second.id))!;
-    const signal = new AbortController().signal;
+    const signal = preparing.signal;
     const changing = one.ctx.systemPrompt.assemble(assembleContextFor(one, signal));
+    assemblies.push(Promise.allSettled([changing]));
     const oldSignal = await wait(entered[0]!.promise);
     const firstPreparation = (await first.progress.read()).preparation!;
     assert.ok(firstPreparation.waiting.some(wait => wait.kind === 'skill' && wait.name === 'old-method'));
     const shared = two.ctx.systemPrompt.assemble(assembleContextFor(two, signal));
+    assemblies.push(Promise.allSettled([shared]));
     const sharedSignal = await wait(entered[1]!.promise);
     const secondPreparation = (await second.progress.read()).preparation!;
     assert.notEqual(secondPreparation.id, firstPreparation.id);
     selected.next('new-method');
     const current = await wait(changing);
-    assert.equal((await first.progress.read()).preparation, null);
-    assert.equal((await second.progress.read()).preparation?.id, secondPreparation.id, '另一会话仍在原准备中等待自己的读取');
+    const firstPrepared = (await first.progress.read()).preparation!;
+    assert.equal(firstPrepared.id, firstPreparation.id);
+    assert.deepEqual(firstPrepared.waiting, [{ kind: 'step-admission' }]);
+    const secondWaiting = (await second.progress.read()).preparation!;
+    assert.equal(secondWaiting.id, secondPreparation.id, '另一会话仍在原准备中等待自己的读取');
+    assert.ok(secondWaiting.waiting.some(wait => wait.kind === 'skill' && wait.name === 'old-method'));
     assert.equal(oldSignal.aborted, true); assert.equal(sharedSignal.aborted, false);
     assert.equal(control.signal.aborted, false); assert.equal(signal.aborted, false);
     assert.ok(JSON.stringify(current.contexts).includes('CURRENT_METHOD_BODY'));
@@ -239,17 +246,26 @@ test('真实Skill准备替换声明，不配合取消的共享provider不阻塞�
     bodies[0]!.reject(new Error('OBSOLETE_PROVIDER_FAILED_LATE'));
     bodies[1]!.resolve('OTHER_SESSION_METHOD_BODY');
     assert.ok(JSON.stringify((await wait(shared)).contexts).includes('OTHER_SESSION_METHOD_BODY'));
-    assert.equal((await second.progress.read()).preparation, null);
+    const secondPrepared = (await second.progress.read()).preparation!;
+    assert.equal(secondPrepared.id, secondPreparation.id);
+    assert.deepEqual(secondPrepared.waiting, [{ kind: 'step-admission' }]);
     await immediate();
-    assert.equal((await first.progress.read()).preparation, null, '被替换读取的迟到失败不能复活旧准备');
-    assert.ok(JSON.stringify((await one.ctx.systemPrompt.assemble(assembleContextFor(one, signal))).contexts).includes('CURRENT_METHOD_BODY'));
+    const afterLateFailure = (await first.progress.read()).preparation!;
+    assert.equal(afterLateFailure.id, firstPreparation.id);
+    assert.deepEqual(afterLateFailure.waiting, [{ kind: 'step-admission' }], '被替换读取的迟到失败不能复活旧Skill准备');
+    const repeated = one.ctx.systemPrompt.assemble(assembleContextFor(one, signal));
+    assemblies.push(Promise.allSettled([repeated]));
+    assert.ok(JSON.stringify((await wait(repeated)).contexts).includes('CURRENT_METHOD_BODY'));
     assert.equal((await app.native.get('skills')!.get('old-method', { scope: two, cwd: root, signal }))?.content,
       'SHARED_METHOD_STILL_AVAILABLE');
     assert.equal(app.models(), 0); assert.deepEqual(app.errors, []);
     first.release(); second.release();
   } finally {
+    preparing.abort(new Error('TEST_SKILL_PREPARATION_CLOSED'));
     for (const body of bodies) body.resolve('released');
-    selected.complete(); unregister(); await app.runtime.dispose();
+    selected.complete(); unregister();
+    try { await app.runtime.dispose(); }
+    finally { await Promise.all(assemblies); }
   }
 });
 
