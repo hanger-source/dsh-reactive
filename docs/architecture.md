@@ -101,7 +101,7 @@ Jobs 的 `job(id)`、Schedule 与 Team 的 `task(id)` 同步构造原来源下�
 
 ## 完整声明帧与稳定身份
 
-renderer 在 React commit 后收集整棵树的声明，经过私有运行时品牌校验及 collector 合并，再交给会话的 `ProgramInstance`。渲染或声明失败进入程序错误边界，不能发布一个空帧来掩盖失败。
+renderer 在 React commit 后收集整棵树的声明，经过私有运行时品牌校验及 collector 合并，在 effect 与同步工作冲刷后将最新完整帧交给会话的 `ProgramInstance`，已退出来源不会因重放中间声明而重新连接。Scope 与 Action 的退出由原 owner 信号独立执行；渲染或声明失败进入程序错误边界，不能发布空帧来掩盖失败。
 
 `Context` 提供 JSON 快照或保留 pending/error 的资源观察；`Offer` 将一个已有 Action 绑定以显式名称和 enabled 状态提供给模型；`Follow` 为已绑定原命令的 Operation 提供新的参与能力；`Expose` 贡献视图、动作或只读操作槽；`Skill` 选择原生方法正文或提供明确目录。
 

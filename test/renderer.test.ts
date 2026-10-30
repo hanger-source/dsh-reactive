@@ -1,9 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { appendFile, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
-import { Component, createContext, createElement as h, useCallback, useContext, useEffect, useLayoutEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { BehaviorSubject } from 'rxjs';
+import { Component, createContext, createElement as h, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { BehaviorSubject, Observable } from 'rxjs';
 import { z } from 'zod';
+import { defineAction, defineProgram, defineSurface, implementAction, view, type ActionExecutionContext } from '@hanger-source/dsh-reactive';
+import { Conversation, ProgramInstance, Scope, createWorkspace } from '@hanger-source/dsh-reactive/kernel';
+import { Expose, implementProgram, useAction } from '@hanger-source/dsh-reactive/program';
 import { createDeclarationRenderer, declaration, type Frame } from '../packages/core/src/program/renderer.ts';
 
 test('真实组件和 Observable 内部更新持续提交完整帧，key 保留状态与 callable，多个 root 共享 Context', async () => {
@@ -82,6 +89,102 @@ test('真实组件和 Observable 内部更新持续提交完整帧，key 保留�
     assert.deepEqual(errors, []);
     assert.ok(frames.every((frame, index) => index === 0 || frame.revision > frames[index - 1]!.revision));
   } finally { renderer.dispose(); second.dispose(); }
+});
+
+test('LayoutEffect连续提交后只连接当前目标的真实文件来源，公开Action不借用已退出代际', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-commit-lifetime-'));
+  await writeFile(join(directory, 'A'), 'retired-fact');
+  await writeFile(join(directory, 'B'), 'current-fact');
+  const saved = join(directory, 'saved');
+  const owner = new Scope(), scope = owner.child();
+  const workspace = createWorkspace(owner, { id: 'commit-lifetime', directory });
+  const save = defineAction({ name: 'save_target', description: '保存当前目标',
+    scope: z.object({ target: z.enum(['A', 'B']) }), input: z.null(), output: z.string() });
+  const actionOwner = implementAction(save, { async execute(_input, call) {
+    await appendFile(saved, call.scope.target + '\n');
+    return call.scope.target;
+  } });
+  const surface = defineSurface({ views: { current: view(z.string()) }, actions: { save } });
+  const definition = defineProgram({ input: z.null(), surface });
+  const identity = { sessionId: 'commit-lifetime', workspaceId: workspace.id, environmentId: 'work', directory, parentSessionId: null };
+  const conversation = new Conversation(scope, identity, workspace, definition, { sessionId: identity.sessionId,
+    sequence: -1, source: 'live', execution: 'idle', inputs: [], calls: [], replies: [], goal: null, requests: {}, waits: [], operationFollows: [], failures: [] });
+  const execution = (): ActionExecutionContext => ({ invocationId: crypto.randomUUID(), sessionId: identity.sessionId,
+    source: { kind: 'participant', participant: 'service', actorId: 'surface-consumer', entrypoint: 'program' },
+    inputs: [], continuation: null, signal: new AbortController().signal });
+  const mounted = new Set<string>(), connected = new Set<string>(), reads: string[] = [];
+  const calls: Promise<{ value: unknown } | { error: unknown }>[] = [];
+  let program: ProgramInstance<typeof definition>;
+  function Worker({ target }: { target: 'A' | 'B' }) {
+    const action = useAction(actionOwner, () => ({ target }), [target]);
+    useLayoutEffect(() => {
+      mounted.add(target);
+      return () => { mounted.delete(target); };
+    }, [target]);
+    const source$ = useMemo(() => new Observable<string>(subscriber => {
+      connected.add(target);
+      const fact = readFileSync(join(directory, target), 'utf8');
+      reads.push(fact);
+      const exposed = program.outputs.actions.peek().save!;
+      const invocation = program.invoke(exposed, null, execution(), () => program.outputs.actions.peek().save === exposed);
+      calls.push(invocation.result.then(value => ({ value }), error => ({ error })));
+      subscriber.next(fact);
+      return () => { connected.delete(target); };
+    }), [target]);
+    return Expose({ surface, value: { views: { current: source$ }, actions: { save: action } } });
+  }
+  function Root() {
+    const [target, select] = useState<'A' | 'B'>('A');
+    useLayoutEffect(() => { select('B'); }, []);
+    return h(Worker, { target });
+  }
+  program = new ProgramInstance(scope, implementProgram(definition, { Component: Root }), conversation, workspace, { execution });
+  try {
+    program.mount();
+    const results = await Promise.all(calls);
+    assert.deepEqual(reads, ['current-fact'], '已经卸载的A不得因历史帧发布而重新读取文件');
+    assert.deepEqual([...mounted], ['B']);
+    assert.deepEqual([...connected], ['B']);
+    assert.equal(await program.outputs.views.current.read(), 'current-fact');
+    assert.deepEqual(results, [{ value: 'B' }], '来源同步消费公开Action时，必须取得当前且可受理的绑定');
+    assert.equal(await readFile(saved, 'utf8'), 'B\n');
+  } finally { owner.dispose(); await owner.closed; }
+  assert.equal(connected.size, 0);
+});
+
+test('发布回调重入卸载并连续挂载时真实清理旧树，仍交付可执行的当前声明', () => {
+  const active = new Set<string>(), cleaned: string[] = [], executed: string[] = [], errors: unknown[] = [];
+  function Work({ name }: { name: string }) {
+    useLayoutEffect(() => {
+      active.add(name);
+      return () => { active.delete(name); cleaned.push(name); };
+    }, [name]);
+    return declaration({ name, run() {
+      assert.ok(active.has(name), '已经退出的声明不能重新交给消费者执行');
+      executed.push(name);
+    } });
+  }
+  const schema = z.object({ name: z.string(), run: z.custom<() => void>(value => typeof value === 'function') });
+  const renderer = createDeclarationRenderer({ decode: value => schema.parse(value), onError: error => errors.push(error),
+    onCommit(frame) {
+      for (const command of frame.declarations) {
+        command.run();
+        if (command.name === 'initial') {
+          renderer.unmount();
+          renderer.render(h(Work, { name: 'superseded' }));
+          renderer.render(h(Work, { name: 'current' }));
+        }
+      }
+    },
+  });
+  try {
+    renderer.render(h(Work, { name: 'initial' }));
+    assert.deepEqual(errors, []);
+    assert.deepEqual(cleaned, ['initial', 'superseded']);
+    assert.deepEqual(executed, ['initial', 'current']);
+    assert.deepEqual([...active], ['current']);
+  } finally { renderer.dispose(); }
+  assert.equal(active.size, 0);
 });
 
 class Boundary extends Component<{ children: ReactNode }, { failed: boolean }> {

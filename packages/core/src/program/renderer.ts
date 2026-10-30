@@ -7,11 +7,14 @@ interface DeclarationProps<T> { readonly value: T; }
 interface Instance { value: unknown; children: Instance[]; }
 interface Container { children: Instance[]; commit(values: readonly unknown[]): void; }
 
-/** 帧和声明顺序不可变；声明引用的业务对象仍由调用者拥有。 */
+/** 帧和声明顺序不可变；声明引用的业务对象仍由调用者拥有。
+ * revision 严格递增，冲刷中被替代的提交不向外发布。
+ */
 export interface Frame<T> { readonly revision: number; readonly declarations: readonly T[]; }
 export interface DeclarationRendererOptions<T> {
   /** ReactNode 擦除泛型；程序层必须在这里核验声明品牌、种类与所属 Surface。 */
   decode(value: unknown): T;
+  /** 冲刷同步工作和 Effect 后交付当前完整帧，revision 可以跳过被替代的提交。 */
   onCommit(frame: Frame<T>): void;
   onError(error: unknown): void;
   signal?: AbortSignal;
@@ -20,7 +23,7 @@ export interface DeclarationRenderer {
   render(element: ReactNode): void;
   /** 冲刷同步 React 工作、Effect 和已完成的 commit；不提升普通 setState/Transition 的优先级，也不等待业务资源。 */
   flush(): void;
-  /** 撤下当前树并发布空帧；之后可以重新 render。 */
+  /** 撤下当前树；冲刷后发布当前帧，发布回调重入的后续 render 可以替代空帧。 */
   unmount(): void;
   /** 释放 React 树和 Effect，停止发布帧；可重复调用。 */
   dispose(): void;
@@ -113,10 +116,10 @@ export function createDeclarationRenderer<T>(options: DeclarationRendererOptions
   let disposed = false;
   let queued = false;
   let publishing = false;
-  const pending: Frame<T>[] = [];
+  let pending: Frame<T> | undefined;
   const fail = (error: unknown) => {
     if (failure) return;
-    failure = { error }; pending.length = 0;
+    failure = { error }; pending = undefined;
     try { options.onError(error); }
     catch (notificationError) { failure.error = new AggregateError([error, notificationError], 'REACTIVE_RENDERER_ERROR_NOTIFICATION_FAILED'); }
   };
@@ -128,8 +131,9 @@ export function createDeclarationRenderer<T>(options: DeclarationRendererOptions
     if (publishing || disposed || failure) return;
     publishing = true;
     try {
-      while (!disposed && !failure && pending.length) {
-        const frame = pending.shift()!;
+      while (!disposed && !failure && pending) {
+        const frame = pending;
+        pending = undefined;
         try { options.onCommit(frame); } catch (error) { fail(error); }
       }
     } finally { publishing = false; }
@@ -145,7 +149,8 @@ export function createDeclarationRenderer<T>(options: DeclarationRendererOptions
     if (disposed || failure) return;
     try {
       const declarations = Object.freeze(values.map(value => options.decode(value)));
-      pending.push(Object.freeze({ revision: ++revision, declarations }));
+      // Effect 可以同步提交下一棵树；退出代际的声明不能在冲刷后重新连接其来源。
+      pending = Object.freeze({ revision: ++revision, declarations });
     } catch (error) { fail(error); return; }
     if (queued) return;
     queued = true;
@@ -162,7 +167,7 @@ export function createDeclarationRenderer<T>(options: DeclarationRendererOptions
   const onAbort = () => dispose();
   function dispose() {
     if (disposed) return;
-    disposed = true; pending.length = 0;
+    disposed = true; pending = undefined;
     options.signal?.removeEventListener('abort', onAbort);
     const cleanup = () => {
       try {

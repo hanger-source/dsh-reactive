@@ -68,7 +68,7 @@ return <>
 
 从核心 `/program` 导入 `useWorkspace()` 和 `useProgramSession()`，模块可直接取得真实工作区与当前 Program 会话，不必逐级传递 sessionId、workspace 或 conversation；业务目标和业务依赖仍显式传入。无参入口返回 `ProgramSessionObservation`，输入类型为 `unknown`，没有 submit，但保留 files 等已有能力。需要提交时使用 `useProgramSession(Program)`：它严格核验当前 `defineProgram` 对象身份，返回对应的 `ProgramSession`，不能靠无参泛型、名称、版本或 schema 推断身份。`submit` 表示明确的新输入，沿原服务来源受理，不继承当前工具 inputs 或 Goal 续接。
 
-组件自身的持续关系通过 `useScope(setup, dependencies)` 在 commit effect 中建立真实子 Scope；同步 setup 可返回异步清理函数，退出立即停止关系。可在其中以 `createReaction(scope, options)` 创建反应并显式 start，与资源、RxJS 和业务 hook 组合。该 Scope 不拥有共享 Program、Workspace 或已受理 Operation；`closed` 只等待它实际持有的已开始工作和清理。
+组件自身的持续关系通过 `useScope(setup, dependencies)` 在 commit effect 中建立真实子 Scope；同步 setup 可返回异步清理函数，退出立即停止关系。可在其中以 `createReaction(scope, options)` 创建反应并显式 start，与资源、RxJS 和业务 hook 组合。模块公开当前完整声明；同步切换业务对象时不会重放旧来源。组件退出的 Scope 和 Action 关系由各自 owner 信号关闭，已受理 Operation 继续由原 owner 管理。 该 Scope 不拥有共享 Program、Workspace 或已受理 Operation；`closed` 只等待它实际持有的已开始工作和清理。
 
 业务 hook 需要把派生能力交给普通函数时，使用 `useSharedResource(source)` 或 `useSharedResource(() => reader.observations$.pipe(mapResource(project)), dependencies)` 取得 ResourceReader，再按需 `useResource(reader)` 读 React 快照。reader 的 read、peek、subscribe、values$ 和 observations$ 共用 Program 的原流索引与寿命；构造不连接来源，退出不销毁借入资源的业务 owner。useResourceInstance 的局部 factory 仍只返回实现选项，不混合两种 factory 合同。
 

@@ -8,7 +8,9 @@
 
 组件类型、位置与 key 遵循 React 身份规则。保持身份时 hooks 可以保留目标绑定与来源对象；替换 key 或卸载子树会清理该部分的查询、关系和声明。目标改变时，应将目标依赖明确传给相关 hook，不能只更换闭包中的业务对象而省略依赖。
 
-组件求值只构造来源和声明，不订阅查询、注册工具或调用业务。React commit 后，renderer 收集完整声明集并校验品牌，collector 合并为一帧。普通文本、任意 host 节点及手工伪造的声明不能作为模型现场进入该帧。渲染、effect 或 collector 失败进入程序错误，不能用空声明继续执行。
+组件求值只构造来源和声明，不订阅查询、注册工具或调用业务。React commit 后，renderer 收集完整声明集并校验品牌，collector 合并为一帧。
+
+每个 renderer 只保留一个尚未公开的最新完整帧；组件 effect 与同步工作冲刷后公开当时最新的帧，不重放已被替代的声明。帧 revision 随 React 实际 commit 严格递增，外部观察可以跳号。公开回调重入产生的新提交继续保留；重入卸载后立即渲染时，中间空帧可被新帧替代，但 React 卸载清理仍会执行。非重入卸载公开空帧；失败、中止或销毁不会外发旧帧。Scope 和 Action 的退出由各自 owner 的信号独立执行，不依赖中间帧的公开。普通文本、任意 host 节点及手工伪造的声明不能作为模型现场进入该帧。渲染、effect 或 collector 失败进入程序错误，不能用空声明继续执行。
 
 每帧包含完整的 Context、Offer、Skill、HumanInput 与 Surface 贡献。同名 Context 或 Offer、重复 Skill 来源及重复 Surface 槽均失败。子组件可以向同一 Surface 提供不同槽；调用方必须显式选择名称与出口，React key 不会自动生成另一套命名空间。
 
