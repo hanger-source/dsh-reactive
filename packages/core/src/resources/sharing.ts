@@ -1,6 +1,7 @@
 import { BehaviorSubject, NEVER, Observable, UnsubscriptionError, concatWith, share, skip } from 'rxjs';
 import type { Scope } from '../reactivity/scope.ts';
 import { normalizeResource } from '../reactivity/observable.ts';
+import { ownedObservable } from '../reactivity/subscribe-owned.ts';
 import type { Observation } from './observation.ts';
 import { ResourceReader, type ResourceReaderOptions } from './reader.ts';
 import { resourceObservations, type ResourceSource } from './source.ts';
@@ -44,7 +45,7 @@ export function scopedResourceSharing(scope: Scope, cleanupFailure: string): <T>
     const observations$ = resourceObservations(source);
     const previous = resources.get(observations$);
     if (previous) return previous as ResourceReader<T>;
-    const reader = shareResource(observations$, { signal: scope.signal,
+    const reader = shareResource(ownedObservable(scope, observations$), { signal: scope.signal,
       onObserverError: error => scope.observerError(error), onCleanupError: recordFailure });
     resources.set(observations$, reader);
     return reader;

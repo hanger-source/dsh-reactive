@@ -4,9 +4,9 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Fragment, StrictMode, createElement as h, type ComponentType } from 'react';
-import { BehaviorSubject, Observable, Subject, concatMap, filter, firstValueFrom } from 'rxjs';
+import { BehaviorSubject, Observable, Subject, UnsubscriptionError, concatMap, filter, firstValueFrom } from 'rxjs';
 import { createReaction, defineReaction, implementReaction, defineProgram, defineSurface, z, type ProgramProps, type ReactionInstance, type ReactionRun } from '@hanger-source/dsh-reactive';
-import { implementProgram, useObservable, useScope } from '@hanger-source/dsh-reactive/program';
+import { implementProgram, useObservable, useRelation, useScope } from '@hanger-source/dsh-reactive/program';
 import { Conversation, ProgramInstance, Scope, createWorkspace } from '@hanger-source/dsh-reactive/kernel';
 
 const contract = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
@@ -20,6 +20,34 @@ function createProgram(Component: ComponentType<ProgramProps<typeof contract>>, 
   });
   return { owner, scope, workspace, program };
 }
+
+test('useRelation来源自然终止后组件真实卸载，父关闭仍保留已经释放来源的清理失败', async () => {
+  const selected = new BehaviorSubject(true), events = new Subject<number>();
+  const issue = new Error('COMPONENT_RELATION_CLEANUP_FAILED');
+  let connected = 0, released = 0;
+  const source = new Observable<number>(subscriber => {
+    connected++;
+    const connection = events.subscribe(subscriber);
+    return () => { connection.unsubscribe(); connected--; released++; throw issue; };
+  });
+  function Worker() { useRelation(source); return null; }
+  function Root() {
+    const current = useObservable(selected);
+    return current.status === 'ready' && current.value ? h(Worker) : null;
+  }
+  const { owner, program } = createProgram(Root, '/workspace');
+  try {
+    program.mount(); assert.equal(connected, 1);
+    events.complete(); assert.equal(connected, 0); assert.equal(released, 1);
+    selected.next(false); program.flush();
+    assert.equal(program.signal.aborted, false, '自然完成的cleanup失败不冒充来源或程序error');
+    owner.dispose();
+    const contains = (error: unknown): boolean => error === issue
+      || (error instanceof AggregateError || error instanceof UnsubscriptionError) && error.errors.some(contains);
+    await assert.rejects(owner.closed, contains);
+    assert.equal(released, 1, '组件卸载和父关闭不重复释放已结束来源');
+  } finally { selected.complete(); events.complete(); owner.dispose(); }
+});
 
 test('组件借用Workspace反应实例，切换目标只结束原关系，Program关闭等待原写入且不收走Workspace', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-reactive-borrowed-reaction-'));

@@ -6,6 +6,7 @@ import type { Json } from '../conversations/protocol.ts';
 import type { Eligibility } from '../resources/eligibility.ts';
 import { bindOperation, type BoundOperation, type OperationAccessContext, type OperationBindingReference, type OperationCommand, type OperationContract, type OperationFeedbackPayload, type OperationFeedbackRead, type OperationOwner, type OperationReference } from '../operations/contract.ts';
 import { Scope } from '../reactivity/scope.ts';
+import { ownedObservable, subscribeOwned } from '../reactivity/subscribe-owned.ts';
 import { synchronous } from '../reactivity/synchronous.ts';
 import { type Observation } from '../resources/observation.ts';
 import { bindResource, type ResourceInstance } from '../resources/binding.ts';
@@ -170,6 +171,14 @@ function useSource<T>(source: T | (() => T), dependencies?: DependencyList): T {
 
 /** hook只借管查询连接与终止缓存；RxJS持有唯一重放值，Program退出后不能重新连接。 */
 function shareQuery<T>(owner: ProgramHookOwner, source$: Observable<T>): Observable<T> {
+  return shareQueryConnection(owner, ownedObservable(owner.reactivityScope, source$));
+}
+
+function shareResourceQuery<T>(owner: ProgramHookOwner, source$: Observable<Observation<T>>): Observable<Observation<T>> {
+  return shareQueryConnection(owner, normalizeResource(ownedObservable(owner.reactivityScope, source$)));
+}
+
+function shareQueryConnection<T>(owner: ProgramHookOwner, source$: Observable<T>): Observable<T> {
   const signal = AbortSignal.any([owner.signal, owner.reactivityScope.signal]);
   const ended$ = defer(() => signal.aborted ? of(undefined) : fromEvent(signal, 'abort'));
   return source$.pipe(share({ connector: () => new ReplaySubject<T>(1),
@@ -286,7 +295,7 @@ export function useResource(source: ResourceSource<unknown> | ResourceImplementa
     typeof selected === 'function' ? paramsOrDependencies as DependencyList : undefined);
   const original$ = resourceObservations(current), stream = isObservable(current);
   const observations$ = useMemo(() => stream
-    ? shareQuery(owner, normalizeResource(original$)) : original$, [owner, original$, stream]);
+    ? shareResourceQuery(owner, original$) : original$, [owner, original$, stream]);
   const observed = useObservable(observations$);
   const state = observed.status === 'ready' ? observed.value : observed;
   return useMemo(() => Object.freeze({ state, observations$ }), [state, observations$]);
@@ -301,15 +310,12 @@ export function useRelation<T>(source: Observable<T> | (() => Observable<T>), de
   if (!isObservable(source$)) throw new Error('REACTIVE_HOOK_OBSERVABLE_REQUIRED');
   useEffect(() => {
     const scope = owner.scope.child();
-    const subscriber = new Subscriber<T>({ next() {}, complete() {},
-      error: (error: unknown) => { if (!scope.disposed) owner.fail(error); } });
-    scope.own(() => subscriber.unsubscribe());
     const stop = () => scope.dispose();
     scope.own(() => owner.signal.removeEventListener('abort', stop));
     owner.signal.addEventListener('abort', stop, { once: true });
     // fatal 可以发生于 React commit；关系退订不能等待 renderer 的延后卸载。
     if (owner.signal.aborted) stop();
-    else source$.subscribe(subscriber);
+    else subscribeOwned(scope, source$, { error: (error: unknown) => { if (!scope.disposed) owner.fail(error); } });
     return () => scope.dispose();
   }, [owner, source$]);
 }

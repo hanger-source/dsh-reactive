@@ -51,6 +51,8 @@ export function inventory(scope: Scope, service: {
 
 父 Scope 撤销立即传播到所有子 Scope，后代不能在同步清理重入中读取旧事实或启动 effect；实际清理仍由 Scope 树汇总，子 signal.reason 保留父的原原因。
 
+Scope 持有的来源在订阅工厂开始前登记实际退订；工厂返回清理函数前发生退出或自然结束，也会先关闭订阅，再让 closed 等待装配结束并保留迟到 teardown 的失败。connect、Scope.observe、Program 共享查询和关系共用这份登记，Program 与 Workspace 共享资源先持有原始来源，再标准化 Observation。来源 error 与清理失败分别交付；读取者提前释放的失败保存在实际 owner.closed，随后退出不重复抛出。外部 RxJS 操作符内部已经处理或丢失的错误不能由最终 Observable 复原；需要完整清理归属时，先建立正式资源 owner，再用 RxJS 派生其观察，不使用全局错误钩子或私有订阅修补。
+
 跨 Scope 的 computed 同时依赖实际读取的值与来源的读取资格。来源退出后，value/get/peek/read 拒绝旧缓存；peek 不跟踪业务值变化。`changes$` 按 RxJS 合同以 error 终止，分支恢复后重新订阅；`subscribe(accept, onError?)` 通过错误回调报告依赖失败并继续观察条件分支的恢复，省略时使用 owner 的 observerError。Resource 的 pending/error/ready 继续沿同一个 Observation 表达。
 
 一次读取的 owner 使用 `read(params, { signal })` 加 `invalidations(params, context)`；推送 owner 使用 `observe` 发出完整 Observation。失效通知只表示需重新读取，不携带替代事实。写入成功后可显式 `instance.invalidate()`；这不会重发写入或唤醒模型。

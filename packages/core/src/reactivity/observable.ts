@@ -1,6 +1,7 @@
-import { Observable, ReplaySubject, Subscription, connectable, takeUntil, defer, from, tap, distinctUntilChanged, EmptyError, filter, isObservable, map, materialize, scan, startWith, share, observeOn, queueScheduler, switchMap, EMPTY, type OperatorFunction } from 'rxjs';
+import { Observable, ReplaySubject, takeUntil, defer, from, tap, distinctUntilChanged, EmptyError, filter, isObservable, map, materialize, scan, startWith, share, observeOn, queueScheduler, switchMap, EMPTY, type OperatorFunction } from 'rxjs';
 import { assertObservation, type Observation } from '../resources/observation.ts';
 import type { Scope } from './scope.ts';
+import { subscribeOwned } from './subscribe-owned.ts';
 
 const connections = new WeakMap<Scope, WeakMap<Observable<unknown>, Observable<unknown>>>();
 
@@ -12,31 +13,22 @@ export function connect<T>(scope: Scope, source$: Observable<T>): Observable<T> 
   const previous = owned.get(source$);
   if (previous) return previous as Observable<T>;
   let replay: ReplaySubject<T> | undefined = new ReplaySubject<T>(1);
-  const connection = new Subscription();
-  const shared$ = connectable(new Observable<T>(subscriber => {
-    // 来源工厂返回前也可能同步释放Scope；实际订阅必须已经归owner持有。
-    connection.add(subscriber);
-    if (!subscriber.closed) source$.subscribe(subscriber);
-  }), {
-    connector: () => replay!, resetOnDisconnect: false,
-  });
-  let current: Observable<T> | undefined = shared$;
   const observed$ = new Observable<T>(subscriber => {
     if (scope.disposed) { subscriber.complete(); return; }
-    return current!.subscribe(subscriber);
+    return replay!.subscribe(subscriber);
   });
   // 先登记共享身份与清理，再建立连接；同步来源也可以安全地重入或释放 owner。
   owned.set(source$, observed$);
   scope.own(() => {
     // 先撤掉可重放对象；complete/teardown中的重入也不能重新取得已退出owner的事实。
-    current = undefined;
     const subject = replay!;
     replay = undefined;
-    // 由owner直接释放来源，清理错误必须回到Scope；先complete会让RxJS丢掉退出异常。
-    try { connection.unsubscribe(); }
-    finally { subject.complete(); }
+    subject.complete();
   });
-  connection.add(shared$.connect());
+  const subject = replay;
+  subscribeOwned(scope, source$, {
+    next: value => subject.next(value), error: error => subject.error(error), complete: () => subject.complete(),
+  });
   return observed$;
 }
 

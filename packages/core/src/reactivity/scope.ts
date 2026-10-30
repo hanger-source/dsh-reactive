@@ -1,8 +1,9 @@
 import { signal, computed, effect, batch, untracked, type ReadonlySignal, type Signal } from '@preact/signals-core';
-import { Observable, Subscriber, EmptyError } from 'rxjs';
+import { Observable, EmptyError } from 'rxjs';
 import { ResourceValue } from '../resources/value.ts';
 import type { Observation } from '../resources/observation.ts';
 import { synchronous } from './synchronous.ts';
+import { subscribeOwned } from './subscribe-owned.ts';
 export { batch };
 type Node<T> = Pick<ReadonlySignal<T>, 'value' | 'peek' | 'subscribe'>;
 
@@ -102,7 +103,7 @@ export class Scope {
     const state = this.state<Observation<T>>({ status: 'pending', generation: 0 });
     let generation = 0;
     let received = false;
-    const subscription = new Subscriber<T>({
+    subscribeOwned(this, source$, {
       next: value => {
         if (this.disposed) return;
         received = true;
@@ -110,15 +111,11 @@ export class Scope {
       },
       error: (error: unknown) => {
         if (!this.disposed) state.set({ status: 'error', generation: ++generation, error });
-        release();
       },
       complete: () => {
         if (!received && !this.disposed) state.set({ status: 'error', generation: ++generation, error: new EmptyError() });
-        release();
       },
     });
-    const release = this.own(() => subscription.unsubscribe());
-    source$.subscribe(subscription);
     return new ResourceValue(this, state);
   }
   dispose(reason: unknown = new ScopeDisposedError()) {

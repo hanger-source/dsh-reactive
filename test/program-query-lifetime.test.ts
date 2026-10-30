@@ -4,12 +4,16 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Fragment, createElement, useLayoutEffect } from 'react';
-import { BehaviorSubject, EmptyError, Observable, Subject, defer, filter, firstValueFrom, from, lastValueFrom, map, of, timeout } from 'rxjs';
+import { BehaviorSubject, EmptyError, Observable, Subject, UnsubscriptionError, defer, filter, firstValueFrom, from, lastValueFrom, map, of, timeout } from 'rxjs';
 import { Scope, ResourceReader, createResource, defineProgram, defineSurface, resourceView, mapResource, z, type Observation, type Workspace } from '@hanger-source/dsh-reactive';
 import { Conversation, ProgramInstance, createWorkspace } from '@hanger-source/dsh-reactive/kernel';
 import { Context, Expose, implementProgram, useObservable, useResource, useShared, useSharedResource } from '@hanger-source/dsh-reactive/program';
 
-test('Program共享来源的真实释放失败归父退出或程序失败owner，退出回执不早于来源清理', () => {
+const containsCleanup = (error: unknown, issue: Error): boolean => error === issue
+  || (error instanceof AggregateError || error instanceof UnsubscriptionError)
+    && error.errors.some((child: unknown) => containsCleanup(child, issue));
+
+test('Program共享来源的真实释放失败归父退出或程序失败owner，退出回执不早于来源清理', async () => {
   for (const end of ['dispose', 'fail'] as const) {
     const issue = new Error('SHARED_QUERY_TEARDOWN_FAILED'), reports: unknown[] = [];
     const root = new Scope({ onObserverError: error => reports.push(error) }), sessionScope = root.child();
@@ -31,20 +35,116 @@ test('Program共享来源的真实释放失败归父退出或程序失败owner�
       execution() { throw new Error('READING_MUST_NOT_EXECUTE_ACTION'); },
     });
     program.mount();
-    const subscription = reader.observations$.subscribe();
+    const observations: Observation<number>[] = [];
+    const subscription = reader.observations$.subscribe(value => observations.push(value));
     try {
       assert.equal(reader.peek().status, 'ready');
       if (end === 'fail') {
         program.fail(new Error('PROGRAM_FAILED'));
-        assert.equal(reports.length, 1);
-        assert.ok(reports[0] instanceof AggregateError && reports[0].errors.includes(issue));
       } else {
-        assert.throws(() => sessionScope.dispose(), error => error instanceof AggregateError
-          && error.errors.some(child => child instanceof AggregateError && child.errors.includes(issue)));
-        assert.deepEqual(reports, []);
+        sessionScope.dispose();
       }
       assert.equal(released, 1); assert.equal(subscription.closed, true);
+      const invalidated = observations.at(-1)!;
+      assert.equal(invalidated.status, 'error');
+      if (invalidated.status === 'error') assert.equal(invalidated.error, program.signal.reason);
+      sessionScope.dispose(); root.dispose();
+      await assert.rejects(root.closed, error => containsCleanup(error, issue));
     } finally { subscription.unsubscribe(); sessionScope.dispose(); root.dispose(); }
+  }
+});
+
+test('useShared实际查询在最后消费者离开或工厂内Program失败时释放，父关闭保留错误且旧查询不重连', async t => {
+  for (const end of ['last-consumer', 'factory-fail'] as const) await t.test(end, async () => {
+    const reports: unknown[] = [], root = new Scope({ onObserverError: error => reports.push(error) });
+    const sessionScope = root.child(), workspace = createWorkspace(root, { id: end, directory: '/workspace' });
+    const definition = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+    const conversation = new Conversation(sessionScope, { sessionId: end, workspaceId: end, environmentId: 'work',
+      directory: '/workspace', parentSessionId: null }, workspace, definition,
+    { sessionId: end, sequence: -1, source: 'live', execution: 'idle', inputs: [], calls: [], replies: [], goal: null, requests: {}, waits: [], operationFollows: [], failures: [] });
+    const issue = new Error('SHARED_RAW_QUERY_CLEANUP_FAILED'), failure = new Error('PROGRAM_QUERY_FAILED');
+    let starts = 0, released = 0, query!: Observable<number>, program!: ProgramInstance<typeof definition>;
+    const source = new Observable<number>(subscriber => {
+      starts++; subscriber.next(42);
+      if (end === 'factory-fail') program.fail(failure);
+      return () => { released++; throw issue; };
+    });
+    program = new ProgramInstance(sessionScope, implementProgram(definition, { Component() {
+      query = useShared(source); return null;
+    } }), conversation, workspace, { execution() { throw new Error('QUERY_MUST_NOT_START_BUSINESS_ACTION'); } });
+    program.mount();
+    assert.equal(starts, 0);
+    const seen: number[] = [], subscription = query.subscribe(value => seen.push(value));
+    try {
+      assert.deepEqual(seen, [42]);
+      if (end === 'last-consumer') {
+        subscription.unsubscribe();
+        assert.equal(released, 1, 'refCount归零真正退订，不能等Program退出才释放');
+        program.fail(failure);
+      }
+      assert.equal(released, 1);
+      const late: number[] = [];
+      assert.equal(query.subscribe(value => late.push(value)).closed, true);
+      assert.deepEqual(late, []);
+      assert.equal(starts, 1, '旧查询在Program失败后不能重新打开来源');
+      sessionScope.dispose(); root.dispose();
+      await assert.rejects(root.closed, error => containsCleanup(error, issue));
+      assert.equal(released, 1);
+    } finally { subscription.unsubscribe(); sessionScope.dispose(); root.dispose(); }
+  });
+});
+
+test('Program的资源hook在框架normalize前接管真实来源，有限ready与工厂退出均保存迟到清理失败', async t => {
+  for (const hook of ['shared-reader', 'resource-hook'] as const) {
+    for (const end of ['complete', 'factory-fail'] as const) await t.test(hook + ':' + end, async () => {
+      const reports: unknown[] = [], root = new Scope({ onObserverError: error => reports.push(error) });
+      const sessionScope = root.child(), workspace = createWorkspace(root, { id: end, directory: '/workspace' });
+      const definition = defineProgram({ input: z.null(), surface: defineSurface({ views: {}, actions: {} }) });
+      const conversation = new Conversation(sessionScope, { sessionId: end, workspaceId: end, environmentId: 'work',
+        directory: '/workspace', parentSessionId: null }, workspace, definition,
+      { sessionId: end, sequence: -1, source: 'live', execution: 'idle', inputs: [], calls: [], replies: [], goal: null, requests: {}, waits: [], operationFollows: [], failures: [] });
+      const issue = new Error('PROGRAM_NORMALIZED_CLEANUP_FAILED'), failure = new Error('NORMALIZED_QUERY_PROGRAM_FAILED');
+      let starts = 0, released = 0, closedBeforeReturn = false, reader: ResourceReader<number> | undefined;
+      let state!: Observation<number>, observations$!: Observable<Observation<number>>, program!: ProgramInstance<typeof definition>;
+      const source = new Observable<Observation<number>>(subscriber => {
+        starts++;
+        subscriber.next({ status: 'ready', generation: 1, value: 42, observedAt: Date.now() });
+        if (end === 'complete') subscriber.complete();
+        else program.fail(failure);
+        closedBeforeReturn = subscriber.closed;
+        return () => { released++; throw issue; };
+      });
+      program = new ProgramInstance(sessionScope, implementProgram(definition, { Component() {
+        if (hook === 'shared-reader') {
+          reader = useSharedResource(source); observations$ = reader.observations$;
+        } else {
+          const observed = useResource(source); state = observed.state; observations$ = observed.observations$;
+        }
+        return null;
+      } }), conversation, workspace, { execution() { throw new Error('RESOURCE_QUERY_MUST_NOT_EXECUTE_ACTION'); } });
+      let subscription: { unsubscribe(): void } | undefined;
+      try {
+        if (hook === 'resource-hook' && end === 'factory-fail') assert.throws(() => program.mount(), error => error === failure);
+        else program.mount();
+        if (hook === 'shared-reader') {
+          assert.equal(starts, 0, '共享Reader构造不能启动来源');
+          subscription = observations$.subscribe();
+        }
+        assert.equal(starts, 1); assert.equal(released, 1);
+        assert.equal(closedBeforeReturn, true, '框架normalize不能隔断真实来源的即时退订');
+        if (end === 'complete') {
+          program.flush();
+          const current = reader ? reader.peek() : state;
+          assert.equal(current.status, 'ready');
+          if (current.status === 'ready') assert.equal(current.value, 42, '有限来源清理失败不覆盖已完成ready');
+        } else assert.equal(program.signal.reason, failure);
+        sessionScope.dispose(); root.dispose();
+        await assert.rejects(root.closed, error => containsCleanup(error, issue) && !containsCleanup(error, failure));
+        observations$.subscribe();
+        assert.equal(starts, 1, '退出后借用旧观察流不能重连已经结束的查询');
+        assert.equal(released, 1);
+      } finally { subscription?.unsubscribe(); sessionScope.dispose(); root.dispose(); }
+    });
   }
 });
 
