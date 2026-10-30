@@ -12,6 +12,8 @@ export { ChildCreationIncompleteError } from './delegations.ts';
 export type { ApplicationAssembly } from './applications/assembly.ts';
 export { implementNativeModule } from './programs/modules.ts';
 export type { NativeModuleImplementationOptions } from './programs/modules.ts';
+export { createNativeApprovalModule } from './approval/module.ts';
+export type { NativeApprovalModuleOptions } from './approval/module.ts';
 export type { DelegationOptions, DelegationAdmission, DelegationRequester } from './delegations.ts';
 export type { ConversationActivity, RequestActivity, ToolActivity } from '@hanger-source/dsh-reactive';
 export { createRuntime } from './runtime.ts';

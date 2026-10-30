@@ -199,6 +199,12 @@ L1 交回 F1 后，明确调用 Follow 以 after=F1.id 登记 L2。owner 可沿�
 
 `OperationOwnerOptions.notifications` 将业务已有可靠设施接入 Host：`connect({ deliver, signal })` 返回 cleanup 或其 Promise，设施负责持久化、租约与重投。`deliver` 接收 sessionId、followId 和 acknowledge，以固定 `serviceActorId` 核验真实 owner；仅 accepted、not-started 或 unregistered 才调用 acknowledge，unknown、pending、拒绝或失败不 ACK。ACK 只移除业务 outbox 待办，不移除 follow 或 feedback。signal 停止新交接；Host 等真实业务调用、投递及已开始的 ACK 结算后调用 cleanup，异步连接迟到和部分启动失败也遵循此顺序。仍可显式调用 `notifyOperation`，Host 不创建另一份队列。
 
+## 原生审批等待
+
+NativeApproval 能力随模块静态安装，组件提交后通过 `useScope` 登记真实会话，收到请求时核验当前 Agent 对象；每会话只允许挂载一次，重复挂载拒绝。服务端模块退出时撤回等待并返回 unavailable；原生请求 signal 取消时返回 cancelled，不调用 next 兜底。前端观察断开不改变服务端模块寿命。
+
+回答先核真实 human 身份，再执行必需的业务 `admitResponder`；异步准入后重新核验 pending，竞争回答只有一次提交。原生服务独占政策、审计、一次性 grant 与是否执行的决定。提交回执不代表 grant 或业务执行成功；pending 仅来自当前回调，不从日志恢复等待或自动重新批准。
+
 ## 人工问题与前台等待
 
 人工读侧使用一份完整 `HumanSnapshot`，持久问题、瞬态 foreground 和晚答 replies 一起发布；questions$ 与 foregroundQuestions$ 从同一事实派生。前台退出只撤下 foreground，不能清空仍有效的问题、答复交付或读侧错误。

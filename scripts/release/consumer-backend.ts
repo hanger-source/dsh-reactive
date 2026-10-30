@@ -5,7 +5,8 @@ import { concatMap, firstValueFrom, map, type Observable } from 'rxjs';
 import { createElement } from 'react';
 import { Context, Expose, Module, Skill, NativeTools, HumanInput, implementModule, implementProgram, useAction, useResource, useResourceInstance, useReaction, useBeforeStep,
   useObservable, useShared, useSharedResource, useRelation, useScope, useWorkspace, useProgramSession, type HumanInputProps } from '@hanger-source/dsh-reactive/program';
-import { createRuntime, mountApplication, type ApplicationAssembly, type ConversationHandle, type ServiceConversation, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
+import { createRuntime, createNativeApprovalModule, mountApplication, type NativeApprovalModuleOptions, type ApplicationAssembly, type ConversationHandle, type ServiceConversation, type RuntimeOptions, type NativeSessionSource } from '@hanger-source/dsh-reactive-dsh';
+import { approvalSurface } from '@hanger-source/dsh-reactive/participation';
 import { createNativeSkills, type NativeSessionSkills } from '@hanger-source/dsh-reactive-dsh/skills';
 import { createNativeTools, type NativeSessionTools } from '@hanger-source/dsh-reactive-dsh/tools';
 import { createNativeAttachments } from '@hanger-source/dsh-reactive-dsh/attachments';
@@ -14,6 +15,14 @@ import { mountProgramGateway } from '@hanger-source/dsh-reactive-remote';
 import { getDeveloperSkill } from '@hanger-source/dsh-reactive-skills';
 import { ConsumerModuleProgram, sessionResources, sessionControls, sessionFileUpload, receiveFileUpload, readSessionView, readSelectedRevision, invocationReceipt } from './consumer-session.js';
 import type { Workspace } from '@hanger-source/dsh-reactive/workspaces';
+
+export function approvalProgram(options: NativeApprovalModuleOptions) {
+  const approvals = createNativeApprovalModule(options);
+  const composition = composeSurface({ approvals: approvalSurface });
+  return implementProgram(defineProgram({ input: z.null(), surface: composition.surface }), {
+    modules: { approvals }, Component: ({ modules }) => createElement(modules.approvals.Component, { mount: composition.mounts.approvals }),
+  });
+}
 
 const contract = defineProgram({ input: z.object({ subject: z.string() }).strict(), surface: defineSurface({ views: { revision: resourceView(z.number()) }, actions: {} }) });
 const program = implementProgram(contract, { Component: () => null });

@@ -1,5 +1,5 @@
 import type { Eligibility, ActionInput, CancellationOptions, FileUploadInvocation, FileUploadSource, FileUploadValue, Invocation, Json, ProgramContract, ProgramSessionClient, HumanProgramSessionClient, ResourceReader, Surface, SurfaceClient, SurfaceMount, ViewValue, WorkSessionHandle, OperationFollowSnapshot } from '@hanger-source/dsh-reactive';
-import { combineResources, composeSurface, createWorkSelector, defineProgram, defineSurface, resourceView, selectSurface, shareResource, z } from '@hanger-source/dsh-reactive';
+import { approvalSurface, combineResources, composeSurface, createWorkSelector, defineProgram, defineSurface, resourceView, selectSurface, shareResource, z, type ApprovalDecision, type ApprovalPendingRequest } from '@hanger-source/dsh-reactive';
 import type { SessionFiles, FileResource, WorkspaceFileText, WorkspaceFileBytes } from '@hanger-source/dsh-reactive/files';
 import type { SessionJournal, ProgramJournalFrame, ProgramJournalPage } from '@hanger-source/dsh-reactive/journal';
 import type { AttachmentIdType, SessionImageAttachment } from '@hanger-source/dsh-reactive/attachments';
@@ -8,6 +8,16 @@ import type { ExecutionFailure, ModelPreparation } from '@hanger-source/dsh-reac
 import { SessionJournalUnavailableError } from '@hanger-source/dsh-reactive/journal';
 
 export const sessionJournalFailure = (error: unknown) => error instanceof SessionJournalUnavailableError;
+
+export function pendingApprovals(client: SurfaceClient<typeof approvalSurface>, options?: CancellationOptions): Promise<readonly ApprovalPendingRequest[]> {
+  return client.readView('pending', options);
+}
+
+export async function answerApproval(client: SurfaceClient<typeof approvalSurface>, sessionId: string,
+  transportId: string, decision: ApprovalDecision, options?: CancellationOptions) {
+  const answer = await client.resolveAction('answer', { sessionId }, options);
+  return answer({ transportId, decision }, options).result;
+}
 
 export async function questionDeliveries<P extends ProgramContract>(session: ProgramSessionClient<P>, signal: AbortSignal): Promise<readonly HumanReplyDelivery[]> {
   return (await session.human.read(signal)).replies;

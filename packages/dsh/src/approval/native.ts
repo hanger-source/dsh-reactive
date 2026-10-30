@@ -5,8 +5,8 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session';
 import { filter, map, type Observable } from 'rxjs';
 import { mapResource, type ResourceReader, type CancellationOptions } from '@hanger-source/dsh-reactive';
 import type { Scope } from '@hanger-source/dsh-reactive/kernel';
-import { NativeCapabilityOwner, nativeObservation, nativeResource, nativeObservationScope, ownNativeValue, type NativeCapability, type NativeSessionSource } from './native-capability.ts';
-import { nativeSessionAccess, nativeSessionEvents, nativeSessionInspections, type NativeSessionAccess } from './conversations/session-access.ts';
+import { NativeCapabilityOwner, nativeObservation, nativeResource, nativeObservationScope, ownNativeValue, type NativeCapability, type NativeSessionSource } from '../native-capability.ts';
+import { nativeSessionAccess, nativeSessionEvents, nativeSessionInspections, type NativeSessionAccess } from '../conversations/session-access.ts';
 
 export type { ApprovalPolicy, ApprovalOutcome } from '@deepseek-ai/dsh-user-approval';
 export type { ApprovalRequestEvent } from '@deepseek-ai/dsh-user-approval/types';

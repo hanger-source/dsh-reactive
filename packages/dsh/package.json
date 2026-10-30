@@ -33,8 +33,8 @@
       "import": "./lib/mcp.js"
     },
     "./approval": {
-      "types": "./lib/approval.d.ts",
-      "import": "./lib/approval.js"
+      "types": "./lib/approval/index.d.ts",
+      "import": "./lib/approval/index.js"
     },
     "./time": {
       "types": "./lib/time.d.ts",

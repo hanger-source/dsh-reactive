@@ -143,6 +143,12 @@ Skill 资格只决定当前 Program 的方法正文或目录贡献，不授予 R
 
 NativeTools 只在 enabled 且资格当前 ready.allowed 时可见。异步 admit 逐次核验真实来源、参数和原始输入；框架持有资格跨越 admit 和原生 Approval，瞬态撤销永久拒绝该次调用。已受理审批沿原 owner 结算，正式 guard 最后复核并释放资格；已进入 execute 的工作按原 owner 结算。同名全局工具须共享一致的 enabled、admit 函数和 reader 身份，不合并权限；独立 SDK 与原生服务保持各自准入。
 
+## 原生审批参与边界
+
+`approvalSurface` 是可独立消费的纯合同，dsh 宿主的 `createNativeApprovalModule` 实现该合同，与其他模块一样由 `composeSurface` 和 `implementProgram` 装配。每个 App 拥有独立工厂实例，每会话挂载一次；Program 安装负责原生能力和真实 Agent 来源。Surface 暴露当前回调摘要与人工答复，读取沿 Session/Surface 权限，不建立逐 actor 过滤承诺。
+
+真实 human 答复经应用必需的响应者准入后交付原生等待者，异步准入后再次核验等待，竞争只能提交一次。工具和 service 不取得答复入口。服务端退出撤回等待，原生请求取消结束等待，前端观察退出不卸载服务端模块。原生服务负责政策、审计、一次性授权及执行；提交回执不代表授权或业务成功。传输标识不是审计标识，不从日志重建等待或另存完成历史。
+
 ## 长期业务操作与人工参与
 
 Operation 是业务系统已有操作的类型化观察对象。Action Invocation 返回受理回执后，Operation 继续由业务 owner 持有；组件、页面和当前函数退出不改变其寿命。共享合同中的 settled 描述操作终态，feedback schema 描述协作节点 payload；owner 按确切登记读取带稳定 id 的反馈。

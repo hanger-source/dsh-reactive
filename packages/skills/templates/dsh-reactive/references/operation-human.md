@@ -37,6 +37,12 @@ Action 的 `operation: { definition, command(input, scope, origin), reference(re
 
 不要由业务拼 `intent:'result'`、Continuation 或 WaitReference 声称持有 Goal 权限。普通人工/服务输入与工具来源不互换；子程序本地输入不冒充父请求，父 causes 保每条 sourceSessionId。
 
+## 原生审批参与
+
+使用纯合同 `approvalSurface` 与 dsh 宿主的 `createNativeApprovalModule({ policy, require, admitResponder })`，通过 `composeSurface`、`implementProgram` 的 modules 和挂载点组合。每 App 独立创建、每 session 挂载一次。`admitResponder` 必需，依据真实 identity、request、decision、actorId 和 signal 做业务核权；仅 human 可答，tool 和 service 来源的调用被拒，模块不向模型声明批准工具。
+
+`pending` 仅含当前等待摘要：transportId、toolName、可空 callId、reason、displayReason。本地和远程 SDK 均 `await module.resolveAction('answer', { sessionId })`，用 transportId 和 `allowed-once` 或 `rejected` 调用并 await invocation.result。submitted 只表示交付等待者；原生服务决定政策、审计、一次性 grant 和执行。transportId 不是审计 requestId，不能从日志恢复等待或自动批准。读取沿 Session/Surface 权限，不承诺逐 actor 过滤。
+
 ## 人工补充不是正式授权
 
 Program 中的 `<HumanInput admitResponder={policy} />` 可由多个模块贡献，必须使用同一个必需的 policy 函数引用；不同引用冲突，最后一项退出撤资格，没有默认政策。policy 按 `question.origin` 的 session、actual tool call、原始 inputs 与真实 actor 核权，不能按当前页面选择或 SDK 自报用户判断。问题观察是独立快照，修改它不会改变权威关联。

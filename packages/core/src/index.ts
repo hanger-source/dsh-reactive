@@ -79,3 +79,5 @@ export { operationFollowSnapshotSchema, type OperationFollowSnapshot } from './o
 export { modelPreparationSchema, ownModelPreparation, type ModelPreparation, type ModelPreparationWait } from './conversations/preparation.ts';
 
 export { actionInvocationOriginSchema } from './actions/contract.ts';
+export { approvalSurface, approvalPendingRequestSchema, approvalDecisionSchema } from './participation/approval.ts';
+export type { ApprovalPendingRequest, ApprovalDecision, ApprovalResponderAdmission } from './participation/approval.ts';

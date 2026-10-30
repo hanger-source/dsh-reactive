@@ -156,6 +156,8 @@ Jobs 与 MCP 实例的 `toolNames`、MCP 的 `resourceToolNames` 是 ResourceRea
 
 `NativeTools.names` 使用原生注册名，保留大小写与连字符，例如 MCP 的 `mcp__Inventory-North__Stock-Count`。不要为通过声明校验而自行小写、改名或重新构造 MCP 名称；原生 client 持有服务器与原工具的精确映射，名称资源直接提供其当前公开身份。
 
+原生审批模块的能力随静态模块安装，组件提交后通过 `useScope` 登记真实会话，收到请求时核验当前 Agent 对象。每个 App 创建独立模块，每个 session 只挂载一次，重复挂载拒绝。前端断线或释放观察不卸载服务端模块；服务端模块退出使等待 unavailable，原生请求 signal 取消使等待 cancelled，不调用 next 兜底。异步响应者准入后重新核对 pending，竞争只能提交一次。
+
 ## 子程序沿原生 owner
 
 `createRuntime(assembly => ...)` 的 assembly 提供 `implementDelegation(action, { program, mode:'spawn'|'fork', childInput, objective, authorize })`。返回普通 ActionImplementation，继续 useAction/Offer/Operation/Follow；不用新增 Delegate 组件或子队列。

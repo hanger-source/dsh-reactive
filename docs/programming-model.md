@@ -669,6 +669,43 @@ resolver 捕获当前公开绑定；所得句柄保持原 command。组件随后
 
 同一 Goal 修订的多个等待共同约束自动续接；暂停不阻止业务事实更新，新 Goal 修订不继承旧结果的继续权限。恢复重建持久关联，不恢复 JavaScript 调用栈。
 
+## 原生审批参与
+
+从 `@hanger-source/dsh-reactive` 根入口或 `/participation` 导入纯合同 `approvalSurface`；从 dsh 宿主导入 `createNativeApprovalModule`。每个 App 创建独立模块实例，使用 `composeSurface` 组合合同，并在 `implementProgram` 的 `modules` 中装配，再以组合结果的挂载点在每个会话挂载一次。工厂接收 `{ policy: 'ask' | 'never', require, admitResponder }`：`require` 使用原生审批政策函数，`admitResponder` 是必需的应用授权函数，可声明为 `authorizeApproval: (admission: ApprovalResponderAdmission) => Promise<void>`。它收到真实 `identity`、请求摘要、`decision`、`actorId` 与取消 `signal`，由业务逐次核权。
+
+例如，在应用工厂内装配审批模块：
+
+```tsx
+import { approvalSurface, composeSurface, defineProgram, z,
+  type ApprovalResponderAdmission } from '@hanger-source/dsh-reactive';
+import { implementProgram } from '@hanger-source/dsh-reactive/program';
+import { createNativeApprovalModule } from '@hanger-source/dsh-reactive-dsh/approval';
+
+function createApprovalProgram(
+  authorizeApproval: (admission: ApprovalResponderAdmission) => Promise<void>,
+) {
+  const composition = composeSurface({ approvals: approvalSurface });
+  const program = defineProgram({ input: z.object({}).strict(), surface: composition.surface });
+  const approvals = createNativeApprovalModule({
+    policy: 'ask',
+    require: () => ({ reason: '此环境工具需要人工确认' }),
+    admitResponder: authorizeApproval,
+  });
+  const implementation = implementProgram(program, {
+    modules: { approvals },
+    Component({ modules }) {
+      const Approvals = modules.approvals.Component;
+      return <Approvals mount={composition.mounts.approvals} />;
+    },
+  });
+  return { program, implementation, composition };
+}
+```
+
+`pending` 是当前真实等待的资源视图，每项包含 `transportId`、`toolName`、可空 `callId`、`reason` 和 `displayReason`。本地和远程 SDK 都先 `await module.resolveAction('answer', { sessionId })`，再以 `{ transportId, decision: 'allowed-once' | 'rejected' }` 调用，等待 `invocation.result`。结果 `{ status: 'submitted' }` 只表示答复交给等待者，不证明原生授权生效或业务成功。只有真实 human 参与者可以回答；模块不提供批准工具 Offer；工具和 service 的答复调用会被拒绝，不能借此批准自己。读取沿现有 Session/Surface 权限，不承诺同会话逐 actor 过滤。
+
+`transportId` 只标识当前传输等待，并非原生审计 requestId。不能从日志重建 pending、恢复 JavaScript 等待或自动重新批准；模块不另存已完成历史。前端断线或释放观察不会卸载服务端模块。
+
 ## 人工参与
 
 `session.human` 和固定问题的 `question.state` 在同一快照中保留问题、前台等待和 `replies`。晚答的每项 `HumanReplyDelivery` 提供实际 `messageId`、`questionCallId`、原问题 `origin`、原队列 `target` 与 `state`：`queued` 表示仍在原生 inbox，`proposed` 表示已从队列提出、尚未追加到输入历史。Work 的 `questions.replies` 按原问题输入归属选择同一事实，`question.reply-pending` 条件解释当前存在交付中的答复。

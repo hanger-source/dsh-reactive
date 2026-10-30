@@ -90,6 +90,7 @@ Action Invocation 的不可变 `origin` 在输入解析和准入之前捕获，�
 - `NativeTools` 声明宿主已安装的原生能力与可选异步业务政策，保留官方工具身份、执行及 guard。可用性同时落实到原生工具与 PTC SDK，等待政策后再次核验声明，不必为文件、待办等工具重写 Action。
 - `actionManifest$` 提供真实工具名、Action、绑定、完整模块路径与公开地址；原生结果及 PTC 结果的 metadata 携带同源结构。业务卡片用 `readActionPresentation` 读取合同结果，无需反解工具 namespace 或模型文本。
 - 原生工具执行中的 Action 通过 `call.askHuman(...)` 主动请求人工补充，复用标准提问工具及真实父子调用。可以等待本次答案，或超时返回 pending，由原对话接收迟答；调用体退出会取消并清理未完成提问。普通 SDK 调用不借用原生工具身份。原问题的持久 continuation、迟答资格及共同进展条件见[人工问题的参与关联](docs/migration-human-continuations.md)。
+- 原生审批通过 `createNativeApprovalModule` 作为模块装配；人工观察当前等待并提交答复，政策、审计、一次性授权与工具执行仍由原生服务负责。详见[原生审批参与](docs/programming-model.md#原生审批参与)。
 - Operation 的 `settled` 与类型化 `feedback` 分别表达业务终态和协作节点。`useOperation` 绑定已有命令，`Follow` 提供再次等待的能力；每次参与保留节点边界和本次 Goal 权限，业务不因再次观察而重新执行。Surface.operations 与 SDK 只读入口保留原绑定；人工问答沿 dsh 原生前台等待、超时继续与迟到回答。
 - `useOperation` 可以明确绑定 null，业务 hook 不必为尚未出现的命令拆出条件组件。`Offer.follow` 与 `Follow` 的 wait 模式暂缓原工作，background 模式可靠关联结果并允许当前工作继续；只观察使用现有 Operation 流。三种关系都不重新发起原操作。
 - `conversation.request(id)` 提供该请求的当前事实与新事件，`progress$` 提供会话事实和当前流式前缀。工具及回复保留实际消费的整组输入；只读观察、退订与重连不会再次提交请求或启动 Agent。
