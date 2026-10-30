@@ -2,23 +2,25 @@ import type { Context } from "@deepseek-ai/cordis";
 import { firstValueFrom } from 'rxjs';
 import { abortable } from '@hanger-source/dsh-reactive';
 import { type SubmitOptions } from "@hanger-source/dsh-reactive/kernel";
-import { humanAnswerSchema, type HumanWaitFrame } from "@hanger-source/dsh-reactive/kernel";
+import { humanAnswerSchema, captureHumanQuestionReference, type HumanQuestionReference, type HumanWaitFrame } from "@hanger-source/dsh-reactive/kernel";
 import { canonical } from "../conversations/records.ts";
 import type { HostOptions } from '../applications/options.ts';
 import type { ConversationSession } from '../conversations/session.ts';
 import type { ConversationSessions } from '../conversations/sessions.ts';
 import type { ConversationObservations } from '../conversations/observations.ts';
-import { admitHumanResponder, assertHumanAnswerBatch } from './human-input.ts';
+import { admitHumanResponder, assertHumanAnswerBatch, assertHumanQuestionSource, assertHumanQuestionReference, assertHumanQuestionTarget } from './human-input.ts';
 /** 人工答复保留原问题与响应者准入；冷读不重建前台等待。 */
 export class ConversationQuestions {
     constructor(private readonly ctx: Context, private readonly options: HostOptions, private readonly signal: AbortSignal, private readonly sessions: ConversationSessions, private readonly facts: ConversationObservations) { }
     private assertActive() { if (this.signal.aborted)
         throw new Error('REACTIVE_HOST_DISPOSED'); }
-    async answerQuestion(session: ConversationSession, id: string, raw: unknown, options: SubmitOptions = {}): Promise<boolean> {
+    async answerQuestion(session: ConversationSession, id: string, raw: unknown, options: SubmitOptions = {}, expected?: HumanQuestionReference): Promise<boolean> {
         this.assertActive();
         this.sessions.assertSessionWorkspace(session);
         if (typeof id !== 'string' || !id.trim())
             throw new Error('REACTIVE_HUMAN_QUESTION_CALL_REQUIRED');
+        const reference = expected === undefined ? undefined : captureHumanQuestionReference(expected);
+        assertHumanQuestionTarget(reference, session.header.id, id);
         const actorId = options.actorId ?? this.options.actorId;
         if (!actorId?.trim())
             throw new Error('REACTIVE_HUMAN_RESPONDER_REQUIRED');
@@ -42,7 +44,11 @@ export class ConversationQuestions {
             const readQuestion = async () => {
                 const inspection = await firstValueFrom(abortable(reading => this.facts.inspect(session.header.id, reading), signal));
                 signal.throwIfAborted();
-                return this.facts.stateOf(inspection).human.questions.active.find(item => item.callId === id);
+                const human = this.facts.stateOf(inspection).human;
+                assertHumanQuestionSource(human, id);
+                const question = human.questions.active.find(item => item.callId === id);
+                if (question) assertHumanQuestionReference(question.origin, reference);
+                return question;
             };
             const question = await readQuestion();
             assertPolicy();
@@ -59,23 +65,34 @@ export class ConversationQuestions {
             // 取消结束当前阶段的等待；迟到的读取或准入没有继续激活 Agent 的续体。
             await firstValueFrom(abortable(() => this.sessions.activate(session.header.id, session.accessId), signal));
             assertPolicy();
-            const restored = this.sessions.live(session).human.snapshot().questions.active.find(item => item.callId === id);
+            const restoredSnapshot = this.sessions.live(session).human.snapshot();
+            assertHumanQuestionSource(restoredSnapshot, id);
+            const restored = restoredSnapshot.questions.active.find(item => item.callId === id);
             if (!restored || canonical(restored) !== canonical(question))
                 throw new Error('REACTIVE_HUMAN_QUESTION_CHANGED');
         }
         signal.throwIfAborted();
         this.sessions.assertSessionWorkspace(session);
-        return this.sessions.live(session).human.answerQuestion(id, answer, { actorId, signal });
+        return this.sessions.live(session).human.answerQuestion(id, answer, { actorId, signal }, reference);
     }
-    async *attachWait(session: ConversationSession, id: string, options: SubmitOptions = {}): AsyncIterable<HumanWaitFrame> {
+    async *attachWait(session: ConversationSession, id: string, options: SubmitOptions = {}, expected?: HumanQuestionReference): AsyncIterable<HumanWaitFrame> {
         this.assertActive();
         this.sessions.assertSessionWorkspace(session);
+        const reference = expected === undefined ? undefined : captureHumanQuestionReference(expected);
+        assertHumanQuestionTarget(reference, session.header.id, id);
         const actorId = options.actorId ?? this.options.actorId;
         if (!actorId?.trim())
             throw new Error('REACTIVE_HUMAN_RESPONDER_REQUIRED');
-        if (!session.live.value)
-            throw new Error('REACTIVE_HUMAN_FOREGROUND_UNAVAILABLE');
         const signal = AbortSignal.any([this.signal, session.scope.signal, ...(options.signal ? [options.signal] : [])]);
-        yield* session.live.value.human.attachWait(id, { actorId, signal });
+        if (!session.live.value) {
+            const inspection = await firstValueFrom(abortable(reading => this.facts.inspect(session.header.id, reading), signal));
+            signal.throwIfAborted();
+            this.assertActive();
+            this.sessions.assertSessionWorkspace(session);
+            const snapshot = this.facts.stateOf(inspection).human;
+            assertHumanQuestionSource(snapshot, id);
+            throw new Error('REACTIVE_HUMAN_FOREGROUND_UNAVAILABLE');
+        }
+        yield* session.live.value.human.attachWait(id, { actorId, signal }, reference);
     }
 }

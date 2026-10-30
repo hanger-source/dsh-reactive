@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import type { Context } from '@deepseek-ai/cordis';
-import { pluginRecordOf, type SessionEvent } from '@deepseek-ai/dsh-session';
+import { pluginRecordOf, TOOL_OUTCOME_UNKNOWN, type SessionEvent } from '@deepseek-ai/dsh-session';
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection';
-import { inputReferenceSchema, requestActivitySchema, toolActivitySchema, replyActivitySchema, executionFailureSchema } from '@hanger-source/dsh-reactive/kernel';
+import { humanAnswerSchema, inputReferenceSchema, requestActivitySchema, toolActivitySchema, replyActivitySchema, executionFailureSchema } from '@hanger-source/dsh-reactive/kernel';
 import { canonical, childInputRecordSchema, goalBindingSchema, inputEditRecordSchema, inputRecordIdentity, operationNotStartedSchema, operationFollowUnregisteredSchema, questionOriginRecordSchema, actionInvocationRecordSchema, operationFollowCallRecordSchema, recordSchema, referenceOf, contentDigest, unique, waitRecordSchema, callForResult, ptcParent } from './records.ts';
 
 const inputsSchema = inputReferenceSchema.array().readonly();
@@ -11,10 +11,17 @@ const proposedOccurrenceSchema = pendingOccurrenceSchema.extend({ target: z.enum
 const requestLifecycleSchema = requestActivitySchema.pick({ requestId: true, state: true, outcome: true });
 const stepSchema = z.object({ turn: z.number().int().nonnegative(), step: z.number().int().nonnegative() }).strict();
 const callOccurrenceSchema = toolActivitySchema.extend({ turn: z.number().int().nonnegative(), step: z.number().int().nonnegative() });
+const questionResultSchema = z.object({ sequence: z.number().int().nonnegative(), kind: z.enum(['answer', 'pending', 'error', 'unknown', 'invalid']),
+  answer: humanAnswerSchema.nullable() }).strict();
+const questionEvidenceSchema = z.object({ questionIds: z.array(z.string()), results: questionResultSchema.array(),
+  consumedReplies: z.array(z.object({ sequence: z.number().int().nonnegative(), messageId: z.string(), answer: humanAnswerSchema.nullable() })),
+  conflicts: z.array(z.object({ sequence: z.number().int().nonnegative(), reason: z.enum(['foreign-result', 'result-source-unresolved']),
+    callSequence: z.number().int().nonnegative().nullable() })) }).strict();
 export const reactiveProjectionSchema = z.object({ sessionId: z.string(), delegated: z.boolean(), inheritedEventCount: z.number().int().nonnegative(),
   records: z.record(z.string(), recordSchema), pendingEdits: z.record(z.string(), inputEditRecordSchema), goals: z.record(z.string(), inputsSchema),
   nativeInputs: z.record(z.string(), inputReferenceSchema),
   questionOrigins: z.record(z.string(), questionOriginRecordSchema.shape.goal),
+  questionEvidence: z.record(z.string(), questionEvidenceSchema),
   operationCalls: z.record(z.string(), z.number().int().nonnegative()),
   inputs: inputsSchema, calls: z.record(z.string(), callOccurrenceSchema), replies: replyActivitySchema.array().readonly(), current: inputsSchema,
   openTurn: z.number().int().nonnegative().nullable(), openStep: stepSchema.nullable(),
@@ -30,9 +37,9 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
 
 /** 仅负责业务请求、原生输入和调用的关联；驱动、水位、冷恢复由原生注册表拥有。 */
 export const reactiveProjectionDefinition: ProjectionDefinition<'reactiveInputs'> = {
-  key: 'reactiveInputs', stateVersion: 15, stateSchema: reactiveProjectionSchema,
+  key: 'reactiveInputs', stateVersion: 16, stateSchema: reactiveProjectionSchema,
   init: (header, inheritedEventCount) => ({ sessionId: header.id, delegated: header.parentSession !== undefined, inheritedEventCount,
-    records: {}, pendingEdits: {}, goals: {}, nativeInputs: {}, questionOrigins: {}, operationCalls: {}, inputs: [], calls: {}, replies: [], current: [], openTurn: null, openStep: null,
+    records: {}, pendingEdits: {}, goals: {}, nativeInputs: {}, questionOrigins: {}, questionEvidence: {}, operationCalls: {}, inputs: [], calls: {}, replies: [], current: [], openTurn: null, openStep: null,
     pending: { 'next-turn': [], 'next-step': [] },
     proposed: {}, requests: {}, waits: [], failures: [] }),
   apply: applyReactiveProjection,
@@ -40,6 +47,73 @@ export const reactiveProjectionDefinition: ProjectionDefinition<'reactiveInputs'
 
 function own<T>(values: Readonly<Record<string, T>>, key: string): T | undefined {
   return Object.hasOwn(values, key) ? values[key] : undefined;
+}
+
+function jsonText(content: readonly { type: string; text?: string }[]): unknown {
+  const text = content.find(block => block.type === 'text');
+  if (text?.text === undefined) return null;
+  try { return JSON.parse(text.text); }
+  catch { return null; }
+}
+function completeAnswer(questionIds: readonly string[], raw: unknown) {
+  const answer = humanAnswerSchema.safeParse(raw);
+  if (!answer.success || answer.data.answers.length !== questionIds.length
+    || new Set(answer.data.answers.map(item => item.id)).size !== questionIds.length
+    || !questionIds.every(id => answer.data.answers.some(item => item.id === id))) return null;
+  return answer.data;
+}
+
+/** 只登记正式结果/消息证据；不推演原生问题状态、计时或结算。 */
+function recordQuestionEvidence(state: ReactiveProjectionState, event: SessionEvent): void {
+  if (event.type === 'tool/call' && event.data.name === 'ask_user_question'
+    || event.type === 'tool/ptc-dispatch-start' && event.data.name === 'ask_user_question') {
+    let raw: unknown;
+    try { raw = event.type === 'tool/call' ? JSON.parse(event.data.arguments) : event.data.arguments; }
+    catch { raw = null; }
+    const prompts = z.object({ questions: z.array(z.object({ id: z.string() })).min(1) }).safeParse(raw);
+    if (prompts.success && new Set(prompts.data.questions.map(item => item.id)).size === prompts.data.questions.length)
+      state.questionEvidence = { ...state.questionEvidence, [String(event.seq)]: {
+        questionIds: prompts.data.questions.map(item => item.id), results: [], consumedReplies: [], conflicts: [],
+      } };
+  }
+  if (event.type === 'tool/result' || event.type === 'tool/ptc-dispatch') {
+    const call = callForResult(state, event);
+    const resultCallId = event.type === 'tool/result' ? event.data.message.toolCallId : event.data.subCallId;
+    for (const [key, before] of Object.entries(state.questionEvidence)) {
+      const question = state.calls[key];
+      if (!question || question.callId !== resultCallId) continue;
+      if (call?.callSequence === question.callSequence) {
+        const error = event.data.error;
+        const failed = event.type === 'tool/result' ? event.data.message.isError === true : event.data.isError;
+        const raw = jsonText(event.type === 'tool/result' ? event.data.message.content : event.data.content);
+        const answer = !error && !failed ? completeAnswer(before.questionIds, raw) : null;
+        // 原生 pending 文本可带展示 message；仅核公开 DTO 的 pending 与精确 callId。
+        const pending = z.object({ pending: z.literal(true), callId: z.literal(question.callId) }).safeParse(raw);
+        const kind = error?.code === TOOL_OUTCOME_UNKNOWN ? 'unknown' : error || failed ? 'error'
+          : answer ? 'answer' : pending.success ? 'pending' : 'invalid';
+        state.questionEvidence = { ...state.questionEvidence, [key]: { ...before,
+          results: [...before.results, { sequence: event.seq, kind, answer }] } };
+      } else if (event.type === 'tool/result') {
+        const terminal = before.results.some(result => result.kind === 'answer' || result.kind === 'error') || before.consumedReplies.some(reply => reply.answer !== null);
+        if (terminal) continue;
+        const pending = before.results.some(result => result.kind === 'pending');
+        if (!call || pending) state.questionEvidence = { ...state.questionEvidence, [key]: { ...before,
+          conflicts: [...before.conflicts, { sequence: event.seq,
+            reason: call ? 'foreign-result' : 'result-source-unresolved', callSequence: call?.callSequence ?? null }] } };
+      }
+    }
+  }
+  if (event.type === 'user/message' && event.data.source.kind === 'user-question-reply') {
+    const source = event.data.source;
+    const matches = Object.entries(state.questionEvidence).filter(([key]) => state.calls[key]?.callId === source.callId);
+    if (matches.length !== 1 || source.outcome !== 'answered') return;
+    const [key, before] = matches[0]!;
+    const raw = z.object({ kind: z.literal('answer_to_pending_question'), tool: z.literal('ask_user_question'),
+      callId: z.literal(source.callId), answers: z.unknown() }).safeParse(jsonText(event.data.content));
+    const answer = raw.success ? completeAnswer(before.questionIds, { answers: raw.data.answers }) : null;
+    state.questionEvidence = { ...state.questionEvidence, [key]: { ...before,
+      consumedReplies: [...before.consumedReplies, { sequence: event.seq, messageId: event.data.id, answer }] } };
+  }
 }
 
 function applyReactiveProjection(previous: ReactiveProjectionState, event: SessionEvent): ReactiveProjectionState {
@@ -220,6 +294,7 @@ function applyReactiveProjection(previous: ReactiveProjectionState, event: Sessi
     if (call) state.calls = { ...state.calls, [String(call.callSequence)]: { ...call, state: failed ? 'failed' : 'returned', observedAt: event.time,
       ...(meta.success ? { result: meta.data.reactive } : {}) } };
   }
+  recordQuestionEvidence(state, event);
   if (event.type === 'assistant/message') {
     const text = event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n');
     const previousReply = state.replies.find(reply => reply.messageId === event.data.message.id);

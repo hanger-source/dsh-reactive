@@ -63,6 +63,10 @@ origin.continuation 是提问实际模型步骤的持久关联，由同一原 ca
 
 Program 的 conversation、本地和远程 SDK 提供 `human` 只读资源，questions 与 foreground 来自同一个快照，可直接 read、组合 observations$ 或交给 useResource。人工 SDK 的 `const question = await session.question(callId, options)` 绑定该会话里已知的原问题；同一 SDK 重复取得同一个对象。`question.state` 保留原 active、foreground、settled 事实，`question.answer(answer, options)` 与 `question.attachWait(options)` 委托原响应准入和真实前台 claim，不再重复传 callId。只读绑定不创建问题、计时器或批准权；三个事实均缺失时不能推断业务取消或完成。读取与退订不回答问题、不停止原问答。
 
+`human` 快照的 `sourceConflicts` 描述来源不可信的结果或答案：原 `origin`、`reason`（`foreign-result`、`result-source-unresolved`、`unverified-answer`）、可空事件序号和 occurrence。受影响来源不出现在可信问题和答复中，其他合法问题仍可读和回答；回答或接管冲突来源抛出 `HumanQuestionSourceConflictError`。Work 的 `questions.sourceConflicts` 和 `question.source-conflict` 按原输入归属展示诊断，不唤醒 Goal 或签发权限。普通工具 JSON 不是人工答复；合法答复后普通工具复用 callId 允许，但重复提问的原生歧义不能按序号强答。原生撤下的问题无法恢复可回答性，直接读取上游原生投影的 UI 仍受 rc.3 限制。
+
+句柄的只读 `origin` 固定原来源，answer 和 attachWait 自动使用它。高级 raw controls 的可选 expected 可直接传 `question.origin`；省略时入口查当前唯一问题并固定实际来源。expected 只是比较条件，政策仍核验实际 origin。远程协议必须携带 sourceConflicts，冲突错误码为 `reactive/human-question-source-conflict`。
+
 限时问题对象可从前台持续观察到 continued 和正式 settled，也可在冷 SDK 上取得迟答对象；迟答是否需要恢复实际 Agent 仍由原会话入口决定。answer 返回的 bool 只表示前台受理或 continued 排队，不能代替持久答复和工具结算。服务端口的运行时拒绝 question、answerQuestion、attachWait、pause 和 cancel，不能靠绕过 TypeScript 声明借用人的身份。
 
 原生工具中的 Action 可以主动问人：

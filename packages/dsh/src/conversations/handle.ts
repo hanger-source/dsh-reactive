@@ -8,7 +8,7 @@ import { type AnyEnvironment, type EnvironmentOperations } from "@hanger-source/
 import { type Scope } from "@hanger-source/dsh-reactive/kernel";
 import { type Observation } from "@hanger-source/dsh-reactive/kernel";
 import { ResourceReader } from "@hanger-source/dsh-reactive/kernel";
-import { createHumanQuestionResolver, type HumanQuestionResolver, type HumanQuestionHandle, type HumanSnapshot } from "@hanger-source/dsh-reactive/kernel";
+import { createHumanQuestionResolver, type HumanQuestionReference, type HumanQuestionResolver, type HumanQuestionHandle, type HumanSnapshot } from "@hanger-source/dsh-reactive/kernel";
 import { type ActionContract, type ActionInput, type ActionScope } from "@hanger-source/dsh-reactive/kernel";
 import { type OperationContract, type OperationHandle, type OperationReference, type OperationCommand, type OperationLocation, type OperationState, type BoundOperation, type OperationFeedbackRead, type OperationFeedbackPayload, type OperationNotificationResult } from "@hanger-source/dsh-reactive/kernel";
 import { type ActionInvocation } from "@hanger-source/dsh-reactive/kernel";
@@ -94,8 +94,8 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
         this.questions$ = this.human.values$.pipe(map(snapshot => snapshot.questions), distinctUntilChanged());
         this.foregroundQuestions$ = this.human.values$.pipe(map(snapshot => snapshot.foreground), distinctUntilChanged());
         this.#question = createHumanQuestionResolver(this.human, {
-            answerQuestion: (id, answer, options) => this.answerQuestion(id, answer, options),
-            attachWait: (id, options) => this.attachWait(id, options),
+            answerQuestion: (id, answer, options, expected) => this.answerQuestion(id, answer, options, expected),
+            attachWait: (id, options, expected) => this.attachWait(id, options, expected),
         }, { signal: this.#scope.signal, onObserverError: error => this.#scope.observerError(error) });
     }
     /** @internal 只有宿主能建立带观察生存期的句柄。 */
@@ -353,15 +353,15 @@ export class ConversationHandle<P extends ProgramContract = ProgramContract> imp
         this.assertHuman();
         return this.#question(callId, options);
     }
-    answerQuestion(callId: string, answer: HumanAnswer, options: SubmitOptions = {}): Promise<boolean> {
+    answerQuestion(callId: string, answer: HumanAnswer, options: SubmitOptions = {}, expected?: HumanQuestionReference): Promise<boolean> {
         this.assertHuman();
         const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
-        return this.questions.answerQuestion(this.entry, callId, answer, { ...options, signal });
+        return this.questions.answerQuestion(this.entry, callId, answer, { ...options, signal }, expected);
     }
-    async *attachWait(callId: string, options: SubmitOptions = {}): AsyncIterable<HumanWaitFrame> {
+    async *attachWait(callId: string, options: SubmitOptions = {}, expected?: HumanQuestionReference): AsyncIterable<HumanWaitFrame> {
         this.assertHuman();
         const signal = options.signal ? AbortSignal.any([this.#scope.signal, options.signal]) : this.#scope.signal;
-        yield* this.questions.attachWait(this.entry, callId, { ...options, signal });
+        yield* this.questions.attachWait(this.entry, callId, { ...options, signal }, expected);
     }
     async pause(options: CancellationOptions = {}) {
         this.assertHuman();

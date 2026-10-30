@@ -5,11 +5,11 @@ import type { ProjectionSnapshot } from '@deepseek-ai/dsh-session-projection';
 import { UserQuestionError, type AskUserQuestionRequest } from '@deepseek-ai/dsh-user-questions';
 import { Observable, Subject, firstValueFrom } from 'rxjs';
 import { abortable, type HumanResponderAdmission } from '@hanger-source/dsh-reactive';
-import { humanAnswerSchema, type HumanAnswer, type HumanSnapshot, type HumanReplyDelivery, type HumanQuestion, type HumanQuestionOrigin, type HumanForegroundQuestion, type HumanResponderOptions, type HumanWaitFrame } from '@hanger-source/dsh-reactive/kernel';
+import { HumanQuestionSourceConflictError, captureHumanQuestionReference, humanAnswerSchema, type HumanQuestionReference, type HumanQuestionSourceConflict, type HumanAnswer, type HumanSnapshot, type HumanReplyDelivery, type HumanQuestion, type HumanQuestionOrigin, type HumanForegroundQuestion, type HumanResponderOptions, type HumanWaitFrame } from '@hanger-source/dsh-reactive/kernel';
 import type { HumanInputDeclaration } from '@hanger-source/dsh-reactive/kernel';
 import { Scope, type Value } from '@hanger-source/dsh-reactive/kernel';
 import type { ReactiveProjectionState } from '../conversations/projections.ts';
-import { canonical, humanQuestionOrigin } from '../conversations/records.ts';
+import { canonical, humanQuestionOrigin, occurrenceOf } from '../conversations/records.ts';
 
 interface HumanInputProgram {
   readonly humanInput: HumanInputDeclaration | undefined;
@@ -19,7 +19,7 @@ interface HumanInputProgram {
 }
 type ForegroundResponse = { readonly signal: AbortSignal; readonly question: HumanQuestion;
   readonly timed: boolean; answer(answer: HumanAnswer): void };
-type Claim = { readonly policy: HumanInputDeclaration; readonly controller: AbortController };
+type Claim = { readonly policy: HumanInputDeclaration; readonly origin: HumanQuestionOrigin; readonly controller: AbortController };
 type QuestionAddress = { readonly channel: 'foreground' | 'continued'; readonly question: HumanQuestion; readonly response?: ForegroundResponse };
 type ResponseAdmission = QuestionAddress & { readonly policy: HumanInputDeclaration; readonly signal: AbortSignal };
 
@@ -39,12 +39,34 @@ function questionOrigin(source: Pick<ReactiveProjectionState, 'sessionId' | 'cal
 }
 
 /** live 与 cold 以同一原生投影切面关联真实调用；不从当前输入推测旧问题来源。 */
-export function humanInputSnapshot(snapshot: ProjectionSnapshot, source: Pick<ReactiveProjectionState, 'sessionId' | 'calls' | 'proposed' | 'questionOrigins'>,
+export function humanInputSnapshot(snapshot: ProjectionSnapshot, source: Pick<ReactiveProjectionState, 'sessionId' | 'calls' | 'proposed' | 'questionOrigins' | 'questionEvidence'>,
   foreground: readonly HumanForegroundQuestion[]): HumanSnapshot {
   const questions = snapshot.values.userQuestions;
   if (!questions) throw new Error('REACTIVE_HUMAN_QUESTIONS_PROJECTION_REQUIRED');
   const inbox = snapshot.values.inbox;
   if (!inbox) throw new Error('REACTIVE_HUMAN_INBOX_PROJECTION_REQUIRED');
+  const sourceConflicts: HumanQuestionSourceConflict[] = [];
+  for (const [key, evidence] of Object.entries(source.questionEvidence)) {
+    const call = source.calls[key];
+    if (!call) throw new Error('REACTIVE_HUMAN_QUESTION_CALL_NOT_FOUND');
+    const origin = questionOrigin(source, call.callId);
+    for (const conflict of evidence.conflicts) sourceConflicts.push({ origin, reason: conflict.reason,
+      eventSequence: conflict.sequence, occurrence: conflict.callSequence === null ? null : occurrenceOf(source.calls[String(conflict.callSequence)]!) });
+  }
+  for (const settled of questions.settled) {
+    const origin = questionOrigin(source, settled.callId);
+    if (sourceConflicts.some(conflict => conflict.origin.callSequence === origin.callSequence)) continue;
+    const evidence = source.questionEvidence[String(origin.callSequence)];
+    const candidates = evidence ? [
+      ...evidence.results.filter(result => result.kind === 'answer').map(result => result.answer),
+      ...evidence.consumedReplies.filter(reply => reply.answer !== null).map(reply => reply.answer),
+    ] : [];
+    if (candidates.length !== 1 || canonical(candidates[0]?.answers) !== canonical(settled.answers)) {
+      sourceConflicts.push({ origin, reason: 'unverified-answer', eventSequence: null, occurrence: null });
+    }
+  }
+  const trusted = (origin: HumanQuestionOrigin) => !sourceConflicts.some(conflict => conflict.origin.sessionId === origin.sessionId
+    && conflict.origin.callSequence === origin.callSequence);
   const replies: HumanReplyDelivery[] = [];
   for (const target of ['next-turn', 'next-step'] as const) for (const message of inbox[target]) {
     if (message === null || typeof message !== 'object' || Array.isArray(message) || !('source' in message)) throw new Error('REACTIVE_HUMAN_INBOX_MESSAGE_INVALID');
@@ -62,9 +84,9 @@ export function humanInputSnapshot(snapshot: ProjectionSnapshot, source: Pick<Re
   }
   return ownHumanFact({
     questions: {
-      active: questions.active.map(question => ({ ...question, origin: questionOrigin(source, question.callId) })),
-      settled: questions.settled.map(question => ({ ...question, origin: questionOrigin(source, question.callId) })),
-    }, foreground, replies,
+      active: questions.active.map(question => ({ ...question, origin: questionOrigin(source, question.callId) })).filter(question => trusted(question.origin)),
+      settled: questions.settled.map(question => ({ ...question, origin: questionOrigin(source, question.callId) })).filter(question => trusted(question.origin)),
+    }, foreground: foreground.filter(question => trusted(question.origin)), replies: replies.filter(reply => trusted(reply.origin)), sourceConflicts,
   });
 }
 
@@ -75,6 +97,19 @@ export function assertHumanAnswerBatch(question: HumanQuestion, answer: HumanAns
     || question.questions.some(item => !ids.has(item.id))) {
     throw new UserQuestionError('the answer batch must name each question exactly once', 'BAD_ANSWER');
   }
+}
+
+export function assertHumanQuestionTarget(expected: HumanQuestionReference | undefined, sessionId: string, callId: string): void {
+  if (expected && (expected.sessionId !== sessionId || expected.callId !== callId))
+    throw new Error('REACTIVE_HUMAN_QUESTION_REFERENCE_MISMATCH');
+}
+export function assertHumanQuestionSource(snapshot: HumanSnapshot, callId: string): void {
+  const conflicts = snapshot.sourceConflicts.filter(conflict => conflict.origin.callId === callId);
+  if (conflicts.length) throw new HumanQuestionSourceConflictError(conflicts);
+}
+export function assertHumanQuestionReference(origin: HumanQuestionOrigin, expected: HumanQuestionReference | undefined): void {
+  if (expected && (origin.sessionId !== expected.sessionId || origin.callId !== expected.callId || origin.callSequence !== expected.callSequence))
+    throw new Error('REACTIVE_HUMAN_QUESTION_CHANGED');
 }
 
 /** @internal 本次准入只借用当前声明；声明撤销或等待退出立即退等，结算后释放 revision 依赖。 */
@@ -112,6 +147,15 @@ export class HumanInputs {
         claim.controller.abort(new Error('REACTIVE_HUMAN_INPUT_CHANGED'));
       }
     });
+    this.scope.own(ctx.on('session/event', session => {
+      if (session !== agent.session || !this.#claims.size) return;
+      const snapshot = this.snapshot();
+      for (const claim of this.#claims) {
+        const conflicts = snapshot.sourceConflicts.filter(conflict => conflict.origin.sessionId === claim.origin.sessionId
+          && conflict.origin.callSequence === claim.origin.callSequence);
+        if (conflicts.length) claim.controller.abort(new HumanQuestionSourceConflictError(conflicts));
+      }
+    }));
     this.snapshot$ = new Observable(subscriber => {
       if (this.scope.disposed) { subscriber.complete(); return; }
       const release = this.scope.own(() => subscriber.complete());
@@ -136,7 +180,9 @@ export class HumanInputs {
     const foreground = [...this.#foreground.entries()].map(([callId, response]) => ({
       callId, questions: response.question.questions, timed: response.timed, origin: response.question.origin,
     }));
-    return humanInputSnapshot(this.ctx.sessionProjections.snapshot(this.agent.session, ['userQuestions', 'inbox']), this.origins(), foreground);
+    // snapshot/stateOf 都同步 materialize 全部注册 unit 到同一 Session cursor；两次读取之间不允许 await。
+    const snapshot = this.ctx.sessionProjections.snapshot(this.agent.session, ['userQuestions', 'inbox']);
+    return humanInputSnapshot(snapshot, this.origins(), foreground);
   }
 
   private origins(): ReactiveProjectionState {
@@ -153,9 +199,11 @@ export class HumanInputs {
       throw new UserQuestionError('human interaction is unavailable to a delegated Agent', 'DELEGATED_CALLER');
   }
   private question(callId: ToolCallId): QuestionAddress {
+    const snapshot = this.snapshot();
+    assertHumanQuestionSource(snapshot, callId);
     const response = this.#foreground.get(callId);
     if (response && !response.signal.aborted) return { channel: 'foreground', question: response.question, response };
-    const question = this.snapshot().questions.active.find(question => question.callId === callId);
+    const question = snapshot.questions.active.find(question => question.callId === callId);
     if (!question) throw new Error('REACTIVE_HUMAN_QUESTION_NOT_OPEN');
     if (question.state !== 'continued') throw new Error('REACTIVE_HUMAN_FOREGROUND_UNAVAILABLE');
     return { channel: 'continued', question };
@@ -190,7 +238,7 @@ export class HumanInputs {
     });
   }
 
-  private async admit(callId: ToolCallId, answer: HumanAnswer | null, options: HumanResponderOptions) {
+  private async admit(callId: ToolCallId, answer: HumanAnswer | null, options: HumanResponderOptions, expected?: HumanQuestionReference) {
     const actorId = options.actorId;
     this.assertRoot();
     this.program.flush();
@@ -201,6 +249,7 @@ export class HumanInputs {
     signal.throwIfAborted();
     const address = this.question(callId);
     const { question, response } = address;
+    assertHumanQuestionReference(question.origin, expected);
     const responding = response ? AbortSignal.any([signal, response.signal]) : signal;
     if (answer) assertHumanAnswerBatch(question, answer);
     await admitHumanResponder(this.program, this.scope, policy, { channel: address.channel,
@@ -224,11 +273,13 @@ export class HumanInputs {
   }
 
   /** 返回实际受理事实；前台答案随后由原生 tool/result 落盘，晚答由原生 inbox 持有。 */
-  async answerQuestion(id: string, raw: unknown, options: HumanResponderOptions): Promise<boolean> {
+  async answerQuestion(id: string, raw: unknown, options: HumanResponderOptions, expected?: HumanQuestionReference): Promise<boolean> {
     if (typeof id !== 'string' || !id.trim()) throw new Error('REACTIVE_HUMAN_QUESTION_CALL_REQUIRED');
     const callId = ToolCallId(id);
+    const reference = expected === undefined ? undefined : captureHumanQuestionReference(expected);
+    assertHumanQuestionTarget(reference, this.agent.id, id);
     const answer = humanAnswerSchema.parse(raw);
-    const admitted = await this.admit(callId, answer, options);
+    const admitted = await this.admit(callId, answer, options, reference);
     const question = this.recheck(admitted);
     if (question.channel === 'continued') return this.ctx.userQuestions.answer(this.agent, callId, answer);
     const foreground = question.response;
@@ -238,14 +289,16 @@ export class HumanInputs {
   }
 
   /** 原生 stream 持有倒计时 claim；断开或声明退出只释放 claim，不提交答案或取消问题。 */
-  async *attachWait(id: string, options: HumanResponderOptions): AsyncIterable<HumanWaitFrame> {
+  async *attachWait(id: string, options: HumanResponderOptions, expected?: HumanQuestionReference): AsyncIterable<HumanWaitFrame> {
     if (typeof id !== 'string' || !id.trim()) throw new Error('REACTIVE_HUMAN_QUESTION_CALL_REQUIRED');
     const callId = ToolCallId(id);
-    const admitted = await this.admit(callId, null, options);
+    const reference = expected === undefined ? undefined : captureHumanQuestionReference(expected);
+    assertHumanQuestionTarget(reference, this.agent.id, id);
+    const admitted = await this.admit(callId, null, options, reference);
     this.recheck(admitted);
     const { policy, signal } = admitted;
     const controller = new AbortController();
-    const claim: Claim = { policy, controller };
+    const claim: Claim = { policy, origin: admitted.question.origin, controller };
     this.#claims.add(claim);
     const observing = AbortSignal.any([signal, controller.signal]);
     const release = () => { this.#claims.delete(claim); controller.abort(); };

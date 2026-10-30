@@ -1,6 +1,6 @@
 /// <reference lib="esnext.disposable" preserve="true" />
 
-import { assertProgramDefinition, type HumanQuestion,
+import { assertProgramDefinition, captureHumanQuestionReference, type HumanQuestion, type HumanQuestionOrigin,
   type HumanForegroundQuestion, type HumanAnswer, type ProgramContract, type ProgramSurface,
   type OperationContract, type OperationHandle, type OperationState, type ResourceReadable,
   type CancellationOptions, type Invocation, type InvocationActivity, type Json,
@@ -21,6 +21,7 @@ import { nativeSource, type NativeReadable } from './sources.ts';
 
 export interface NativeHumanQuestion {
   readonly callId: string;
+  readonly origin: HumanQuestionOrigin;
   readonly state: HostObservable<Observation<HumanQuestionSnapshot>>;
   answer(answer: HumanAnswer, options?: CancellationOptions): Promise<boolean>;
   attachWait(options?: CancellationOptions): AsyncIterable<HumanWaitFrame>;
@@ -341,14 +342,15 @@ export class NativeSession<P extends ProgramContract> implements Disposable, Asy
   async question(callId: string, options: CancellationOptions = {}): Promise<NativeHumanQuestion> {
     const question = await this.sdk.question(callId, this.options(options));
     this.assertActive();
-    let bound = this.#questions.get(question.callId);
+    const key = JSON.stringify([question.origin.sessionId, question.origin.callSequence]);
+    let bound = this.#questions.get(key);
     if (!bound) {
       const controlOptions = (options?: CancellationOptions) => this.options(options);
-      bound = Object.freeze({ callId: question.callId, state: this.resource(question.state),
+      bound = Object.freeze({ callId: question.callId, origin: question.origin, state: this.resource(question.state),
         answer: (answer: HumanAnswer, options?: CancellationOptions) => question.answer(answer, controlOptions(options)),
         async *attachWait(options?: CancellationOptions) { yield* question.attachWait(controlOptions(options)); },
       });
-      this.#questions.set(question.callId, bound);
+      this.#questions.set(key, bound);
     }
     return bound;
   }
@@ -384,12 +386,12 @@ export class NativeSession<P extends ProgramContract> implements Disposable, Asy
   /** 问题保留其原始归属；页面切换不把另一会话的问题改投本会话。 */
   answer(question: HumanQuestion | HumanForegroundQuestion, answer: HumanAnswer, options?: CancellationOptions): Promise<boolean> {
     this.assertQuestion(question);
-    return this.sdk.answerQuestion(question.callId, answer, this.options(options));
+    return this.sdk.answerQuestion(question.callId, answer, this.options(options), captureHumanQuestionReference(question.origin));
   }
 
   async *claim(question: HumanQuestion | HumanForegroundQuestion, options?: CancellationOptions) {
     this.assertQuestion(question);
-    yield* this.sdk.attachWait(question.callId, this.options(options));
+    yield* this.sdk.attachWait(question.callId, this.options(options), captureHumanQuestionReference(question.origin));
   }
 
   private assertQuestion(question: HumanQuestion | HumanForegroundQuestion) {

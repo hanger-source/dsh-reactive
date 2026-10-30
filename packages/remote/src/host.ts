@@ -14,7 +14,7 @@ import type { ProgramOperationRequest, ProgramOperationLocateRequest, ProgramInv
 import type { ProgramRequestAddress, ProgramRequestStatus, ProgramWorkspace, ProgramGoalControl, ProgramCancelResult, ProgramJournalOpenRequest, ProgramJournalPageRequest, ProgramJournalFrame } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramProgressFrame, ProgramConversationEvent, ProgramExecutionFailure, ProgramModelPreparation } from '@hanger-source/dsh-reactive-client/types';
 import type { ProgramResumeGoalRequest } from '@hanger-source/dsh-reactive-client/types';
-import { goalReferenceSchema } from '@hanger-source/dsh-reactive';
+import { goalReferenceSchema, captureHumanQuestionReference } from '@hanger-source/dsh-reactive';
 import type { ConversationActivity, ExecutionFailure, ModelPreparation } from '@hanger-source/dsh-reactive';
 import { Inbox } from '@hanger-source/dsh-reactive-client/inbox';
 import { createProgramActionOwner, type ProgramActionOwner, type ProgramActionOwnerOptions } from './actions.ts';
@@ -674,7 +674,7 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
     const handle = await this.openSession(request);
     let first = true;
     try {
-      yield* frames(handle.human.values$, this.reading(handle, signal), ({ questions, foreground, replies }) => {
+      yield* frames(handle.human.values$, this.reading(handle, signal), ({ questions, foreground, replies, sourceConflicts }) => {
         const wireQuestion = <Q extends { readonly origin: HumanQuestionOrigin }>(question: Q) => ({
           ...question, origin: { ...question.origin, inputs: this.wireInputs(question.origin.inputs),
             continuation: question.origin.continuation === null ? null : { ...question.origin.continuation,
@@ -684,6 +684,8 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
           questions: { ...questions, active: questions.active.map(wireQuestion), settled: questions.settled.map(wireQuestion) },
           foreground: foreground.map(wireQuestion),
           replies: replies.map(wireQuestion),
+          sourceConflicts: sourceConflicts.map(conflict => ({ ...wireQuestion(conflict), occurrence: conflict.occurrence === null
+            ? null : { ...conflict.occurrence, inputs: this.wireInputs(conflict.occurrence.inputs) } })),
         } };
         first = false; return frame;
       });
@@ -694,21 +696,33 @@ export class ProgramRemoteService<E extends readonly AnyEnvironment[] = readonly
   /** bool 只说明前台受理或 continued 排队，不是答案落盘和工具结算。 */
   @Remote({ resources: { session: request => SessionId(request.sessionId) } })
   async answerQuestion(request: ProgramAnswerRequest, signal: AbortSignal): Promise<boolean> {
+    const callId = request.callId;
+    const expected = captureQuestionReference(request);
     const { actorId } = this.human();
     const handle = await this.options.application.open(request.sessionId, { contract: request.program }, request.accessId).catch(this.rethrow);
-    try { return await handle.answerQuestion(request.callId, request.answer, { actorId, signal }).catch(this.rethrow); }
+    try { return await handle.answerQuestion(callId, request.answer, { actorId, signal }, expected).catch(this.rethrow); }
     finally { handle.release(); }
   }
 
   /** claim 真实前台等待；流退出由原生 Human owner 释放 claim。 */
   @Remote({ mode: 'stream', resources: { session: request => SessionId(request.sessionId) } })
   async *attachWait(request: ProgramQuestionRequest, signal: AbortSignal): AsyncIterable<ProgramWaitFrame> {
+    const callId = request.callId;
+    const expected = captureQuestionReference(request);
     const { actorId } = this.human();
     const handle = await this.options.application.open(request.sessionId, { contract: request.program }, request.accessId).catch(this.rethrow);
-    try { yield* handle.attachWait(request.callId, { actorId, signal: this.reading(handle, signal) }); }
+    try { yield* handle.attachWait(callId, { actorId, signal: this.reading(handle, signal) }, expected); }
     catch (error) { this.rethrow(error); }
     finally { handle.release(); }
   }
+}
+
+function captureQuestionReference(request: ProgramQuestionRequest) {
+  if (request.expected === undefined) return undefined;
+  const expected = captureHumanQuestionReference(request.expected);
+  if (expected.sessionId !== request.sessionId || expected.callId !== request.callId)
+    throw new Error('REACTIVE_HUMAN_QUESTION_REFERENCE_MISMATCH');
+  return expected;
 }
 
 /** 仅连接物理流与已有 Observable；历史、重连与游标继续由 Gateway 拥有。 */

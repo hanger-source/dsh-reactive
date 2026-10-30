@@ -11,7 +11,7 @@ import { BehaviorSubject, filter, firstValueFrom } from 'rxjs';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import { createUserMessage, type GenerateOptions } from '@deepseek-ai/dsh-llm';
-import { ConversationAccessRevokedError, createWorkSelector, defineApplication, defineEnvironment, z } from '@hanger-source/dsh-reactive';
+import { HumanQuestionSourceConflictError, ConversationAccessRevokedError, createWorkSelector, defineApplication, defineEnvironment, z } from '@hanger-source/dsh-reactive';
 import { defineAction, implementAction } from '@hanger-source/dsh-reactive';
 import type { HumanAnswer, HumanQuestionOrigin, HumanResponderAdmission, HumanSnapshot } from '@hanger-source/dsh-reactive';
 import { inputReferenceSchema } from '@hanger-source/dsh-reactive/kernel';
@@ -32,6 +32,101 @@ function admitResponder(admission: HumanResponderAdmission, actors: readonly str
   if (!actors.includes(admission.actorId)) throw new Error('MERCHANT_RESPONDER_DENIED');
   if (admission.question.questions[0]?.id !== 'merchant-permission') throw new Error('MERCHANT_QUESTION_DENIED');
   if (admission.answer && admission.answer.answers[0]?.selected[0] !== '允许') throw new Error('MERCHANT_ANSWER_DENIED');
+}
+
+for (const output of ['boolean', 'answer-shaped'] as const) {
+  test(`待答问题遇普通同ID工具${output}结果：公开来源冲突，旧句柄与异步准入拒绝，独立问题和冷读仍成立`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-human-pending-collision-'));
+    let modelCalls = 0, executions = 0, hold = true;
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const admissions: string[] = [];
+    const ordinary = defineAction({ name: 'ordinary_business', description: '执行另一项独立业务', scope: z.null(),
+      input: z.object({}).strict(), output: z.union([z.boolean(), z.object({ answers: z.array(z.object({ id: z.string(), selected: z.array(z.string()) })) })]) });
+    const implementation = implementAction(ordinary, { execute() { executions++; return output === 'boolean' ? true : structuredClone(answer); } });
+    const program = defineProgram({ input: z.object({ workId: z.string() }).strict(), surface: defineSurface({ views: {}, actions: {} }) });
+    const definition = defineApplication({ name: 'pending-collision-' + output, admit: async () => {}, environments: [defineEnvironment({
+      id: 'work', instructions: '保留原问题，继续独立工作，再询问另一项工作', program: implementProgram(program, { Component() {
+        const action = useAction(implementation, () => null, []);
+        return h(Fragment, null, HumanInput({ async admitResponder(admission) {
+          admitResponder(admission);
+          admissions.push(admission.question.callId);
+          if (admission.question.callId === 'collision' && hold) { entered.resolve(); await release.promise; }
+        } }), Offer({ name: 'ordinary_business', action }));
+      } }),
+    })] });
+    const app = await boot(join(root, 'home'), definition, async function* () {
+      modelCalls++;
+      if (modelCalls === 1) yield* tool('ask_user_question', 'collision', { questions, timeout: 1 });
+      else if (modelCalls === 3) yield* tool('ordinary_business', 'collision', {});
+      else if (modelCalls === 5) yield* tool('ask_user_question', 'healthy-question', { questions, timeout: 30 });
+      else yield* text('本请求结束');
+    });
+    let session: Awaited<ReturnType<typeof app.host.create>> | undefined;
+    let answering: Promise<{ ok: boolean; error?: unknown }> | undefined;
+    try {
+      session = await app.host.create('work', { workspaceId: app.workspace.workspaceId });
+      await session.submit({ requestId: 'original-A', content: '询问原工作 A', intent: 'question', delivery: 'followup', scope: { workId: 'A' } });
+      await session.whenIdle();
+      const before = await session.human.read();
+      const original = before.questions.active[0]!;
+      assert.equal(original.state, 'continued');
+      assert.deepEqual(before.sourceConflicts, []);
+      assert.deepEqual(original.origin.inputs.map(input => input.requestId), ['original-A']);
+      const bound = await session.question('collision');
+      answering = bound.answer(answer).then(() => ({ ok: true }), error => ({ ok: false, error }));
+      await entered.promise;
+      await session.submit({ requestId: 'ordinary-B', content: '仅执行独立工作 B', intent: 'question', delivery: 'followup', scope: { workId: 'B' } });
+      await session.whenIdle();
+      const native = app.native.sessions.get(SessionId(session.id))!;
+      const calls = native.snapshotEvents().filter(event => event.type === 'tool/call');
+      const foreign = calls.find(event => event.data.name === 'ordinary_business')!;
+      const foreignResult = native.snapshotEvents().find(event => event.type === 'tool/result' && event.sourceEventSeqs?.includes(foreign.seq))!;
+      const human = await session.human.read();
+      assert.deepEqual(human.questions, { active: [], settled: [] });
+      assert.equal(human.sourceConflicts.length, 1);
+      assert.deepEqual(human.sourceConflicts[0], { origin: original.origin, reason: 'foreign-result', eventSequence: foreignResult.seq,
+        occurrence: { callId: foreign.data.callId, callSequence: foreign.seq, rootCallId: foreign.data.callId, parentCallId: null,
+          name: 'ordinary_business', inputs: session.snapshot().requests['ordinary-B']!.inputs } });
+      const conflict = (error: unknown) => error instanceof HumanQuestionSourceConflictError
+        && error.conflicts[0]?.origin.callSequence === original.origin.callSequence;
+      await assert.rejects(bound.state.read(), conflict);
+      await assert.rejects(bound.answer(answer), conflict);
+      await assert.rejects(session.answerQuestion('collision', answer), conflict);
+      await assert.rejects(session.attachWait('collision')[Symbol.asyncIterator]().next(), conflict);
+      assert.deepEqual(admissions, ['collision'], '冲突后不再次进入业务响应政策');
+      hold = false; release.resolve();
+      const rejected = await answering;
+      assert.equal(rejected.ok, false); assert.ok(conflict(rejected.error), '准入等待期间进入的异源结果必须在原生受理前被发现');
+      assert.equal(executions, 1);
+      assert.equal(native.snapshotEvents().some(event => event.type === 'user/message' && event.data.source.kind === 'user-question-reply'), false);
+
+      const healthyForeground = firstValueFrom(session.foregroundQuestions$.pipe(filter(values => values.some(value => value.callId === 'healthy-question'))));
+      const foregroundResult = healthyForeground.then(value => ({ ok: true as const, value }), error => ({ ok: false as const, error }));
+      await session.submit({ requestId: 'healthy-C', content: '询问独立工作 C', intent: 'question', delivery: 'followup', scope: { workId: 'C' } });
+      const foreground = await foregroundResult;
+      if (!foreground.ok) throw foreground.error;
+      assert.ok(foreground.value.some(value => value.callId === 'healthy-question'));
+      assert.equal(await (await session.question('healthy-question')).answer(answer), true);
+      await session.whenIdle();
+      const healthy = await session.human.read();
+      assert.deepEqual(healthy.questions.settled.map(value => value.callId), ['healthy-question']);
+      assert.deepEqual(healthy.sourceConflicts, human.sourceConflicts);
+      assert.equal(modelCalls, 6);
+      const id = session.id;
+      await app.host.close(id);
+      const cold = await app.host.open(id, program);
+      try {
+        assert.deepEqual((await cold.human.read()).sourceConflicts, human.sourceConflicts);
+        await assert.rejects(bound.state.read(), conflict);
+        await assert.rejects(cold.question('collision'), conflict);
+        await assert.rejects(cold.answerQuestion('collision', answer), conflict);
+        await assert.rejects(cold.attachWait('collision')[Symbol.asyncIterator]().next(), conflict);
+        assert.equal(app.native.agents.get(SessionId(id)), undefined, '来源冲突的冷控制不得激活原生Agent');
+        assert.equal(modelCalls, 6);
+      } finally { cold.release(); }
+      assert.deepEqual(app.errors, []);
+    } finally { hold = false; release.resolve(); await answering; session?.release(); await app.dispose(); }
+  });
 }
 
 test('提问后复用callId的普通工具不改写旧问题来源，再次同ID提问明确拒绝歧义来源', async () => {
@@ -84,6 +179,7 @@ test('提问后复用callId的普通工具不改写旧问题来源，再次同ID
     assert.notEqual(ordinaryStart.seq, originalStart.seq);
     const preserved = (await session.human.read()).questions.settled[0];
     assert.deepEqual(preserved, original, '普通同ID工具不能成为历史问题的新来源');
+    assert.deepEqual((await session.human.read()).sourceConflicts, [], '合法人答已结算后普通工具复用ID不构成待答来源冲突');
     assert.deepEqual(preserved!.origin.inputs.map(input => [input.requestId, input.scope]),
       [['original-question', { merchantId: 'merchant-a', workId: 'original' }]]);
     await session.submit({ requestId: 'ambiguous-question', content: '为第三项工作再次询问', intent: 'question', delivery: 'followup',
@@ -180,6 +276,7 @@ for (const mode of ['native', 'ptc'] as const) {
       assert.deepEqual(admittedOrigins, [origin], '当前选择与消费者写入尝试均不得改写策略所核验的原问题');
       await session.whenIdle();
       assert.equal(requests.length, 2);
+      assert.deepEqual((await session.human.read()).sourceConflicts, [], '真实前台答复及PTC结果不能被投影交付次序误判为缺少来源');
       const agent = app.native.agents.get(SessionId(session.id))!;
       const events = agent.session.snapshotEvents();
       assert.equal(events.filter(event => event.type === 'user/message' && event.data.source.kind === 'user-question-reply').length, 0);
@@ -374,6 +471,7 @@ for (const mode of ['native', 'ptc'] as const) {
       const settled = await firstValueFrom(cold.questions$.pipe(filter(state => state.settled.some(value => value.callId === pending.callId))));
       await cold.whenIdle();
       assert.deepEqual((await cold.human.read()).replies, [], 'user/message 结算后不遗留 proposal');
+      assert.deepEqual((await cold.human.read()).sourceConflicts, [], '正常晚答沿真实consumed reply结算，native和PTC都保持可信');
       humanSubscription.unsubscribe();
       assert.equal(requests.length, 4);
       assert.deepEqual(settled.active, []);

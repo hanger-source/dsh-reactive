@@ -23,6 +23,7 @@ import { remoteAttachments } from './attachments.ts';
 import type { SessionAttachments } from '@hanger-source/dsh-reactive';
 import { remoteFiles } from './files.ts';
 import { createHumanWaits, remoteHuman } from './human.ts';
+import { captureHumanQuestionReference } from '@hanger-source/dsh-reactive';
 import { createClientScope, revokeConversationAccess, type ClientScope } from './scope.ts';
 import { ResourceReader } from '@hanger-source/dsh-reactive';
 import { actionIdentity, assertActionIdentity } from '@hanger-source/dsh-reactive';
@@ -36,7 +37,7 @@ export { createAuthenticatedTransport } from './transport.ts';
 export type { AuthenticatedTransport, AuthenticatedTransportOptions } from './transport.ts';
 export { Inbox } from './contracts/inbox.ts';
 export { decodeProgramFailure, ActionAdmissionUnknownError, CreationUnknownError, CreationIncompleteError,
-  ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFilesUnavailableError, SessionJournalUnavailableError, SessionAttachmentsUnavailableError } from './contracts/errors.ts';
+  ProgramParticipantMismatchError, SubmissionAdmissionUnknownError, InputEditAdmissionUnknownError, FileUploadReceiptUnknownError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFilesUnavailableError, SessionJournalUnavailableError, SessionAttachmentsUnavailableError, HumanQuestionSourceConflictError } from './contracts/errors.ts';
 export type { AttachmentIdType, ImageAttachmentRef, SessionAttachments, SessionImageAttachment } from '@hanger-source/dsh-reactive';
 export { ProgramJournal } from './journal.ts';
 export type { ProgramJournalOptions, ProgramJournalRequest } from './journal.ts';
@@ -217,7 +218,7 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
         owner.acquire(() => slots, slots => { slots.clear(); }, 'program-view-slots');
         const assertActive = (): void => { active(); scopeSignal.throwIfAborted(); };
         const sessionResult = <T>(reply: RemoteResult<T>): T => {
-          if (!reply.ok) throw revokeConversationAccess(owner, reply.error);
+          if (!reply.ok) throw revokeConversationAccess(owner, decodeProgramFailure(reply.error));
           return reply.value;
         };
         const actionBindings = createActionBindings(owner, address);
@@ -493,8 +494,8 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
           const waits = createHumanWaits(owner, address);
           const controls: Pick<RemoteProgramSession<P>, 'question' | 'answerQuestion' | 'attachWait' | 'pause' | 'resumeGoal' | 'cancel'> = {
             question: createHumanQuestionResolver(human, {
-              answerQuestion: (id, answer, options) => controls.answerQuestion(id, answer, options),
-              attachWait: (id, options) => controls.attachWait(id, options),
+              answerQuestion: (id, answer, options, expected) => controls.answerQuestion(id, answer, options, expected),
+              attachWait: (id, options, expected) => controls.attachWait(id, options, expected),
             }, { signal: scopeSignal }),
             async pause(options = {}) {
               assertActive();
@@ -512,15 +513,16 @@ async function bindParticipantProgramClient<const P extends SharedProgramContrac
               const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
               return sessionResult(await callRemote(current => remote.cancel(address, current), signal));
             },
-            async answerQuestion(callId, answer, options = {}) {
+            async answerQuestion(callId, answer, options = {}, expected) {
               assertActive();
+              const reference = expected === undefined ? undefined : captureHumanQuestionReference(expected);
               const signal = options.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal;
               signal.throwIfAborted();
-              return sessionResult(await callRemote(current => remote.answerQuestion({ ...address, callId, answer }, current), signal));
+              return sessionResult(await callRemote(current => remote.answerQuestion({ ...address, callId, answer, expected: reference }, current), signal));
             },
-            async *attachWait(callId, options = {}) {
+            async *attachWait(callId, options = {}, expected) {
               assertActive();
-              yield* waits.attach(callId, options);
+              yield* waits.attach(callId, options, expected);
             },
           };
           Object.assign(handle, controls);

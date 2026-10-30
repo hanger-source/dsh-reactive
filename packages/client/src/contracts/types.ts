@@ -1,5 +1,5 @@
 import type { AttachmentIdType, ExecutionFailure, ModelPreparation, ModelPreparationAdmission, SessionImageAttachment as CoreSessionImageAttachment } from '@hanger-source/dsh-reactive';
-import type { ActionIdentity, ActionInvocationOrigin, InvocationPhase, Continuation, GoalReference, GoalActivity, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanReplyDelivery, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
+import type { ActionIdentity, ActionInvocationOrigin, InvocationPhase, Continuation, GoalReference, GoalActivity, InputReference, Submission, HumanAnswer, HumanInputState, HumanForegroundQuestion, HumanQuestionOrigin, HumanQuestionReference, HumanQuestionSourceConflict, HumanReplyDelivery, HumanWaitFrame, ConversationEvent, WorkspaceInfo, WorkspaceRegistration, ConversationCreateOptions, CreationReference, EncodedFileUploadRequest, FileUploadValue, ProgramContractIdentity,
   ProgramGoalControl as CoreProgramGoalControl, ProgramCancelResult as CoreProgramCancelResult, ProgramRequestStatus as CoreProgramRequestStatus,
   ProgramJournalEvent as CoreProgramJournalEvent, ProgramJournalEntry as CoreProgramJournalEntry,
   ProgramJournalPage as CoreProgramJournalPage, ProgramJournalWindow as CoreProgramJournalWindow,
@@ -159,10 +159,13 @@ export interface ProgramQuestions {
   };
   readonly foreground: readonly WireHumanQuestion<HumanForegroundQuestion>[];
   readonly replies: readonly WireHumanQuestion<HumanReplyDelivery>[];
+  readonly sourceConflicts: readonly (Omit<WireHumanQuestion<HumanQuestionSourceConflict>, 'occurrence'> & {
+    readonly occurrence: (Omit<NonNullable<HumanQuestionSourceConflict['occurrence']>, 'inputs'> & { readonly inputs: readonly InputReference<JsonValue>[] }) | null;
+  })[];
 }
 export type ProgramQuestionsFrame = { readonly type: 'baseline'; readonly value: ProgramQuestions }
   | { readonly type: 'questions'; readonly value: ProgramQuestions };
-export interface ProgramQuestionRequest extends ProgramSessionAddress { readonly callId: string; }
+export interface ProgramQuestionRequest extends ProgramSessionAddress { readonly callId: string; readonly expected?: HumanQuestionReference; }
 export interface ProgramAnswerRequest extends ProgramQuestionRequest { readonly answer: HumanAnswer; }
 export type ProgramWaitFrame = HumanWaitFrame;
 /** id/origin 由宿主真实受理入口签发，不是客户端生成的任务或幂等键。 */

@@ -2,7 +2,8 @@ import { RemoteError, type RemoteErrorCode } from '@deepseek-ai/dsh-typert-proto
 import { z } from 'zod';
 import { ActionContractMismatchError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFilesUnavailableError, SessionAttachmentsUnavailableError, SessionJournalUnavailableError, programIdentity, type ActionIdentity, type NativeChildCommand, type NativeChildReference, type ProgramContractIdentity } from '@hanger-source/dsh-reactive';
 import type { ProgramCreationReference, ProgramFailure, ProgramIdentity } from './types.ts';
-import { EligibilityError, ActionInvocationConflictError, ActionAdmissionInProgressError } from '@hanger-source/dsh-reactive';
+import { EligibilityError, ActionInvocationConflictError, ActionAdmissionInProgressError, HumanQuestionSourceConflictError } from '@hanger-source/dsh-reactive';
+export { HumanQuestionSourceConflictError } from '@hanger-source/dsh-reactive';
 export { ConversationAccessRevokedError, SessionProgramMismatchError } from '@hanger-source/dsh-reactive';
 export { SessionFilesUnavailableError, SessionAttachmentsUnavailableError, SessionJournalUnavailableError } from '@hanger-source/dsh-reactive';
 
@@ -44,6 +45,7 @@ export class FileUploadReceiptUnknownError extends Error {
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface RemoteErrorDetailsMap {
+    'reactive/human-question-source-conflict': { readonly conflicts: import('./types.ts').ProgramQuestions['sourceConflicts'] };
     'reactive/native-goal': { readonly code: string };
     'reactive/goal-round-driver-unavailable': { readonly reason: string };
     'reactive/action-invocation-conflict': { readonly invocationId: string };
@@ -66,9 +68,23 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
   }
 }
 const actionIdentitySchema = z.object({ name: z.string(), version: z.number().int().positive().safe() }).strict();
+const inputReferenceSchema = z.object({ sourceSessionId: z.string().min(1), messageId: z.string().min(1), requestId: z.string().nullable(),
+  source: z.string(), intent: z.enum(['question', 'goal', 'followup', 'result']), scope: z.json(), actorId: z.string().min(1).nullable(),
+  participant: z.enum(['human', 'service', 'native']) }).strict();
+const occurrenceSchema = z.object({ callId: z.string(), callSequence: z.number().int().nonnegative().safe(), rootCallId: z.string(),
+  parentCallId: z.string().nullable(), name: z.string(), inputs: inputReferenceSchema.array() }).strict();
+const questionSourceConflictSchema = z.object({ origin: occurrenceSchema.extend({ sessionId: z.string().min(1),
+  continuation: z.object({ sessionId: z.string().min(1), inputs: inputReferenceSchema.array(),
+    goal: z.object({ id: z.string().min(1), revision: z.number().int().positive() }).strict().nullable() }).strict().nullable() }),
+  reason: z.enum(['foreign-result', 'result-source-unresolved', 'unverified-answer']), eventSequence: z.number().int().nonnegative().safe().nullable(),
+  occurrence: occurrenceSchema.nullable() }).strict();
 
 /** 正式 failure 已由 Gateway/贡献合同核验，客户端保留完整公开 details。 */
-export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError | ConversationAccessRevokedError | SessionProgramMismatchError | ActionContractMismatchError | ActionInvocationConflictError | ActionAdmissionInProgressError | SessionFilesUnavailableError | SessionAttachmentsUnavailableError | SessionJournalUnavailableError | EligibilityError {
+export function decodeProgramFailure(value: Omit<ProgramFailure, 'details'> & { readonly details: unknown }): RemoteError | ConversationAccessRevokedError | SessionProgramMismatchError | ActionContractMismatchError | ActionInvocationConflictError | ActionAdmissionInProgressError | SessionFilesUnavailableError | SessionAttachmentsUnavailableError | SessionJournalUnavailableError | EligibilityError | HumanQuestionSourceConflictError {
+  if (value.code === 'reactive/human-question-source-conflict') {
+    const { conflicts } = z.object({ conflicts: questionSourceConflictSchema.array().min(1) }).strict().parse(value.details);
+    return new HumanQuestionSourceConflictError(conflicts);
+  }
   if (value.code === 'reactive/eligibility') {
     const failure = z.object({ code: z.string(), message: z.string(), details: z.union([z.array(z.json()), z.record(z.string(), z.json())]) }).strict();
     const details = z.object({ capabilityName: z.string(), reason: z.enum(['pending', 'error', 'denied']), observation: z.discriminatedUnion('status', [

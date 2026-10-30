@@ -731,6 +731,12 @@ for (const reply of snapshot.replies) {
 }
 ```
 
+`HumanSnapshot.sourceConflicts` 报告不能可信关联到原问题的结果或答案，包含原 `origin`、`reason`（`foreign-result`、`result-source-unresolved` 或 `unverified-answer`）、`eventSequence` 和 `occurrence`（后两者可能为 null）。受影响来源从可信问题、前台和答复数据中排除，其他合法问题仍可读取和回答。Work 的 `questions.sourceConflicts` 与 `question.source-conflict` 按原 `origin.inputs` 归属；它们只提供诊断，不唤醒 Goal 或授予权限。尝试回答或接管受影响来源会抛出 `HumanQuestionSourceConflictError`，其 `conflicts` 提供同一诊断。
+
+来源判断依赖原提问的正式结果、完整合法答案或实际消费的人工回复；普通工具返回的 JSON 即使形似答案也不是人工答复。已正式返回 pending 的问题若随后被异源结果污染且没有合法终结证据，也会报告冲突；普通 PTC 内部调用不触发这一判断。合法回答后普通工具复用 callId 可以继续，重复提问复用同一 callId 仍可能因原生寻址不足报 `REACTIVE_HUMAN_QUESTION_ORIGIN_AMBIGUOUS`，不能按序号强行回答。原生已经撤下的问题无法由诊断恢复可回答性；直接读取上游原生投影的 UI 仍受 rc.3 限制。
+
+固定问题句柄的 `origin` 是只读来源，按会话和原调用序号复用；`answer` 与 `attachWait` 自动固定来源。高级调用可向 `answerQuestion(callId, answer, options?, expected?)` 或 `attachWait(callId, options?, expected?)` 传入句柄的 `origin`；省略时入口查找当前唯一问题并固定其实际来源。`expected` 只用于比较，准入策略始终检查实际 origin。core 的 `humanQuestionReferenceSchema` 和 `captureHumanQuestionReference` 提供 sessionId、callId、callSequence 引用的校验和捕获。冲突在准入前及等待结束后接受控制前检查，已接管的等待只在自身来源受影响时结束。
+
 原问题在晚答进入 `user/message` 前仍可能保持 `continued`；`question.pending` 表示原生问题尚未结算，不表示人一定还没回答。提议窗口结束、取消或重新入队会改变交付事实；`replies` 为空不能证明从未作答，也不能证明模型已经消费。冷读保留最后持久事实，`proposed` 不承诺 Agent 仍在运行。进入输入历史、模型实际处理和业务完成分别观察；这些读侧不恢复函数栈或签发 Goal 续接权限。
 
 程序用 HumanInput 声明真实响应者准入，问题与回答继续属于 dsh 原生问答服务。多个模块可以贡献 HumanInput，但必须传同一个必需的 `admitResponder` 函数引用；冲突拒绝，最后一项退出撤销资格，不提供默认政策：

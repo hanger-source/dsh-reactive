@@ -6,7 +6,7 @@ import type { Continuation, ConversationActivity, ExecutionFailure, GoalActivity
 import type { AssistantAttemptSnapshot, AssistantProgressFrame, ConversationEvent } from './events.ts';
 import type { ConversationProgressSnapshot } from './request.ts';
 import type { ModelPreparation, ModelPreparationAdmission } from './preparation.ts';
-import type { HumanForegroundQuestion, HumanQuestion, HumanReplyDelivery, HumanSettledQuestion, HumanSnapshot } from '../participation/contract.ts';
+import type { HumanForegroundQuestion, HumanQuestion, HumanQuestionSourceConflict, HumanReplyDelivery, HumanSettledQuestion, HumanSnapshot } from '../participation/contract.ts';
 import type { Observation } from '../resources/observation.ts';
 import { matchesOperationFollowResult, type OperationFollowSnapshot } from '../operations/follows.ts';
 import type { ResourceReader, ResourceReadable, ResourceReaderOptions } from '../resources/reader.ts';
@@ -58,6 +58,7 @@ export interface WorkOperationFollow extends WorkOccurrence<OperationFollowSnaps
 
 /** 条件只描述原事实，不判定整个业务是否可以继续，也不把执行 busy 当作阻塞。 */
 export type WorkCondition =
+  | ({ readonly kind: 'question.source-conflict' } & WorkOccurrence<HumanQuestionSourceConflict>)
   | ({ readonly kind: 'preparation.waiting' } & WorkOccurrence<ModelPreparation>)
   | ({ readonly kind: 'execution.failed' } & WorkOccurrence<ExecutionFailure>)
   | ({ readonly kind: 'goal.paused' } & WorkOccurrence<GoalActivity>)
@@ -97,6 +98,7 @@ export interface WorkSessionSnapshot {
     readonly active: readonly WorkOccurrence<HumanQuestion>[];
     readonly settled: readonly WorkOccurrence<HumanSettledQuestion>[];
     readonly replies: readonly WorkOccurrence<HumanReplyDelivery>[];
+    readonly sourceConflicts: readonly WorkOccurrence<HumanQuestionSourceConflict>[];
   };
   readonly foreground: readonly WorkOccurrence<HumanForegroundQuestion>[];
   readonly waits: readonly WorkOccurrence<WorkWait>[];
@@ -193,7 +195,7 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
     const sessions = sources.map(({ identity, progress, human }): WorkSessionSnapshot => {
       const { activity, attempts } = progress;
       if (activity.sessionId !== identity.sessionId) throw new Error('REACTIVE_WORK_SESSION_MISMATCH');
-      for (const question of [...human.questions.active, ...human.questions.settled, ...human.foreground, ...human.replies]) {
+      for (const question of [...human.questions.active, ...human.questions.settled, ...human.foreground, ...human.replies, ...human.sourceConflicts]) {
         if (question.origin.sessionId !== identity.sessionId) throw new Error('REACTIVE_WORK_QUESTION_SESSION_MISMATCH');
       }
       for (const wait of activity.waits) {
@@ -228,6 +230,7 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
       const active = occurrences(human.questions.active, value => value.origin.inputs);
       const settled = occurrences(human.questions.settled, value => value.origin.inputs);
       const humanReplies = occurrences(human.replies, value => value.origin.inputs);
+      const sourceConflicts = occurrences(human.sourceConflicts, value => value.origin.inputs);
       const foreground = occurrences(human.foreground, value => value.origin.inputs);
       const waits = occurrences(activity.waits, value => value.continuation.inputs);
       const goals = occurrences(activity.goal === null ? [] : [activity.goal], value => value.inputs);
@@ -240,6 +243,7 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
         return [Object.freeze({ value, matchedInputs, resultRequest })];
       }));
       const conditions: WorkCondition[] = [];
+      for (const conflict of sourceConflicts) conditions.push(Object.freeze({ kind: 'question.source-conflict', ...conflict }));
       if (preparation && preparation.value.waiting.length) conditions.push(Object.freeze({ kind: 'preparation.waiting', ...preparation }));
       for (const failure of failures) conditions.push(Object.freeze({ kind: 'execution.failed', ...failure }));
       for (const reply of humanReplies) {
@@ -311,7 +315,7 @@ export function createWorkSelector<K extends Json>(options: { readonly identify:
         matchedInputs: uniqueInputs([...(question.active?.matchedInputs ?? []), ...(question.foreground?.matchedInputs ?? [])]) }));
       return Object.freeze({ identity: captureIdentity(identity), sessionId: identity.sessionId,
         source: activity.source, live: activity.source === 'live', execution: activity.execution, sequence: activity.sequence,
-        requests, inputs, calls, replies, failures, preparation, attempts: activeAttempts, questions: Object.freeze({ active, settled, replies: humanReplies }),
+        requests, inputs, calls, replies, failures, preparation, attempts: activeAttempts, questions: Object.freeze({ active, settled, replies: humanReplies, sourceConflicts }),
         foreground, waits, operationFollows, goals, conditions: Object.freeze(conditions) });
     });
     return Object.freeze({ key, sessions: Object.freeze(sessions), invocations: Object.freeze([]) });

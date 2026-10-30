@@ -4,12 +4,23 @@ import { ChildCreationIncompleteError, CreationIncompleteError, InputFileNotStag
 import { isAttachmentError } from '@deepseek-ai/dsh-attachment';
 import { z, EligibilityError, ConversationAccessRevokedError, SessionProgramMismatchError, SessionFileOutsideWorkspaceError, SessionFilesUnavailableError, SessionJournalUnavailableError, SessionAttachmentsUnavailableError, ActionBindingUnavailableError, ActionTargetMismatchError, ActionContractMismatchError, ActionInvocationConflictError, ActionAdmissionInProgressError, InputEditRejectedError, ProgramContractMismatchError, SharedProgramRequiredError } from '@hanger-source/dsh-reactive';
 import '@hanger-source/dsh-reactive-client/errors';
-import type { ProgramFailure } from '@hanger-source/dsh-reactive-client/types';
+import type { ProgramFailure, ProgramQuestions } from '@hanger-source/dsh-reactive-client/types';
+import { HumanQuestionSourceConflictError } from '@hanger-source/dsh-reactive';
+
+function wireQuestionConflicts(error: HumanQuestionSourceConflictError): ProgramQuestions['sourceConflicts'] {
+  const inputs = (values: import('@hanger-source/dsh-reactive').HumanQuestionOrigin['inputs']) =>
+    values.map(value => ({ ...value, scope: z.json().parse(value.scope) }));
+  return error.conflicts.map(value => ({ ...value, origin: { ...value.origin, inputs: inputs(value.origin.inputs),
+    continuation: value.origin.continuation === null ? null : { ...value.origin.continuation, inputs: inputs(value.origin.continuation.inputs) } },
+    occurrence: value.occurrence === null ? null : { ...value.occurrence, inputs: inputs(value.occurrence.inputs) } }));
+}
 
 /** 框架领域事实与正式接入的原生 Goal 分类保留公开含义；其他错误由官方 Gateway 归类。 */
 export function createProgramFailureMapper(wireStream: Pick<TypertGatewayWireStream, 'failure'>): (error: unknown) => ProgramFailure {
   return error => {
-    const known = error instanceof NativeGoalError
+    const known = error instanceof HumanQuestionSourceConflictError
+      ? new RemoteError('reactive/human-question-source-conflict', error.message, { conflicts: wireQuestionConflicts(error) })
+      : error instanceof NativeGoalError
       ? new RemoteError('reactive/native-goal', error.message, { code: error.code })
       : error instanceof GoalRoundDriverUnavailableError
         ? new RemoteError('reactive/goal-round-driver-unavailable', error.message, { reason: error.reason })

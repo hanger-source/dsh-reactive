@@ -75,6 +75,41 @@ export interface HumanSnapshot {
   readonly questions: HumanInputState;
   readonly foreground: readonly HumanForegroundQuestion[];
   readonly replies: readonly HumanReplyDelivery[];
+  readonly sourceConflicts: readonly HumanQuestionSourceConflict[];
+}
+
+/** 正式日志已经无法支持该原问题的可信读侧；不表达另一套问题生命周期。 */
+export interface HumanQuestionSourceConflict {
+  readonly origin: HumanQuestionOrigin;
+  readonly reason: 'foreign-result' | 'result-source-unresolved' | 'unverified-answer';
+  readonly eventSequence: number | null;
+  readonly occurrence: ToolOccurrence | null;
+}
+
+/** 调用者固定的预期发生身份；权限及原始输入仍由宿主的真实 origin 决定。 */
+export interface HumanQuestionReference {
+  readonly sessionId: string;
+  readonly callId: string;
+  readonly callSequence: number;
+}
+
+export const humanQuestionReferenceSchema: z.ZodType<HumanQuestionReference, HumanQuestionReference> = z.object({
+  sessionId: z.string().min(1), callId: z.string().min(1), callSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+}).strict();
+
+/** 在第一个异步边界前取得自有身份；完整 origin 也只贡献这三个引用字段。 */
+export function captureHumanQuestionReference(expected: HumanQuestionReference): HumanQuestionReference {
+  return Object.freeze(humanQuestionReferenceSchema.parse({ sessionId: expected?.sessionId,
+    callId: expected?.callId, callSequence: expected?.callSequence }));
+}
+
+export class HumanQuestionSourceConflictError extends Error {
+  readonly conflicts: readonly HumanQuestionSourceConflict[];
+  constructor(conflicts: readonly HumanQuestionSourceConflict[]) {
+    super('REACTIVE_HUMAN_QUESTION_SOURCE_CONFLICT');
+    this.name = 'HumanQuestionSourceConflictError';
+    this.conflicts = structuredClone(conflicts);
+  }
 }
 
 /** 固定callId当前可见的原生事实；全部缺失不等于业务已取消或已完成。 */

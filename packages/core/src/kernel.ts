@@ -25,6 +25,7 @@ export { assertOperationFollowSupported, attachOperation, bindOperation, encodeO
 export { humanAnswerSchema, type HumanAnswer, type HumanAskOptions, type HumanAskResult, type HumanForegroundQuestion, type HumanInputState, type HumanPrompt, type HumanQuestion, type HumanQuestionOrigin, type HumanResponderOptions, type HumanWaitFrame } from './participation/contract.ts';
 export { createHumanQuestionResolver, type HumanQuestionHandle, type HumanQuestionResolver } from './participation/questions.ts';
 export type { HumanSnapshot, HumanReplyDelivery } from './participation/contract.ts';
+export { HumanQuestionSourceConflictError, humanQuestionReferenceSchema, captureHumanQuestionReference, type HumanQuestionSourceConflict, type HumanQuestionReference } from './participation/contract.ts';
 export { type HumanInputDeclaration, type SkillDeclaration } from './program/declarations.ts';
 export { assertExpectedProgram, assertProgramDefinition, captureProgramExpectation, assertSharedProgramDefinition, type ProgramContract, type SharedProgramContract, type ProgramExpectation, type ProgramImplementation, type ProgramInput, type ProgramParsedInput } from './program/definition.ts';
 export { programIdentity, assertProgramIdentity, ProgramContractMismatchError, SharedProgramRequiredError, type ProgramContractIdentity } from './program/identity.ts';

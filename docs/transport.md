@@ -276,6 +276,10 @@ ApplicationHost 的实际 Action owner 持有唯一 Invocation 回执索引，Ga
 
 本地与远程 SDK 的 `human` 资源提供同一批 questions 和 foreground 事实，远程 `human$` 是其完整 Observation 流。`question(callId, options?)` 只绑定当前快照中已知的原问题并复用对象，返回固定 callId、state、answer 与 attachWait。state 保留 active、foreground 和 settled 的原生形态；前台超时、迟答、冷恢复和取消均不靠 SDK 自建阶段推断。服务来源不能借这些入口作答或控制 Goal。
 
+远程 `human$` 帧必须包含 `sourceConflicts`；客户端拒绝缺少该字段的协议帧。冲突包含原 origin、原因、事件序号及可空 occurrence，受影响的问题和答复不进入可信数据，其他来源照常可用。回答或接管受影响来源返回类型化 `HumanQuestionSourceConflictError`，传输错误码为 `reactive/human-question-source-conflict`。Work 按原输入归属暴露 `questions.sourceConflicts` 和 `question.source-conflict`，不因此恢复 Goal 或授予权限。
+
+问题句柄的只读 `origin` 固定原来源，answer 和 attachWait 自动带上引用。高级调用的 `ProgramQuestionRequest.expected` 可选，包含 sessionId、callId、callSequence；省略时服务端查找当前唯一问题并固定实际来源。expected 是比较条件，服务器策略始终核验实际 origin。来源冲突无法恢复原生已撤下问题的可回答性；直接读取上游原生投影的 UI 仍受 rc.3 限制。
+
 前台、持久 active 与 settled 问题均携带与本地相同的 origin：原 sessionId、实际工具调用及其完整原始输入集合。客户端可据此把问题交给对应请求或业务模块，无需订阅并反查工具历史。多输入问题保留全部来源，JSON 范围不按客户端 Program 转换；origin 是关联事实，响应许可仍由认证入口与当前 HumanInput 策略核验。
 
 ## 官方流与发布边界

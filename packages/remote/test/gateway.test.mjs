@@ -832,6 +832,9 @@ test('真实认证 carrier 复用 Gateway：Action 主动问人、codec/resource
     assert.match(String(completedActivity.at(-1).error), /REACTIVE_REMOTE_CLIENT_DISPOSED/u);
     assert.equal(executions, 1, '已完成调用的读侧撤销不重新执行或改写业务结果');
     assert.deepEqual(runtimeErrors, []); assert.deepEqual(carrierErrors, []);
+  } catch (error) {
+    console.error('gateway.scenario.failed', error);
+    throw error;
   } finally {
     finish.resolve(); editFinish.resolve(); await Promise.all(clients.map(client => client.dispose()));
     await gateway.close(); await runtime.dispose();

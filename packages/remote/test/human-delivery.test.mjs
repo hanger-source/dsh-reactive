@@ -3,13 +3,14 @@ import { test } from 'node:test';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createElement as h } from 'react';
+import { createElement as h, Fragment } from 'react';
 import { firstValueFrom, filter, timeout } from 'rxjs';
 import WebSocket from 'ws';
+import { RemoteStream } from '@deepseek-ai/dsh-api-gateway/client';
 import { LlmAdapter, ToolCallId } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
-import { defineApplication, defineEnvironment, defineProgram, defineSurface, createWorkSelector, z } from '@hanger-source/dsh-reactive';
-import { HumanInput, implementProgram, useBeforeStep } from '@hanger-source/dsh-reactive/program';
+import { defineApplication, defineEnvironment, defineProgram, defineSurface, defineAction, implementAction, HumanQuestionSourceConflictError, createWorkSelector, z } from '@hanger-source/dsh-reactive';
+import { HumanInput, Offer, useAction, implementProgram, useBeforeStep } from '@hanger-source/dsh-reactive/program';
 import { createRuntime, nativeModel } from '@hanger-source/dsh-reactive-dsh';
 import { createProgramClient } from '@hanger-source/dsh-reactive-client';
 import { mountProgramGateway, RemoteAuthenticationError } from '@hanger-source/dsh-reactive-remote';
@@ -158,6 +159,135 @@ for (const failPreparation of [false, true]) test(failPreparation
       assert.equal(runtime.native.agents.get(SessionId(local.id)), undefined, '失败历史的冷读不激活 Agent');
       assert.equal(modelCalls, 3);
     } else assert.deepEqual(errors, []);
+  } finally {
+    hold = false; release.resolve(); await client?.dispose(); local?.release();
+    try { await gateway?.close(); } finally { await runtime.dispose(); }
+  }
+});
+
+test('真实 HTTP 隔离复用 callId 的业务答案，原问题控制拒绝迟答且 Work 保留原工作归属', { timeout: 15000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-reactive-human-source-'));
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  let phase = 'original', emitted = false, hold = false, gateway, client, local;
+  const errors = [], admissions = [];
+  const answer = { answers: [{ id: 'evidence', selected: [], custom: '业务 JSON 不是人工回答' }] };
+  const action = defineAction({ name: 'business_answer', description: '返回业务 JSON', scope: z.null(), input: z.object({}), output: z.object({ answers: z.array(z.object({ id: z.string(), selected: z.array(z.string()), custom: z.string() })) }) });
+  const implementation = implementAction(action, { execute: () => answer });
+  const program = defineProgram({ name: 'human_source', input: z.object({ workId: z.string() }), surface: defineSurface({ views: {}, actions: {} }) });
+  const definition = defineApplication({ name: 'human-source', admit: async () => {}, environments: [defineEnvironment({
+    id: 'work', instructions: '实际调用由受控模型指定', program: implementProgram(program, { Component() {
+      const business = useAction(implementation, () => null, []);
+      return h(Fragment, null, h(Offer, { name: 'business_answer', action: business }), h(HumanInput, { async admitResponder(admission) {
+        admissions.push(admission.question.origin);
+        if (hold) { entered.resolve(); await release.promise; }
+      } }));
+    } }),
+  })] });
+  const runtime = await createRuntime(() => definition, { home: join(root, 'home'), actorId: 'alice', tools: 'native',
+    onError: value => errors.push(value.error), model: nativeModel({ provider: 'human-source', model: 'controlled', create: () => new class extends LlmAdapter {
+      async *stream() {
+        if (!emitted) {
+          emitted = true;
+          const id = ToolCallId(phase === 'independent' ? 'independent-question' : 'shared-question');
+          const name = phase === 'foreign' ? 'business_answer' : 'ask_user_question';
+          const args = JSON.stringify(phase === 'foreign' ? {} : { questions: [{ id: 'evidence', question: '证据在哪里？' }], timeout: 1 });
+          yield { type: 'block-start', index: 0, blockType: 'tool-call' };
+          yield { type: 'tool-call-delta', index: 0, id, name, argumentsDelta: args };
+          yield { type: 'block-end', index: 0, block: { type: 'tool-call', id, name, arguments: args } };
+          yield { type: 'finish', reason: { kind: 'tool-calls' } }; return;
+        }
+        yield { type: 'block-start', index: 0, blockType: 'text' };
+        yield { type: 'block-end', index: 0, block: { type: 'text', text: '等待后续明确输入' } };
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      }
+    }() }),
+  });
+  try {
+    const workspace = await runtime.application.createWorkspace({ directory: root });
+    local = await runtime.application.create('work', { workspaceId: workspace.workspaceId });
+    await local.submit({ requestId: 'original', intent: 'question', delivery: 'followup', content: '原问题', scope: { workId: 'original' } }, { actorId: 'alice' });
+    await local.whenIdle();
+    gateway = await mountProgramGateway(runtime.native, { application: runtime.application,
+      model: { provider: 'human-source', model: 'controlled' }, participant: principal => ({ participant: 'human', actorId: principal.id }),
+      access: access => access.registerPolicy('source', { bindings: () => [{
+        role: { name: 'participate', resource: 'session', actions: ['reactivePrograms/open', 'reactivePrograms/questions', 'reactivePrograms/answerQuestion', 'reactivePrograms/attachWait', 'reactivePrograms/progress'] },
+        resource: { kind: 'session', id: local.id },
+      }] }), carrier: { onError: error => errors.push(error), async authenticate() { return { kind: 'source', id: 'bob' }; } },
+    });
+    client = await createProgramClient(program, { baseUrl: gateway.url, createWebSocket: url => new WebSocket(url) });
+    const remote = await client.open(local.id), original = (await remote.human.read()).questions.active[0];
+    const bound = await remote.question(original.callId);
+    assert.deepEqual(bound.origin, original.origin);
+    hold = true;
+    const expected = { sessionId: local.id, callId: original.callId, callSequence: original.origin.callSequence };
+    const answering = remote.answerQuestion(original.callId, answer, {}, expected).then(value => ({ value }), error => ({ error }));
+    expected.callId = 'independent-question'; expected.callSequence += 100;
+    await entered.promise;
+    phase = 'foreign'; emitted = false;
+    const changed = next(remote.human.values$, value => value.sourceConflicts.length > 0);
+    await local.submit({ requestId: 'foreign', intent: 'question', delivery: 'followup', content: '独立业务工作', scope: { workId: 'foreign' } }, { actorId: 'alice' });
+    await local.whenIdle();
+    const conflicted = await changed, [conflict] = conflicted.sourceConflicts;
+    assert.deepEqual(conflict.origin, original.origin);
+    assert.equal(conflict.reason, 'foreign-result');
+    assert.equal(conflict.occurrence.inputs[0].requestId, 'foreign');
+    assert.deepEqual(conflicted.questions, { active: [], settled: [] });
+    release.resolve(); hold = false;
+    const result = await answering;
+    assert.ok(result.error instanceof HumanQuestionSourceConflictError, JSON.stringify(result, (_key, value) => value instanceof Error
+      ? { name: value.name, message: value.message, code: value.code, details: value.details, cause: value.cause } : value));
+    assert.deepEqual(result.error.conflicts, conflicted.sourceConflicts);
+    await assert.rejects(bound.answer(answer), HumanQuestionSourceConflictError);
+    await assert.rejects(bound.attachWait()[Symbol.asyncIterator]().next(), HumanQuestionSourceConflictError);
+    await assert.rejects(remote.answerQuestion(original.callId, answer), HumanQuestionSourceConflictError);
+    await assert.rejects(remote.attachWait(original.callId)[Symbol.asyncIterator]().next(), HumanQuestionSourceConflictError);
+    const selector = createWorkSelector({ identify: origin => origin.scope?.workId });
+    const sources = { sessions: [{ identity: remote.identity, progress: await remote.progress.read(), human: conflicted }] };
+    assert.deepEqual(selector.select('original', sources).sessions[0].questions.sourceConflicts[0].value, conflict);
+    assert.ok(selector.select('original', sources).sessions[0].conditions.some(value => value.kind === 'question.source-conflict'));
+    assert.deepEqual(selector.select('foreign', sources).sessions[0].questions.sourceConflicts, []);
+    phase = 'independent'; emitted = false;
+    await local.submit({ requestId: 'independent', intent: 'question', delivery: 'followup', content: '另一合法问题', scope: { workId: 'independent' } }, { actorId: 'alice' });
+    await local.whenIdle();
+    const independent = await next(remote.human.values$, value => value.questions.active.some(item => item.callId === 'independent-question'));
+    assert.equal(independent.sourceConflicts.length, 1);
+    assert.equal(await (await remote.question('independent-question')).answer(answer), true);
+    await local.whenIdle();
+    const settled = await next(remote.human.values$, value => value.questions.settled.some(item => item.callId === 'independent-question'));
+    assert.equal(settled.questions.settled.some(item => item.callId === original.callId), false);
+    assert.ok(admissions.every(origin => origin.callId === original.callId || origin.callId === 'independent-question'));
+    assert.deepEqual(errors, []);
+    // 在真实 Gateway 的传输消费边界损坏来源证据，不能把未核验的 settled 发布成 ready。
+    const iterate = RemoteStream.prototype[Symbol.asyncIterator];
+    for (const malformed of ['missing', 'not-array']) {
+      let damaged = 0;
+      RemoteStream.prototype[Symbol.asyncIterator] = function (...args) {
+        const iterator = iterate.apply(this, args), next = iterator.next.bind(iterator);
+        iterator.next = async (...args) => {
+          const result = await next(...args);
+          const frame = result.value?.value;
+          if (!result.done && frame?.type === 'baseline' && frame.value?.questions) {
+            const value = { ...frame.value };
+            if (malformed === 'missing') delete value.sourceConflicts;
+            else value.sourceConflicts = {};
+            damaged++;
+            return { ...result, value: { ...result.value, value: { ...frame, value } } };
+          }
+          return result;
+        };
+        return iterator;
+      };
+      let stop;
+      try {
+        const unchecked = await client.open(local.id), visible = [];
+        stop = unchecked.human.values$.subscribe({ next: value => visible.push(value), error() {} });
+        await assert.rejects(unchecked.human.read(), /REACTIVE_REMOTE_HUMAN_SOURCE_EVIDENCE_INVALID/);
+        assert.equal(damaged, 1);
+        assert.deepEqual(visible, []);
+        stop.unsubscribe(); stop = undefined;
+        await unchecked.release();
+      } finally { stop?.unsubscribe(); RemoteStream.prototype[Symbol.asyncIterator] = iterate; }
+    }
   } finally {
     hold = false; release.resolve(); await client?.dispose(); local?.release();
     try { await gateway?.close(); } finally { await runtime.dispose(); }
