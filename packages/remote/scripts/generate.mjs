@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname, relative, resolve } from 'node:path';
 import ts from 'typescript';
 import { WorkspaceAnalyzer, WorkspaceCaches, FaceModelEmitter, writeWorkspaceArtifacts } from '@deepseek-ai/dsh-typert-generator';
@@ -59,11 +60,24 @@ writeWorkspaceArtifacts(root, artifacts);
 const hostOutput = resolve(root, 'packages/remote/lib');
 const clientOutput = resolve(root, 'packages/client/lib');
 mkdirSync(clientOutput, { recursive: true });
-for (const file of ['typert.remote-client.js', 'typert.remote-client.d.ts', 'typert.remote-client.d.ts.map']) {
+const declarationFile = resolve(hostOutput, 'typert.remote-client.d.ts');
+const declaration = readFileSync(declarationFile, 'utf8');
+const mapDirective = '//# sourceMappingURL=typert.remote-client.d.ts.map\n';
+if (!declaration.endsWith('\n' + mapDirective)) {
+  throw new Error('REACTIVE_CLIENT_TYPERT_DECLARATION_MAP_DIRECTIVE_INVALID');
+}
+// 客户端发行包不含 Host 源码；只移除官方末尾 map 指令，声明正文保持原样。
+writeFileSync(declarationFile, declaration.slice(0, -mapDirective.length));
+const archive = resolve(root, '.trash', 'build-output-' + randomUUID());
+const archiveMap = source => {
+  const saved = resolve(archive, relative(root, source));
+  mkdirSync(dirname(saved), { recursive: true });
+  renameSync(source, saved);
+};
+// 保留生成位置的目录镜像；增量构建遗留在客户端的 map 也必须退出发行目录。
+archiveMap(resolve(hostOutput, 'typert.remote-client.d.ts.map'));
+const previousMap = resolve(clientOutput, 'typert.remote-client.d.ts.map');
+if (existsSync(previousMap)) archiveMap(previousMap);
+for (const file of ['typert.remote-client.js', 'typert.remote-client.d.ts']) {
   renameSync(resolve(hostOutput, file), resolve(clientOutput, file));
 }
-const mapFile = resolve(clientOutput, 'typert.remote-client.d.ts.map');
-const declarationMap = JSON.parse(readFileSync(mapFile, 'utf8'));
-declarationMap.sources = declarationMap.sources.map(source => relative(clientOutput, resolve(hostOutput, declarationMap.sourceRoot ?? '', source)).replaceAll('\\', '/'));
-delete declarationMap.sourceRoot;
-writeFileSync(mapFile, JSON.stringify(declarationMap));
