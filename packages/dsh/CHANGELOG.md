@@ -2,6 +2,12 @@
 
 此文件保留源码版本准备记录；条目和版本号本身不表示 npm 已发布或公共 API 已稳定。
 
+## 0.35.1
+
+### Patch Changes
+
+- @hanger-source/dsh-reactive@0.35.1
+
 ## 0.35.0
 
 ### Minor Changes
