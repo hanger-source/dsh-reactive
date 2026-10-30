@@ -12,6 +12,7 @@
 
 ### Patch Changes
 
+- 会话 records 与 projections 的声明产物使用公开的附件类型，支持仓外严格类型检查。
 - Updated dependencies [d4a0ede]
   - @hanger-source/dsh-reactive@0.38.0
 

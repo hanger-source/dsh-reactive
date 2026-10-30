@@ -4,6 +4,10 @@
 
 ## 0.38.0
 
+### Patch Changes
+
+- 会话附件 schema 显式声明输入与输出类型，使下游声明产物引用公开的 AttachmentIdType；校验逻辑与运行时代码保持一致。
+
 ### Minor Changes
 
 - d4a0ede: 新增人工端 resumeGoal(expected, options)，通过精确 GoalReference 执行原生恢复、续行启用和持久回执。本地与远程共享合同，服务参与者不能取得此控制；会话激活继续独立表达。

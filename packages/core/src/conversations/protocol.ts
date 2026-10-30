@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import type { LlmFailure } from '@deepseek-ai/dsh-llm';
-import type { AdmittedPromptContentPart, PromptContentPart as NativePromptContentPart } from '@deepseek-ai/dsh-attachment/types';
+import type { PromptContentPart as NativePromptContentPart } from '@deepseek-ai/dsh-attachment/types';
 import type { FileUploadReceiptId } from '../files/contract.ts';
+import type { AttachmentIdType } from '../attachments/index.ts';
 import { continuationSchema, inputReferenceSchema, waitSchema, type Continuation, type InputParticipant, type InputReference, type InputResult, type Json, type WaitReference } from './causality.ts';
 import { operationFollowSnapshotSchema, type OperationFollowSnapshot } from '../operations/follows.ts';
 
@@ -49,7 +50,7 @@ const rawContentSchema = z.union([z.string(), promptPartSchema.array().readonly(
   .transform(value => typeof value === 'string' ? [{ type: 'text' as const, text: value }] : value)
   .refine(contentPresent, '输入必须包含非空文本或附件');
 // 这里读取宿主持久事实的形状；原始提交使用上方 receipt schema，不能走此分支。
-const attachmentIdSchema = z.custom<Extract<AdmittedPromptContentPart, { type: 'file' }>['attachment']['attachmentId']>(
+const attachmentIdSchema: z.ZodType<AttachmentIdType, AttachmentIdType> = z.custom<AttachmentIdType>(
   value => typeof value === 'string' && value.length > 0);
 const dimensionsSchema = z.object({ width: z.number().int().positive(), height: z.number().int().positive() }).strict();
 const admittedPartSchema = z.discriminatedUnion('type', [textPartSchema,
